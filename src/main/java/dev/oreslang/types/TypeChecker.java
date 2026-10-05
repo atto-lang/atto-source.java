@@ -351,7 +351,14 @@ public final class TypeChecker {
         }
 
         if (klass.actorKind() != Ast.ActorKind.NONE) {
-            validateActorProtocolContract(klass);
+            if (!klass.actorProtocolTypes().isEmpty() && klass.actorProtocolTypes().size() != 3) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' protocol must be <Message, Reply, Error>");
+            }
+            for (Ast.TypeRef protocolType : klass.actorProtocolTypes()) {
+                resolve(protocolType, classGenerics, self);
+            }
+            validateActorReceiveContract(klass);
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
@@ -407,10 +414,10 @@ public final class TypeChecker {
             boolean actorEndpoint = klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && method.visibility() == Ast.Visibility.PUBLIC
-                    && !method.name().equals("constructor");
+                    && method.name().equals("receive");
             boolean actorIngress = klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
-                    && (actorEndpoint || method.name().equals("constructor"));
+                    && (method.name().equals("receive") || method.name().equals("constructor"));
             if (klass.actorKind() != Ast.ActorKind.NONE && method.isStatic()) {
                 throw new IllegalArgumentException(
                         "actor class '" + klass.name()
@@ -493,62 +500,85 @@ public final class TypeChecker {
         }
     }
 
-    private void validateActorProtocolContract(Ast.ClassDecl klass) {
-        List<Ast.MethodDecl> publicInstance = klass.methods().stream()
-                .filter(method -> !method.isStatic()
-                        && method.visibility() == Ast.Visibility.PUBLIC
-                        && !method.name().equals("constructor"))
-                .toList();
+    private void validateActorReceiveContract(Ast.ClassDecl klass) {
+        Named selfType = nominalClassType(klass);
+        Record effective = publicClassShape(klass, new LinkedHashSet<>());
+        String receiveKey = methodContractKey("receive", 1, 0);
+        Type effectiveReceive = effective.members().get(receiveKey);
 
-        for (Ast.MethodDecl endpoint : publicInstance) {
-            if (!endpoint.genericParameters().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
-                                + "' cannot declare method generic parameters");
-            }
-            if (endpoint.explicitReceiverType() != null) {
-                throw new IllegalArgumentException(
-                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
-                                + "' must use implicit self");
-            }
-            if (endpoint.parameters().stream().anyMatch(Ast.Param::mutable)) {
-                throw new IllegalArgumentException(
-                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
-                                + "' cannot accept 'mut' parameters; mutable authority cannot cross the mailbox boundary");
-            }
-        }
-
-        Record effectiveProtocol = publicClassShape(klass, new LinkedHashSet<>());
-        if (effectiveProtocol.members().isEmpty()) {
+        if (effective.members().size() != 1 || !(effectiveReceive instanceof Function fn)
+                || fn.parameters().size() != 1 || fn.result() != Primitive.VOID) {
             throw new IllegalArgumentException(
                     "actor '" + klass.name()
-                            + "' must expose at least one public protocol method, locally or through actor inheritance");
+                            + "' must expose exactly one effective public receive(Message): void mailbox ingress and no other public instance members");
         }
 
-        Named selfType = nominalClassType(klass);
-        for (Ast.MethodDecl local : klass.methods()) {
-            if (local.isStatic()
-                    || local.visibility() == Ast.Visibility.PUBLIC
-                    || local.name().equals("constructor")) {
-                continue;
-            }
-            for (Ast.TypeRef parentRef : klass.parents()) {
-                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-                if (parent == null) continue;
-                Named parentType = concreteClassReference(parentRef, klass, selfType);
-                ResolvedMethod inherited = findMethodTarget(
-                        parent,
-                        parentType,
-                        local.name(),
-                        local.arity(),
-                        new LinkedHashSet<>());
-                if (inherited != null
-                        && inherited.method().visibility() == Ast.Visibility.PUBLIC) {
-                    throw new IllegalArgumentException(
-                            "actor '" + klass.name()
-                                    + "' cannot narrow inherited public protocol method '"
-                                    + local.name() + "'/" + local.arity() + " to private");
-                }
+        ResolvedMethod receive = findMethodTarget(
+                klass,
+                selfType,
+                "receive",
+                1,
+                new LinkedHashSet<>());
+        if (receive == null) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name() + "' has no effective public receive(Message): void mailbox ingress");
+        }
+        if (receive.method().visibility() != Ast.Visibility.PUBLIC) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                            + "' cannot narrow inherited public receive(Message): void to private");
+        }
+        if (receive.method().isStatic()
+                || receive.method().isAbstract()
+                || receive.method().async()
+                || !receive.method().genericParameters().isEmpty()
+                || receive.method().explicitReceiverType() != null
+                || receive.method().parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                            + "' receive ingress must be one concrete, synchronous, monomorphic public receive(Message): void method using implicit self");
+        }
+        if (receive.method().parameters().getFirst().mutable()) {
+            throw new IllegalArgumentException(
+                    "actor receive message cannot be 'mut'; mutable caller authority cannot cross the mailbox boundary");
+        }
+
+        Map<String, Type> bindings =
+                classGenericBindings(receive.owner(), receive.ownerType());
+        Type result = substituteGenerics(
+                resolve(
+                        receive.method().returnType(),
+                        Set.copyOf(receive.owner().genericParameters()),
+                        receive.ownerType()),
+                bindings);
+        if (result != Primitive.VOID) {
+            throw new IllegalArgumentException(
+                    "actor receive method '" + klass.name()
+                            + ".receive' must return void; replies/errors travel through explicit response capabilities");
+        }
+
+        Type message = substituteGenerics(
+                resolveParam(
+                        receive.method().parameters().getFirst(),
+                        Set.copyOf(receive.owner().genericParameters()),
+                        receive.ownerType()),
+                bindings);
+        validateActorCallableBoundaryType(
+                message,
+                klass.actorKind(),
+                false,
+                "message type of actor receive method '" + klass.name() + ".receive'");
+
+        if (klass.actorProtocolTypes().size() == 3) {
+            Type declaredMessage = resolve(
+                    klass.actorProtocolTypes().getFirst(),
+                    Set.copyOf(klass.genericParameters()),
+                    selfType);
+            if (!assignable(message, declaredMessage)
+                    || !assignable(declaredMessage, message)) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name()
+                                + "' receive message type must exactly match Actor<Message, Reply, Error>'s Message type");
             }
         }
     }
@@ -934,11 +964,12 @@ public final class TypeChecker {
                         }
                         if (call.typeArgumentsPresent()) {
                             throw new IllegalArgumentException(
-                                    "actor protocol calls are statically specialized and do not accept method type arguments");
+                                    "ActorRef operations do not accept call-site type arguments");
                         }
                         if (member.member().equals("is_alive")) {
                             if (!call.arguments().isEmpty()) {
-                                throw new IllegalArgumentException("ActorRef.is_alive expects no arguments");
+                                throw new IllegalArgumentException(
+                                        "ActorRef.is_alive expects no arguments");
                             }
                             if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
                                 throw new IllegalArgumentException(
@@ -946,87 +977,30 @@ public final class TypeChecker {
                             }
                             return Primitive.BOOL;
                         }
-                        if (member.member().equals("send")
-                                || member.member().equals("receive")
-                                || member.member().equals("mailbox")) {
+                        if (member.member().equals("receive") || member.member().equals("mailbox")) {
                             throw new IllegalArgumentException(
-                                    "raw ActorRef mailbox operations are runtime-private; "
-                                            + "invoke a declared typed actor protocol method instead");
+                                    "actor receive/mailbox is runtime-owned; enqueue through ActorRef.send(message)");
+                        }
+                        if (!member.member().equals("send")) {
+                            throw new IllegalArgumentException(
+                                    "unknown ActorRef operation '" + member.member()
+                                            + "'; ActorRef exposes send(message), id, and permitted lifecycle queries");
+                        }
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef.send expects exactly one message");
                         }
 
-                        Ast.ClassDecl actorClass = findClass(actorType.name());
-                        if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
-                            ResolvedMethod target = findMethodTarget(
-                                    actorClass,
-                                    actorType,
-                                    member.member(),
-                                    call.arguments().size(),
-                                    new LinkedHashSet<>());
-                            if (target == null
-                                    || target.method().visibility() != Ast.Visibility.PUBLIC
-                                    || target.method().isStatic()
-                                    || target.method().name().equals("constructor")) {
-                                throw new IllegalArgumentException(
-                                        "no public actor protocol method '" + member.member()
-                                                + "' with arity " + call.arguments().size()
-                                                + " on " + actorClass.name());
-                            }
-                            Ast.MethodDecl method = target.method();
-                            if (!method.genericParameters().isEmpty()) {
-                                throw new IllegalArgumentException(
-                                        "actor protocol methods cannot have method-level generics");
-                            }
-                            Map<String, Type> bindings =
-                                    classGenericBindings(target.owner(), target.ownerType());
-                            Type result = checkGenericCallable(
-                                    target.owner().genericParameters(),
-                                    method.parameters(),
-                                    method.returnType(),
-                                    call.arguments(),
-                                    env,
-                                    generics,
-                                    self,
-                                    target.ownerType(),
-                                    bindings,
-                                    "actor protocol method "
-                                            + target.owner().name() + "." + method.name());
-                            return new Named("Future", List.of(result));
-                        }
-
-                        Ast.InterfaceDecl protocol = findInterface(actorType.name());
-                        if (protocol == null) {
-                            throw new IllegalArgumentException(
-                                    "ActorRef<" + actorType.name()
-                                            + "> must name an actor class or actor protocol interface");
-                        }
-                        Map<String, Type> bindings = genericBindings(
-                                protocol.genericParameters(),
-                                actorType.arguments(),
-                                "actor protocol interface " + protocol.name());
-                        Record shape = (Record) substituteGenerics(
-                                interfaceShape(
-                                        protocol,
-                                        Set.copyOf(protocol.genericParameters()),
-                                        new LinkedHashSet<>()),
-                                bindings);
-                        Type endpoint = shape.members().get(
-                                methodContractKey(member.member(), call.arguments().size(), 0));
-                        if (!(endpoint instanceof Function fn)) {
-                            throw new IllegalArgumentException(
-                                    "no monomorphic actor protocol method '" + member.member()
-                                            + "' with arity " + call.arguments().size()
-                                            + " on interface " + protocol.name());
-                        }
-                        for (int i = 0; i < fn.parameters().size(); i++) {
-                            validateLambdaArgument(
-                                    call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                            requireAssignable(
-                                    typeOf(call.arguments().get(i), env, generics, self),
-                                    fn.parameters().get(i),
-                                    "argument " + (i + 1) + " to actor protocol "
-                                            + protocol.name() + "." + member.member());
-                        }
-                        return new Named("Future", List.of(fn.result()));
+                        Type expectedMessage = actorRefMessageType(
+                                actorType,
+                                "ActorRef<" + actorType.name() + ">");
+                        Ast.Expr argument = call.arguments().getFirst();
+                        validateLambdaArgument(argument, expectedMessage, env, generics, self);
+                        requireAssignable(
+                                typeOf(argument, env, generics, self),
+                                expectedMessage,
+                                "ActorRef.send message for " + actorType.name());
+                        return Primitive.VOID;
                     }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
@@ -1845,6 +1819,85 @@ public final class TypeChecker {
     }
 
 
+    private Type actorRefMessageType(Named protocolType, String where) {
+        Ast.ClassDecl actorClass = findClass(protocolType.name());
+        if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+            Map<String, Type> actorBindings = classGenericBindings(actorClass, protocolType);
+            Record effective = (Record) substituteGenerics(
+                    publicClassShape(actorClass, new LinkedHashSet<>()),
+                    actorBindings);
+            Type endpoint = effective.members().get(methodContractKey("receive", 1, 0));
+            if (effective.members().size() != 1
+                    || !(endpoint instanceof Function shape)
+                    || shape.parameters().size() != 1
+                    || shape.result() != Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        where + " must resolve to exactly one public receive(Message): void actor ingress");
+            }
+
+            ResolvedMethod receive = findMethodTarget(
+                    actorClass,
+                    protocolType,
+                    "receive",
+                    1,
+                    new LinkedHashSet<>());
+            if (receive == null
+                    || receive.method().visibility() != Ast.Visibility.PUBLIC
+                    || receive.method().isStatic()
+                    || receive.method().isAbstract()
+                    || receive.method().async()
+                    || !receive.method().genericParameters().isEmpty()
+                    || receive.method().explicitReceiverType() != null
+                    || receive.method().parameters().size() != 1
+                    || receive.method().parameters().getFirst().mutable()) {
+                throw new IllegalArgumentException(
+                        where + " must resolve to one concrete, synchronous, monomorphic public receive(Message): void actor ingress");
+            }
+            Map<String, Type> bindings =
+                    classGenericBindings(receive.owner(), receive.ownerType());
+            Type result = substituteGenerics(
+                    resolve(
+                            receive.method().returnType(),
+                            Set.copyOf(receive.owner().genericParameters()),
+                            receive.ownerType()),
+                    bindings);
+            if (result != Primitive.VOID) {
+                throw new IllegalArgumentException(where + " receive(Message) must return void");
+            }
+            return substituteGenerics(
+                    resolveParam(
+                            receive.method().parameters().getFirst(),
+                            Set.copyOf(receive.owner().genericParameters()),
+                            receive.ownerType()),
+                    bindings);
+        }
+
+        Ast.InterfaceDecl protocol = findInterface(protocolType.name());
+        if (protocol == null) {
+            throw new IllegalArgumentException(
+                    where + " must name an actor class or receive-only actor protocol interface");
+        }
+        Map<String, Type> bindings = genericBindings(
+                protocol.genericParameters(),
+                protocolType.arguments(),
+                "actor protocol interface " + protocol.name());
+        Record shape = (Record) substituteGenerics(
+                interfaceShape(
+                        protocol,
+                        Set.copyOf(protocol.genericParameters()),
+                        new LinkedHashSet<>()),
+                bindings);
+        Type endpoint = shape.members().get(methodContractKey("receive", 1, 0));
+        if (shape.members().size() != 1
+                || !(endpoint instanceof Function fn)
+                || fn.parameters().size() != 1
+                || fn.result() != Primitive.VOID) {
+            throw new IllegalArgumentException(
+                    where + " interface must expose exactly receive(Message): void");
+        }
+        return fn.parameters().getFirst();
+    }
+
     private Type builtinActorHandleMember(Type receiver, String member) {
         if (!(receiver instanceof Named named)) return null;
         if (named.name().equals("ActorSpawn") && named.arguments().size() == 1) {
@@ -1877,18 +1930,21 @@ public final class TypeChecker {
                     }
                     yield new Function(List.of(), Primitive.BOOL);
                 }
-                case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
-                        "raw ActorRef mailbox operations are runtime-private; "
-                                + "invoke a declared typed actor protocol method instead");
-                default -> {
-                    if (named.arguments().size() == 1) {
+                case "send" -> {
+                    if (named.arguments().size() != 1
+                            || !(named.arguments().getFirst() instanceof Named protocolNamed)) {
                         throw new IllegalArgumentException(
-                                "actor protocol methods are not first-class values; invoke '"
-                                        + member + "(...)' directly through the ActorRef");
+                                "ActorRef.send requires ActorRef<ActorOrProtocol>");
                     }
-                    throw new IllegalArgumentException(
-                            "unknown ActorRef member '" + member + "'");
+                    Type message = actorRefMessageType(
+                            protocolNamed,
+                            "ActorRef<" + protocolNamed.name() + ">");
+                    yield new Function(List.of(message), Primitive.VOID);
                 }
+                case "receive", "mailbox" -> throw new IllegalArgumentException(
+                        "actor receive/mailbox is runtime-owned; use ActorRef.send(message)");
+                default -> throw new IllegalArgumentException(
+                        "unknown ActorRef member '" + member + "'");
             };
         }
         return null;
