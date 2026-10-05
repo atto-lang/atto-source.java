@@ -1467,6 +1467,10 @@ public final class OresEvalRootNode extends RootNode {
                 return OresFuture.from(stage);
             }
 
+            if (value instanceof java.util.concurrent.Future<?> hostFuture) {
+                return context.adaptHostFuture(hostFuture);
+            }
+
             if (value instanceof OresObject object
                     && classImplementsAwaitable(object.klass, new LinkedHashSet<>())) {
                 Ast.MethodDecl method =
@@ -1484,6 +1488,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (projected instanceof CompletionStage<?> stage) {
                     return OresFuture.from(stage);
+                }
+                if (projected instanceof java.util.concurrent.Future<?> hostFuture) {
+                    return context.adaptHostFuture(hostFuture);
                 }
                 throw new IllegalStateException(
                         "Awaitable.get_awaited() on " + object.klass.name()
