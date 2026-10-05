@@ -1638,6 +1638,11 @@ public final class OwnershipChecker {
             return Ast.TypeRef.union(alternatives);
         }
 
+        Ast.TypeRef iterableShape = sequenceDestructureSourceType(concrete);
+        if (!iterableShape.equals(concrete)) {
+            return sequenceDestructureBindingType(iterableShape, index, rest);
+        }
+
         if (concrete.isTupleType()) {
             if (rest) {
                 if (index > concrete.arguments().size()) return Ast.TypeRef.inferred();
@@ -1650,6 +1655,27 @@ public final class OwnershipChecker {
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
                 && concrete.arguments().size() == 1) {
             return rest ? concrete : concrete.arguments().getFirst();
+        }
+        return Ast.TypeRef.inferred();
+    }
+
+    private Ast.TypeRef sequenceDestructureSourceType(Ast.TypeRef source) {
+        Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass == null) return concrete;
+
+        ResolvedMethod iterator =
+                findMethodTarget(klass, concrete, "Symbol.iterator", 0, new LinkedHashSet<>());
+        if (iterator == null) return concrete;
+
+        Ast.TypeRef result = substituteType(
+                iterator.method().returnType(),
+                genericBindings(iterator.owner().genericParameters(), iterator.ownerType().arguments()));
+        if (result == null) return Ast.TypeRef.inferred();
+        if (result.isTupleType()) return result;
+        if ((result.name().equals("Array") || result.name().equals("List"))
+                && result.arguments().size() == 1) {
+            return result;
         }
         return Ast.TypeRef.inferred();
     }
@@ -1722,10 +1748,19 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType) {
         if (iterableType == null) return Ast.TypeRef.inferred();
-        if ((iterableType.name().equals("Array") || iterableType.name().equals("List"))
-                && iterableType.arguments().size() == 1) {
-            return iterableType.arguments().getFirst();
+        Ast.TypeRef concrete = iterableType.isBorrow() ? iterableType.borrowedTarget() : iterableType;
+        if ((concrete.name().equals("Array") || concrete.name().equals("List"))
+                && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
         }
+        if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
+            Ast.TypeRef first = concrete.arguments().getFirst();
+            return concrete.arguments().stream().allMatch(first::equals)
+                    ? first
+                    : Ast.TypeRef.inferred();
+        }
+        Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
+        if (!sequence.equals(concrete)) return iterableElementType(sequence);
         return Ast.TypeRef.inferred();
     }
 
