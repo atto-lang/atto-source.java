@@ -1674,11 +1674,15 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // Fail closed for nominal runtime/interop types. Adding a new
+            // actor-boundary capability must be an explicit language decision,
+            // not an accidental consequence of being unknown to the checker.
+            if (named.name().equals("ActorId") && named.arguments().isEmpty()) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " uses opaque or unknown nominal type '" + named.name()
+                            + "'; actor-boundary capabilities must be explicitly whitelisted");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
