@@ -37,6 +37,23 @@ Native Image is fundamentally closed-world for Java classes. Oreslang therefore 
 
 That makes the mechanism consistent across Windows, macOS, Linux, Android, and AOT-only targets. Platform-specific native dynamic linking can remain an optional trusted-host optimization, never a semantic dependency.
 
+## Native-first language/runtime boundary
+
+Java/Truffle is a reference/bootstrap backend, not the semantic definition of
+Oreslang runtime features. Ores-owned facilities should lower through
+backend-independent runtime intrinsics and, where practical, be implemented in
+the native runtime. JNI may be used as a narrow bridge from the Java-hosted
+compiler/runtime, but Java reflection, JVM class identity, and Java library
+behavior must not define Oreslang semantics.
+
+Type tests, casts, and pattern matching therefore use Oreslang type and
+constructor metadata. Java host objects remain explicit capability-gated
+interop values and do not acquire Oreslang nominal identity through JVM
+`instanceof`.
+
+The native ABI direction and migration rules are specified in
+[NATIVE_RUNTIME_ABI.md](NATIVE_RUNTIME_ABI.md).
+
 ## Java host interop boundary
 
 Java imports are a two-key boundary. Source may name an explicit `java:` class, but execution requires both:
