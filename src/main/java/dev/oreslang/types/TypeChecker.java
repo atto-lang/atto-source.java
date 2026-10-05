@@ -65,6 +65,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> importedActorBindings = new HashSet<>();
+    private final Set<String> importedActorNamespaces = new HashSet<>();
     private static final Set<String> RESERVED_IMPORT_BINDINGS = Set.of(
             "stdio", "process", "actor", "Futures",
             "Mutex", "SharedMutex", "RwLock",
@@ -131,6 +133,9 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
                 }
                 importedValues.add(imported.namespace());
+                if (imported.kind() == Ast.ImportKind.ACTOR) {
+                    importedActorNamespaces.add(imported.namespace());
+                }
                 continue;
             }
             if (imported.names().isEmpty()) {
@@ -149,12 +154,32 @@ public final class TypeChecker {
                 if (!exposed.add(localName)) {
                     throw new IllegalArgumentException("duplicate imported name '" + localName + "'");
                 }
-                if (imported.kind() != Ast.ImportKind.CLASS
-                        && imported.kind() != Ast.ImportKind.ACTOR) {
+                if (imported.kind() == Ast.ImportKind.ACTOR) {
+                    importedActorBindings.add(localName);
+                } else if (imported.kind() != Ast.ImportKind.CLASS) {
                     importedValues.add(localName);
                 }
             }
         }
+    }
+
+    private boolean isOpaqueImportedActor(String name) {
+        return importedActorClasses.containsKey(name)
+                || importedActorBindings.contains(name)
+                || (name.indexOf('.') > 0
+                    && importedActorNamespaces.contains(
+                            name.substring(0, name.indexOf('.'))));
+    }
+
+    private Named opaqueImportedActorType(
+            String name,
+            Ast.CallExpr call,
+            Set<String> callerGenerics,
+            Type callerSelf) {
+        List<Type> arguments = call.typeArguments().stream()
+                .map(type -> resolve(type, callerGenerics, callerSelf))
+                .toList();
+        return new Named(name, arguments);
     }
 
     private void validateLinkedActorContracts(Ast.Program program) {
@@ -1206,12 +1231,6 @@ public final class TypeChecker {
                             return Primitive.BOOL;
                         }
 
-                        Ast.ClassDecl actorClass = findClass(actorType.name());
-                        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
-                            throw new IllegalArgumentException(
-                                    "ActorRef<" + actorType.name()
-                                            + "> must name a concrete actor class for mailbox send");
-                        }
                         if (member.member().equals("receive")) {
                             throw new IllegalArgumentException(
                                     "actor receive(message) is runtime-owned; enqueue through ActorRef.send(message)");
@@ -1224,6 +1243,22 @@ public final class TypeChecker {
                         if (call.arguments().size() != 1) {
                             throw new IllegalArgumentException(
                                     "ActorRef.send expects exactly one message");
+                        }
+
+                        Ast.ClassDecl actorClass = findClass(actorType.name());
+                        if (actorClass == null) {
+                            if (!isOpaqueImportedActor(actorType.name())) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef<" + actorType.name()
+                                                + "> must name a concrete or declared imported actor class");
+                            }
+                            typeOf(call.arguments().getFirst(), env, generics, self);
+                            return Primitive.VOID;
+                        }
+                        if (actorClass.actorKind() == Ast.ActorKind.NONE) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef<" + actorType.name()
+                                            + "> must name an actor class for mailbox send");
                         }
 
                         Ast.MethodDecl receive = actorClass.methods().stream()
@@ -1498,10 +1533,15 @@ public final class TypeChecker {
             Ast.CallExpr call = spawned.call();
             Ast.FunctionDecl callableTarget = null;
             Ast.ClassDecl classTarget = null;
+            String opaqueImportedActor = null;
             String label;
             if (call.callee() instanceof Ast.NameExpr targetName) {
                 callableTarget = findFunction(targetName.name());
                 classTarget = findClass(targetName.name());
+                if (classTarget == null
+                        && importedActorBindings.contains(targetName.name())) {
+                    opaqueImportedActor = targetName.name();
+                }
                 label = "actor " + targetName.name();
             } else if (call.callee() instanceof Ast.MemberExpr qualified
                     && qualified.receiver() instanceof Ast.NameExpr namespace) {
@@ -1513,7 +1553,13 @@ public final class TypeChecker {
                 if (classTarget == null) {
                     classTarget = importedActorClasses.get(qualifiedName);
                 }
-                if (callableTarget == null && classTarget == null) {
+                if (classTarget == null
+                        && importedActorNamespaces.contains(namespace.name())) {
+                    opaqueImportedActor = qualifiedName;
+                }
+                if (callableTarget == null
+                        && classTarget == null
+                        && opaqueImportedActor == null) {
                     throw new IllegalArgumentException(
                             "spawn target '" + qualifiedName
                                     + "' is not a known actor class or actor callable");
@@ -1526,6 +1572,19 @@ public final class TypeChecker {
 
             if (callableTarget != null && classTarget != null) {
                 throw new IllegalArgumentException(label + " is ambiguous between a class and callable");
+            }
+
+            if (opaqueImportedActor != null) {
+                // Standalone Truffle parsing does not own cross-unit ABI
+                // metadata. Preserve only the actor/mailbox shape here; the
+                // trusted IncrementalCompiler/linker performs the strong
+                // constructor/message checks before linked execution.
+                for (Ast.Expr argument : call.arguments()) {
+                    typeOf(argument, env, generics, self);
+                }
+                Named actorType = opaqueImportedActorType(
+                        opaqueImportedActor, call, generics, self);
+                return new Named("ActorRef", List.of(actorType));
             }
 
             if (classTarget != null) {
