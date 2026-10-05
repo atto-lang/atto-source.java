@@ -449,7 +449,7 @@ Oreslang follows the useful parts of the C# Task-based Asynchronous Pattern whil
 - an `async fnc` or `async routine` is typed as returning `Future<T>`, where `T` is the declared source return type;
 - calling an async callable returns the future immediately; `await` unwraps its result and propagates cancellation and the original failure rather than leaking a host-specific wrapper exception;
 - `async main` is allowed and is awaited exactly once at the process boundary;
-- async task arguments and results cross an owned-data boundary. The reference interpreter detaches supported data graphs before execution/completion so caller and task do not silently race on the same mutable object;
+- async task arguments and results cross an owned-data boundary. Move-only arguments are consumed by the async call under Oreslang's normal affine rules; the reference interpreter then detaches supported data graphs before execution/completion so no hidden caller/task mutable alias is introduced. Copy-like scalars retain their ordinary copy semantics;
 - futures, mutex/guard capabilities, functions/closures, unresolved generic values, actor instances, and host capabilities cannot cross that detached task boundary;
 - generic async callables are temporarily rejected until Oreslang has an explicit task-safe/sendable generic bound;
 - async instance methods are temporarily rejected until receiver move/borrow semantics are explicit. Use an async top-level/module callable or async static class function instead;
