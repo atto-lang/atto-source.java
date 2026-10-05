@@ -514,15 +514,25 @@ select {
 ```
 
 A select without a `default` arm waits until one case can commit. A `default`
-arm makes the operation non-blocking: it runs only when no channel case is ready.
-`try select { ... }` is the explicit non-blocking spelling and may omit a
-default arm, in which case no body runs when nothing is ready.
+arm is an immediate fallback: if no case is ready at that instant, the default
+body runs and no channel registration remains pending.
+
+`nb select { ... }` is deliberately different. It atomically registers all
+cases, returns from the statement immediately, and later schedules exactly the
+winning arm as a detached continuation. If the registration was created during
+an actor turn, that continuation is re-enqueued onto the same actor's serialized
+lane; it can never overlap another turn for that actor. Pending registrations
+are cancellable and are cancelled when their owning actor/runtime terminates.
+Because `default` means "do not remain registered", `nb select` and
+`default` cannot be combined.
 
 Selection is transactional. Exactly one case commits. Losing read cases do not
 consume values, losing write cases do not reserve capacity, and readiness is
-rechecked under the same atomic commit protocol. Case preference rotates by
-logical execution domain so a permanently-ready early case cannot starve later
-cases.
+rechecked under the same atomic commit protocol. The default policy is
+`fair`: a deterministic rotating cursor per logical execution domain prevents
+a permanently-ready early case from starving later cases. `select ordered`
+uses stable source/list order when strict priority is intentional. Oreslang does
+not introduce pseudo-random case selection by default.
 
 Dynamic selection uses first-class case descriptors. `select.readch(ch)` and
 `select.writech(ch, value)` create inert entries; they do not perform I/O.
@@ -536,7 +546,7 @@ val entries = [
   select.writech(replies, pending)
 ];
 
-select from entries as chosen {
+select fair from entries as chosen {
   stdio.println(chosen.index);
   stdio.println(chosen.kind);   // "read" or "write"
   stdio.println(chosen.value);
@@ -547,8 +557,13 @@ val keyed = obj{
   data: select.readch(data_ch)
 };
 
-try select from keyed as chosen {
+nb select fair from keyed as chosen {
   stdio.println(chosen.key);
+}
+
+// Immediate fallback is a separate ordinary-select mode:
+select ordered from keyed as chosen {
+  handle(chosen);
 } default -> {
   do_other_work();
 }
