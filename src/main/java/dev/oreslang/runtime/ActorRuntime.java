@@ -797,8 +797,23 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
 
-        future.whenCompleteRuntime((value, failure) ->
-                target.enqueue(() -> continuation.accept(value, failure)));
+        ActorCell<?> cell = actors.get(target.actorId());
+        if (cell == null || cell.stopped.get()) {
+            future.cancel(false);
+            return;
+        }
+
+        cell.pendingContinuations.add(future);
+        if (cell.stopped.get()) {
+            cell.pendingContinuations.remove(future);
+            future.cancel(false);
+            return;
+        }
+
+        future.whenCompleteRuntime((value, failure) -> {
+            cell.pendingContinuations.remove(future);
+            target.enqueue(() -> continuation.accept(value, failure));
+        });
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
@@ -2843,6 +2858,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final boolean trustedFactory;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
+        private final Set<OresFuture<?>> pendingContinuations = ConcurrentHashMap.newKeySet();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -3154,6 +3170,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
+            List<OresFuture<?>> pending;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -3164,9 +3181,15 @@ public final class ActorRuntime implements AutoCloseable {
                 else mailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
+                pending = List.copyOf(pendingContinuations);
+                pendingContinuations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+
+            // Cancellation removes channel/select waiter registrations before
+            // any future channel activity can revive work for this dead actor.
+            for (OresFuture<?> future : pending) future.cancel(false);
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
