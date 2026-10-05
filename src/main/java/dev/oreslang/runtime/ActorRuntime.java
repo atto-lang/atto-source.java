@@ -53,6 +53,8 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
+    private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
+    private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
@@ -1002,25 +1004,58 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
         private final ActorId creator;
+        private final int memberLimit;
+        private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
         private UUID joinSecret = UUID.randomUUID();
 
-        private ActorGroup(ActorGroupId id, ActorId creator) {
+        private ActorGroup(
+                ActorGroupId id,
+                ActorId creator,
+                IsolatePolicy creatorPolicy) {
             this.id = Objects.requireNonNull(id, "id");
             this.creator = creator;
+            Objects.requireNonNull(creatorPolicy, "creatorPolicy");
+            this.memberLimit = Math.max(
+                    1,
+                    Math.min(
+                            dispatcherConfig.maxActors(),
+                            creatorPolicy.maxMailboxMessages()));
+            this.eventTopicLimit = Math.max(
+                    1,
+                    Math.min(
+                            MAX_EVENT_TOPICS_PER_GROUP,
+                            creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             if (creator != null) members.add(creator);
         }
 
         public ActorGroupId id() { return id; }
-        public Optional<ActorId> creatorId() { return Optional.ofNullable(creator); }
+
+        public Optional<ActorId> creatorId() {
+            requireObserver("inspect ActorGroup creator");
+            return Optional.ofNullable(creator);
+        }
+
         public boolean closed() { return groupClosed.get(); }
-        public int memberCount() { return members.size(); }
-        public Set<ActorId> memberIds() { return Set.copyOf(members); }
+
+        public int memberCount() {
+            requireObserver("inspect ActorGroup membership");
+            return members.size();
+        }
+
+        public Set<ActorId> memberIds() {
+            requireObserver("inspect ActorGroup membership");
+            return Set.copyOf(members);
+        }
+
+        int eventTopicLimit() { return eventTopicLimit; }
+
         public ActorEventBus events() {
+            requireObserver("access ActorGroup events");
             requireOpen();
             return eventBus;
         }
@@ -1075,6 +1110,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("actor is not alive: " + actorId);
                 }
+                if (!members.contains(actorId) && members.size() >= memberLimit) {
+                    throw new IllegalStateException(
+                            "ActorGroup member limit exceeded: maximum " + memberLimit);
+                }
                 members.add(actorId);
                 if (groupClosed.get() || cell.stopped.get()) {
                     members.remove(actorId);
@@ -1090,9 +1129,18 @@ public final class ActorRuntime implements AutoCloseable {
 
         public boolean contains(ActorRef<?> ref) {
             Objects.requireNonNull(ref, "ref");
-            requireCallerRuntimeAffinity("inspect ActorGroup membership");
+            requireObserver("inspect ActorGroup membership");
             if (!ref.ownedBy(ActorRuntime.this)) return false;
             return members.contains(ref.id());
+        }
+
+        private void requireObserver(String operation) {
+            requireCallerRuntimeAffinity(operation);
+            ActorId caller = currentActorId().orElse(null);
+            if (caller != null && !isMember(caller)) {
+                throw new SecurityException(
+                        operation + " requires ActorGroup membership");
+            }
         }
 
         boolean isMember(ActorId actorId) {
@@ -1181,7 +1229,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public String toString() {
-            return "ActorGroup[" + id.value() + ",members=" + members.size() + "]";
+            return "ActorGroup[" + id.value() + ",closed=" + groupClosed.get() + "]";
         }
     }
 
@@ -1214,6 +1262,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         ActorId creator = currentActorId().orElse(null);
+        IsolatePolicy creatorPolicy =
+                currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
         if (creator != null && !actors.containsKey(creator)) {
             throw new IllegalStateException("current actor is no longer registered");
         }
@@ -1222,11 +1272,29 @@ public final class ActorRuntime implements AutoCloseable {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             if (actorGroups.size() >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
-                        "ActorGroup runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
+                        "ActorGroup runtime limit exceeded: maximum "
+                                + dispatcherConfig.maxActors());
+            }
+            if (creator != null) {
+                long ownedGroups = actorGroups.values().stream()
+                        .filter(group -> creator.equals(group.creator))
+                        .filter(group -> !group.closed())
+                        .count();
+                int ownerLimit = Math.max(
+                        1,
+                        Math.min(
+                                MAX_ACTOR_GROUPS_PER_ACTOR,
+                                creatorPolicy.maxMailboxMessages()));
+                if (ownedGroups >= ownerLimit) {
+                    throw new IllegalStateException(
+                            "actor-owned ActorGroup limit exceeded for "
+                                    + creator + ": maximum " + ownerLimit);
+                }
             }
             while (true) {
                 ActorGroupId id = ActorGroupId.create();
-                ActorGroup group = new ActorGroup(id, creator);
+                ActorGroup group =
+                        new ActorGroup(id, creator, creatorPolicy);
                 if (actorGroups.putIfAbsent(id, group) == null) return group;
             }
         }
