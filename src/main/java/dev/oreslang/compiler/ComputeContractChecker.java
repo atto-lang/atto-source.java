@@ -256,6 +256,7 @@ public final class ComputeContractChecker {
     private void validateComputeMetadata(Ast.FunctionDecl fn, Map<String, Ast.Param> params) {
         int placeCount = 0;
         Set<String> layoutTargets = new LinkedHashSet<>();
+        LinkedHashMap<String, String> effectClaims = new LinkedHashMap<>();
 
         for (Ast.Annotation annotation : fn.annotations()) {
             switch (annotation.name()) {
@@ -265,7 +266,9 @@ public final class ComputeContractChecker {
                                 annotation.name().toLowerCase() + " requires at least one region path");
                     }
                     for (Ast.TypeRef argument : annotation.arguments()) {
-                        validateRegionPath(argument, params, annotation.name().toLowerCase());
+                        String privilege = annotation.name().toLowerCase();
+                        validateRegionPath(argument, params, privilege);
+                        claimEffectPath(effectClaims, argument.name(), privilege);
                     }
                 }
                 case "Reduces" -> {
@@ -274,6 +277,10 @@ public final class ComputeContractChecker {
                                 "reduces requires exactly a region path and reduction operator");
                     }
                     validateRegionPath(annotation.arguments().get(0), params, "reduces");
+                    claimEffectPath(
+                            effectClaims,
+                            annotation.arguments().get(0).name(),
+                            "reduces");
                     Ast.TypeRef operator = annotation.arguments().get(1);
                     requireMetadataAtom(operator, "reduction operator");
                 }
@@ -311,6 +318,19 @@ public final class ComputeContractChecker {
                 }
                 default -> { }
             }
+        }
+    }
+
+    private static void claimEffectPath(
+            Map<String, String> claims,
+            String path,
+            String privilege) {
+        String previous = claims.putIfAbsent(path, privilege);
+        if (previous != null) {
+            throw new IllegalArgumentException(
+                    "region effect footprint '" + path
+                            + "' is declared more than once ("
+                            + previous + " and " + privilege + ")");
         }
     }
 
@@ -1070,7 +1090,12 @@ public final class ComputeContractChecker {
     private record ResolvedFunction(String id, Ast.FunctionDecl declaration) { }
 
     private void validateFlow(String module, Ast.FlowDecl flow) {
+        if (flow.edges().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "flow '" + flow.name() + "' requires at least one dependency edge");
+        }
         LinkedHashMap<String, LinkedHashSet<String>> outgoing = new LinkedHashMap<>();
+        LinkedHashSet<String> seenEdges = new LinkedHashSet<>();
         for (Ast.FlowEdge edge : flow.edges()) {
             ResolvedFunction from = resolveFunctionRef(module, edge.from());
             ResolvedFunction to = resolveFunctionRef(module, edge.to());
@@ -1081,6 +1106,12 @@ public final class ComputeContractChecker {
             if (to == null || !isCompute(to.declaration())) {
                 throw new IllegalArgumentException(
                         "flow '" + flow.name() + "' target '" + edge.to() + "' is not a compute fnc");
+            }
+            String canonicalEdge = from.id() + "\u0000" + to.id();
+            if (!seenEdges.add(canonicalEdge)) {
+                throw new IllegalArgumentException(
+                        "flow '" + flow.name() + "' contains duplicate dependency edge "
+                                + edge.from() + " -> " + edge.to());
             }
             outgoing.computeIfAbsent(from.id(), ignored -> new LinkedHashSet<>()).add(to.id());
             outgoing.computeIfAbsent(to.id(), ignored -> new LinkedHashSet<>());
@@ -1114,6 +1145,10 @@ public final class ComputeContractChecker {
     }
 
     private void validateAspect(String module, Ast.AspectDecl aspect) {
+        if (aspect.rules().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "aspect '" + aspect.name() + "' requires at least one advice rule");
+        }
         Set<String> rules = new LinkedHashSet<>();
         for (Ast.AspectRule rule : aspect.rules()) {
             Ast.FunctionDecl handler = resolveFunction(module, rule.handler());
