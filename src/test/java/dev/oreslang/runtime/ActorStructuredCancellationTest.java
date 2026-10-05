@@ -321,6 +321,218 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void structuredChildHandleIsParentBoundAndCanSendAndCancel()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch created = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorHandle<String>> handleRef =
+                    new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        if ("spawn".equals(message)) {
+                            handleRef.set(context.runtime().spawnChildShared(
+                                    factoryContext ->
+                                            (childMessage, childContext) -> {
+                                                if ("stop".equals(childMessage)) {
+                                                    childContext.self().stop();
+                                                }
+                                            }));
+                            created.countDown();
+                            return;
+                        }
+                        if ("send".equals(message)) {
+                            handleRef.get().send("stop");
+                        }
+                    });
+
+            parent.send("spawn");
+            assertTrue(created.await(2, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorHandle<String> handle = handleRef.get();
+            assertThrows(
+                    SecurityException.class,
+                    handle::cancel,
+                    "child lifecycle handle must remain bound to its parent actor");
+
+            parent.send("send");
+            assertTrue(handle.awaitTermination(2, TimeUnit.SECONDS));
+            parent.stop();
+        }
+    }
+
+    @Test
+    void parentHandleCanCancelDirectChild() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch childCreated = new CountDownLatch(1);
+            CountDownLatch parentIssuedCancel = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorHandle<String>> childHandle =
+                    new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        if ("spawn".equals(message)) {
+                            childHandle.set(context.runtime().spawnChildShared(
+                                    factoryContext ->
+                                            (childMessage, childContext) -> { }));
+                            childCreated.countDown();
+                            return;
+                        }
+                        if ("cancel".equals(message)) {
+                            assertTrue(childHandle.get().cancel());
+                            parentIssuedCancel.countDown();
+                            context.self().stop();
+                        }
+                    });
+
+            parent.send("spawn");
+            assertTrue(childCreated.await(2, TimeUnit.SECONDS));
+            parent.send("cancel");
+
+            assertTrue(parentIssuedCancel.await(2, TimeUnit.SECONDS));
+            assertTrue(childHandle.get().awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    ActorRuntime.ActorCancelledException.class,
+                    childHandle.get().failure().orElseThrow());
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void lifecycleHandleCannotCrossActorMailbox() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> receiver =
+                    runtime.spawnShared(() -> (message, context) -> { });
+
+            ActorRuntime.ActorRef<String> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> child =
+                                context.runtime().spawnChildShared(
+                                        factoryContext ->
+                                                (childMessage, childContext) -> { });
+                        receiver.send(child);
+                    });
+
+            parent.send("leak");
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    SecurityException.class,
+                    parent.failure().orElseThrow());
+            receiver.stop();
+        }
+    }
+
+    @Test
+    void hostControlHandleIsUnavailableToActorCode() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) ->
+                            context.runtime().controlHandle(context.self().id()));
+
+            actor.send("control");
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    SecurityException.class,
+                    actor.failure().orElseThrow());
+        }
+    }
+
+    @Test
+    void parentHandleCanForceKillDirectChildThroughHostRevoker()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorRuntime.ForceCancellationRequest> observed =
+                    new AtomicReference<>();
+            runtime.setForceCancellationTreeHook(request -> {
+                observed.set(request);
+                return true;
+            });
+
+            CountDownLatch killed = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> child =
+                                context.runtime().spawnChildShared(
+                                        factoryContext ->
+                                                (childMessage, childContext) -> { });
+                        assertTrue(child.kill());
+                        killed.countDown();
+                        context.self().stop();
+                    });
+
+            parent.send("kill-child");
+            assertTrue(killed.await(2, TimeUnit.SECONDS));
+            assertEquals(1, observed.get().targets().size());
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void forceKillRequiresAtomicRevocationOfCompleteStructuredSubtree()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch spawned = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> root =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> child =
+                                context.runtime().spawnChildShared(
+                                        factoryContext ->
+                                                (childMessage, childContext) -> {
+                                                    childContext.runtime()
+                                                            .spawnChildShared(
+                                                                    grandFactoryContext ->
+                                                                            (grandMessage,
+                                                                             grandContext) -> { });
+                                                });
+                        child.send("spawn-grandchild");
+                        spawned.countDown();
+                    });
+
+            root.send("spawn-tree");
+            assertTrue(spawned.await(2, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorControlHandle rootControl =
+                    runtime.controlHandle(root);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (rootControl.childIds().isEmpty()
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, rootControl.childIds().size());
+
+            ActorRuntime.ActorControlHandle childControl =
+                    runtime.controlHandle(rootControl.childIds().get(0));
+            while (childControl.childIds().isEmpty()
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, childControl.childIds().size());
+
+            runtime.setForceCancellationHook(
+                    (actorId, executionDomain) -> true);
+            assertThrows(
+                    IllegalStateException.class,
+                    rootControl::kill,
+                    "leaf-only force hook must fail closed for a subtree");
+            assertTrue(rootControl.isAlive());
+
+            AtomicReference<ActorRuntime.ForceCancellationRequest> observed =
+                    new AtomicReference<>();
+            runtime.setForceCancellationTreeHook(request -> {
+                observed.set(request);
+                return true;
+            });
+
+            assertTrue(rootControl.kill());
+            assertEquals(3, observed.get().targets().size());
+            assertTrue(rootControl.awaitTermination(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void ordinaryActorCannotInvokeForceCancellationAuthority() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicBoolean revokerInvoked = new AtomicBoolean();
