@@ -41,6 +41,7 @@ final class ActorGroupRuntime<Out> {
     private final AtomicLong nextSequence = new AtomicLong();
     private final Object outboxAdmissionLock = new Object();
     private final AtomicBoolean scheduled = new AtomicBoolean();
+    private final AtomicBoolean retryScheduled = new AtomicBoolean();
     private final AtomicBoolean stopped = new AtomicBoolean();
     private final AtomicReference<Thread> executionLease = new AtomicReference<>();
 
@@ -183,13 +184,22 @@ final class ActorGroupRuntime<Out> {
             runtime.executeActorGroupMailman(this::runMailmanQuantum);
         } catch (RejectedExecutionException saturated) {
             scheduled.set(false);
-            if (!stopped.get()) {
-                runtime.retryActorGroupMailman(this::scheduleMailman);
-            }
+            scheduleMailmanRetry();
         } catch (RuntimeException failure) {
             scheduled.set(false);
             throw failure;
         }
+    }
+
+    private void scheduleMailmanRetry() {
+        if (stopped.get()) return;
+        if (!retryScheduled.compareAndSet(false, true)) return;
+        runtime.retryActorGroupMailman(() -> {
+            retryScheduled.set(false);
+            if (!stopped.get() && !outbox.isEmpty()) {
+                scheduleMailman();
+            }
+        });
     }
 
     private void runMailmanQuantum() {
