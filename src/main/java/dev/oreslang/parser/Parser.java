@@ -473,6 +473,14 @@ public final class Parser {
 
         if (method.visibility() != Ast.Visibility.PUBLIC) return;
 
+        if (method.name().equals("id")
+                || method.name().equals("is_alive")
+                || method.name().equals("mailbox")) {
+            throw error(previous(),
+                    "public actor protocol method '" + method.name()
+                            + "' collides with a reserved ActorRef control member");
+        }
+
         // Public actor methods are the typed source-level protocol. The
         // compiler/runtime lowers all of them onto one hidden mailbox
         // dispatcher; no user-visible method name is privileged.
