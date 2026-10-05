@@ -767,6 +767,33 @@ end
                 }
                 """);
 
+        assertComputeRejected("""
+                compute fnc contradictoryDiscard(Region<int> values): void
+                reads values;
+                discards values.position;
+                {
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc contradictoryReduce(Region<int> values): void
+                writes values;
+                reduces values.mass by sum;
+                {
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc contradictoryAtomic(Region<int> values): void
+                reads values.counter;
+                atomic values;
+                {
+                  return;
+                }
+                """);
+
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 compute fnc readThenWrite(Region<int> values): void
                 reads values;
