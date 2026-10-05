@@ -326,6 +326,14 @@ Ordinary actor cancellation is structured:
 Cancellation is control flow, not a normal guest exception. An Oreslang
 `try/catch` cannot swallow the cancellation signal and keep the actor alive.
 
+Carrier-thread interruption is deliberately **not** an actor cancellation
+signal. Actors are multiplexed over shared carriers, so a Java/native worker
+interrupt caused by executor shutdown or host machinery cannot be attributed to
+the actor currently occupying that carrier. Structured cancellation is keyed by
+actor/runtime state; non-cooperative untrusted termination is keyed by the
+revocable isolate/domain boundary. This keeps carrier identity completely
+separate from actor identity.
+
 ### Force cancellation for untrusted actors
 
 Untrusted code cannot be expected to poll, yield, honor callbacks, or run
