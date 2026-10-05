@@ -45,6 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -116,6 +117,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_MAILMAN_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_ROOT_DEADLINE_NANOS = new ThreadLocal<>();
+    private static final int AFFINITY_SCAN_LIMIT = 64;
+    private static final int AFFINITY_REHOME_AFTER_MISSES = 3;
+    private static final long AFFINITY_STEAL_GRACE_NANOS =
+            TimeUnit.MICROSECONDS.toNanos(50);
 
     private record ActorExecutionContext(
             ActorRuntime runtime,
@@ -233,6 +238,16 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean untrusted() {
             return this == UNTRUSTED;
         }
+    }
+
+    /**
+     * Placement policy for actor turns inside their already-selected scheduler
+     * domain. This is deliberately a performance preference, never a semantic
+     * constraint: pool isolation and the per-actor execution lease are hard
+     * invariants, while a busy home carrier may be bypassed by work stealing.
+     */
+    public enum ActorAffinityPolicy {
+        PREFER_LAST_CARRIER
     }
 
     /**
@@ -408,6 +423,10 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (ArithmeticException overflow) {
                 return Integer.MAX_VALUE;
             }
+        }
+
+        public ActorAffinityPolicy actorAffinityPolicy() {
+            return ActorAffinityPolicy.PREFER_LAST_CARRIER;
         }
 
         public int throughputFor(ActorKind kind) {
@@ -874,6 +893,17 @@ public final class ActorRuntime implements AutoCloseable {
             long rejectedTurns,
             int largestPoolSize) { }
 
+    /**
+     * Soft-affinity telemetry. A hit means a runnable actor returned to its
+     * preferred carrier. A migration means another carrier stole the turn.
+     * Rehomes are adaptive preference changes after repeated migration or a
+     * retired preferred carrier.
+     */
+    public record DispatcherAffinityStats(
+            long affinityHits,
+            long migrations,
+            long rehomes) { }
+
     public record ActorId(UUID value) {
         public ActorId { Objects.requireNonNull(value); }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
@@ -1294,6 +1324,15 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong privateRejectedTurns = new AtomicLong();
         private final AtomicLong sharedRejectedTurns = new AtomicLong();
         private final AtomicLong untrustedRejectedTurns = new AtomicLong();
+        private final AtomicLong privateAffinityHits = new AtomicLong();
+        private final AtomicLong sharedAffinityHits = new AtomicLong();
+        private final AtomicLong untrustedAffinityHits = new AtomicLong();
+        private final AtomicLong privateAffinityMigrations = new AtomicLong();
+        private final AtomicLong sharedAffinityMigrations = new AtomicLong();
+        private final AtomicLong untrustedAffinityMigrations = new AtomicLong();
+        private final AtomicLong privateAffinityRehomes = new AtomicLong();
+        private final AtomicLong sharedAffinityRehomes = new AtomicLong();
+        private final AtomicLong untrustedAffinityRehomes = new AtomicLong();
         private int actorCount;
         private int privateActorCount;
         private int sharedActorCount;
@@ -1378,6 +1417,37 @@ public final class ActorRuntime implements AutoCloseable {
 
         private synchronized int actorCount() {
             return actorCount;
+        }
+
+        private AtomicLong affinityHitCounter(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateAffinityHits;
+                case SHARED -> sharedAffinityHits;
+                case UNTRUSTED -> untrustedAffinityHits;
+            };
+        }
+
+        private AtomicLong affinityMigrationCounter(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateAffinityMigrations;
+                case SHARED -> sharedAffinityMigrations;
+                case UNTRUSTED -> untrustedAffinityMigrations;
+            };
+        }
+
+        private AtomicLong affinityRehomeCounter(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateAffinityRehomes;
+                case SHARED -> sharedAffinityRehomes;
+                case UNTRUSTED -> untrustedAffinityRehomes;
+            };
+        }
+
+        private DispatcherAffinityStats affinityStats(ActorKind kind) {
+            return new DispatcherAffinityStats(
+                    affinityHitCounter(kind).get(),
+                    affinityMigrationCounter(kind).get(),
+                    affinityRehomeCounter(kind).get());
         }
 
         private synchronized void reserveMemory(long bytes, String purpose) {
@@ -2034,6 +2104,11 @@ public final class ActorRuntime implements AutoCloseable {
                 overrunCounter(kind).get(),
                 rejectionCounter(kind).get(),
                 executor.getLargestPoolSize());
+    }
+
+    public DispatcherAffinityStats dispatcherAffinityStats(ActorKind kind) {
+        Objects.requireNonNull(kind, "kind");
+        return dispatcherGroup.affinityStats(kind);
     }
 
     /** Immutable observability for the privileged VM control-plane scheduler. */
@@ -5741,6 +5816,133 @@ public final class ActorRuntime implements AutoCloseable {
         return executor;
     }
 
+    /**
+     * Runnable carrying a soft home-carrier preference. The preferred Thread is
+     * never an ownership token: ActorCell.executionLease remains the only
+     * authority that permits actor execution.
+     */
+    static final class AffinityTask implements Runnable {
+        private final Thread preferredCarrier;
+        private final Runnable delegate;
+
+        AffinityTask(Thread preferredCarrier, Runnable delegate) {
+            this.preferredCarrier = preferredCarrier;
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+        }
+
+        Thread preferredCarrier() {
+            return preferredCarrier;
+        }
+
+        boolean prefers(Thread carrier) {
+            return preferredCarrier != null && preferredCarrier == carrier;
+        }
+
+        boolean hasLiveForeignPreference(Thread carrier) {
+            return preferredCarrier != null
+                    && preferredCarrier != carrier
+                    && preferredCarrier.isAlive();
+        }
+
+        @Override
+        public void run() {
+            delegate.run();
+        }
+    }
+
+    /**
+     * Bounded ready queue that biases each worker toward tasks homed to that
+     * same carrier. If only foreign-affine work exists, a worker waits for a
+     * tiny grace interval and then steals normally. Thus affinity improves
+     * cache locality but cannot strand runnable work behind an occupied,
+     * retired, or slow carrier.
+     */
+    static final class AffinityBlockingQueue extends LinkedBlockingQueue<Runnable> {
+        AffinityBlockingQueue(int capacity) {
+            super(capacity);
+        }
+
+        private Runnable pollEligible(Thread carrier) {
+            int scanned = 0;
+            for (Runnable candidate : this) {
+                if (++scanned > AFFINITY_SCAN_LIMIT) break;
+                if (candidate instanceof AffinityTask affine
+                        && affine.hasLiveForeignPreference(carrier)) {
+                    continue;
+                }
+                if (remove(candidate)) return candidate;
+            }
+            return null;
+        }
+
+        private Runnable pollPreferred(Thread carrier) {
+            int scanned = 0;
+            for (Runnable candidate : this) {
+                if (++scanned > AFFINITY_SCAN_LIMIT) break;
+                if (candidate instanceof AffinityTask affine
+                        && affine.prefers(carrier)
+                        && remove(candidate)) {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+
+        private Runnable pollAffinityFirst(Thread carrier) {
+            Runnable preferred = pollPreferred(carrier);
+            return preferred != null ? preferred : pollEligible(carrier);
+        }
+
+        private static void affinityGrace(long nanos) throws InterruptedException {
+            if (nanos <= 0L) return;
+            LockSupport.parkNanos(nanos);
+            if (Thread.interrupted()) throw new InterruptedException();
+        }
+
+        @Override
+        public Runnable take() throws InterruptedException {
+            Thread carrier = Thread.currentThread();
+            while (true) {
+                Runnable task = pollAffinityFirst(carrier);
+                if (task != null) return task;
+                if (isEmpty()) return super.take();
+
+                // Only live foreign-affine work was visible. Give its home
+                // carrier a short chance to claim it, then permit stealing.
+                affinityGrace(AFFINITY_STEAL_GRACE_NANOS);
+                task = pollAffinityFirst(carrier);
+                if (task != null) return task;
+                return super.take();
+            }
+        }
+
+        @Override
+        public Runnable poll() {
+            Runnable task = pollAffinityFirst(Thread.currentThread());
+            return task != null ? task : super.poll();
+        }
+
+        @Override
+        public Runnable poll(long timeout, TimeUnit unit) throws InterruptedException {
+            long budget = unit.toNanos(timeout);
+            if (budget <= 0L) return poll();
+
+            long started = System.nanoTime();
+            Thread carrier = Thread.currentThread();
+            Runnable task = pollAffinityFirst(carrier);
+            if (task != null) return task;
+            if (isEmpty()) return super.poll(timeout, unit);
+
+            affinityGrace(Math.min(AFFINITY_STEAL_GRACE_NANOS, budget));
+            task = pollAffinityFirst(carrier);
+            if (task != null) return task;
+
+            long elapsed = System.nanoTime() - started;
+            long remaining = Math.max(0L, budget - elapsed);
+            return remaining == 0L ? super.poll() : super.poll(remaining, TimeUnit.NANOSECONDS);
+        }
+    }
+
     private static ThreadPoolExecutor newDispatcher(
             int parallelism,
             int readyQueueCapacity,
@@ -5757,7 +5959,7 @@ public final class ActorRuntime implements AutoCloseable {
                 maxThreads,
                 50L,
                 TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity, true),
+                new AffinityBlockingQueue(readyQueueCapacity),
                 namedFactory(threadPrefix),
                 new ThreadPoolExecutor.AbortPolicy());
         return executor;
@@ -5792,6 +5994,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final long deadlineNanos;
         private volatile Thread activeCarrier;
         private final AtomicReference<Thread> executionLease = new AtomicReference<>();
+        private final AtomicReference<Thread> preferredCarrier = new AtomicReference<>();
+        private final AtomicInteger affinityMissStreak = new AtomicInteger();
         private volatile ScheduledFuture<?> lifetimeFuture;
         private volatile ScheduledFuture<?> messageDeadlineFuture;
         private final AtomicLong messageEpoch = new AtomicLong();
@@ -6329,7 +6533,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (stopped.get() || closed.get()) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
-                dispatcherFor(kind).execute(this::runBatch);
+                dispatcherFor(kind).execute(
+                        new AffinityTask(preferredCarrier.get(), this::runBatch));
                 scaleDispatcherForDemand(kind);
             } catch (RejectedExecutionException rejected) {
                 rejectionCounter(kind).incrementAndGet();
@@ -6339,9 +6544,36 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void observeCarrierAffinity(Thread carrier) {
+            Thread preferred = preferredCarrier.get();
+            if (preferred == null) {
+                if (preferredCarrier.compareAndSet(null, carrier)) {
+                    affinityMissStreak.set(0);
+                    return;
+                }
+                preferred = preferredCarrier.get();
+            }
+
+            if (preferred == carrier) {
+                affinityMissStreak.set(0);
+                dispatcherGroup.affinityHitCounter(kind).incrementAndGet();
+                return;
+            }
+
+            dispatcherGroup.affinityMigrationCounter(kind).incrementAndGet();
+            int misses = affinityMissStreak.incrementAndGet();
+            if (!preferred.isAlive() || misses >= AFFINITY_REHOME_AFTER_MISSES) {
+                if (preferredCarrier.compareAndSet(preferred, carrier)) {
+                    affinityMissStreak.set(0);
+                    dispatcherGroup.affinityRehomeCounter(kind).incrementAndGet();
+                }
+            }
+        }
+
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
             Thread carrier = Thread.currentThread();
+            observeCarrierAffinity(carrier);
             if (!executionLease.compareAndSet(null, carrier)) {
                 ACTOR_CARRIER.remove();
                 fail(new IllegalStateException(
