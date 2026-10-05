@@ -155,10 +155,12 @@ condition_and   = equality { "," equality } ;
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
-for_stmt        = "for" "(" for_of_head ")" block
-                | "for" "(" [ for_init ] ";" [ expression ] ";" [ expression ] ")" block ;
+for_stmt        = "for" "(" for_of_head ")" loop_body
+                | "for" "(" [ for_init ] ";" [ expression ] ";" [ expression ] ")" loop_body
+                | "for" for_of_head loop_body ;
 
 for_of_head     = [ binding_kind ] IDENT "of" expression ;
+loop_body       = block | "do" { statement } "done" ;
 for_init        = binding_kind [ type_ref ] IDENT "=" expression
                 | expression ;
 
@@ -254,7 +256,11 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    Semantic restrictions:
    - "block" followed by "{" is a standalone lexical scope. It has no implicit
      scheduling behavior and declarations inside it do not escape the scope.
-   - "loop" followed by "{" is the canonical explicit infinite loop.
+   - "loop" accepts either "{ ... }" or "do ... done". Iterator and
+     conventional for-loops accept the same body forms. The canonical iterator
+     shorthand is "for x of iterable do ... done"; parenthesized headers remain
+     valid for compatibility. A bare done closes a do-body, while done(...)
+     remains a callable invocation.
      break exits and continue advances the nearest enclosing loop/for; return
      still exits the enclosing callable. Loop control never crosses a callable
      boundary.
