@@ -1166,9 +1166,8 @@ public final class Parser {
         List<Ast.IfBranch> branches = new ArrayList<>();
         Ast.Expr condition = parseCondition();
 
-        // Brace-delimited form is self-terminating. The keyword-delimited
-        // then/do form below uses fi, but braces must not consume a surrounding
-        // fi when nested inside a keyword-delimited conditional.
+        // Braces delimit branch bodies, but every if remains structurally
+        // closed by fi. This keeps if nesting explicit and unambiguous.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseBlock()));
             while (match(ELSEIF)) {
@@ -1178,6 +1177,7 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
+            consume(FI, "expected 'fi' to close if");
             return new Ast.IfStmt(branches, elseBody);
         }
 
@@ -1228,8 +1228,7 @@ public final class Parser {
     private Ast.MatchStmt parseMatch() {
         boolean ordered = check(IDENT) && peek().lexeme().equals("first");
         if (ordered) advance();
-        Ast.Expr subject = parseExpression();
-        match(SEMICOLON);
+        Ast.Expr subject = parseMatchSubject();
 
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
@@ -1245,6 +1244,50 @@ public final class Parser {
         consume(END, "expected 'end' to close match");
         if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
         return new Ast.MatchStmt(subject, ordered, arms);
+    }
+
+    private Ast.Expr parseMatchSubject() {
+        if (check(EOF)) throw error(peek(), "match requires a subject expression");
+
+        int start = current;
+        int startLine = peek().line();
+        int parens = 0;
+        int brackets = 0;
+        int braces = 0;
+        int end = start;
+
+        for (; end < tokens.size(); end++) {
+            Token token = tokens.get(end);
+            if (end > start && parens == 0 && brackets == 0 && braces == 0) {
+                if (token.type() == SEMICOLON || token.line() > startLine) break;
+            }
+
+            switch (token.type()) {
+                case LPAREN -> parens++;
+                case RPAREN -> parens--;
+                case LBRACKET -> brackets++;
+                case RBRACKET -> brackets--;
+                case LBRACE -> braces++;
+                case RBRACE -> braces--;
+                default -> { }
+            }
+        }
+
+        if (end == start) throw error(peek(), "match requires a subject expression");
+
+        ArrayList<Token> subjectTokens = new ArrayList<>(tokens.subList(start, end));
+        Token boundary = tokens.get(Math.min(end, tokens.size() - 1));
+        subjectTokens.add(new Token(EOF, "", boundary.line(), boundary.column()));
+
+        Parser subjectParser = new Parser(subjectTokens);
+        Ast.Expr subject = subjectParser.parseExpression();
+        if (!subjectParser.check(EOF)) {
+            throw error(tokens.get(start), "invalid match subject expression");
+        }
+
+        current = end;
+        match(SEMICOLON);
+        return subject;
     }
 
     private Ast.Pattern parsePattern() {
