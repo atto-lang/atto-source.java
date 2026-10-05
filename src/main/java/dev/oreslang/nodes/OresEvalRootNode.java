@@ -629,6 +629,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw fatal;
             } catch (LinkageError fatal) {
                 throw fatal;
+            } catch (ReturnSignal signal) {
+                return asyncPure(new AsyncReturn(signal.value));
             } catch (Throwable failure) {
                 return asyncFailure(failure);
             }
@@ -644,6 +646,7 @@ public final class OresEvalRootNode extends RootNode {
         private static AsyncPlan asyncFlatMap(AsyncPlan plan, AsyncMapper next) {
             if (plan instanceof AsyncTailTransfer) return plan;
             if (plan instanceof AsyncPure pure) {
+                if (pure.value() instanceof AsyncReturn) return plan;
                 return new AsyncThunk(() -> safePlan(() -> next.apply(pure.value())));
             }
             if (plan instanceof AsyncFailure) return plan;
@@ -1609,6 +1612,12 @@ public final class OresEvalRootNode extends RootNode {
                                 : asyncEval(conditional.whenFalse(), env));
             }
 
+            if (expr instanceof Ast.TryPropagateExpr propagated) {
+                return asyncFlatMap(
+                        asyncEval(propagated.expression(), env),
+                        value -> safePlan(() -> asyncPure(tryPropagate(value))));
+            }
+
             if (expr instanceof Ast.UnaryExpr unary) {
                 return asyncFlatMap(asyncEval(unary.operand(), env), value ->
                         safePlan(() -> asyncPure(switch (unary.operator()) {
@@ -1960,6 +1969,9 @@ public final class OresEvalRootNode extends RootNode {
                         || containsAwait(conditional.whenTrue())
                         || containsAwait(conditional.whenFalse());
             }
+            if (expr instanceof Ast.TryPropagateExpr propagated) {
+                return containsAwait(propagated.expression());
+            }
             if (expr instanceof Ast.CallExpr call) {
                 if (containsAwait(call.callee())) return true;
                 for (Ast.Expr argument : call.arguments()) {
@@ -2188,6 +2200,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Futures")) return new FuturesFacade();
                 if (name.name().equals("Future")) return new FutureFactory();
+                if (name.name().equals("Iterator")) return new IteratorFactory();
+                if (name.name().equals("Stream")) return new StreamFactory();
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("RwLock")) return new RwLockFactory(context);
@@ -2262,6 +2276,9 @@ public final class OresEvalRootNode extends RootNode {
                 return truth(eval(conditional.condition(), env))
                         ? eval(conditional.whenTrue(), env)
                         : eval(conditional.whenFalse(), env);
+            }
+            if (expr instanceof Ast.TryPropagateExpr propagated) {
+                return tryPropagate(eval(propagated.expression(), env));
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);
@@ -2465,6 +2482,21 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown Future static member " + name);
                 };
             }
+            if (receiver instanceof IteratorFactory factory) {
+                return switch (name) {
+                    case "from_values" -> (Invokable) factory::fromValues;
+                    default -> throw new IllegalArgumentException(
+                            "unknown Iterator static member " + name);
+                };
+            }
+            if (receiver instanceof StreamFactory factory) {
+                return switch (name) {
+                    case "from_values" -> (Invokable) factory::fromValues;
+                    case "from_future" -> (Invokable) factory::fromFuture;
+                    default -> throw new IllegalArgumentException(
+                            "unknown Stream static member " + name);
+                };
+            }
             if (receiver instanceof CallbackFacade callback) {
                 return callback.member(name);
             }
@@ -2508,6 +2540,32 @@ public final class OresEvalRootNode extends RootNode {
                     case "get_awaited" -> (Invokable) args -> {
                         requireZero(args, "Future.get_awaited");
                         return future.getAwaited();
+                    };
+                    case "map" -> (Invokable) args -> {
+                        Invokable mapper = requireInvokableArg(args, "Future.map");
+                        @SuppressWarnings("unchecked")
+                        OresFuture<Object> source = (OresFuture<Object>) future;
+                        return source.mapOn(
+                                asyncScheduler(),
+                                value -> mapper.call(List.of(value)));
+                    };
+                    case "flat_map", "and_then" -> (Invokable) args -> {
+                        Invokable mapper = requireInvokableArg(
+                                args, "Future." + name);
+                        @SuppressWarnings("unchecked")
+                        OresFuture<Object> source = (OresFuture<Object>) future;
+                        return source.flatMapOn(asyncScheduler(), value -> {
+                            Object mapped = mapper.call(List.of(value));
+                            if (!(mapped instanceof Awaitable<?> awaited)) {
+                                throw new IllegalArgumentException(
+                                        "Future." + name
+                                                + " callback must return Awaitable<T>");
+                            }
+                            @SuppressWarnings("unchecked")
+                            Awaitable<Object> typed =
+                                    (Awaitable<Object>) awaited;
+                            return typed;
+                        });
                     };
                     case "attach_callback" -> (Invokable) args -> {
                         requireOne(args, "Future.attach_callback");
@@ -2563,6 +2621,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
+            if (receiver instanceof IteratorValue iterator) return iteratorMember(iterator, name);
+            if (receiver instanceof StreamValue stream) return streamMember(stream, name);
             if (receiver instanceof OresRwLock<?> rwLock) return rwLockMember(rwLock, name);
             if (receiver instanceof OresRwLock.ReadGuard<?> guard) {
                 return switch (name) {
