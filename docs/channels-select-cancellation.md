@@ -40,9 +40,41 @@ ActorMailman remains routing/control-plane logic. It may decide which actor or
 actor group receives an envelope, but it must not invent another transport
 primitive.
 
+
+## Core/std-lib ownership and runtime boundary
+
+The user-facing channel API belongs to Oreslang core/stdlib (canonically
+`std/channels` plus compiler syntax sugar), not to the scheduler or ActorMailman
+implementation.
+
+The compiler/runtime primitive boundary is deliberately small:
+
+- `Channel<T>` and rendezvous/bounded channel construction;
+- Future-producing read/write registration;
+- `SelectSet`, read/write cases, and selection policies;
+- immediate `try readch` / `try writech` probes.
+
+Source syntax lowers onto that core surface:
+
+```text
+readch ch             -> await (nb readch ch)
+writech ch, value     -> await (nb writech ch, value)
+select { ... }        -> await (nb select { ... })
+```
+
+The OresVM scheduler, ActorMailman, and ActorGroup implementation do **not** use
+`select` or `nb select` to scan actor mailboxes. Mailbox writes already know
+which actor became runnable, so the runtime pushes that actor onto the relevant
+ready queue directly. This preserves O(1)-style wakeup behavior and avoids a
+giant dynamic select over all actors.
+
+A future implementation may share lower-level readiness-registration machinery
+between channels, timers, I/O, mailboxes, Futures, and scheduler wakeups, but
+that does not make scheduler dispatch itself a source-level `select`.
+
 ## readch, writech, await, and select are suspension points
 
-Source-level channel operations are scheduler suspension points:
+Source-level blocking channel operations are scheduler suspension points:
 
 ```ores
 let msg = readch incoming;
@@ -51,18 +83,62 @@ let value = await future;
 ```
 
 "Blocking" in Oreslang means the logical actor/continuation waits. It must never
-mean parking one of the bounded actor carrier threads.
+mean parking one of the bounded OresVM carrier threads.
 
-The lowering target is an Ores-owned `OresFuture<T>`. A pending operation:
+All channel waits lower through Ores-owned `OresFuture<T>` registrations. A
+pending blocking operation:
 
 - registers runtime-owned readiness state;
-- releases the current actor/scheduler turn;
+- suspends/releases the current actor turn;
 - lets the carrier execute other runnable actors;
-- makes the suspended actor runnable again when the operation wins/completes;
+- makes the suspended actor runnable again when the operation completes;
 - resumes only through the actor's scheduler/serialized execution lane.
 
 Producer, timer, JNI, I/O, and channel-completion threads may settle runtime
 state, but they never execute Oreslang guest continuation code inline.
+
+
+## Nonblocking and immediate channel operations
+
+`nb readch` and `nb writech` arm the same channel operation but do not suspend
+the actor. They return a Future/Awaitable immediately:
+
+```ores
+Future<Message> pending = nb readch incoming;
+Future<WriteOutcome> sent = nb writech outgoing, payload;
+
+do_other_work();
+
+let msg = await pending;
+await sent;
+```
+
+No actor is spawned to implement these forms. A Future represents completion,
+not independently executing work.
+
+This is distinct from the immediate probe forms:
+
+```ores
+try readch incoming
+try writech outgoing, payload
+```
+
+`try` checks readiness once and returns immediately **without registering a
+waiter**. The three-way contract is therefore:
+
+```text
+readch       register + suspend actor until completion
+nb readch    register + return Future immediately
+try readch   probe once; never register
+
+writech      register + suspend actor until completion
+nb writech   register + return Future immediately
+try writech  probe once; never register
+```
+
+Outstanding `nb readch` / `nb writech` registrations are attached to the
+owning actor lifetime and are detached automatically on structured
+cancellation.
 
 ## Static select
 
@@ -79,66 +155,79 @@ case readch ctx.Done():
 }
 ```
 
-The default policy is **priority**, not Go-style pseudo-random choice.
+The default policy is **fair deterministic rotation**, not Go-style
+pseudo-random choice and not fixed lexical priority.
 
-If several cases are ready when a selection probe occurs, the first ready case
-in source order wins. This makes tests, simulations, replay, and latency
-reasoning reproducible. Priority selection can starve later cases, so code that
-needs fairness should request it explicitly.
+Each logical select site owns a reusable `SelectSet` cursor. If multiple cases
+stay ready, successive selections rotate the first probe position so one hot
+case cannot permanently starve the rest:
 
 ```ores
-select round_robin {
-case readch high_priority : let msg
-    handle(msg);
-case readch background : let msg
-    handle_background(msg);
+select fair {
+case readch a : let x
+    handle_a(x);
+case readch b : let y
+    handle_b(y);
 }
 ```
 
-A reusable round-robin select site owns its own cursor. There is no
-process-global random generator influencing selection.
+Strict lexical priority is opt-in:
 
-Future policies may include weighted or deadline-aware selection, but they must
-be explicit and inspectable. Hidden randomness is not part of the default
-contract.
+```ores
+select ordered {
+case readch control : let msg
+    handle_control(msg);
+case readch normal : let msg
+    handle_normal(msg);
+}
+```
+
+With `ordered`, the first ready case wins and later cases may starve. That is
+useful when the programmer intentionally wants cancellation/control traffic to
+outrank ordinary work.
+
+There is no hidden process-global random generator. An explicit random or
+weighted policy may be added later as an opt-in policy, but randomness is never
+the default.
 
 ## Nonblocking select
 
 Canonical spelling:
 
 ```ores
-nb select {
-case readch incoming : let msg
-    stdio.println("Received:", msg);
-case readch payload : const payload
-    stdio.println("Received payload:", payload);
-case readch ctx.Done():
-    return;
-}
+Future<SelectOutcome> selection =
+    nb select {
+    case readch incoming : let msg
+        stdio.println("Received:", msg);
+    case readch payload : const payload
+        stdio.println("Received payload:", payload);
+    case readch ctx.Done():
+        return;
+    };
 ```
 
 `nb select` means:
 
-1. build/arm the same select plan as ordinary `select`;
-2. return from the current source statement immediately;
-3. when one case wins later, enqueue its branch as a continuation on the owning
+1. build/arm the exact same `SelectSet` as ordinary `select`;
+2. return immediately with the pending Future/Awaitable;
+3. when one case wins later, enqueue its continuation on the owning
    actor/scheduler;
-4. execute the branch only when that actor next owns its single execution lease.
+4. execute that continuation only when the actor next owns its single execution
+   lease.
 
-The winning branch **must not** run on the producer thread and **must not** run
+The winning continuation must not run on the producer thread and must not run
 concurrently with another turn of the same actor. Nonblocking selection changes
 waiting behavior, not actor serialization.
 
-Semantically this is the same idea as creating a Future and not immediately
-awaiting it. The runtime registration remains attached to the actor lifetime, so
-actor cancellation automatically detaches it.
+Ordinary blocking `select` is simply the source-level await/suspension form of
+the same runtime operation.
 
 ## Dynamic select
 
-Dynamic select uses exactly the same select engine. It is not a reflection-only
-side API like Go's `reflect.Select`.
+Dynamic select uses exactly the same `SelectSet` runtime primitive as static
+select. Oreslang does not require reflection.
 
-A dynamic case is data:
+A dynamic case is ordinary typed data:
 
 - `readcase(channel, key)`
 - `writecase(channel, value, key)`
@@ -149,10 +238,11 @@ A list can be built from runtime data:
 let cases = [
     readcase(incoming, "incoming"),
     readcase(payload, "payload"),
-    readcase(ctx.Done(), "cancel"),
+    readcase(scope.cancelled(), "cancel"),
 ];
 
-select cases : let chosen;
+let set = selectset(cases);
+let chosen = select set;
 
 match chosen.key {
     "incoming" -> handle(chosen.value);
@@ -161,28 +251,27 @@ match chosen.key {
 }
 ```
 
-The nonblocking dynamic form produces/arms the same pending selection without
-waiting for it:
+The same set can be armed nonblockingly:
 
 ```ores
-nb select cases : let pending;
+Future<SelectOutcome> pending = nb select set;
 ```
 
 Map-driven construction is also first-class. Map keys become result keys:
 
 ```ores
-let cases = readcases(channels_by_name);
-select round_robin cases : let chosen;
+let set = selectset(readcases(channels_by_name));
+let chosen = select set;
 dispatch(chosen.key, chosen.value);
 ```
 
-For priority selection the input iteration order is the priority order. Code
-that requires reproducibility must use an order-defined collection or sort the
-case list explicitly before selecting.
+For `fair`, the `SelectSet` owns the rotating cursor. For `ordered`, input
+iteration order is priority order. Code using ordered map selection must
+therefore use an order-defined map or sort entries explicitly.
 
-The runtime already exposes list/map case construction and reusable
-`SelectPlan` values. Grammar/evaluator lowering must target that substrate; it
-must not duplicate selection logic in the parser/interpreter.
+Static compiler syntax and dynamic list/map construction both lower to
+`ChannelRuntime.SelectSet`; there is no reflection side path and no duplicate
+selection engine.
 
 ## Select correctness
 
@@ -205,17 +294,33 @@ This gives the required properties:
 ## Parent and child actors
 
 An actor spawned during another actor's turn is automatically that actor's
-child. Callers do not pass a cancellation Context object through every API.
+lifecycle child. Callers do not pass a cancellation Context object through every
+API.
 
-Parent/child structure is lifecycle structure, not message-routing magic.
-Parents and children still communicate through ActorRefs/mailboxes/channels.
+Parent/child structure is supervision/lifetime structure, not message-routing
+magic. Parents, children, and grandchildren still communicate through ordinary
+ActorRefs/mailboxes/channels.
 
-Cancelling a parent cascades to all descendants. Pending awaits, channel
-operations, and selects owned by those actors must be detached/cancelled as part
-of lifetime teardown.
+There is **not** a scheduler or full ActorMailman per actor:
 
-This is the structured-concurrency property Oreslang wants without creating a
-second task abstraction beside actors.
+- OresVM owns the physical scheduler/thread-pool domains;
+- each actor owns its mailbox channel plus small scheduling metadata;
+- each ActorGroup owns one logical serialized ActorMailman;
+- a normal child/grandchild inherits its parent's ActorGroup and scheduler
+  domain unless spawn explicitly crosses a trust/isolation/resource/placement
+  boundary.
+
+The supervision tree and ActorGroup topology are intentionally different
+dimensions. A child may remain supervised by its parent while being placed in a
+different group/domain because it is untrusted, isolated, quota-separated, or
+remotely placed.
+
+Cancelling a parent cascades to all descendants. Pending awaits,
+`readch`/`writech`, `nb readch`/`nb writech`, and selections owned by those
+actors are detached/cancelled as part of lifetime teardown.
+
+This gives structured actor lifetimes without creating a second task abstraction
+beside actors.
 
 ## Trusted actor cancellation
 
@@ -291,16 +396,25 @@ that execution is an actor.
 This branch establishes the runtime substrate:
 
 - Ores-owned buffered and rendezvous channels;
-- Future-based read/write suspension;
-- deterministic PRIORITY selection;
-- reusable ROUND_ROBIN selection plans;
-- dynamic list/map case construction;
+- Future-based read/write registration;
+- explicit `nb readch` / `nb writech` lowering targets;
+- immediate non-registering `try readch` / `try writech` probes;
+- reusable `SelectSet` as the single static/dynamic selection primitive;
+- deterministic FAIR selection by default;
+- explicit ORDERED selection for strict lexical priority;
+- `nb select` as the same Future-producing operation without source-level await;
+- dynamic list/map case construction without reflection;
 - cancellation-safe select readiness registration;
 - actor mailboxes backed by Ores channels instead of a Java BlockingQueue;
 - automatic parent/child actor lifetime attachment and cascading cancellation;
 - explicit forced Graal generation cancellation.
 
-The parser/evaluator surface for `readch`, `writech`, `select`, and
-`nb select` must land only after the current transitional await path is fully
-unified with `OresFuture/OresScheduler`. It is intentionally not implemented
-by blocking actor carriers just to make syntax tests pass.
+The scheduler and ActorMailman remain push/ready-queue based and do not implement
+their actor loops with `select` or `nb select`.
+
+The parser/evaluator spelling for `readch`, `writech`, `select`, and the
+`nb` forms should lower directly onto these core/stdlib primitives once the
+transitional source `await` path is fully unified with
+`OresFuture/OresScheduler`. It must not be implemented by parking carrier
+threads merely to make syntax tests pass.
+
