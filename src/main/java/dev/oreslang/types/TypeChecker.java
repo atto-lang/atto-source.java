@@ -13,6 +13,7 @@ import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.SelfType;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.Union;
@@ -734,9 +735,13 @@ public final class TypeChecker {
                 }
             }
 
-            Type callableSelf = method.isStatic() ? null : self;
+            // The value binding and the type-level spelling `self` carry an
+            // identity proof, not merely the enclosing nominal class type.
+            // This is what rejects `return new Foo()` from a `: self`
+            // method while still allowing aliases/chained self-returning calls.
+            Type callableSelf = method.isStatic() ? null : new SelfType(self);
             Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
+            if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 if (method.async()) {
@@ -3776,7 +3781,13 @@ public final class TypeChecker {
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
-        if (ref.name().equals("self")) return self == null ? Unknown.INSTANCE : self;
+        if (ref.name().equals("self")) {
+            if (self == null) {
+                throw new IllegalArgumentException(
+                        "'self' type is only available in an instance receiver context");
+            }
+            return self;
+        }
         if (ref.name().equals("null")) {
             if (!allowNullMarker) throw new IllegalArgumentException("null is not a standalone type; it is only legal as Option<null>");
             return Primitive.NULL;
