@@ -30,7 +30,7 @@ jobs:
           java --version
           native-image --version
       - name: Verify JIT/JVM profile
-        run: mvn -B -ntp verify
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run showcase
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
       - name: Compile and run shared Oreslang program
