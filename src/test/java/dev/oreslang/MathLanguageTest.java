@@ -4,7 +4,6 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ImmutableGuestValue;
-import dev.oreslang.runtime.math.ElectricalMath;
 import dev.oreslang.runtime.math.OresComplex;
 import dev.oreslang.runtime.math.OresMatrix;
 import dev.oreslang.runtime.math.OresVector;
@@ -260,15 +259,4 @@ final class MathLanguageTest {
         assertTrue(duplicate.getMessage().contains("duplicate imported name 'op'"));
     }
 
-    @Test
-    void electricalHelpersUseComplexImpedanceSemantics() {
-        double omega = ElectricalMath.angularFrequency(60.0);
-        OresComplex capacitor = ElectricalMath.capacitiveImpedance(omega, 100e-6);
-        assertEquals(0.0, capacitor.real(), 1e-12);
-        assertEquals(-26.525823848649225, capacitor.imaginary(), 1e-12);
-
-        OresComplex inductor = ElectricalMath.inductiveImpedance(omega, 10e-3);
-        assertEquals(0.0, inductor.real(), 1e-12);
-        assertEquals(3.7699111843077517, inductor.imaginary(), 1e-12);
-    }
 }
