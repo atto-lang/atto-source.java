@@ -33,6 +33,44 @@ final class HeterogeneousTaskMapperTest {
     }
 
     @Test
+    void parentAndChildFieldPathsConflictButSiblingLeavesRemainIndependent() {
+        var root = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var region = HeterogeneousTaskMapper.RegionSlice.root(root);
+        var cpu = new HeterogeneousTaskMapper.Variant(
+                "cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
+
+        var wholePosition = task(
+                "position",
+                HeterogeneousTaskMapper.Access.writeFields(region, "position"),
+                cpu);
+        var positionX = task(
+                "position-x",
+                HeterogeneousTaskMapper.Access.readFields(region, "position.x"),
+                cpu);
+        var positionY = task(
+                "position-y",
+                HeterogeneousTaskMapper.Access.writeFields(region, "position.y"),
+                cpu);
+
+        assertFalse(
+                mapper.independent(wholePosition, positionX),
+                "a parent field footprint must overlap its nested child");
+        assertTrue(
+                mapper.independent(positionX, positionY),
+                "distinct leaf fields may still execute independently");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> HeterogeneousTaskMapper.Access.readFields(region, "position..x"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> HeterogeneousTaskMapper.Access.readFields(region, ".position"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> HeterogeneousTaskMapper.Access.readFields(region, "position."));
+    }
+
+    @Test
     void disjointFieldWritesMayRunInParallel() {
         var root = HeterogeneousTaskMapper.allocateRegionIdentity();
         var region = HeterogeneousTaskMapper.RegionSlice.root(root);
@@ -51,6 +89,16 @@ final class HeterogeneousTaskMapperTest {
 
         assertTrue(mapper.independent(position, temperature));
         assertFalse(mapper.independent(position, whole));
+    }
+
+    @Test
+    void certifiedSlicesCannotReuseReservedRootIdentity() {
+        var root = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var family = HeterogeneousTaskMapper.certifyDisjointFamily();
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> HeterogeneousTaskMapper.RegionSlice.certified(root, 1L, family));
     }
 
     @Test
@@ -188,6 +236,14 @@ final class HeterogeneousTaskMapperTest {
         assertEquals(1, tiny.chunkCount());
         assertEquals(8, tiny.workItemsPerChunk(),
                 "small workloads should stay one vector-aligned chunk rather than one task per item");
+    }
+
+    @Test
+    void cpuChunkPlanningFailsClosedWhenSimdAlignmentWouldOverflow() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> mapper.planCpuChunks(Long.MAX_VALUE, 1, 8, 1));
+        assertTrue(failure.getMessage().contains("64-bit"));
     }
 
     @Test
