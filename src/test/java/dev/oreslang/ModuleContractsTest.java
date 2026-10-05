@@ -110,7 +110,7 @@ final class ModuleContractsTest {
     }
 
     @Test
-    void importedInterfacesCanContractMultipleModulesAcrossFiles() {
+    void importedTraitsCanContractMultipleModulesAcrossFiles() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> sources = new LinkedHashMap<>();
         sources.put("storage-contract.ores", """
@@ -120,7 +120,7 @@ final class ModuleContractsTest {
                 end
                 """);
         sources.put("redis.ores", """
-                import interface StorageModule from "./storage-contract.ores";
+                import trait StorageModule from "./storage-contract.ores";
 
                 define module RedisStorage with StorageModule as
                   pub const String kind = "redis";
@@ -132,7 +132,7 @@ final class ModuleContractsTest {
                 }
                 """);
         sources.put("postgres.ores", """
-                import interface StorageModule as BackendContract from "./storage-contract.ores";
+                import trait StorageModule as BackendContract from "./storage-contract.ores";
 
                 define module PostgresStorage with BackendContract as
                   pub const String kind = "postgres";
@@ -164,7 +164,7 @@ final class ModuleContractsTest {
                 """);
 
         Files.writeString(redis, """
-                import interface StorageModule from "./storage-contract.ores";
+                import trait StorageModule from "./storage-contract.ores";
 
                 define module RedisStorage with StorageModule as
                   pub const String kind = "redis";
@@ -173,7 +173,7 @@ final class ModuleContractsTest {
                 """);
 
         Files.writeString(app, """
-                import interface StorageModule from "./storage-contract.ores";
+                import trait StorageModule from "./storage-contract.ores";
                 import module RedisStorage from "./redis.ores";
 
                 fnc inspect(Module<StorageModule> storage): void {
@@ -212,7 +212,7 @@ final class ModuleContractsTest {
                         end
                         """,
                 "broken.ores", """
-                        import interface StorageModule from "./storage-contract.ores";
+                        import trait StorageModule from "./storage-contract.ores";
 
                         define module Broken with StorageModule as
                           pub const String kind = "broken";
@@ -226,22 +226,78 @@ final class ModuleContractsTest {
     }
 
     @Test
+    void importedModuleValuesDoNotDegradeToUnknown() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("storage-contract.ores", """
+                pub define trait StorageModule as
+                  kind: String;
+                  fnc health(): int;
+                end
+                """);
+        sources.put("loose.ores", """
+                define module LooseStorage as
+                  pub const String kind = "loose";
+                end
+                """);
+        sources.put("app.ores", """
+                import trait StorageModule from "./storage-contract.ores";
+                import module LooseStorage from "./loose.ores";
+
+                fnc inspect(Module<StorageModule> storage): int {
+                  return storage.health();
+                }
+
+                pub routine main(): void {
+                  inspect(LooseStorage);
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure =
+                assertThrows(IllegalArgumentException.class, () -> compiler.compile(sources));
+        assertTrue(
+                failure.getMessage().contains("argument")
+                        || failure.getMessage().contains("assign"),
+                "imported module values must retain a precise module shape: " + failure.getMessage());
+    }
+
+    @Test
+    void traitAndInterfaceSelectorsRemainDistinct() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = Map.of(
+                "contracts.ores", """
+                        pub define trait StorageModule as
+                          fnc health(): int;
+                        end
+                        """,
+                "app.ores", """
+                        import interface StorageModule from "./contracts.ores";
+                        pub routine main(): void { return; }
+                        """);
+
+        IllegalArgumentException failure =
+                assertThrows(IllegalArgumentException.class, () -> compiler.compile(sources));
+        assertTrue(failure.getMessage().contains("does not match an exported declaration"));
+    }
+
+    @Test
     void moduleContractsParticipateInAbiInvalidation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
 
         Map<String, String> first = new LinkedHashMap<>();
         first.put("contracts.ores", """
-                pub define interface A
-                  fnc run() => int;
+                pub define trait A as
+                  fnc run(): int;
                 end
 
-                pub define interface B
-                  fnc run() => int;
+                pub define trait B as
+                  fnc run(): int;
                 end
                 """);
         first.put("provider.ores", """
-                import interface A from "./contracts.ores";
-                import interface B from "./contracts.ores";
+                import trait A from "./contracts.ores";
+                import trait B from "./contracts.ores";
 
                 define module Worker with A as
                   pub fnc run(): int { return 1; }
@@ -256,8 +312,8 @@ final class ModuleContractsTest {
 
         Map<String, String> changed = new LinkedHashMap<>(first);
         changed.put("provider.ores", """
-                import interface A from "./contracts.ores";
-                import interface B from "./contracts.ores";
+                import trait A from "./contracts.ores";
+                import trait B from "./contracts.ores";
 
                 define module Worker with B as
                   pub fnc run(): int { return 1; }
