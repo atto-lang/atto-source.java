@@ -221,10 +221,10 @@ final class AsyncSchedulerLanguageTest {
                     stdio.stdout.write(v);
                   }
 
-                  do
+                  do {
                     stdio.stdout.write(i);
-                    i = i + 1
-                  done while i < 3;
+                    i = i + 1;
+                  } while (i < 3);
                   return;
                 }
                 """;
