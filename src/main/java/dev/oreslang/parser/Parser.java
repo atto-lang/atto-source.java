@@ -799,7 +799,10 @@ public final class Parser {
         if (match(TRY)) return parseTry();
         if (match(FOR)) return parseFor();
         if (match(WHILE)) return parseWhile();
-        if (match(DO)) return parseDoWhile();
+        if (check(DO) && checkNext(LBRACE)) {
+            advance();
+            return parseDoWhile();
+        }
 
         Ast.Expr expression = parseExpression();
         consumeStatementTerminator("expression statement should end with ';'");
@@ -927,13 +930,7 @@ public final class Parser {
     }
 
     private Ast.Stmt parseDoWhile() {
-        List<Ast.Stmt> body;
-        if (check(LBRACE)) {
-            body = parseBlock();
-        } else {
-            body = parseUntil(DONE);
-            consume(DONE, "expected 'done' before do-while condition");
-        }
+        List<Ast.Stmt> body = parseBlock();
         consume(WHILE, "expected 'while' after do-while body");
         Ast.Expr condition = parseExpression();
         match(SEMICOLON);
