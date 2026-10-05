@@ -365,12 +365,41 @@ end
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 compute fnc descending(Region<int> values, int n): void {
-                  for int i = n; i >= 0; i-- {
+                  for int i = n; i > 0; i-- {
                     val x = i;
                   }
                   return;
                 }
                 """));
+
+        assertComputeRejected("""
+                compute fnc skipStepCanWrap(Region<int> values, int n): void {
+                  for int i = 0; i < n; i = i + 2 {
+                    val x = i;
+                  }
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc inclusiveDynamicLowerBoundCanExceedTripRange(
+                        Region<int> values,
+                        int n): void {
+                  for int i = n; i >= 0; i-- {
+                    val x = i;
+                  }
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc inclusiveMaxLiteralCanWrap(Region<int> values): void {
+                  for int i = 0; i <= 9223372036854775807; i++ {
+                    val x = i;
+                  }
+                  return;
+                }
+                """);
 
         assertComputeRejected("""
                 compute fnc wrongWay(Region<int> values, int n): void {
