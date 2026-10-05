@@ -40,6 +40,7 @@ public final class ActorEventBus implements AutoCloseable {
     public static final class EventBackpressureException extends IllegalStateException {
         private final String topic;
         private final ActorRuntime.ActorId subscriber;
+        private final int limit;
 
         private EventBackpressureException(
                 String topic,
@@ -49,10 +50,12 @@ public final class ActorEventBus implements AutoCloseable {
                     + topic + ", subscriber=" + subscriber + ", limit=" + limit);
             this.topic = topic;
             this.subscriber = subscriber;
+            this.limit = limit;
         }
 
         public String topic() { return topic; }
         public ActorRuntime.ActorId subscriber() { return subscriber; }
+        public int limit() { return limit; }
     }
 
     public static final class Event<T> {
@@ -481,12 +484,15 @@ public final class ActorEventBus implements AutoCloseable {
                     }
 
                     topic.published.incrementAndGet();
+                    OresFuture<List<Void>> completion =
+                            runtime.ownCurrentActorFuture(
+                                    combineReliableWrites(writes));
                     return new PublishReceipt(
                             reserved.size(),
                             reserved.size(),
                             0,
                             0,
-                            combineReliableWrites(writes));
+                            completion);
                 }
 
                 int accepted = 0;
@@ -713,7 +719,8 @@ public final class ActorEventBus implements AutoCloseable {
 
         public OresFuture<Event<T>> readAsync() {
             requireReadable();
-            OresFuture<Event<T>> read = channel.readAsync();
+            OresFuture<Event<T>> read =
+                    runtime.ownCurrentActorFuture(channel.readAsync());
             read.whenCompleteRuntime((value, failure) -> {
                 if (failure == null) {
                     if (topic.policy == DeliveryPolicy.RELIABLE) {
