@@ -7,6 +7,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -14,6 +15,8 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
+import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresFutures;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -354,6 +357,9 @@ public final class OresEvalRootNode extends RootNode {
             if (main == null) main = findFunction("main");
             if (main == null) return null;
             Object result = callFunction(main, List.of(arguments));
+            if (result instanceof OresFuture<?> future) {
+                return AsyncRuntime.await(future);
+            }
             if (result instanceof CompletionStage<?> stage) {
                 return AsyncRuntime.await(stage);
             }
@@ -427,6 +433,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation invokableInvocation(Invokable callable, List<?> args) {
+            // Extracted method/static values must enter the same trampoline
+            // slots as direct calls, not recursively start nested trampolines.
+            if (callable instanceof BoundMethod bound) {
+                return bound.receiver.owner.prepareBoundMethodInvocation(
+                        bound.receiver, bound.methodName, objectArguments(args), bound.accessClass);
+            }
+            if (callable instanceof StaticFunctionValue function) {
+                return function.owner.prepareStaticValueInvocation(
+                        function.klass, function.functionName, objectArguments(args), function.accessClass);
+            }
             return new Invocation(this, InvocationKind.INVOKABLE, null, callable, objectArguments(args));
         }
 
@@ -493,7 +509,6 @@ public final class OresEvalRootNode extends RootNode {
                     (delivered, actorContext) ->
                             invoke(functionBodyInvocation(fn, delivered)));
         }
-
 
         private Object tryInvokeIntrinsic(Ast.FunctionDecl fn, List<Object> args) {
             String name = intrinsicName(fn);
@@ -1315,10 +1330,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "async instance methods are not admitted until receiver ownership can be moved into the task");
             }
-            if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
+            for (int i = 0; i < method.arity(); i++) {
                 Ast.Param param = method.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -1674,7 +1689,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -1711,7 +1726,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ClassFacade klass) {
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), methodCall.member(), args.size(), new LinkedHashSet<>());
+                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
@@ -1736,7 +1751,7 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -1788,6 +1803,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -2018,6 +2034,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
+                if (value instanceof OresFuture<?> future) {
+                    return AsyncRuntime.await(future);
+                }
                 if (value instanceof CompletionStage<?> stage) {
                     return AsyncRuntime.await(stage);
                 }
@@ -2127,6 +2146,19 @@ public final class OresEvalRootNode extends RootNode {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof FutureFactory) {
+                return switch (name) {
+                    case "all" -> (Invokable) args -> {
+                        requireOne(args, "Future.all");
+                        return OresFutures.all(asSequence(args.getFirst()));
+                    };
+                    case "race" -> (Invokable) args -> {
+                        requireOne(args, "Future.race");
+                        return OresFutures.race(asSequence(args.getFirst()));
+                    };
+                    default -> throw new IllegalArgumentException("unknown Future member " + name);
+                };
+            }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
@@ -2155,10 +2187,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    return klass.owner().tailCallable(
-                            args -> klass.owner().callStaticFunctionRaw(fn, objectArguments(args)));
                 }
-                if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
+                if (!functions.isEmpty()) {
+                    return new StaticFunctionValue(klass.owner(), klass.klass(), name, env == null ? null : env.accessClass());
+                }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
@@ -2176,9 +2208,7 @@ public final class OresEvalRootNode extends RootNode {
                     return object.fields.get(name);
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
-                    throw new IllegalArgumentException("instance method " + object.klass.name() + "." + name
-                            + " is direct-call-only and cannot be used as a first-class callable value; "
-                            + "wrap receiver." + name + "(...) in an explicit lambda when a callback is required");
+                    return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
@@ -2249,8 +2279,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object normalizeHostResult(Object value) {
             if (value == null) return new OptionValue(false, null);
+            if (value instanceof CompletionStage<?> stage) {
+                return OresFuture.from(stage);
+            }
             if (value instanceof Number || value instanceof Boolean || value instanceof String
-                    || value instanceof Character || value instanceof CompletionStage<?>) {
+                    || value instanceof Character || value instanceof OresFuture<?>) {
                 return value;
             }
             return new HostObjectFacade(value);
@@ -2373,16 +2406,22 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
-        private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
-            Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
+        private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
+            CallableSelector selector = CallableSelector.instance(name, args.size());
+            Ast.MethodDecl method = findMethod(receiver.klass, selector, new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            return callMethod(receiver, method, args);
+            requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
+            if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
+            return methodInvocation(receiver, method, args);
         }
 
-        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
-            Ast.MethodDecl fn = findStaticFunction(klass, name, args.size(), new LinkedHashSet<>());
+        private Invocation prepareStaticValueInvocation(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
+            CallableSelector selector = CallableSelector.staticFunction(name, args.size());
+            Ast.MethodDecl fn = findStaticFunction(klass, selector, new LinkedHashSet<>());
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
-            return callStaticFunction(klass, fn, args);
+            requireClassMemberVisible(fn.visibility(), declaringClass(fn), accessClass, "static function", name);
+            if (!fn.genericParameters().isEmpty()) throw new IllegalArgumentException("generic static function values require direct-call specialization");
+            return staticFunctionInvocation(fn, args);
         }
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
@@ -2392,7 +2431,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunctionRaw(Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + fn.name());
-            if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            if (args.size() != fn.arity()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             if (!fn.async()) return callStaticFunctionBodyRaw(fn, args);
 
             List<?> detached = detachAsyncArguments(args);
@@ -2404,7 +2443,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
             Env env = new Env(null, false, declaringClass(fn));
-            for (int i = 0; i < fn.parameters().size(); i++) {
+            for (int i = 0; i < fn.arity(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -2417,6 +2456,56 @@ public final class OresEvalRootNode extends RootNode {
                 return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a static function boundary", signal);
+            }
+        }
+
+        /**
+         * Go-style method value: method code remains shared in the class method
+         * table.  Extraction materializes only the receiver identity plus the
+         * statically known method-name family; callback arity selects the same
+         * closed-world CallableSelector slot used by direct calls.
+         *
+         * <p>Direct receiver.method(...) calls bypass this object entirely, so
+         * ordinary method invocation has no bound-method allocation.  An AOT
+         * backend may lower a non-escaping value to a register/stack "fat
+         * pointer" (receiver + resolved slot) instead of heap allocating it.
+         */
+        /**
+         * First-class static callable counterpart to BoundMethod.  No receiver
+         * is captured; only the owning class and shared static slot family are
+         * retained.  Invocation arity selects the closed-world static selector.
+         */
+        private static final class StaticFunctionValue implements Invokable {
+            private final Evaluator owner;
+            private final Ast.ClassDecl klass;
+            private final String functionName;
+            private final Ast.ClassDecl accessClass;
+
+            private StaticFunctionValue(Evaluator owner, Ast.ClassDecl klass, String functionName, Ast.ClassDecl accessClass) {
+                this.owner = owner;
+                this.klass = klass;
+                this.functionName = functionName;
+                this.accessClass = accessClass;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return owner.invoke(owner.prepareStaticValueInvocation(klass, functionName, arguments, accessClass));
+            }
+        }
+
+        private static final class BoundMethod implements Invokable {
+            private final OresObject receiver;
+            private final String methodName;
+            private final Ast.ClassDecl accessClass;
+
+            private BoundMethod(OresObject receiver, String methodName, Ast.ClassDecl accessClass) {
+                this.receiver = receiver;
+                this.methodName = methodName;
+                this.accessClass = accessClass;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return receiver.owner.invoke(receiver.owner.prepareBoundMethodInvocation(receiver, methodName, arguments, accessClass));
             }
         }
 
@@ -2719,10 +2808,16 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
-        private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        private Ast.MethodDecl findMethod(
+                Ast.ClassDecl klass,
+                CallableSelector selector,
+                Set<Ast.ClassDecl> seen) {
+            if (selector.kind() != CallableSelector.Kind.INSTANCE) {
+                throw new IllegalArgumentException("instance dispatch requires an INSTANCE selector");
+            }
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl method : klass.methods()) {
-                if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+                if (selector.matches(method)) {
                     seen.remove(klass);
                     return method;
                 }
@@ -2731,7 +2826,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                Ast.MethodDecl candidate = findMethod(parent, name, arity, seen);
+                Ast.MethodDecl candidate = findMethod(parent, selector, seen);
                 if (candidate != null) {
                     seen.remove(klass);
                     return candidate;
@@ -2741,10 +2836,16 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
-        private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        private Ast.MethodDecl findStaticFunction(
+                Ast.ClassDecl klass,
+                CallableSelector selector,
+                Set<Ast.ClassDecl> seen) {
+            if (selector.kind() != CallableSelector.Kind.STATIC) {
+                throw new IllegalArgumentException("static dispatch requires a STATIC selector");
+            }
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl fn : klass.methods()) {
-                if (fn.isStatic() && fn.name().equals(name) && fn.parameters().size() == arity) {
+                if (selector.matches(fn)) {
                     seen.remove(klass);
                     return fn;
                 }
@@ -2753,7 +2854,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                Ast.MethodDecl candidate = findStaticFunction(parent, name, arity, seen);
+                Ast.MethodDecl candidate = findStaticFunction(parent, selector, seen);
                 if (candidate != null) {
                     seen.remove(klass);
                     return candidate;
@@ -2767,13 +2868,13 @@ public final class OresEvalRootNode extends RootNode {
             if (!seen.add(klass)) return List.of();
             LinkedHashMap<Integer, Ast.MethodDecl> result = new LinkedHashMap<>();
             for (Ast.MethodDecl fn : klass.methods()) {
-                if (fn.isStatic() && fn.name().equals(name)) result.put(fn.parameters().size(), fn);
+                if (fn.isStatic() && fn.name().equals(name)) result.put(fn.arity(), fn);
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.parameters().size(), fn);
+                for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.arity(), fn);
             }
             seen.remove(klass);
             return List.copyOf(result.values());
@@ -2783,7 +2884,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
-                Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                Ast.MethodDecl iterator = findMethod(
+                        object.klass,
+                        CallableSelector.instance("Symbol.iterator", 0),
+                        new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
                 object.owner.requireClassMemberVisible(
                         iterator.visibility(),
@@ -3466,6 +3570,8 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private enum FutureFactory { INSTANCE }
+
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
