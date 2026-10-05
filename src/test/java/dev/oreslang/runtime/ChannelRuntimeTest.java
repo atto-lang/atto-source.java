@@ -222,4 +222,42 @@ final class ChannelRuntimeTest {
     }
 
 
+    @Test
+    void selectCancellationRaceHasExactlyOneOwnerOfTheValue() throws Exception {
+        for (int i = 0; i < 200; i++) {
+            var channel = ChannelRuntime.<Integer>channel(1);
+            var selected = ChannelRuntime.select(List.of(
+                    new ChannelRuntime.ReadCase<>(channel, "value")));
+
+            var start = new java.util.concurrent.CountDownLatch(1);
+            Thread writer = Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                assertTrue(channel.tryWrite(42));
+            });
+
+            start.countDown();
+            boolean cancelled = selected.cancel(false);
+            writer.join();
+
+            if (cancelled) {
+                assertEquals(
+                        42,
+                        channel.tryRead().orElseThrow(),
+                        "successful select cancellation must leave the value unconsumed");
+            } else {
+                assertEquals(
+                        42,
+                        selected.get(1, TimeUnit.SECONDS).value(),
+                        "lost cancellation means the select committed the value");
+                assertTrue(channel.tryRead().isEmpty());
+            }
+        }
+    }
+
+
 }
