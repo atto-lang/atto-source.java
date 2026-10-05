@@ -1933,6 +1933,14 @@ public final class TypeChecker {
                 }
 
                 Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) member;
+                if (fn.name().equals("id")
+                        || fn.name().equals("is_alive")
+                        || fn.name().equals("mailbox")) {
+                    throw new IllegalArgumentException(
+                            where + " ActorRef interface method '" + iface.name()
+                                    + "." + fn.name()
+                                    + "' collides with a reserved ActorRef control member");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             where + " ActorRef interface method '" + iface.name()
