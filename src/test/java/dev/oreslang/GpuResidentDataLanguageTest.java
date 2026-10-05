@@ -7,6 +7,11 @@ import org.graalvm.polyglot.Context;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class GpuResidentDataLanguageTest {
@@ -38,12 +43,7 @@ final class GpuResidentDataLanguageTest {
 
     @Test
     void hostOrchestrationExecutesThroughGpuRuntimeBackend() {
-        GpuRuntime.installBackend(new GpuRuntime.Backend() {
-            @Override public String name() { return "language-roundtrip"; }
-            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
-            @Override public Object uploadArray(java.util.List<?> values) { return java.util.List.copyOf(values); }
-            @Override public java.util.List<?> downloadArray(Object token, long length) { return (java.util.List<?>) token; }
-        });
+        GpuRuntime.installBackend(new ResidentBackend("language-roundtrip"));
 
         assertDoesNotThrow(() -> {
             try (Context context = Context.newBuilder(OresLanguage.ID)
@@ -88,12 +88,7 @@ final class GpuResidentDataLanguageTest {
 
     @Test
     void hostMatrixOrchestrationExecutesThroughGpuRuntimeBackend() {
-        GpuRuntime.installBackend(new GpuRuntime.Backend() {
-            @Override public String name() { return "matrix-language-roundtrip"; }
-            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
-            @Override public Object uploadArray(java.util.List<?> values) { return java.util.List.copyOf(values); }
-            @Override public java.util.List<?> downloadArray(Object token, long length) { return (java.util.List<?>) token; }
-        });
+        GpuRuntime.installBackend(new ResidentBackend("matrix-language-roundtrip"));
 
         assertDoesNotThrow(() -> {
             try (Context context = Context.newBuilder(OresLanguage.ID)
@@ -233,5 +228,37 @@ final class GpuResidentDataLanguageTest {
                         }
                         """)));
         assertTrue(nested.getMessage().contains("current device ABI"));
+    }
+
+    private static final class ResidentBackend implements GpuRuntime.Backend {
+        private final String name;
+        private final AtomicLong nextHandle = new AtomicLong(1L);
+        private final Map<Long, List<?>> buffers = new HashMap<>();
+
+        private ResidentBackend(String name) {
+            this.name = name;
+        }
+
+        @Override public String name() { return name; }
+        @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+
+        @Override
+        public synchronized long uploadArray(String elementAbiType, List<?> values) {
+            long handle = nextHandle.getAndIncrement();
+            buffers.put(handle, List.copyOf(values));
+            return handle;
+        }
+
+        @Override
+        public synchronized List<?> downloadArray(String elementAbiType, long nativeHandle, long length) {
+            List<?> values = buffers.get(nativeHandle);
+            if (values == null) throw new IllegalStateException("stale resident test handle " + nativeHandle);
+            return values;
+        }
+
+        @Override
+        public synchronized void release(long nativeHandle) {
+            buffers.remove(nativeHandle);
+        }
     }
 }
