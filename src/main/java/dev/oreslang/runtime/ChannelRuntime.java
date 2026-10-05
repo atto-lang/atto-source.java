@@ -110,7 +110,7 @@ public final class ChannelRuntime {
 
         public OresFuture<Selection> next() {
             int start = policy == SelectPolicy.ROUND_ROBIN
-                    ? Math.floorMod(cursor.getAndIncrement(), cases.size())
+                    ? (int) Math.floorMod(cursor.getAndIncrement(), cases.size())
                     : 0;
             return new Selector(cases, policy, start).arm();
         }
