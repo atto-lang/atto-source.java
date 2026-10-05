@@ -326,6 +326,45 @@ final class CallableSemanticsTest {
         assertEquals("7", output);
     }
 
+    @Test
+    void moduleCallableFieldRemainsInvokable() throws Exception {
+        String output = run("""
+                define module callbacks
+                  pub val Fnc<int, int> increment = |int value| -> {
+                    return value + 1;
+                  };
+                end
+
+                pub routine main(): void {
+                  stdio.stdout.write(callbacks.increment(4));
+                  return;
+                }
+                """);
+
+        assertEquals("5", output);
+    }
+
+    @Test
+    void directMethodCallThroughMutexGuardRemainsExecutable() throws Exception {
+        String output = run("""
+                define class Counter as
+                  pub read(): int {
+                    return 7;
+                  }
+                end
+
+                pub routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  stdio.stdout.write(guard.read());
+                  guard.release();
+                  return;
+                }
+                """);
+
+        assertEquals("7", output);
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callables.ores")

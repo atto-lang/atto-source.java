@@ -635,7 +635,15 @@ public final class OresEvalRootNode extends RootNode {
                         return klass.owner().invokeStaticFunction(klass.klass(), methodCall.member(), args);
                     }
                     if (receiver instanceof ModuleFacade module) {
-                        return module.owner().invokeModuleFunction(module.module(), methodCall.member(), args);
+                        return module.owner().invokeModuleCallable(module.module(), methodCall.member(), args);
+                    }
+                    if (receiver instanceof OresMutex.Guard<?> guard
+                            && !methodCall.member().equals("release")
+                            && !methodCall.member().equals("is_released")
+                            && guard.value() instanceof OresObject protectedObject
+                            && protectedObject.owner.hasInstanceMethodNamed(
+                                    protectedObject.klass, methodCall.member(), new LinkedHashSet<>())) {
+                        return protectedObject.owner.invokeMethod(protectedObject, methodCall.member(), args);
                     }
                     Object callee = member(receiver, methodCall.member());
                     if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
@@ -1200,7 +1208,7 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
         }
 
-        private Object invokeModuleFunction(Ast.ModuleDecl module, String name, List<Object> args) {
+        private Object invokeModuleCallable(Ast.ModuleDecl module, String name, List<Object> args) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn
                         && fn.name().equals(name)
@@ -1208,8 +1216,12 @@ public final class OresEvalRootNode extends RootNode {
                     return callFunction(fn, args);
                 }
             }
-            throw new IllegalArgumentException("module '" + module.name()
-                    + "' does not export callable '" + name + "'");
+            Object candidate = moduleMember(module, name);
+            if (!(candidate instanceof Invokable callable)) {
+                throw new IllegalArgumentException("module member '" + module.name() + "." + name
+                        + "' is not callable");
+            }
+            return callable.call(args);
         }
 
         private boolean hasInstanceMethodNamed(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
