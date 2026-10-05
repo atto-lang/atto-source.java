@@ -47,7 +47,7 @@ final class GpuRuntimeTest {
             @Override public String name() { return "freeze-test"; }
 
             @Override
-            public Object invoke(GpuRuntime.Invocation invocation) {
+            public Object invoke(GpuRuntime.BackendInvocation invocation) {
                 List<?> outer = assertInstanceOf(List.class, invocation.arguments().getFirst());
                 List<?> inner = assertInstanceOf(List.class, outer.getFirst());
                 assertThrows(UnsupportedOperationException.class, () -> ((List<Object>) outer).add(9L));
@@ -218,7 +218,7 @@ final class GpuRuntimeTest {
     void rejectsBackendDownloadLengthMismatch() {
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
             @Override public String name() { return "bad-length"; }
-            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+            @Override public Object invoke(GpuRuntime.BackendInvocation invocation) { return null; }
             @Override public long uploadArray(String elementAbiType, List<?> values) {
                 assertEquals("i64", elementAbiType);
                 return 1L;
@@ -243,7 +243,7 @@ final class GpuRuntimeTest {
     void nativeResourceHandleZeroIsAlwaysRejected() {
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
             @Override public String name() { return "zero-handle"; }
-            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+            @Override public Object invoke(GpuRuntime.BackendInvocation invocation) { return null; }
             @Override public long uploadArray(String elementAbiType, List<?> values) { return 0L; }
         });
 
@@ -280,7 +280,7 @@ final class GpuRuntimeTest {
     void wrapsUnexpectedBackendFailuresWithoutMaskingGpuExceptions() {
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
             @Override public String name() { return "boom"; }
-            @Override public Object invoke(GpuRuntime.Invocation invocation) {
+            @Override public Object invoke(GpuRuntime.BackendInvocation invocation) {
                 throw new IllegalStateException("driver exploded");
             }
         });
@@ -303,7 +303,7 @@ final class GpuRuntimeTest {
         }
 
         @Override public String name() { return name; }
-        @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+        @Override public Object invoke(GpuRuntime.BackendInvocation invocation) { return null; }
 
         @Override
         public synchronized long uploadArray(String elementAbiType, List<?> values) {
