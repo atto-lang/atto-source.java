@@ -683,6 +683,53 @@ end
     }
 
     @Test
+    void emptyOrDuplicatePlannerMetadataFailsClosed() {
+        assertComputeRejected("""
+                compute fnc a(Region<int> values): void
+                reads values;
+                {
+                  return;
+                }
+
+                define flow empty as
+                end
+                """);
+
+        assertComputeRejected("""
+                compute fnc a(Region<int> values): void
+                reads values;
+                {
+                  return;
+                }
+
+                compute fnc b(Region<int> values): void
+                reads values;
+                {
+                  return;
+                }
+
+                define flow duplicate as
+                  a -> b;
+                  a -> b;
+                end
+                """);
+
+        assertComputeRejected("""
+                define aspect Empty as
+                end
+                """);
+
+        assertComputeRejected("""
+                compute fnc bad(Region<int> values): void
+                reads values;
+                writes values;
+                {
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void aroundAdviceCannotInterceptComputeDeviceOrSchedulerJoinPoints() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
