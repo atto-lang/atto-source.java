@@ -82,6 +82,11 @@ invariants are mandatory:
 8. JNI local/global references must not be retained as device-resource identity;
 9. Native Image builds should statically link or explicitly whitelist the trusted
    native adapter rather than allowing guest-driven dynamic library loading.
+10. host/guest transfer graphs are cycle-checked and bounded (currently 256 nesting
+    levels, 100,000 nodes, and 16 MiB estimated frozen representation) before driver
+    invocation;
+11. resident resources are pinned for the full duration of each native/backend call so
+    concurrent Oreslang `release()` cannot free memory underneath in-flight work.
 
 ## Language-native math
 
@@ -91,3 +96,12 @@ They must not be defined by Java, EJML, CUDA, OpenCL, BLAS, or a JNI library.
 
 A backend may accelerate an operation only if it preserves the same Oreslang
 semantics. The portable compiler-generated kernel is the semantic reference.
+
+### Matrix performance evolution
+
+ABI v3 intentionally uses a correct backend-neutral 1-D output-cell launch for matrix
+multiply. The next performance ABI should add an explicit 2-D NDRange plus preferred/
+required local-workgroup dimensions before the compiler emits tiled `__local`-memory
+matmul. The compiler must not assume a 16x16/32x32 workgroup unless the launcher/device
+contract has accepted it. A tiled backend remains obligated to match the portable kernel's
+shape, complex-arithmetic, alias and error semantics.
