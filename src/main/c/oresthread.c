@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <jni.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -620,4 +621,272 @@ Java_dev_oreslang_runtime_NativeTimerService_nativeCancel(
         return JNI_TRUE;
     }
     return JNI_FALSE;
+}
+
+
+/* ------------------------------------------------------------------------- */
+/* Native one-permit FIFO synchronizer for SharedMutex.                       */
+/* ------------------------------------------------------------------------- */
+
+typedef struct ores_permit_waiter {
+    pthread_cond_t condition;
+    int granted;
+    struct ores_permit_waiter *next;
+} ores_permit_waiter;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    int permits;
+    ores_permit_waiter *head;
+    ores_permit_waiter *tail;
+} ores_native_permit;
+
+static void permit_enqueue(
+        ores_native_permit *permit,
+        ores_permit_waiter *waiter) {
+    waiter->next = NULL;
+    if (permit->tail == NULL) {
+        permit->head = waiter;
+        permit->tail = waiter;
+    } else {
+        permit->tail->next = waiter;
+        permit->tail = waiter;
+    }
+}
+
+static void permit_remove(
+        ores_native_permit *permit,
+        ores_permit_waiter *target) {
+    ores_permit_waiter **cursor = &permit->head;
+    ores_permit_waiter *previous = NULL;
+    while (*cursor != NULL) {
+        if (*cursor == target) {
+            *cursor = target->next;
+            if (permit->tail == target) permit->tail = previous;
+            target->next = NULL;
+            return;
+        }
+        previous = *cursor;
+        cursor = &(*cursor)->next;
+    }
+}
+
+static int java_thread_interrupted(JNIEnv *env) {
+    jclass thread_class = (*env)->FindClass(env, "java/lang/Thread");
+    if (thread_class == NULL) return 0;
+    jmethodID interrupted = (*env)->GetStaticMethodID(
+            env,
+            thread_class,
+            "interrupted",
+            "()Z");
+    if (interrupted == NULL) {
+        (*env)->DeleteLocalRef(env, thread_class);
+        return 0;
+    }
+    jboolean result = (*env)->CallStaticBooleanMethod(
+            env,
+            thread_class,
+            interrupted);
+    (*env)->DeleteLocalRef(env, thread_class);
+    if ((*env)->ExceptionCheck(env)) return 0;
+    return result == JNI_TRUE;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_oreslang_runtime_NativePermit_nativeCreate(
+        JNIEnv *env,
+        jclass cls) {
+    (void)cls;
+    ores_native_permit *permit =
+            (ores_native_permit *)calloc(1, sizeof(*permit));
+    if (permit == NULL) {
+        throw_illegal_state(env, "failed to allocate native permit");
+        return 0;
+    }
+    if (pthread_mutex_init(&permit->mutex, NULL) != 0) {
+        free(permit);
+        throw_illegal_state(env, "pthread_mutex_init failed for native permit");
+        return 0;
+    }
+    permit->permits = 1;
+    return (jlong)(intptr_t)permit;
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_oreslang_runtime_NativePermit_nativeAcquire(
+        JNIEnv *env,
+        jclass cls,
+        jlong handle,
+        jlong timeout_nanos) {
+    (void)cls;
+    ores_native_permit *permit =
+            (ores_native_permit *)(intptr_t)handle;
+    if (permit == NULL) {
+        throw_illegal_state(env, "native permit handle is null");
+        return 0;
+    }
+    if (timeout_nanos < -1) {
+        throw_illegal_state(env, "native permit timeout is invalid");
+        return 0;
+    }
+
+    pthread_mutex_lock(&permit->mutex);
+    if (permit->permits > 0 && permit->head == NULL) {
+        permit->permits--;
+        pthread_mutex_unlock(&permit->mutex);
+        return 1;
+    }
+    if (timeout_nanos == 0) {
+        pthread_mutex_unlock(&permit->mutex);
+        return 0;
+    }
+
+    ores_permit_waiter waiter;
+    memset(&waiter, 0, sizeof(waiter));
+    if (pthread_cond_init(&waiter.condition, NULL) != 0) {
+        pthread_mutex_unlock(&permit->mutex);
+        throw_illegal_state(env, "pthread_cond_init failed for native permit waiter");
+        return 0;
+    }
+    permit_enqueue(permit, &waiter);
+
+    uint64_t deadline = UINT64_MAX;
+    if (timeout_nanos > 0) {
+        uint64_t now = monotonic_nanos();
+        uint64_t delay = (uint64_t)timeout_nanos;
+        deadline = UINT64_MAX - now < delay ? UINT64_MAX : now + delay;
+    }
+
+    int result = 0;
+    for (;;) {
+        if (waiter.granted) {
+            result = 1;
+            break;
+        }
+
+        if (java_thread_interrupted(env)) {
+            permit_remove(permit, &waiter);
+            result = -1;
+            break;
+        }
+
+        uint64_t now = monotonic_nanos();
+        if (deadline != UINT64_MAX && now >= deadline) {
+            permit_remove(permit, &waiter);
+            result = 0;
+            break;
+        }
+
+        uint64_t slice = 10000000ULL; /* 10 ms interrupt-observation quantum */
+        if (deadline != UINT64_MAX) {
+            uint64_t remaining = deadline - now;
+            if (remaining < slice) slice = remaining;
+        }
+        struct timespec wake;
+        realtime_after_nanos(slice, &wake);
+        int wait_status = pthread_cond_timedwait(
+                &waiter.condition,
+                &permit->mutex,
+                &wake);
+        if (wait_status != 0 && wait_status != ETIMEDOUT) {
+            permit_remove(permit, &waiter);
+            result = 0;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&permit->mutex);
+    pthread_cond_destroy(&waiter.condition);
+    return (jint)result;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_NativePermit_nativeTryAcquire(
+        JNIEnv *env,
+        jclass cls,
+        jlong handle,
+        jboolean fair) {
+    (void)env;
+    (void)cls;
+    ores_native_permit *permit =
+            (ores_native_permit *)(intptr_t)handle;
+    if (permit == NULL) return JNI_FALSE;
+
+    pthread_mutex_lock(&permit->mutex);
+    int acquired = permit->permits > 0
+            && (fair != JNI_TRUE || permit->head == NULL);
+    if (acquired) permit->permits--;
+    pthread_mutex_unlock(&permit->mutex);
+    return acquired ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_NativePermit_nativeRelease(
+        JNIEnv *env,
+        jclass cls,
+        jlong handle) {
+    (void)cls;
+    ores_native_permit *permit =
+            (ores_native_permit *)(intptr_t)handle;
+    if (permit == NULL) {
+        throw_illegal_state(env, "native permit handle is null");
+        return;
+    }
+
+    pthread_mutex_lock(&permit->mutex);
+    if (permit->head != NULL) {
+        ores_permit_waiter *waiter = permit->head;
+        permit->head = waiter->next;
+        if (permit->head == NULL) permit->tail = NULL;
+        waiter->next = NULL;
+        waiter->granted = 1;
+        pthread_cond_signal(&waiter->condition);
+    } else if (permit->permits == 0) {
+        permit->permits = 1;
+    } else {
+        pthread_mutex_unlock(&permit->mutex);
+        throw_illegal_state(env, "native permit released without ownership");
+        return;
+    }
+    pthread_mutex_unlock(&permit->mutex);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_NativePermit_nativeHasQueuedThreads(
+        JNIEnv *env,
+        jclass cls,
+        jlong handle) {
+    (void)env;
+    (void)cls;
+    ores_native_permit *permit =
+            (ores_native_permit *)(intptr_t)handle;
+    if (permit == NULL) return JNI_FALSE;
+
+    pthread_mutex_lock(&permit->mutex);
+    int queued = permit->head != NULL;
+    pthread_mutex_unlock(&permit->mutex);
+    return queued ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_NativePermit_nativeDestroy(
+        JNIEnv *env,
+        jclass cls,
+        jlong handle) {
+    (void)cls;
+    ores_native_permit *permit =
+            (ores_native_permit *)(intptr_t)handle;
+    if (permit == NULL) return;
+
+    pthread_mutex_lock(&permit->mutex);
+    if (permit->head != NULL || permit->permits == 0) {
+        pthread_mutex_unlock(&permit->mutex);
+        throw_illegal_state(
+                env,
+                "cannot destroy a native permit while owned or contended");
+        return;
+    }
+    pthread_mutex_unlock(&permit->mutex);
+    pthread_mutex_destroy(&permit->mutex);
+    free(permit);
 }
