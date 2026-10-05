@@ -2519,9 +2519,7 @@ public final class ActorRuntime implements AutoCloseable {
         public void close() {
             try {
                 if (protocolRequest != null && !protocolRequest.reply().isDone()) {
-                    protocolRequest.reply().failFromRuntime(
-                            new CancellationException(
-                                    "actor protocol call ended before producing a reply"));
+                    protocolRequest.reply().cancel(false);
                 }
             } finally {
                 if (release != null) release.run();
@@ -6561,6 +6559,12 @@ public final class ActorRuntime implements AutoCloseable {
                             try {
                                 ProtocolRequest protocol = envelope.protocolRequest();
                                 if (protocol != null) {
+                                    if (protocol.reply().isCancelled()) {
+                                        // Cancellation before dispatch revokes
+                                        // the queued request. Do not run guest
+                                        // actor code for an abandoned RPC.
+                                        continue;
+                                    }
                                     if (!(behavior instanceof ProtocolDispatchBehavior dispatcher)) {
                                         throw new SecurityException(
                                                 "ActorRef protocol call targeted an actor without a typed source protocol dispatcher");
