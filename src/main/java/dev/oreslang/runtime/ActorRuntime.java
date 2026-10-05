@@ -6780,8 +6780,19 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "no suspended typed actor protocol request is active");
             }
+
+            // Cancellation belongs to the caller's observation Future, not to
+            // the actor's logical mailbox turn. The actor must still finish
+            // cleanup/state mutation normally; its reply is simply discarded.
+            if (protocol.reply().isCancelled()) {
+                return;
+            }
+
             Object prepared = prepareProtocolReply(value);
             if (!protocol.reply().completeFromRuntime(prepared)) {
+                if (protocol.reply().isCancelled()) {
+                    return; // cancellation won the settlement race
+                }
                 throw new IllegalStateException(
                         "typed actor protocol reply was already settled");
             }
