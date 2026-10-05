@@ -562,11 +562,79 @@ public final class TypeChecker {
 
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
+        rejectDeclarationScopeFunctionExpression(field.initializer(), "module binding '" + field.name() + "'");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
         if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
             throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
         }
+    }
+
+    private void rejectDeclarationScopeFunctionExpression(Ast.Expr expression, String context) {
+        if (containsFunctionExpression(expression)) {
+            throw new IllegalArgumentException(
+                    "function expressions are executable-scope-only and cannot appear in " + context);
+        }
+    }
+
+    private boolean containsFunctionExpression(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LambdaExpr) return true;
+        if (expression instanceof Ast.LiteralExpr || expression instanceof Ast.NameExpr) return false;
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return containsFunctionExpression(binary.left()) || containsFunctionExpression(binary.right());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) return containsFunctionExpression(unary.operand());
+        if (expression instanceof Ast.AssignExpr assign) {
+            return containsFunctionExpression(assign.target()) || containsFunctionExpression(assign.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return containsFunctionExpression(conditional.condition())
+                    || containsFunctionExpression(conditional.whenTrue())
+                    || containsFunctionExpression(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.TypeTestExpr tested) return containsFunctionExpression(tested.value());
+        if (expression instanceof Ast.PatternTestExpr tested) return containsFunctionExpression(tested.value());
+        if (expression instanceof Ast.CastExpr cast) return containsFunctionExpression(cast.value());
+        if (expression instanceof Ast.CallExpr call) {
+            if (containsFunctionExpression(call.callee())) return true;
+            for (Ast.Expr argument : call.arguments()) {
+                if (containsFunctionExpression(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.MemberExpr member) return containsFunctionExpression(member.receiver());
+        if (expression instanceof Ast.IndexExpr indexed) {
+            return containsFunctionExpression(indexed.receiver())
+                    || containsFunctionExpression(indexed.index());
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (containsFunctionExpression(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return containsFunctionExpression(awaited.expression());
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) if (containsFunctionExpression(item)) return true;
+            return false;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) if (containsFunctionExpression(item)) return true;
+            return false;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (containsFunctionExpression(field.dynamicName())
+                        || containsFunctionExpression(field.value())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -2480,6 +2548,9 @@ public final class TypeChecker {
     }
 
     private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
+        rejectDeclarationScopeFunctionExpression(
+                field.initializer(),
+                "class/actor field '" + klass.name() + "." + field.name() + "'");
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
         if (field.type() != null) return resolve(field.type(), generics, self);
