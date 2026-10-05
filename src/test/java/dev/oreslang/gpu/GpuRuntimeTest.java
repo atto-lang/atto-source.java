@@ -306,6 +306,37 @@ final class GpuRuntimeTest {
     }
 
     @Test
+    void failedLastReleaseCanBeRetriedWithoutLosingTheLease() {
+        AtomicInteger releases = new AtomicInteger();
+        GpuRuntime.Backend backend = new GpuRuntime.Backend() {
+            private final List<?> values = List.of(1L);
+
+            @Override public String name() { return "retry-release"; }
+            @Override public Object invoke(GpuRuntime.BackendInvocation invocation) { return null; }
+            @Override public long uploadArray(String elementAbiType, List<?> input) { return 7L; }
+            @Override public List<?> downloadArray(String elementAbiType, long nativeHandle, long length) {
+                return values;
+            }
+            @Override public void release(long nativeHandle) {
+                if (releases.incrementAndGet() == 1) {
+                    throw new IllegalStateException("transient driver release failure");
+                }
+            }
+        };
+        GpuRuntime.installBackend(backend);
+        GpuRuntime runtime = new GpuRuntime();
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i64", List.of(1L));
+
+        assertThrows(GpuRuntime.GpuExecutionException.class, () -> runtime.release(array));
+        assertEquals(List.of(1L), runtime.downloadArray(array),
+                "failed release must leave the Oreslang handle live for retry");
+
+        assertDoesNotThrow(() -> runtime.release(array));
+        assertEquals(2, releases.get());
+        assertThrows(GpuRuntime.GpuTransferException.class, () -> runtime.downloadArray(array));
+    }
+
+    @Test
     void backendInvocationReceivesNativeResourceDescriptorsNotGuestHandles() {
         TransferBackend backend = new TransferBackend("wire-args") {
             @Override
