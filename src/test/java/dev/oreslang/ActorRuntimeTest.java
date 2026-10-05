@@ -172,6 +172,81 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void cancellingQueuedProtocolRequestSkipsGuestDispatch() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Integer> gate = new CompletableFuture<>();
+            CountDownLatch firstSuspended = new CountDownLatch(1);
+            AtomicInteger skippedDispatches = new AtomicInteger();
+
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> {
+                        if (method.equals("block")) {
+                            firstSuspended.countDown();
+                            turnContext.suspendOn(gate, (value, failure, resumeContext) ->
+                                    resumeContext.completeProtocolReply(value));
+                            throw new AssertionError("suspendOn must unwind the current actor turn");
+                        }
+                        if (method.equals("should_not_run")) {
+                            skippedDispatches.incrementAndGet();
+                            return 99;
+                        }
+                        throw new IllegalArgumentException("unexpected protocol method " + method);
+                    });
+
+            var blocker = runtime.invokeSourceProtocol(ref, "block", List.of());
+            assertTrue(firstSuspended.await(2, TimeUnit.SECONDS));
+
+            var cancelled = runtime.invokeSourceProtocol(ref, "should_not_run", List.of());
+            assertTrue(cancelled.cancel(true));
+
+            gate.complete(1);
+            assertEquals(1, blocker.get(2, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(250);
+            while (skippedDispatches.get() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(0, skippedDispatches.get(),
+                    "a protocol request cancelled before dispatch must not execute guest code");
+            assertTrue(ref.isAlive());
+        }
+    }
+
+    @Test
+    void stoppingSuspendedProtocolActorCancelsPendingReplyAndDropsLateResume() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Integer> gate = new CompletableFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicInteger resumed = new AtomicInteger();
+
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> {
+                        suspended.countDown();
+                        turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
+                            resumed.incrementAndGet();
+                            resumeContext.completeProtocolReply(value);
+                        });
+                        throw new AssertionError("suspendOn must unwind the current actor turn");
+                    });
+
+            var reply = runtime.invokeSourceProtocol(ref, "wait", List.of());
+            assertTrue(suspended.await(2, TimeUnit.SECONDS));
+
+            ref.stop();
+
+            assertTrue(reply.isDone());
+            assertTrue(reply.isCancelled(),
+                    "stopping an actor with an in-flight protocol request must settle the reply");
+            assertFalse(ref.isAlive());
+
+            gate.complete(7);
+            Thread.sleep(50);
+            assertEquals(0, resumed.get(),
+                    "a late producer completion must not resurrect a stopped actor turn");
+        }
+    }
+
+    @Test
     void protocolInvocationRejectsForeignRuntimeActorRefs() {
         try (ActorRuntime owner = new ActorRuntime();
              ActorRuntime foreign = new ActorRuntime()) {
