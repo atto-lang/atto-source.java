@@ -122,10 +122,20 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 if (imported.wildcard()) {
-                    namespaceImports.put(imported.namespace(), imported);
+                    String localName = imported.namespace();
+                    if (namedImports.containsKey(localName)
+                            || namespaceImports.putIfAbsent(localName, imported) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate import binding '" + localName + "'");
+                    }
                 } else {
                     for (String importedName : imported.names()) {
-                        namedImports.put(imported.localName(importedName), imported);
+                        String localName = imported.localName(importedName);
+                        if (namespaceImports.containsKey(localName)
+                                || namedImports.putIfAbsent(localName, imported) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate import binding '" + localName + "'");
+                        }
                     }
                 }
             }
@@ -1222,23 +1232,53 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object exportAny(String name) {
+            Object resolved = null;
+            int matches = 0;
+
             Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
+            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
+                resolved = new ModuleFacade(this, module);
+                matches++;
+            }
+
             Ast.ClassDecl klass = findClass(name);
-            if (klass != null) return new ClassFacade(this, klass);
+            if (klass != null) {
+                resolved = new ClassFacade(this, klass);
+                matches++;
+            }
+
             Ast.FunctionDecl fn = findFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) return (Invokable) args -> callFunction(fn, args);
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
+                resolved = (Invokable) args -> callFunction(fn, args);
+                matches++;
+            }
+
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
                     if (decl instanceof Ast.FieldDecl field
                             && field.visibility() == Ast.Visibility.PUBLIC
                             && field.name().equals(name)) {
-                        if (field.initializer() == null) throw new IllegalArgumentException("exported binding has no initializer: " + name);
-                        return eval(field.initializer(), new Env(null));
+                        if (field.initializer() == null) {
+                            throw new IllegalArgumentException(
+                                    "exported binding has no initializer: " + name);
+                        }
+                        Object value = eval(field.initializer(), new Env(null));
+                        resolved = value;
+                        matches++;
                     }
                 }
             }
-            throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export '" + name + "'");
+
+            if (matches == 0) {
+                throw new IllegalArgumentException(
+                        "code unit '" + codeUnitId + "' does not export '" + name + "'");
+            }
+            if (matches > 1) {
+                throw new IllegalArgumentException(
+                        "code unit '" + codeUnitId
+                                + "' has an ambiguous cross-kind export named '" + name + "'");
+            }
+            return resolved;
         }
 
         private OresObject instantiate(Ast.ClassDecl klass, List<Object> args) {
