@@ -2715,7 +2715,7 @@ public final class ActorRuntime implements AutoCloseable {
      * to method-name + argument-list requests over the actor's one mailbox.
      */
     @FunctionalInterface
-    public interface SourceProtocolBehavior {
+    private interface SourceProtocolBehavior {
         Object invoke(
                 String method,
                 List<?> arguments,
@@ -2723,7 +2723,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     @FunctionalInterface
-    public interface SourceProtocolBehaviorFactory {
+    private interface SourceProtocolBehaviorFactory {
         SourceProtocolBehavior create(ActorContext<Object> context) throws Exception;
     }
 
@@ -3122,11 +3122,28 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Compiler/interpreter lowering target for persistent SHARED source actor
+     * classes. Source state is constructed only after the actor context is
+     * installed. The resulting Behavior has one mailbox ingress; source code
+     * admits messages only through ActorRef.send.
+     */
+    public ActorRef<Object> spawnSourceSharedActor(
+            BehaviorFactory<Object> behaviorFactory) {
+        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        requireCallerRuntimeAffinity("spawn source shared actor classes");
+        return spawnInternal(
+                ActorKind.SHARED,
+                defaultSpawnPolicy(),
+                behaviorFactory,
+                true);
+    }
+
+    /**
+     * Compiler/interpreter lowering target for persistent SHARED source actor
      * classes. The returned ActorRef still represents exactly one mailbox;
      * public source methods are multiplexed through runtime-private protocol
      * metadata rather than exposed as raw send/receive operations.
      */
-    public ActorRef<Object> spawnSourceSharedProtocolActor(
+    private ActorRef<Object> spawnSourceSharedProtocolActor(
             SourceProtocolBehaviorFactory behaviorFactory) {
         Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         requireCallerRuntimeAffinity("spawn source shared protocol actor classes");
@@ -3157,7 +3174,7 @@ public final class ActorRuntime implements AutoCloseable {
      * in runtime-private envelope metadata; user arguments alone pass message
      * validation/accounting.
      */
-    public OresFuture<Object> invokeSourceProtocol(
+    private OresFuture<Object> invokeSourceProtocol(
             ActorRef<?> ref,
             String method,
             List<?> arguments) {
