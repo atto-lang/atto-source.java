@@ -18,6 +18,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class HostImportTest {
     @Test
+    void javaSourceAuthorityRequiresHostInteropAuthority() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                IsolatePolicy.developer().withCapabilities(
+                        IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
+        assertTrue(failure.getMessage().contains("JAVA_SOURCE_INTEROP requires JAVA_INTEROP"));
+        assertDoesNotThrow(() -> IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
+    }
+
+    @Test
     void validatesJavaImportShapesAliasesAndCollisions() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 import module Math from "java:java.lang.Math";
