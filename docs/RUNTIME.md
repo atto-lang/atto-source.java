@@ -121,7 +121,10 @@ dispatch, the runtime lowers live handles into immutable backend-only
 `NativeResourceArg` descriptors containing an opaque non-zero u64 ID, resource kind,
 exact scalar ABI, length and matrix shape. Aliased Array/Stream/collected views share a
 reference-counted runtime lease so the backend release hook runs exactly once. Released
-handles fail before driver invocation. See `GPU_NATIVE_ABI.md` for the JNI/native contract.
+handles fail before driver invocation. Transfer graphs are cycle checked and bounded before
+freezing, and every native operation pins its resident leases until the backend call
+finishes, preventing concurrent release/use-after-free races. See `GPU_NATIVE_ABI.md` for
+the JNI/native contract.
 
 The evaluator still does not emulate or CPU-fallback GPU **kernel execution**. If a
 GPU-targeted named function, static function, lambda, or batch reaches the evaluator
