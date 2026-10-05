@@ -207,7 +207,9 @@ multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
 unary           = [ "!" | "-" | "+" | "await" ] postfix
                 | "&" [ "mut" ] unary ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
-call_suffix     = "(" [ argument_list ] ")" ;
+call_suffix     = "(" [ call_argument_list ] ")" ;
+call_argument_list = call_argument { "," call_argument } ;
+call_argument   = [ "..." ] expression ;
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "is" | "when"
