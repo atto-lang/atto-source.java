@@ -161,7 +161,7 @@ final class RoutineAndLoopTest {
     void forOfInjectsSchedulerSafepoints() throws Exception {
         String output = run("""
                 pub routine main(): void {
-                  for (val item of arr[1, 2, 3]) {
+                  for (const item of arr[1, 2, 3]) {
                     stdio.stdout.write(item);
                   }
                   stdio.stdout.write(process.descriptor.scheduler_safepoints)
@@ -193,7 +193,7 @@ final class RoutineAndLoopTest {
                 }
 
                 pub routine main(): void {
-                  for item of arr[1, 2] do
+                  for const item of arr[1, 2] do
                     done();
                     stdio.stdout.write(item);
                   done
@@ -219,15 +219,55 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void forOfRequiresExplicitConstOrLetBindings() {
+        IllegalArgumentException bare = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for value of arr[1, 2] do
+                            stdio.stdout.write(value);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(bare.getMessage().contains("variable used before declared"));
+        assertTrue(bare.getMessage().contains("value"));
+
+        IllegalArgumentException destructured = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for [key, value] of arr[(1, 2)] do
+                            stdio.stdout.write(key);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(destructured.getMessage().contains("variable used before declared"));
+
+        IllegalArgumentException valBinding = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for val value of arr[1, 2] do
+                            stdio.stdout.write(value);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(valBinding.getMessage().contains("for-of bindings require 'const' or 'let'"));
+    }
+
+    @Test
     void forOfSequencePatternsDestructureTupleElements() throws Exception {
         String output = run("""
                 pub routine main(): void {
-                  for [key, value] of arr[(1, "a"), (2, "b")] do
+                  for const [key, value] of arr[(1, "a"), (2, "b")] do
                     stdio.stdout.write(key);
                     stdio.stdout.write(value);
                   done
 
-                  for [_, let value] of arr[(9, 3), (8, 4)] {
+                  for const [_, let value] of arr[(9, 3), (8, 4)] {
                     value = value + 1;
                     stdio.stdout.write(value);
                   }
@@ -244,7 +284,7 @@ final class RoutineAndLoopTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         pub routine main(): void {
-                          for [a, b, c] of arr[(1, 2)] do
+                          for const [a, b, c] of arr[(1, 2)] do
                             stdio.stdout.write(a);
                           done
                           return;
@@ -293,7 +333,7 @@ final class RoutineAndLoopTest {
 
                 pub routine main(): void {
                   val bag = new collections.Bag();
-                  for (val item of bag) {
+                  for (const item of bag) {
                     stdio.stdout.write(item);
                   }
                 }

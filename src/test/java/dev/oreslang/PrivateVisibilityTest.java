@@ -207,7 +207,7 @@ final class PrivateVisibilityTest {
                         end
 
                         fnc bad(Bag bag): void {
-                          for value of bag do
+                          for const value of bag do
                             stdio.stdout.write(value);
                           done
                           return;
@@ -223,7 +223,7 @@ final class PrivateVisibilityTest {
                   }
 
                   pub write_self(): void {
-                    for value of self do
+                    for const value of self do
                       stdio.stdout.write(value);
                     done
                     return;
@@ -318,7 +318,7 @@ final class PrivateVisibilityTest {
 
                 pub routine main(): void {
                   val vault = external.make_vault();
-                  for value of vault do
+                  for const value of vault do
                     stdio.stdout.write(value);
                   done
                   return;

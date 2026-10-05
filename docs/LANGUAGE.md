@@ -795,11 +795,11 @@ In the typed shorthand, `int i = 0` creates an implicit mutable `let i: int` sco
 and iterator-style loops. The compact `of` form does not require parentheses, and both body styles are valid:
 
 ```ores
-for item of values do
+for const item of values do
   work(item)
 done
 
-for [key, value] of entries do
+for const [key, value] of entries do
   consume(key, value)
 done
 
@@ -808,12 +808,14 @@ for let [key, value] of mutable_entries {
   consume(key, value);
 }
 
-for (val item of values) {
+for (const item of values) {
   work(item);
 }
 ```
 
-A sequence pattern defaults to `val` bindings. `for let [k, v] ...` or `for const [k, v] ...` applies that binding kind to the pattern, while an explicit kind inside the pattern propagates to subsequent names. `_` discards one tuple/list position without creating a binding.
+Iterator variables are declarations, so every `for ... of ...` header must explicitly use `const` or `let`. Use `const` for the normal read-only iteration case and `let` only when the per-iteration local is rebound. Sequence patterns require the same outer declaration, such as `for const [k, v] of entries`; an explicit `const` or `let` inside the pattern may change the binding kind for subsequent names. `_` discards one tuple/list position without creating a binding.
+
+Bare forms such as `for item of values` are rejected at compile time with `variable used before declared`. `val` is not accepted as a for-of binder; the iterator surface intentionally uses only `const` and `let`.
 
 A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 
