@@ -3857,10 +3857,18 @@ public final class ActorRuntime implements AutoCloseable {
                         groupState.abortActorReservation();
                     }
                 }
-                if (generationLease != null) {
-                    generationLease.close();
+                // Release runtime quota before generation cleanup. A broken
+                // lease implementation must not strand actor admission capacity
+                // or mask the primary spawn failure.
+                if (runtimeReserved) {
+                    releaseReservedActorSlot(kind);
+                    runtimeReserved = false;
                 }
-                if (runtimeReserved) releaseReservedActorSlot(kind);
+                if (generationLease != null) {
+                    closeGenerationLeaseAfterAdmissionFailure(
+                            generationLease,
+                            failure);
+                }
                 throw failure;
             }
         }
@@ -6257,7 +6265,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             try {
                 actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
                 throw fatal;
             } catch (Throwable ignored) {
                 // Actor termination must still complete. Runtime cleanup hooks
@@ -6270,7 +6278,7 @@ public final class ActorRuntime implements AutoCloseable {
             unregisterActor(this);
             try {
                 generationLease.close();
-            } catch (VirtualMachineError | ThreadDeath fatal) {
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
                 throw fatal;
             } catch (Throwable leaseFailure) {
                 ref.terminationCause.compareAndSet(null, leaseFailure);
