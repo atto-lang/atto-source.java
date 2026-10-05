@@ -432,7 +432,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             List<Object> normalized = normalizeFunctionArguments(fn, args);
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                if (!fn.async()) return callFunctionBodyRaw(fn, normalized);
+                if (!fn.async()) return callFunctionBody(fn, normalized);
 
                 List<?> detached = detachAsyncArguments(normalized);
                 return context.asyncRuntime().submit(() ->
@@ -576,6 +576,24 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private Object callFunctionBody(Ast.FunctionDecl fn, List<?> args) {
+            if (!fn.trapped()) return callFunctionBodyRaw(fn, args);
+            try {
+                Object value = callFunctionBodyRaw(fn, args);
+                Object success = value == null ? List.of() : value;
+                return List.of(
+                        new OptionValue(true, success),
+                        new OptionValue(false, null));
+            } catch (OresPanic panic) {
+                // Panic is an invariant/recovery channel, not an ordinary throw.
+                throw panic;
+            } catch (RuntimeException failure) {
+                return List.of(
+                        new OptionValue(false, null),
+                        new OptionValue(true, failure));
+            }
+        }
+
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -583,7 +601,10 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
-                executeBlock(fn.body(), env);
+                // A trap owns the dynamic throw boundary until its body returns.
+                // Treat it as a tail-call barrier so proper-tail-call lowering
+                // cannot erase the boundary by replacing this activation.
+                executeBlock(fn.body(), env, fn.trapped());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
