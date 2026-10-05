@@ -3025,13 +3025,17 @@ public final class TypeChecker {
 
     private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
         Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
-        if (field.type() != null) return resolve(field.type(), generics, self);
+        if (field.type() != null) {
+            // A field declaration has no receiver identity at the declaration
+            // site. Keep `self` as a receiver-bearing method type rather than
+            // silently degrading it into the enclosing nominal class.
+            return resolve(field.type(), generics, null);
+        }
         if (field.initializer() == null) {
             throw new IllegalArgumentException("inferred field '" + klass.name() + "." + field.name()
                     + "' requires an initializer");
         }
-        return typeOf(field.initializer(), new Env(null), generics, self);
+        return typeOf(field.initializer(), new Env(null), generics, null);
     }
 
     private void validateFieldLayout(Ast.ClassDecl klass) {
@@ -3756,6 +3760,10 @@ public final class TypeChecker {
                 }
                 bindings.put(generic.name(), joined);
             }
+            return;
+        }
+        if (pattern instanceof SelfType p && actual instanceof SelfType a) {
+            inferGenericBindings(p.bound(), a.bound(), bindings, fixedBindings, label);
             return;
         }
         if (pattern instanceof Borrow p && actual instanceof Borrow a) {
