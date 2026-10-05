@@ -103,6 +103,42 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void publicComputeContractsParticipateInAbiInvalidation() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "kernel.ores", """
+                        pub compute fnc transform(Region<int> values): void
+                        reads values;
+                        place cpu;
+                        {
+                          return;
+                        }
+                        """,
+                "consumer.ores", """
+                        import fnc {transform} from "./kernel.ores";
+                        pub fnc launch(): void { return; }
+                        """);
+
+        compiler.compile(initial);
+
+        Map<String, String> changed = Map.of(
+                "kernel.ores", """
+                        pub compute fnc transform(Region<int> values): void
+                        writes values;
+                        place gpu;
+                        {
+                          return;
+                        }
+                        """,
+                "consumer.ores", initial.get("consumer.ores"));
+
+        var result = compiler.compile(changed);
+        assertTrue(result.rebuilt("kernel.ores"));
+        assertTrue(result.rebuilt("consumer.ores"),
+                "public compute effects/layout/placement are part of the callable ABI for downstream codegen");
+    }
+
+    @Test
     void callableKindAndActorKindParticipateInAbiInvalidation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> initial = Map.of(
