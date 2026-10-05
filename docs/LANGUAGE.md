@@ -254,6 +254,28 @@ find(self Box)(int key): self {
 
 The receiver variable name is always `self`.
 
+### Receiver-polymorphic `self` type
+
+In an instance-method type position, `self` is a receiver-polymorphic type, not an alias for the enclosing nominal class. It preserves the receiver proof needed for fluent APIs:
+
+```ores
+define class Fluent as
+  pub same(): self {
+    return self;
+  }
+
+  pub wrong(): self {
+    return new Fluent(); // compile error: Fluent is not the exact receiver self type
+  }
+end
+```
+
+An inferred alias of the receiver preserves that proof, so `val me = self; return me;` is valid. Explicitly widening the value to the nominal class loses the proof and cannot be narrowed back to `self`.
+
+When a `self`-returning method is inherited, the return type rebinds to the actual static receiver type. If `Child extends Base` and `Base.same(): self`, then `child.same()` has type `Child`, which keeps subclass-only fluent chains type-safe. Interfaces and structural method contracts preserve the same receiver-polymorphic slot semantics.
+
+The `self` type is only valid where an instance receiver exists. Top-level/module functions and static class functions cannot declare a `self` type.
+
 A class may list multiple parent classes and multiple interfaces:
 
 ```ores
@@ -1039,7 +1061,7 @@ Direct method calls do not create per-instance closures:
 box.get();
 ```
 
-The compiler/runtime resolves the shared class method slot and passes `box` as a hidden first argument. The hidden receiver is not part of the source-visible arity used for overload selection.
+The compiler/runtime resolves the shared class method slot and passes `box` as a hidden first argument. The hidden receiver is not part of the source-visible arity used for overload selection. Receiver-polymorphic `self` typing does not change this representation: methods remain one shared declaration/slot per class, never one function object per instance.
 
 Methods may also be used as first-class callbacks:
 
