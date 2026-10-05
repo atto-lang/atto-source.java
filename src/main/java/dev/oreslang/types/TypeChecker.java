@@ -674,7 +674,9 @@ public final class TypeChecker {
             Type actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
-            if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
+            if (binding.kind() == Ast.BindingKind.CONST
+                    && !(binding.initializer() instanceof Ast.LambdaExpr)
+                    && !constant(binding.initializer())) {
                 throw new IllegalArgumentException("const '" + binding.name() + "' needs a compile-time constant initializer");
             }
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
