@@ -190,27 +190,39 @@ public final class Ast {
             boolean isAbstract,
             ActorKind actorKind,
             List<String> genericParameters,
+            List<TypeRef> actorProtocolTypes,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
+            actorProtocolTypes = List.copyOf(actorProtocolTypes);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
         }
 
+        public ClassDecl(String name, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         List<MethodDecl> methods) {
+            this(name, isAbstract, actorKind, genericParameters, List.of(),
+                    parents, interfaces, fields, methods);
+        }
+
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, parents, interfaces, fields, methods);
+            this(name, isAbstract, ActorKind.NONE, genericParameters, List.of(),
+                    parents, interfaces, fields, methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, List.of(), List.of(), fields, methods);
+            this(name, isAbstract, ActorKind.NONE, genericParameters, List.of(),
+                    List.of(), List.of(), fields, methods);
         }
     }
 
