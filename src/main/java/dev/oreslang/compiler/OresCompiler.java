@@ -11,7 +11,8 @@ public final class OresCompiler {
     private OresCompiler() { }
 
     public static Ast.Program parseAndTypeCheck(String source) {
-        return TypeChecker.check(Parser.parse(source));
+        Ast.Program checked = TypeChecker.check(Parser.parse(source));
+        return ComputeContractChecker.check(checked);
     }
 
     /**

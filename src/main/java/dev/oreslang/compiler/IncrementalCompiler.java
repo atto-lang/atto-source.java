@@ -156,6 +156,7 @@ public final class IncrementalCompiler {
             appendGenerics(abi, fn.genericParameters());
             appendParams(abi, fn.parameters());
             abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            appendComputeAbi(abi, fn.annotations());
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
@@ -217,6 +218,27 @@ public final class IncrementalCompiler {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
+        }
+    }
+
+    private static void appendComputeAbi(StringBuilder abi, List<Ast.Annotation> annotations) {
+        for (Ast.Annotation annotation : annotations) {
+            if (!Set.of(
+                    "Compute",
+                    "Reads",
+                    "Writes",
+                    "Discards",
+                    "Reduces",
+                    "Atomic",
+                    "Layout",
+                    "Place").contains(annotation.name())) {
+                continue;
+            }
+            abi.append(" compute-").append(annotation.name()).append(':');
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                abi.append(typeRef(argument)).append(',');
+            }
+            abi.append('\n');
         }
     }
 

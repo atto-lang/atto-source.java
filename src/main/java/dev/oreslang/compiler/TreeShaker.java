@@ -695,7 +695,8 @@ public final class TreeShaker {
                 return List.of(new Ast.ForOfDestructureStmt(
                         loop.bindings(),
                         iterable,
-                        rewriteStatements(loop.body(), module, bodyLocals)));
+                        rewriteStatements(loop.body(), module, bodyLocals),
+                        loop.execution()));
             }
             if (statement instanceof Ast.ForOfStmt loop) {
                 Ast.Expr iterable = rewriteExpression(loop.iterable(), module, locals);
@@ -705,7 +706,8 @@ public final class TreeShaker {
                         loop.bindingKind(),
                         loop.bindingName(),
                         iterable,
-                        rewriteStatements(loop.body(), module, bodyLocals)));
+                        rewriteStatements(loop.body(), module, bodyLocals),
+                        loop.execution()));
             }
             if (statement instanceof Ast.ForStmt loop) {
                 LinkedHashMap<String, Object> loopLocals = new LinkedHashMap<>(locals);
@@ -721,7 +723,8 @@ public final class TreeShaker {
                         initializer,
                         rewriteExpression(loop.condition(), module, loopLocals),
                         rewriteExpression(loop.update(), module, loopLocals),
-                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(loopLocals))));
+                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(loopLocals)),
+                        loop.execution()));
             }
             throw new IllegalStateException("unhandled statement " + statement.getClass().getSimpleName());
         }
@@ -882,6 +885,13 @@ public final class TreeShaker {
         }
 
         private void seedRoots() {
+            for (Symbol symbol : symbols.values()) {
+                if (symbol.declaration() instanceof Ast.FlowDecl
+                        || symbol.declaration() instanceof Ast.AspectDecl) {
+                    mark(symbol.id());
+                }
+            }
+
             if (options.preservePublicApi()) {
                 for (Symbol symbol : symbols.values()) {
                     if (isPublicApi(symbol.declaration())) mark(symbol.id());
@@ -997,10 +1007,38 @@ public final class TreeShaker {
             }
             if (declaration instanceof Ast.TypeAliasDecl alias) {
                 scanType(alias.target());
+                return;
+            }
+            if (declaration instanceof Ast.FlowDecl flow) {
+                for (Ast.FlowEdge edge : flow.edges()) {
+                    markCallableReference(module, edge.from());
+                    markCallableReference(module, edge.to());
+                }
+                return;
+            }
+            if (declaration instanceof Ast.AspectDecl aspect) {
+                for (Ast.AspectRule rule : aspect.rules()) {
+                    markCallableReference(module, rule.handler());
+                }
             }
         }
 
+        private void markCallableReference(String module, String name) {
+            String resolved;
+            if (name.contains(".")) {
+                resolved = resolveSymbol(name, false);
+            } else {
+                String local = qualify(module, name);
+                resolved = symbols.containsKey(local) ? local : resolveSymbol(name, true);
+            }
+            if (resolved != null) mark(resolved);
+        }
+
         private void scanAnnotation(Ast.Annotation annotation) {
+            if (Set.of("Compute", "Reads", "Writes", "Discards", "Reduces", "Atomic", "Layout", "Place")
+                    .contains(annotation.name())) {
+                return;
+            }
             for (Ast.TypeRef argument : annotation.arguments()) scanType(argument);
         }
 
@@ -1282,6 +1320,8 @@ public final class TreeShaker {
             if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
             if (declaration instanceof Ast.FieldDecl field) return field.name();
             if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+            if (declaration instanceof Ast.FlowDecl flow) return flow.name();
+            if (declaration instanceof Ast.AspectDecl aspect) return aspect.name();
             return null;
         }
 

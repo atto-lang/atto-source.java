@@ -33,7 +33,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, FlowDecl, AspectDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -248,7 +248,63 @@ public final class Ast {
         public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
     }
 
+    /** Static compiler-visible edge between named compute callables. */
+    public record FlowEdge(String from, String to) {
+        public FlowEdge {
+            if (from == null || from.isBlank() || to == null || to.isBlank()) {
+                throw new IllegalArgumentException("flow endpoints cannot be blank");
+            }
+            if (from.equals(to)) throw new IllegalArgumentException("flow self-edge is invalid");
+        }
+    }
+
+    /** Compile-time dataflow declaration; it owns no runtime mutable state. */
+    public record FlowDecl(String name, List<FlowEdge> edges) implements Decl {
+        public FlowDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("flow name cannot be blank");
+            edges = List.copyOf(edges);
+        }
+    }
+
+    public enum AspectJoinPoint {
+        FNC,
+        TASK,
+        ACTOR_MESSAGE,
+        ACTOR_SPAWN,
+        AWAIT_SUSPEND,
+        AWAIT_RESUME,
+        IO,
+        REGION_TRANSFER,
+        GPU_LAUNCH,
+        ERROR,
+        RPC,
+        DATABASE
+    }
+
+    public enum AspectAdviceKind { BEFORE, AFTER, AROUND }
+
+    /** A statically woven advice rule. The handler is a named Oreslang callable. */
+    public record AspectRule(AspectJoinPoint joinPoint, AspectAdviceKind adviceKind, String handler) {
+        public AspectRule {
+            if (joinPoint == null || adviceKind == null) {
+                throw new IllegalArgumentException("aspect rule join point/advice kind cannot be null");
+            }
+            if (handler == null || handler.isBlank()) {
+                throw new IllegalArgumentException("aspect handler cannot be blank");
+            }
+        }
+    }
+
+    /** Compile-time aspect declaration; Oreslang does not support runtime monkey-patching. */
+    public record AspectDecl(String name, List<AspectRule> rules) implements Decl {
+        public AspectDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("aspect name cannot be blank");
+            rules = List.copyOf(rules);
+        }
+    }
+
     public enum BindingKind { CONST, VAL, LET }
+    public enum LoopExecution { SEQUENTIAL, PARALLEL, SIMD, PARALLEL_SIMD }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
@@ -350,25 +406,52 @@ public final class Ast {
         }
     }
 
-    public record ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) implements Stmt {
-        public ForOfStmt { body = List.copyOf(body); }
+    public record ForOfStmt(
+            BindingKind bindingKind,
+            String bindingName,
+            Expr iterable,
+            List<Stmt> body,
+            LoopExecution execution) implements Stmt {
+        public ForOfStmt {
+            body = List.copyOf(body);
+            if (execution == null) throw new IllegalArgumentException("loop execution mode cannot be null");
+        }
+        public ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) {
+            this(bindingKind, bindingName, iterable, body, LoopExecution.SEQUENTIAL);
+        }
     }
 
     public record ForOfDestructureStmt(
             List<DestructureBinding> bindings,
             Expr iterable,
-            List<Stmt> body) implements Stmt {
+            List<Stmt> body,
+            LoopExecution execution) implements Stmt {
         public ForOfDestructureStmt {
             bindings = List.copyOf(bindings);
             body = List.copyOf(body);
             if (bindings.isEmpty()) {
                 throw new IllegalArgumentException("for-of destructure pattern cannot be empty");
             }
+            if (execution == null) throw new IllegalArgumentException("loop execution mode cannot be null");
+        }
+        public ForOfDestructureStmt(List<DestructureBinding> bindings, Expr iterable, List<Stmt> body) {
+            this(bindings, iterable, body, LoopExecution.SEQUENTIAL);
         }
     }
 
-    public record ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) implements Stmt {
-        public ForStmt { body = List.copyOf(body); }
+    public record ForStmt(
+            Stmt initializer,
+            Expr condition,
+            Expr update,
+            List<Stmt> body,
+            LoopExecution execution) implements Stmt {
+        public ForStmt {
+            body = List.copyOf(body);
+            if (execution == null) throw new IllegalArgumentException("loop execution mode cannot be null");
+        }
+        public ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) {
+            this(initializer, condition, update, body, LoopExecution.SEQUENTIAL);
+        }
     }
 
     public record LoopStmt(List<Stmt> body) implements Stmt {
