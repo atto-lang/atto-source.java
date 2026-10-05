@@ -109,6 +109,40 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void pendingReadersOwnValuesInFifoRegistrationOrder() throws Exception {
+        var channel = ChannelRuntime.<String>rendezvous();
+        var first = ChannelRuntime.nbRead(channel);
+        var second = ChannelRuntime.nbRead(channel);
+
+        assertFalse(first.isDone());
+        assertFalse(second.isDone());
+
+        assertTrue(channel.tryWrite("first"));
+        assertEquals("first", first.get(1, TimeUnit.SECONDS));
+        assertFalse(second.isDone(), "first write must not skip the oldest pending reader");
+
+        assertTrue(channel.tryWrite("second"));
+        assertEquals("second", second.get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void pendingWritersCommitInFifoRegistrationOrder() throws Exception {
+        var channel = ChannelRuntime.<String>rendezvous();
+        var first = ChannelRuntime.nbWrite(channel, "first");
+        var second = ChannelRuntime.nbWrite(channel, "second");
+
+        assertFalse(first.isDone());
+        assertFalse(second.isDone());
+
+        assertEquals("first", channel.tryRead().orElseThrow());
+        assertNull(first.get(1, TimeUnit.SECONDS));
+        assertFalse(second.isDone(), "first read must not skip the oldest pending writer");
+
+        assertEquals("second", channel.tryRead().orElseThrow());
+        assertNull(second.get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
     void closingChannelFailsPendingOperations() {
         var channel = ChannelRuntime.<String>rendezvous();
         var read = channel.read();
