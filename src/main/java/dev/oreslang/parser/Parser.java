@@ -882,6 +882,23 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
+        if (looksLikeTypedForInitializer()) {
+            Ast.TypeRef type = parseTypeRef();
+            String name = consume(IDENT, "expected typed loop binding name").lexeme();
+            consume(EQUAL, "typed for initializer requires '='");
+            Ast.BindingStmt init = new Ast.BindingStmt(
+                    Ast.BindingKind.LET,
+                    type,
+                    name,
+                    parseExpression());
+            consume(SEMICOLON, "expected ';' after for initializer");
+            Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
+            consume(SEMICOLON, "expected ';' after for condition");
+            Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
+            consume(RPAREN, "expected ')' after for header");
+            return new Ast.ForStmt(init, condition, update, parseLoopBody());
+        }
+
         if (check(LBRACKET)) {
             List<Ast.DestructureBinding> bindings = parseForSequenceBindings(Ast.BindingKind.VAL);
             consume(OF, "expected 'of' after for-of destructure pattern");
