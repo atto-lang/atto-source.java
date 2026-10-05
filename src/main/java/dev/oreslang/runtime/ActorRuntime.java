@@ -168,7 +168,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             try {
                 turn.run();
-            } catch (Throwable failure) {
+            } catch (RuntimeException | Error failure) {
                 callbackFailure.set(failure);
                 throw failure;
             } finally {
