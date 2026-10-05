@@ -510,6 +510,102 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
+    void restFirstOrMiddleIsAlwaysRejectedForBothSyntaxFamilies() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc values(): Array<int> { return [1, 2, 3]; }
+                pub fnc main(): void {
+                  const [first, ...rest, last] = values();
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc values(): Array<int> { return [1, 2, 3]; }
+                pub fnc main(): void {
+                  [const ...rest, const last] = values();
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc value(): {active: bool, label: string} {
+                  return obj{active: true, label: "x"};
+                }
+                pub fnc main(): void {
+                  const {...rest, active} = value();
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc value(): {active: bool, label: string} {
+                  return obj{active: true, label: "x"};
+                }
+                pub fnc main(): void {
+                  {const ...rest, const active} = value();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void staticallyTypedIterableRestUsesDeclaredIteratorShape() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Vector<T> as
+                  let Array<T> items = new Array<T>();
+
+                  pub add(T value): void {
+                    self.items.add(value);
+                    return;
+                  }
+
+                  pub [Symbol.iterator](): Array<T> {
+                    return self.items;
+                  }
+                end
+
+                fnc vector(): Vector<int> {
+                  let Vector<int> values = new Vector<int>();
+                  values.add(4);
+                  values.add(5);
+                  values.add(6);
+                  return values;
+                }
+
+                fnc acceptsInts(Array<int> values): void {
+                  stdio.println(values[0]);
+                  return;
+                }
+
+                pub fnc main(): void {
+                  const [first, ...rest] = vector();
+                  acceptsInts(rest);
+                  stdio.println(first);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void unionRestKeepsEveryFiniteTailAlternativeStatic() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc variant(bool flag): [int, string] | [int, bool, string] {
+                  if flag; then
+                    return [3, "short"];
+                  else
+                    return [4, true, "long"];
+                  fi
+                }
+
+                pub fnc main(): void {
+                  const [head, ...rest] = variant(false);
+                  stdio.println(head);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void restDestructuringExecutesWithoutRuntimeTypeDiscovery() throws Exception {
         String program = """
                 type Row = {v: int, label: string, ok: bool};
