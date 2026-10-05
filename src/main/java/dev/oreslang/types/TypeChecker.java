@@ -70,7 +70,8 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
-                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
+                "Object", "List", "Option", "Result", "Future",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
@@ -753,7 +754,11 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
-            if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
+            if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
+                    || name.name().equals("Channel") || name.name().equals("SelectCase")
+                    || name.name().equals("SelectSet")) {
+                return new Named("$" + name.name() + "Factory", List.of());
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -951,6 +956,86 @@ public final class TypeChecker {
                     return asyncResult(target.async(), result);
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr channelCall
+                    && channelCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("Channel")
+                    && channelCall.member().equals("new")) {
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Channel.new<T>(capacity) requires exactly one explicit element type");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Channel.new<T> expects exactly one capacity");
+                }
+                requireAssignable(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        Primitive.INT,
+                        "Channel.new capacity");
+                Type element = resolve(call.typeArguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "Channel<void> cannot carry a value; use an explicit signal/unit type");
+                }
+                return new Named("Channel", List.of(element));
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr selectCaseCall
+                    && selectCaseCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("SelectCase")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "SelectCase constructors infer channel element types");
+                }
+                return switch (selectCaseCall.member()) {
+                    case "read" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase.read expects one Channel<T>");
+                        }
+                        channelElementType(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                "SelectCase.read");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "write" -> {
+                        if (call.arguments().size() != 2) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.write expects Channel<T>, value");
+                        }
+                        Type element = channelElementType(
+                                typeOf(call.arguments().get(0), env, generics, self),
+                                "SelectCase.write");
+                        requireAssignable(
+                                typeOf(call.arguments().get(1), env, generics, self),
+                                element,
+                                "SelectCase.write value");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "default" -> {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException("SelectCase.default expects no arguments");
+                        }
+                        yield new Named("SelectCase", List.of());
+                    }
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectCase constructor '" + selectCaseCall.member() + "'");
+                };
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr selectSetCall
+                    && selectSetCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("SelectSet")
+                    && selectSetCall.member().equals("new")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("SelectSet.new does not accept type arguments");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "SelectSet.new expects one list/map of SelectCase values");
+                }
+                typeOf(call.arguments().getFirst(), env, generics, self);
+                return new Named("SelectSet", List.of());
+            }
+
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
