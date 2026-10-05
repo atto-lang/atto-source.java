@@ -272,22 +272,20 @@ public final class OresEvalRootNode extends RootNode {
 
             return context.actors().spawnSourceSharedActor(actorContext -> {
                 OresObject actor = instantiateActorState(klass, prepared);
-                return (methodName, arguments, turnContext) -> {
-                    Ast.MethodDecl endpoint = findMethod(
-                            klass,
-                            methodName,
-                            arguments.size(),
-                            new LinkedHashSet<>());
-                    if (endpoint == null
-                            || endpoint.isStatic()
-                            || endpoint.visibility() != Ast.Visibility.PUBLIC
-                            || endpoint.name().equals("constructor")) {
-                        throw new IllegalArgumentException(
-                                "actor class '" + klass.name()
-                                        + "' has no public protocol method '"
-                                        + methodName + "' with arity " + arguments.size());
-                    }
-                    return callMethod(actor, endpoint, arguments);
+                Ast.MethodDecl receive = findMethod(
+                        klass,
+                        "receive",
+                        1,
+                        new LinkedHashSet<>());
+                if (receive == null
+                        || receive.isStatic()
+                        || receive.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor class '" + klass.name()
+                                    + "' has no effective public receive(message) ingress");
+                }
+                return (message, turnContext) -> {
+                    callMethod(actor, receive, List.of(message));
                 };
             });
         }
