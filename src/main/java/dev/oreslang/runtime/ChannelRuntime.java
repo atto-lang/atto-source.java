@@ -499,9 +499,21 @@ public final class ChannelRuntime {
         private final AtomicLong fairCursor = new AtomicLong();
 
         public SelectSet(Collection<? extends SelectCase> cases) {
+            this(cases, 0L);
+        }
+
+        /**
+         * Runtime/compiler hook for static select sites that retain a
+         * deterministic fairness ticket across repeated executions while
+         * rebuilding their evaluated channel/value cases each time.
+         */
+        public SelectSet(
+                Collection<? extends SelectCase> cases,
+                long initialFairCursor) {
             Objects.requireNonNull(cases, "cases");
             if (cases.isEmpty()) throw new IllegalArgumentException("select requires at least one case");
             this.cases = List.copyOf(cases);
+            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream().filter(DefaultCase.class::isInstance).count();
             if (defaults > 1) throw new IllegalArgumentException("select permits at most one default case");
         }
