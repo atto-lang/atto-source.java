@@ -337,11 +337,11 @@ final class OwnershipAndClosureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         actor Worker {
-                          private helper() => int {
+                          private helper() : int {
                             return 7;
                           }
 
-                          private leak() => (() -> int) {
+                          private leak() : Fnc<int> {
                             return self.helper;
                           }
                         }

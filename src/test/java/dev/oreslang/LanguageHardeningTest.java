@@ -651,7 +651,7 @@ final class LanguageHardeningTest {
         IllegalArgumentException module = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
-                        pub fnc main() => void {
+                        pub fnc main() : void {
                           define module RuntimeMade
                           end
                           return;
@@ -662,7 +662,7 @@ final class LanguageHardeningTest {
         IllegalArgumentException klass = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
-                        pub fnc main() => void {
+                        pub fnc main() : void {
                           define class RuntimeMade as
                           end
                           return;
@@ -673,7 +673,7 @@ final class LanguageHardeningTest {
         IllegalArgumentException namespace = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
-                        pub fnc main() => void {
+                        pub fnc main() : void {
                           namespace runtime;
                           return;
                         }
@@ -692,7 +692,7 @@ final class LanguageHardeningTest {
         IllegalArgumentException trait = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
-                        pub fnc main() => void {
+                        pub fnc main() : void {
                           trait RuntimeTrait
                           return;
                         }

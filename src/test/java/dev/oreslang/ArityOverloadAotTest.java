@@ -15,6 +15,52 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ArityOverloadAotTest {
 
+    @Test
+    void privateCallbackSlotsRetainLexicalAuthorityWithoutBecomingPublic() throws Exception {
+        String program = """
+                define class Box as
+                  val int base;
+                  private read(): int { return self.base; }
+                  private read(int extra): int { return self.base + extra; }
+                  private static fnc secret(): int { return 1; }
+                  private static fnc secret(int value): int { return value * 2; }
+                  pub reader(): Fnc<int> { return self.read; }
+                  pub static fnc multiplier(): Fnc<int, int> { return Box.secret; }
+                end
+                pub routine main(): void {
+                  val box = new Box(10);
+                  val read = box.reader();
+                  val multiply = Box.multiplier();
+                  stdio.stdout.write(read());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(multiply(9));
+                  return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "private-callbacks.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("10:18", out.toString(StandardCharsets.UTF_8));
+
+        for (String extraction : new String[]{
+                "val Fnc<int> callback = new Box().read;",
+                "val Fnc<int, int> callback = Box.secret;"}) {
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class, () ->
+                    TypeChecker.check(Parser.parse("""
+                            define class Box as
+                              private read(): int { return 1; }
+                              private static fnc secret(): int { return 1; }
+                              private static fnc secret(int value): int { return value; }
+                            end
+                            fnc bad(): void {
+                            """ + extraction + "\nreturn;\n}")));
+            assertTrue(denied.getMessage().contains("private"), denied.getMessage());
+        }
+    }
+
     private static final String PROGRAM = """
             pub interface Picker {
               fnc pick() => String;
@@ -23,42 +69,42 @@ final class ArityOverloadAotTest {
             }
 
             define class Base implements Picker as
-              pub pick() => String {
+              pub pick() : String {
                 return "base0";
               }
 
-              pub pick(int x) => String {
+              pub pick(int x) : String {
                 return "base1";
               }
 
-              pub pick(int x, int y) => String {
+              pub pick(int x, int y) : String {
                 return "base2";
               }
 
-              pub same() => String {
+              pub same() : String {
                 return "instance";
               }
 
-              pub static fnc same() => String {
+              pub static fnc same() : String {
                 return "static";
               }
 
-              pub static fnc choose() => String {
+              pub static fnc choose() : String {
                 return "static0";
               }
 
-              pub static fnc choose(int x) => String {
+              pub static fnc choose(int x) : String {
                 return "static1";
               }
             end
 
             define class Child extends Base as
-              pub pick(int x) => String {
+              pub pick(int x) : String {
                 return "child1";
               }
             end
 
-            pub routine main() => void {
+            pub routine main() : void {
               val base = new Base();
               val child = new Child();
 
@@ -117,18 +163,18 @@ final class ArityOverloadAotTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Bad as
-                          pub pick(int value) => int {
+                          pub pick(int value) : int {
                             return value;
                           }
 
-                          pub pick(String value) => String {
+                          pub pick(String value) : String {
                             return value;
                           }
                         end
                         """)));
 
         assertTrue(failure.getMessage().contains("already has arity 1"));
-        assertTrue(failure.getMessage().contains("overload only by arity"));
+        assertTrue(failure.getMessage().contains("overload identity is name + arity only"));
     }
 
     @Test
@@ -137,11 +183,11 @@ final class ArityOverloadAotTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Bad as
-                          pub pick<T>(T value) => T {
+                          pub pick<T>(T value) : T {
                             return value;
                           }
 
-                          pub pick<U, V>(U value) => U {
+                          pub pick<U, V>(U value) : U {
                             return value;
                           }
                         end
@@ -156,31 +202,31 @@ final class ArityOverloadAotTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Left as
-                          pub ping() => int { return 1; }
+                          pub ping() : int { return 1; }
                         end
 
                         define class Right as
-                          pub ping() => int { return 2; }
+                          pub ping() : int { return 2; }
                         end
 
                         define class Ambiguous extends Left, Right as
                         end
                         """)));
 
-        assertTrue(ambiguous.getMessage().contains("ambiguous inherited method slot"));
+        assertTrue(ambiguous.getMessage().contains("ambiguous inherited method"));
         assertTrue(ambiguous.getMessage().contains("arity 0"));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Left as
-                  pub ping() => int { return 1; }
+                  pub ping() : int { return 1; }
                 end
 
                 define class Right as
-                  pub ping() => int { return 2; }
+                  pub ping() : int { return 2; }
                 end
 
                 define class Resolved extends Left, Right as
-                  pub ping() => int { return 3; }
+                  pub ping() : int { return 3; }
                 end
                 """)));
     }
@@ -189,7 +235,7 @@ final class ArityOverloadAotTest {
     void ordinaryDiamondInheritanceOfSameDeclarationKeepsOneSlot() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Root as
-                  pub ping() => int { return 1; }
+                  pub ping() : int { return 1; }
                 end
 
                 define class Left extends Root as
@@ -209,60 +255,60 @@ final class ArityOverloadAotTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
-                          pub pick() => int { return 0; }
-                          pub pick(int value) => int { return value; }
+                          pub pick() : int { return 0; }
+                          pub pick(int value) : int { return value; }
                         end
 
-                        pub fnc bad() => void {
+                        pub fnc bad() : void {
                           val box = new Box();
                           val callback = box.pick;
                           return;
                         }
                         """)));
 
-        assertTrue(failure.getMessage().contains("must be called so arity can select the overload"));
+        assertTrue(failure.getMessage().contains("direct-call-only"), failure.getMessage());
     }
 
     @Test
     void expectedFunctionTypeBindsOverloadedMethodValueAndSelfWithoutCloningMethodCode() throws Exception {
         String program = """
-                pub fnc call0((() -> int) callback) => int {
+                pub fnc call0(Fnc<int> callback) : int {
                   return callback();
                 }
 
-                pub fnc call1(((int) -> int) callback) => int {
+                pub fnc call1(Fnc<int, int> callback) : int {
                   return callback(5);
                 }
 
                 define class Box as
                   val int base;
 
-                  pub pick() => int {
+                  pub pick() : int {
                     return self.base;
                   }
 
-                  pub pick(int delta) => int {
+                  pub pick(int delta) : int {
                     return self.base + delta;
                   }
 
-                  pub via_self0() => int {
+                  pub via_self0() : int {
                     return call0(self.pick);
                   }
 
-                  pub via_self1() => int {
+                  pub via_self1() : int {
                     return call1(self.pick);
                   }
 
-                  pub static fnc select() => int {
+                  pub static fnc select() : int {
                     return 70;
                   }
 
-                  pub static fnc select(int delta) => int {
+                  pub static fnc select(int delta) : int {
                     return 70 + delta;
                   }
                 end
 
-                pub routine main() => void {
+                pub routine main() : void {
                   val left = new Box(10);
                   val right = new Box(20);
                   val typed = new Box(30);
@@ -270,7 +316,7 @@ final class ArityOverloadAotTest {
                   stdio.println(call0(left.pick));
                   stdio.println(call1(right.pick));
 
-                  val (() -> int) callback = typed.pick;
+                  val Fnc<int> callback = typed.pick;
                   stdio.println(callback());
 
                   stdio.println(new Box(40).via_self0());

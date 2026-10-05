@@ -966,7 +966,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -1003,7 +1003,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ClassFacade klass) {
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), methodCall.member(), args.size(), new LinkedHashSet<>());
+                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
@@ -1028,7 +1028,7 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -1449,7 +1449,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 if (!functions.isEmpty()) {
-                    return new StaticFunctionValue(klass.owner(), klass.klass(), name);
+                    return new StaticFunctionValue(klass.owner(), klass.klass(), name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
@@ -1468,7 +1468,7 @@ public final class OresEvalRootNode extends RootNode {
                     return object.fields.get(name);
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
-                    return new BoundMethod(object, name);
+                    return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
@@ -1663,17 +1663,21 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
-        private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
+        private Object invokeMethod(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.instance(name, args.size());
             Ast.MethodDecl method = findMethod(receiver.klass, selector, new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
+            requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
+            if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
             return callMethod(receiver, method, args);
         }
 
-        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
+        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.staticFunction(name, args.size());
             Ast.MethodDecl fn = findStaticFunction(klass, selector, new LinkedHashSet<>());
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
+            requireClassMemberVisible(fn.visibility(), declaringClass(fn), accessClass, "static function", name);
+            if (!fn.genericParameters().isEmpty()) throw new IllegalArgumentException("generic static function values require direct-call specialization");
             return callStaticFunction(klass, fn, args);
         }
 
@@ -1732,29 +1736,33 @@ public final class OresEvalRootNode extends RootNode {
             private final Evaluator owner;
             private final Ast.ClassDecl klass;
             private final String functionName;
+            private final Ast.ClassDecl accessClass;
 
-            private StaticFunctionValue(Evaluator owner, Ast.ClassDecl klass, String functionName) {
+            private StaticFunctionValue(Evaluator owner, Ast.ClassDecl klass, String functionName, Ast.ClassDecl accessClass) {
                 this.owner = owner;
                 this.klass = klass;
                 this.functionName = functionName;
+                this.accessClass = accessClass;
             }
 
             @Override public Object call(List<Object> arguments) {
-                return owner.invokeStaticFunction(klass, functionName, arguments);
+                return owner.invokeStaticFunction(klass, functionName, arguments, accessClass);
             }
         }
 
         private static final class BoundMethod implements Invokable {
             private final OresObject receiver;
             private final String methodName;
+            private final Ast.ClassDecl accessClass;
 
-            private BoundMethod(OresObject receiver, String methodName) {
+            private BoundMethod(OresObject receiver, String methodName, Ast.ClassDecl accessClass) {
                 this.receiver = receiver;
                 this.methodName = methodName;
+                this.accessClass = accessClass;
             }
 
             @Override public Object call(List<Object> arguments) {
-                return receiver.owner.invokeMethod(receiver, methodName, arguments);
+                return receiver.owner.invokeMethod(receiver, methodName, arguments, accessClass);
             }
         }
 

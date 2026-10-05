@@ -1212,7 +1212,7 @@ public final class TypeChecker {
                 }
 
                 if (receiver instanceof Record record) {
-                    String prefix = methodKey(member.member(), call.arguments().size()) + "$generics";
+                    String prefix = CallableSelector.instance(member.member(), call.arguments().size()).mangledName() + "$generics";
                     List<Map.Entry<String, Type>> candidates = record.members().entrySet().stream()
                             .filter(entry -> entry.getKey().startsWith(prefix))
                             .toList();
@@ -1516,7 +1516,7 @@ public final class TypeChecker {
                 Type result = record.members().get(member.member());
                 if (result != null) return result;
 
-                String methodPrefix = member.member() + "$arity";
+                String methodPrefix = CallableSelector.instance(member.member(), 0).mangledName().replace("$arity0", "$arity");
                 boolean structuralMethod = record.members().keySet().stream()
                         .anyMatch(key -> key.startsWith(methodPrefix) && key.contains("$generics"));
                 if (structuralMethod) {
@@ -1770,7 +1770,8 @@ public final class TypeChecker {
                         "generic static function '" + klass.name() + "." + fn.name()
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
-            return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+            requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
+            return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
         }
 
         if (normalized instanceof Named named) {
@@ -1794,6 +1795,7 @@ public final class TypeChecker {
             }
 
             Ast.MethodDecl method = target.method();
+            requireClassMemberVisible(method.visibility(), target.owner(), "method", method.name());
             if (!method.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
                         "generic method '" + target.owner().name() + "." + method.name()
@@ -1805,6 +1807,7 @@ public final class TypeChecker {
             Type signature = functionType(
                     method.parameters(),
                     method.returnType(),
+                    method.async(),
                     memberGenerics,
                     target.ownerType());
             return substituteGenerics(
