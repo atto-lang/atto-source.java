@@ -135,12 +135,21 @@ public final class OresEvalRootNode extends RootNode {
             INVOKABLE
         }
 
+        private record TailReturnContract(
+                Ast.TypeRef resultType,
+                Set<String> genericParameters) {
+            private TailReturnContract {
+                genericParameters = Set.copyOf(genericParameters);
+            }
+        }
+
         private record Invocation(
                 Evaluator owner,
                 InvocationKind kind,
                 Object receiver,
                 Object target,
-                List<Object> arguments) { }
+                List<Object> arguments,
+                TailReturnContract returnContract) { }
 
         private record TailCall(Invocation invocation) { }
 
@@ -360,6 +369,7 @@ public final class OresEvalRootNode extends RootNode {
                         (Ast.MethodDecl) invocation.target(),
                         invocation.arguments());
                 case STATIC_FUNCTION -> callStaticFunctionRaw(
+                        (Ast.ClassDecl) invocation.receiver(),
                         (Ast.MethodDecl) invocation.target(),
                         invocation.arguments());
                 case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
@@ -367,27 +377,124 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation functionInvocation(Ast.FunctionDecl fn, List<?> args) {
-            return new Invocation(this, InvocationKind.FUNCTION, null, fn, objectArguments(args));
+            return new Invocation(
+                    this,
+                    InvocationKind.FUNCTION,
+                    null,
+                    fn,
+                    objectArguments(args),
+                    functionTailContract(fn));
         }
 
         private Invocation functionBodyInvocation(Ast.FunctionDecl fn, List<?> args) {
-            return new Invocation(this, InvocationKind.FUNCTION_BODY, null, fn, objectArguments(args));
+            return new Invocation(
+                    this,
+                    InvocationKind.FUNCTION_BODY,
+                    null,
+                    fn,
+                    objectArguments(args),
+                    functionTailContract(fn));
         }
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
-            return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
+            return new Invocation(
+                    this,
+                    InvocationKind.METHOD,
+                    receiver,
+                    method,
+                    objectArguments(args),
+                    methodTailContract(receiver.klass, method));
         }
 
-        private Invocation staticFunctionInvocation(Ast.MethodDecl fn, List<?> args) {
-            return new Invocation(this, InvocationKind.STATIC_FUNCTION, null, fn, objectArguments(args));
+        private Invocation staticFunctionInvocation(
+                Ast.ClassDecl klass,
+                Ast.MethodDecl fn,
+                List<?> args) {
+            return new Invocation(
+                    this,
+                    InvocationKind.STATIC_FUNCTION,
+                    klass,
+                    fn,
+                    objectArguments(args),
+                    methodTailContract(klass, fn));
         }
 
         private Invocation invokableInvocation(Invokable callable, List<?> args) {
-            return new Invocation(this, InvocationKind.INVOKABLE, null, callable, objectArguments(args));
+            TailReturnContract contract = callable instanceof TailCallable tail
+                    ? tail.returnContract()
+                    : null;
+            return new Invocation(
+                    this,
+                    InvocationKind.INVOKABLE,
+                    null,
+                    callable,
+                    objectArguments(args),
+                    contract);
         }
 
         private TailInvokable tailCallable(Invokable callable) {
-            return new TailCallable(this, callable);
+            return new TailCallable(this, callable, null);
+        }
+
+        private TailInvokable tailCallable(
+                Invokable callable,
+                TailReturnContract returnContract) {
+            return new TailCallable(this, callable, returnContract);
+        }
+
+        private static TailReturnContract functionTailContract(Ast.FunctionDecl fn) {
+            return new TailReturnContract(
+                    fn.returnType(),
+                    Set.copyOf(fn.genericParameters()));
+        }
+
+        private static TailReturnContract methodTailContract(
+                Ast.ClassDecl klass,
+                Ast.MethodDecl method) {
+            LinkedHashSet<String> generics =
+                    new LinkedHashSet<>(klass.genericParameters());
+            generics.addAll(method.genericParameters());
+            return new TailReturnContract(method.returnType(), Set.copyOf(generics));
+        }
+
+        private static boolean tailTypeIsConcrete(
+                Ast.TypeRef type,
+                Set<String> genericParameters) {
+            if (type == null
+                    || type.inferArguments()
+                    || type.name().equals("$infer$")
+                    || genericParameters.contains(type.name())) {
+                return false;
+            }
+            for (Ast.TypeRef argument : type.arguments()) {
+                if (!tailTypeIsConcrete(argument, genericParameters)) return false;
+            }
+            return true;
+        }
+
+        private static boolean tailContractsEquivalent(
+                TailReturnContract caller,
+                TailReturnContract callee) {
+            return caller != null
+                    && callee != null
+                    && tailTypeIsConcrete(caller.resultType(), caller.genericParameters())
+                    && tailTypeIsConcrete(callee.resultType(), callee.genericParameters())
+                    && Objects.equals(caller.resultType(), callee.resultType());
+        }
+
+        private static boolean ordinaryTailTarget(Invocation invocation) {
+            return switch (invocation.kind()) {
+                case FUNCTION, FUNCTION_BODY ->
+                        ((Ast.FunctionDecl) invocation.target()).actorKind()
+                                == Ast.ActorKind.NONE;
+                case METHOD ->
+                        ((OresObject) invocation.receiver()).klass.actorKind()
+                                == Ast.ActorKind.NONE;
+                case STATIC_FUNCTION ->
+                        ((Ast.ClassDecl) invocation.receiver()).actorKind()
+                                == Ast.ActorKind.NONE;
+                case INVOKABLE -> invocation.target() instanceof TailCallable;
+            };
         }
 
         @SuppressWarnings("unchecked")
@@ -451,7 +558,7 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
-                executeBlock(fn.body(), env);
+                executeBlock(fn.body(), env, false, functionTailContract(fn));
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -476,7 +583,11 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
-                executeBlock(method.body(), env);
+                executeBlock(
+                        method.body(),
+                        env,
+                        false,
+                        methodTailContract(receiver.klass, method));
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -486,15 +597,33 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
-            executeBlock(statements, parent, false);
+            executeBlock(statements, parent, false, null);
         }
 
-        private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
+        private void executeBlock(
+                List<Ast.Stmt> statements,
+                Env parent,
+                boolean inheritedTailBarrier) {
+            executeBlock(statements, parent, inheritedTailBarrier, null);
+        }
+
+        private void executeBlock(
+                List<Ast.Stmt> statements,
+                Env parent,
+                boolean inheritedTailBarrier,
+                TailReturnContract tailReturnContract) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             try {
-                for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
+                for (Ast.Stmt stmt : statements) {
+                    executeStatement(
+                            stmt,
+                            env,
+                            deferred,
+                            inheritedTailBarrier,
+                            tailReturnContract);
+                }
             } catch (TailCallSignal signal) {
                 throw signal;
             } catch (ReturnSignal signal) {
@@ -519,7 +648,8 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> deferred,
-                boolean inheritedTailBarrier) {
+                boolean inheritedTailBarrier,
+                TailReturnContract tailReturnContract) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
@@ -554,7 +684,8 @@ public final class OresEvalRootNode extends RootNode {
                 returnFrom(
                         ret.value(),
                         env,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards(),
+                        tailReturnContract);
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
@@ -564,28 +695,32 @@ public final class OresEvalRootNode extends RootNode {
                         executeBlock(
                                 branch.body(),
                                 env,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards(),
+                        tailReturnContract);
                         return;
                     }
                 }
                 executeBlock(
                         ifStmt.elseBody(),
                         env,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards(),
+                        tailReturnContract);
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
                 // A call under catch/finally is not a proper tail call: the
                 // caller still owns exception/cleanup semantics after the call.
-                try { executeBlock(tried.body(), env, true); }
+                try { executeBlock(tried.body(), env, true, tailReturnContract); }
                 catch (TailCallSignal signal) { throw signal; }
                 catch (ReturnSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv, true);
-                } finally { executeBlock(tried.finallyBody(), env, true); }
+                    executeBlock(tried.catchBody(), catchEnv, true, tailReturnContract);
+                } finally {
+                    executeBlock(tried.finallyBody(), env, true, tailReturnContract);
+                }
                 return;
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
@@ -597,7 +732,8 @@ public final class OresEvalRootNode extends RootNode {
                     executeBlock(
                             loop.body(),
                             iteration,
-                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards(),
+                        tailReturnContract);
                 }
                 return;
             }
@@ -608,20 +744,26 @@ public final class OresEvalRootNode extends RootNode {
                             loop.initializer(),
                             loopEnv,
                             new ArrayDeque<>(),
-                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards(),
+                        tailReturnContract);
                 }
                 while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                     context.schedulerSafepoint();
                     executeBlock(
                             loop.body(),
                             loopEnv,
-                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards(),
+                        tailReturnContract);
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
             }
         }
 
-        private void returnFrom(Ast.Expr value, Env env, boolean tailBarrier) {
+        private void returnFrom(
+                Ast.Expr value,
+                Env env,
+                boolean tailBarrier,
+                TailReturnContract callerContract) {
             if (value == null) throw new ReturnSignal(null);
 
             if (!tailBarrier) {
@@ -631,19 +773,30 @@ public final class OresEvalRootNode extends RootNode {
                             ? invocation.target() instanceof TailCallable callable
                                     && callable.owner() == this
                             : invocation.owner() == this;
-                    if (localTailTarget) {
+                    boolean verifiedCrossUnitTail =
+                            !localTailTarget
+                                    && tailContractsEquivalent(
+                                            callerContract,
+                                            invocation.returnContract());
+
+                    /*
+                     * Never erase an actor-composition boundary. A linked call
+                     * may replace its caller only when both declared result
+                     * contracts are identical and concrete. Unknown, inferred,
+                     * and unresolved-generic contracts retain the caller frame
+                     * so its ordinary return-shape validation still runs.
+                     */
+                    if (ordinaryTailTarget(invocation)
+                            && (localTailTarget || verifiedCrossUnitTail)) {
                         throw new TailCallSignal(invocation);
                     }
-                    // Crossing an untyped linked-code-unit boundary keeps this
-                    // activation until the imported call returns so the caller's
-                    // declared return-shape check still runs.
                     throw new ReturnSignal(invoke(invocation));
                 }
                 if (value instanceof Ast.ConditionalExpr conditional) {
                     Ast.Expr selected = truth(eval(conditional.condition(), env))
                             ? conditional.whenTrue()
                             : conditional.whenFalse();
-                    returnFrom(selected, env, false);
+                    returnFrom(selected, env, false, callerContract);
                     return;
                 }
             }
@@ -694,7 +847,10 @@ public final class OresEvalRootNode extends RootNode {
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
                                         + " with arity " + args.size());
                     }
-                    return klass.owner().staticFunctionInvocation(fn, args);
+                    return klass.owner().staticFunctionInvocation(
+                            klass.klass(),
+                            fn,
+                            args);
                 }
 
                 if (receiver instanceof ModuleFacade module) {
@@ -800,7 +956,9 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    return tailCallable(
+                            args -> callFunctionRaw(fn, objectArguments(args)),
+                            functionTailContract(fn));
                 }
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
@@ -1083,7 +1241,11 @@ public final class OresEvalRootNode extends RootNode {
                                         + "polymorphic function values are not supported yet");
                     }
                     return klass.owner().tailCallable(
-                            args -> klass.owner().callStaticFunctionRaw(fn, objectArguments(args)));
+                            args -> klass.owner().callStaticFunctionRaw(
+                                    klass.klass(),
+                                    fn,
+                                    objectArguments(args)),
+                            methodTailContract(klass.klass(), fn));
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
@@ -1302,10 +1464,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
-            return invoke(staticFunctionInvocation(fn, args));
+            return invoke(staticFunctionInvocation(klass, fn, args));
         }
 
-        private Object callStaticFunctionRaw(Ast.MethodDecl fn, List<?> args) {
+        private Object callStaticFunctionRaw(
+                Ast.ClassDecl klass,
+                Ast.MethodDecl fn,
+                List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + fn.name());
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env env = new Env(null);
@@ -1314,7 +1479,11 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
-                executeBlock(fn.body(), env);
+                executeBlock(
+                        fn.body(),
+                        env,
+                        false,
+                        methodTailContract(klass, fn));
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -1410,7 +1579,9 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    yield tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    yield tailCallable(
+                            args -> callFunctionRaw(fn, objectArguments(args)),
+                            functionTailContract(fn));
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
@@ -1449,7 +1620,9 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' must be specialized by a direct call; "
                                     + "polymorphic function values are not supported yet");
                 }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                return tailCallable(
+                            args -> callFunctionRaw(fn, objectArguments(args)),
+                            functionTailContract(fn));
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
@@ -1505,7 +1678,9 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    return tailCallable(
+                            args -> callFunctionRaw(fn, objectArguments(args)),
+                            functionTailContract(fn));
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
@@ -1856,7 +2031,10 @@ public final class OresEvalRootNode extends RootNode {
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
     private interface TailInvokable extends Invokable { }
 
-    private record TailCallable(Evaluator owner, Invokable delegate) implements TailInvokable {
+    private record TailCallable(
+            Evaluator owner,
+            Invokable delegate,
+            Evaluator.TailReturnContract returnContract) implements TailInvokable {
         @Override public Object call(List<Object> arguments) {
             return delegate.call(arguments);
         }

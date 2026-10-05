@@ -174,6 +174,55 @@ final class ProjectManifestImportTest {
     }
 
     @Test
+    void verifiedCrossFileMutualTailCallsStayConstantStack() throws Exception {
+        Path app = temp.resolve("cross-file-tail-recursion");
+        Files.createDirectories(app);
+        Path even = app.resolve("even.ores");
+        Path odd = app.resolve("odd.ores");
+
+        Files.writeString(even, """
+                import * as other from "./odd.ores";
+
+                pub fnc even(int n): bool {
+                  if n == 0; do
+                    return true;
+                  else
+                    return other.odd(n - 1);
+                  fi
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(even(50000));
+                  return;
+                }
+                """);
+
+        Files.writeString(odd, """
+                import * as other from "./even.ores";
+
+                pub fnc odd(int n): bool {
+                  if n == 0; do
+                    return false;
+                  else
+                    return other.even(n - 1);
+                  fi
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                even,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("true", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void importedTailCallsPreserveCallerReturnContracts() throws Exception {
         Path app = temp.resolve("tail-contract-import");
         Files.createDirectories(app);
