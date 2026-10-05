@@ -559,7 +559,13 @@ public final class OwnershipChecker {
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.SpreadExpr spread) {
-            return checkExpr(spread.expression(), scope, consuming);
+            // The enclosing call consumes/checks the aggregate exactly once.
+            // Any later ownership query for the syntactic spread argument must
+            // therefore be type-only or a one-element spread would double-move
+            // move-only storage such as FixedArray.
+            Ast.TypeRef aggregate = syntacticType(spread.expression(), scope);
+            Ast.TypeRef element = spreadArgumentType(aggregate);
+            return new ValueInfo(element, kindOfType(element), null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
@@ -1427,6 +1433,18 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return null;
+    }
+
+    private Ast.TypeRef spreadArgumentType(Ast.TypeRef aggregate) {
+        if (aggregate == null) return Ast.TypeRef.inferred();
+        Ast.TypeRef concrete = aggregate.isBorrow() ? aggregate.borrowedTarget() : aggregate;
+        if (concrete.isTupleType() && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+        if (concrete.isFixedArrayType() && concrete.fixedArrayLength() == 1) {
+            return concrete.fixedArrayElement();
+        }
+        return Ast.TypeRef.inferred();
     }
 
     private Ast.TypeRef syntacticType(Ast.Expr expr, Scope scope) {
