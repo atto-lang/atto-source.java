@@ -770,7 +770,12 @@ public final class Parser {
         else name = parseQualifiedName();
 
         if (name.equals("Tuple") && (check(LBRACKET) || check(LT))) {
-            Token.Type close = match(LBRACKET) ? RBRACKET : GT;
+            Token.Type close;
+            if (match(LBRACKET)) close = RBRACKET;
+            else {
+                consume(LT, "expected '[' or '<' after Tuple");
+                close = GT;
+            }
             List<Ast.TypeRef> elements = new ArrayList<>();
             if (!check(close)) {
                 do elements.add(parseTypeRef()); while (match(COMMA));
@@ -780,7 +785,12 @@ public final class Parser {
         }
 
         if (name.equals("FixedArray") && (check(LBRACKET) || check(LT))) {
-            Token.Type close = match(LBRACKET) ? RBRACKET : GT;
+            Token.Type close;
+            if (match(LBRACKET)) close = RBRACKET;
+            else {
+                consume(LT, "expected '[' or '<' after FixedArray");
+                close = GT;
+            }
             Ast.TypeRef element = parseTypeRef();
             consume(COMMA, "FixedArray requires element type and compile-time length");
             Token lengthToken = consume(INT, "FixedArray length must be a non-negative compile-time integer");
