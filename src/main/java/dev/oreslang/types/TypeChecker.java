@@ -62,6 +62,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        PureEffectChecker.check(program);
         OwnershipChecker.check(program);
         return program;
     }
@@ -70,7 +71,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
-                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future", "Exception",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
@@ -209,8 +210,7 @@ public final class TypeChecker {
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
-                Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+                Type signature = callableContractType(fn, Set.of(), null);
 
                 // Only concretely reifiable fnc declarations become raw
                 // function-valued namespace members. Routines remain
@@ -272,11 +272,34 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.pure()) {
+            if (fn.async()) {
+                throw new IllegalArgumentException("pure fnc/routine cannot be async until async effects are typed");
+            }
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("actor entry points cannot be pure; actor turns are state/effect boundaries");
+            }
+            for (Ast.Param param : fn.parameters()) {
+                if (param.mutable()) {
+                    throw new IllegalArgumentException("pure callable '" + fn.name()
+                            + "' cannot declare mutable parameter '" + param.name() + "'");
+                }
+            }
+        }
+        if (fn.trapped()) {
+            if (fn.async()) {
+                throw new IllegalArgumentException("trap cannot wrap async callables yet; trapping must include future completion");
+            }
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("trap cannot wrap actor entry points; actor failures belong to supervision");
+            }
+        }
         if (fn.name().equals("init")) {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
                     || fn.nonLexical()
+                    || fn.trapped()
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
                     || !fn.parameters().isEmpty()
@@ -742,7 +765,7 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+                return functionType(fn, Set.of(), null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -886,7 +909,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return asyncResult(target.async(), result);
+                    return effectiveFunctionResult(target, result);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
@@ -913,7 +936,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return asyncResult(target.async(), result);
+                    return effectiveFunctionResult(target, result);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
@@ -1232,7 +1255,7 @@ public final class TypeChecker {
                                 "generic callable '" + namespace.name() + "." + member.member()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), moduleFunction.async(), Set.of(), null);
+                    return functionType(moduleFunction, Set.of(), null);
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
@@ -2804,6 +2827,29 @@ public final class TypeChecker {
                 asyncResult(async, resolve(returns, generics, self)));
     }
 
+    private Function functionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
+        Function raw = functionType(fn.parameters(), fn.returnType(), fn.async(), generics, self);
+        return fn.trapped() ? new Function(raw.parameters(), trapResult(raw.result())) : raw;
+    }
+
+    private Type effectiveFunctionResult(Ast.FunctionDecl fn, Type raw) {
+        Type result = asyncResult(fn.async(), raw);
+        return fn.trapped() ? trapResult(result) : result;
+    }
+
+    private Type trapResult(Type raw) {
+        Type success = raw == Primitive.VOID ? new Tuple(List.of()) : raw;
+        return new Tuple(List.of(
+                new Named("Option", List.of(success)),
+                new Named("Option", List.of(new Named("Exception", List.of())))));
+    }
+
+    private Function callableContractType(Ast.FunctionDecl fn, Set<String> ownerGenerics, Type self) {
+        Function raw = callableContractType(
+                fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), ownerGenerics, self);
+        return fn.trapped() ? new Function(raw.parameters(), trapResult(raw.result())) : raw;
+    }
+
     private Function callableContractType(
             List<String> callableGenerics,
             List<Ast.Param> params,
@@ -3238,6 +3284,12 @@ public final class TypeChecker {
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
+            case "Exception" -> {
+                if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                    throw new IllegalArgumentException("Exception does not take type arguments");
+                }
+                yield new Named("Exception", List.of());
+            }
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
