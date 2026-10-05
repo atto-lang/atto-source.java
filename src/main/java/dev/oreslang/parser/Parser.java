@@ -370,6 +370,16 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> memberAnnotations = parseAnnotations();
             Modifiers memberModifiers = parseModifiers();
+            if (memberModifiers.visibility == Ast.Visibility.PUBLIC
+                    || memberModifiers.async
+                    || memberModifiers.nonLexical
+                    || memberModifiers.isStatic
+                    || memberModifiers.isAbstract
+                    || memberModifiers.shared) {
+                throw error(previous(),
+                        "interface callable signatures currently accept only the structural callable modifier; "
+                                + "unsupported modifiers must not be silently discarded");
+            }
             CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
 
             if (isLegacyFnSpelling()) {
