@@ -573,6 +573,9 @@ public final class TypeChecker {
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
             Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
+            if (binding.declaredType() != null && binding.initializer() instanceof Ast.ListExpr listLiteral) {
+                validateSequenceLiteralAgainstDeclared(binding.declaredType(), listLiteral, env, generics, self);
+            }
             boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
             if (recursiveLambda && declaredAhead instanceof Function) {
                 env.define(binding.name(), declaredAhead, binding.kind());
@@ -3187,6 +3190,269 @@ public final class TypeChecker {
         return resolve(ref, generics, self, false);
     }
 
+    private List<Ast.TypeRef> positionalTypeArguments(Ast.TypeRef ref) {
+        return ref.arguments().stream()
+                .filter(argument -> !argument.isNamedParameter() && !argument.isSequenceShape())
+                .toList();
+    }
+
+    private List<Ast.TypeRef> sequenceShapeDimensions(Ast.TypeRef ref) {
+        return ref.arguments().stream().filter(Ast.TypeRef::isSequenceShape).toList();
+    }
+
+    private Map<String, Ast.TypeRef> namedTypeParameters(Ast.TypeRef ref) {
+        Map<String, Ast.TypeRef> named = new LinkedHashMap<>();
+        for (Ast.TypeRef argument : ref.arguments()) {
+            if (!argument.isNamedParameter()) continue;
+            String name = argument.namedParameterName();
+            if (named.putIfAbsent(name, argument.namedParameterValue()) != null) {
+                throw new IllegalArgumentException("duplicate named type parameter '" + name + "'");
+            }
+        }
+        return Map.copyOf(named);
+    }
+
+    private Type resolveCollectionType(
+            Ast.TypeRef ref,
+            Set<String> generics,
+            Type self,
+            boolean allowNullMarker) {
+        List<Ast.TypeRef> positional = positionalTypeArguments(ref);
+        List<Ast.TypeRef> dimensions = sequenceShapeDimensions(ref);
+        Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
+        validateCollectionMetadata(ref.name(), metadata);
+
+        boolean fixed = ref.name().equals("FixedArray") || ref.name().equals("FixedList");
+
+        if (dimensions.isEmpty()) {
+            if (fixed) {
+                throw new IllegalArgumentException(ref.name()
+                        + " requires an explicit finite sequence shape, for example "
+                        + ref.name() + "[4 of int]");
+            }
+            if (ref.inferArguments()) return new ListType(Unknown.INSTANCE);
+            if (positional.size() != 1) {
+                throw new IllegalArgumentException(ref.name()
+                        + " requires one element type when using legacy '<T>' syntax; "
+                        + "prefer " + ref.name() + "[T]");
+            }
+            return new ListType(resolve(positional.getFirst(), generics, self, allowNullMarker));
+        }
+
+        if (!positional.isEmpty()) {
+            throw new IllegalArgumentException(ref.name()
+                    + " cannot mix positional '<T>' type arguments with '[...]' sequence shape syntax");
+        }
+
+        Integer declaredRank = metadataRank(metadata);
+        if (declaredRank != null && declaredRank != dimensions.size()) {
+            if (dimensions.size() != 1) {
+                throw new IllegalArgumentException("rank=" + declaredRank + " disagrees with "
+                        + dimensions.size() + " explicit '[...]' dimensions");
+            }
+        }
+
+        if (dimensions.size() > 1) {
+            Ast.TypeRef base = singleHomogeneousDimensionElement(dimensions.getFirst(), ref.name());
+            for (int i = 1; i < dimensions.size(); i++) {
+                Ast.TypeRef next = singleHomogeneousDimensionElement(dimensions.get(i), ref.name());
+                if (!sameTypeRefIgnoringCompilerMetadata(base, next)) {
+                    throw new IllegalArgumentException(ref.name()
+                            + " multidimensional shorthand currently requires the same homogeneous element type in every dimension");
+                }
+            }
+            Type nested = resolve(base, generics, self, allowNullMarker);
+            int rank = declaredRank == null ? dimensions.size() : declaredRank;
+            for (int i = 0; i < rank; i++) nested = new ListType(nested);
+            return nested;
+        }
+
+        Ast.TypeRef shape = dimensions.getFirst();
+        if (fixed) {
+            List<Ast.TypeRef> exact = expandFiniteSequencePatterns(shape.arguments(), ref.name());
+            return new Tuple(exact.stream()
+                    .map(element -> resolve(element, generics, self, allowNullMarker))
+                    .toList());
+        }
+
+        if (shape.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "finite sequence pattern cannot be used directly with " + ref.name()
+                            + "; use " + ref.name() + "[...(T1, T2, ...)] for repeating groups, "
+                            + "a union such as " + ref.name() + "[T1 | T2], or FixedArray[T1, T2, ...]");
+        }
+
+        Ast.TypeRef pattern = shape.arguments().getFirst();
+        Type element;
+        if (pattern.isRepeatMany()) {
+            List<Ast.TypeRef> unit = expandFiniteSequencePatterns(pattern.arguments(), ref.name());
+            element = unionResolved(unit, generics, self, allowNullMarker);
+        } else if (pattern.isRepeatExact()) {
+            throw new IllegalArgumentException(ref.name() + "[" + pattern.repeatExactCount()
+                    + " of T] declares a fixed extent; use FixedArray[" + pattern.repeatExactCount()
+                    + " of T] or " + ref.name() + "[T] for runtime extent");
+        } else {
+            element = resolve(pattern, generics, self, allowNullMarker);
+        }
+
+        int rank = declaredRank == null ? 1 : declaredRank;
+        Type result = element;
+        for (int i = 0; i < rank; i++) result = new ListType(result);
+        return result;
+    }
+
+    private Ast.TypeRef singleHomogeneousDimensionElement(Ast.TypeRef shape, String collectionName) {
+        if (!shape.isSequenceShape() || shape.arguments().size() != 1) {
+            throw new IllegalArgumentException(collectionName
+                    + " multidimensional shorthand requires one homogeneous type per '[...]' dimension");
+        }
+        Ast.TypeRef element = shape.arguments().getFirst();
+        if (element.isRepeatMany() || element.isRepeatExact()) {
+            throw new IllegalArgumentException(collectionName
+                    + " multidimensional shorthand does not combine with repeat patterns yet");
+        }
+        return element;
+    }
+
+    private List<Ast.TypeRef> expandFiniteSequencePatterns(List<Ast.TypeRef> patterns, String collectionName) {
+        List<Ast.TypeRef> expanded = new ArrayList<>();
+        for (Ast.TypeRef pattern : patterns) {
+            if (pattern.isRepeatMany()) {
+                throw new IllegalArgumentException(collectionName
+                        + " finite sequence shape cannot contain unbounded '...' repetition");
+            }
+            if (pattern.isRepeatExact()) {
+                long count = pattern.repeatExactCount();
+                if (count > 1_000_000L) {
+                    throw new IllegalArgumentException("sequence repeat count is too large: " + count);
+                }
+                Ast.TypeRef repeated = pattern.arguments().getFirst();
+                if (repeated.isRepeatMany() || repeated.isRepeatExact() || repeated.isSequenceShape()) {
+                    throw new IllegalArgumentException("nested counted sequence patterns require a grouped finite pattern");
+                }
+                for (long i = 0; i < count; i++) expanded.add(repeated);
+            } else {
+                expanded.add(pattern);
+            }
+        }
+        if (expanded.isEmpty()) {
+            throw new IllegalArgumentException(collectionName + " sequence shape cannot expand to zero elements");
+        }
+        return List.copyOf(expanded);
+    }
+
+    private Type unionResolved(
+            List<Ast.TypeRef> refs,
+            Set<String> generics,
+            Type self,
+            boolean allowNullMarker) {
+        List<Type> resolved = refs.stream()
+                .map(type -> resolve(type, generics, self, allowNullMarker))
+                .map(this::widenCollectionElement)
+                .toList();
+        return Types.unionOf(resolved);
+    }
+
+    private void validateCollectionMetadata(String collectionName, Map<String, Ast.TypeRef> metadata) {
+        Set<String> allowed = Set.of(
+                "growth_policy", "allocator", "align", "inline_capacity",
+                "max_capacity", "storage", "rank");
+        for (Map.Entry<String, Ast.TypeRef> entry : metadata.entrySet()) {
+            String name = entry.getKey();
+            Ast.TypeRef value = entry.getValue();
+            if (name.equals("size") || name.equals("capacity")) {
+                throw new IllegalArgumentException("'" + name
+                        + "' is runtime instance state; pass it to the constructor '(...)', not '<...>'");
+            }
+            if (!allowed.contains(name)) {
+                throw new IllegalArgumentException("unknown named type parameter '" + name
+                        + "' for " + collectionName);
+            }
+            if (Set.of("align", "inline_capacity", "max_capacity", "rank").contains(name)) {
+                if (!value.isIntLiteral()) {
+                    throw new IllegalArgumentException("'" + name + "' requires an integer compile-time value");
+                }
+                long number = value.intLiteralValue();
+                if (name.equals("align")) {
+                    if (number <= 0 || (number & (number - 1)) != 0) {
+                        throw new IllegalArgumentException("'align' must be a positive power of two");
+                    }
+                } else if (name.equals("rank")) {
+                    if (number <= 0 || number > 32) {
+                        throw new IllegalArgumentException("'rank' must be between 1 and 32");
+                    }
+                } else if (number < 0) {
+                    throw new IllegalArgumentException("'" + name + "' cannot be negative");
+                }
+            }
+        }
+    }
+
+    private Integer metadataRank(Map<String, Ast.TypeRef> metadata) {
+        Ast.TypeRef rank = metadata.get("rank");
+        return rank == null ? null : Math.toIntExact(rank.intLiteralValue());
+    }
+
+    private boolean sameTypeRefIgnoringCompilerMetadata(Ast.TypeRef left, Ast.TypeRef right) {
+        if (!left.name().equals(right.name()) || left.inferArguments() != right.inferArguments()) return false;
+        List<Ast.TypeRef> leftArgs = positionalTypeArguments(left);
+        List<Ast.TypeRef> rightArgs = positionalTypeArguments(right);
+        if (leftArgs.size() != rightArgs.size()) return false;
+        for (int i = 0; i < leftArgs.size(); i++) {
+            if (!sameTypeRefIgnoringCompilerMetadata(leftArgs.get(i), rightArgs.get(i))) return false;
+        }
+        return true;
+    }
+
+    private void validateSequenceLiteralAgainstDeclared(
+            Ast.TypeRef declared,
+            Ast.ListExpr literal,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        String name = declared.name();
+        if (!Set.of("Array", "List", "Vector", "Slice", "FixedArray", "FixedList").contains(name)) return;
+        List<Ast.TypeRef> dimensions = sequenceShapeDimensions(declared);
+        if (dimensions.isEmpty() || dimensions.size() > 1) return;
+
+        Ast.TypeRef shape = dimensions.getFirst();
+        if (name.equals("FixedArray") || name.equals("FixedList")) {
+            List<Ast.TypeRef> exact = expandFiniteSequencePatterns(shape.arguments(), name);
+            if (literal.elements().size() != exact.size()) {
+                throw new IllegalArgumentException(name + " literal has " + literal.elements().size()
+                        + " element(s), but its fixed sequence shape requires " + exact.size());
+            }
+            for (int i = 0; i < exact.size(); i++) {
+                Type expected = resolve(exact.get(i), generics, self);
+                Type actual = typeOf(literal.elements().get(i), env, generics, self);
+                requireAssignable(actual, expected, name + " literal element " + i);
+            }
+            return;
+        }
+
+        if (shape.arguments().size() != 1) return;
+        Ast.TypeRef pattern = shape.arguments().getFirst();
+        if (pattern.isRepeatMany()) {
+            List<Ast.TypeRef> unit = expandFiniteSequencePatterns(pattern.arguments(), name);
+            if (literal.elements().size() % unit.size() != 0) {
+                throw new IllegalArgumentException(name + " literal does not complete repeating sequence group of "
+                        + unit.size() + " element(s)");
+            }
+            for (int i = 0; i < literal.elements().size(); i++) {
+                Ast.TypeRef expectedRef = unit.get(i % unit.size());
+                Type expected = resolve(expectedRef, generics, self);
+                Type actual = typeOf(literal.elements().get(i), env, generics, self);
+                requireAssignable(actual, expected, name + " repeating sequence element " + i);
+            }
+        } else if (!pattern.isRepeatExact()) {
+            Type expected = resolve(pattern, generics, self);
+            for (int i = 0; i < literal.elements().size(); i++) {
+                requireAssignable(typeOf(literal.elements().get(i), env, generics, self),
+                        expected, name + " literal element " + i);
+            }
+        }
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
@@ -3238,10 +3504,8 @@ public final class TypeChecker {
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
-            case "Array", "List" -> {
-                if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
-                yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
-            }
+            case "Array", "List", "Vector", "Slice", "FixedArray", "FixedList" ->
+                    resolveCollectionType(ref, generics, self, allowNullMarker);
             case "DynamicStruct" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException("DynamicStruct requires exactly one explicit value type");
