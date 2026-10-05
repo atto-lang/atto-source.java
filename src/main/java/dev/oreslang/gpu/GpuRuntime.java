@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -26,6 +27,36 @@ public final class GpuRuntime {
     private static final AtomicReference<Backend> PROCESS_BACKEND = new AtomicReference<>();
 
     public enum CallableKind { FNC, ROUTINE }
+    public enum ResourceKind { ARRAY, MATRIX, STREAM }
+
+    /**
+     * Trusted-backend wire descriptor. This is the only form in which a native
+     * resource ID crosses from the Oreslang runtime into a physical backend.
+     */
+    public record NativeResourceArg(
+            long nativeHandle,
+            ResourceKind kind,
+            String elementAbiType,
+            long length,
+            long rows,
+            long cols) {
+        public NativeResourceArg {
+            requireNativeHandle(nativeHandle, "backend resource argument");
+            Objects.requireNonNull(kind, "kind");
+            elementAbiType = normalizeDeviceScalarType(elementAbiType);
+            if (length < -1 || rows < 0 || cols < 0) {
+                throw new IllegalArgumentException("invalid backend resource metadata");
+            }
+        }
+    }
+
+    public record BackendInvocation(String callable, CallableKind callableKind, List<?> arguments) {
+        public BackendInvocation {
+            Objects.requireNonNull(callable, "callable");
+            Objects.requireNonNull(callableKind, "callableKind");
+            arguments = List.copyOf(Objects.requireNonNull(arguments, "arguments"));
+        }
+    }
 
     /** Marker for private guest-runtime values that expose a safe GPU wire form. */
     public interface Transferable {
@@ -66,11 +97,11 @@ public final class GpuRuntime {
     public interface Backend {
         String name();
 
-        default boolean supports(Invocation invocation) {
+        default boolean supports(BackendInvocation invocation) {
             return true;
         }
 
-        Object invoke(Invocation invocation);
+        Object invoke(BackendInvocation invocation);
 
         /**
          * Uploads a flat device buffer and returns a backend-owned opaque native
@@ -113,6 +144,7 @@ public final class GpuRuntime {
         private final long nativeHandle;
         private final String elementAbiType;
         private final long length;
+        private final AtomicBoolean released = new AtomicBoolean();
 
         private ArrayHandle(Backend backend, long nativeHandle, String elementAbiType, long length) {
             this.backend = Objects.requireNonNull(backend, "backend");
@@ -124,7 +156,11 @@ public final class GpuRuntime {
 
         public String backendName() { return backend.name(); }
         public String elementAbiType() { return elementAbiType; }
-        public long length() { return length; }
+        public long length() { ensureLive(); return length; }
+
+        private void ensureLive() {
+            if (released.get()) throw new GpuTransferException("GpuArray native resource has already been released");
+        }
     }
 
     /** Opaque GPU-resident dense row-major matrix resource. */
@@ -169,6 +205,7 @@ public final class GpuRuntime {
         private final long nativeHandle;
         private final String elementAbiType;
         private final long lengthHint;
+        private final AtomicBoolean released = new AtomicBoolean();
 
         private StreamHandle(Backend backend, long nativeHandle, String elementAbiType, long lengthHint) {
             this.backend = Objects.requireNonNull(backend, "backend");
@@ -182,7 +219,11 @@ public final class GpuRuntime {
 
         public String backendName() { return backend.name(); }
         public String elementAbiType() { return elementAbiType; }
-        public long lengthHint() { return lengthHint; }
+        public long lengthHint() { ensureLive(); return lengthHint; }
+
+        private void ensureLive() {
+            if (released.get()) throw new GpuTransferException("GpuStream native resource has already been released");
+        }
     }
 
     public record Invocation(String callable, CallableKind callableKind, List<?> arguments) {
@@ -235,15 +276,17 @@ public final class GpuRuntime {
         Invocation invocation = new Invocation(callable, callableKind, arguments);
         Backend backend = requireBackend("gpu callable '" + callable + "'");
         validateDeviceOwnership(invocation.arguments(), backend);
+        BackendInvocation backendInvocation = new BackendInvocation(
+                callable, callableKind, lowerBackendArguments(invocation.arguments(), backend));
 
         boolean supported = backendCall(backend, "supports(" + callable + ")",
-                () -> backend.supports(invocation));
+                () -> backend.supports(backendInvocation));
         if (!supported) {
             throw new GpuCapabilityUnavailableException(
                     "GPU backend '" + backend.name() + "' cannot execute gpu callable '" + callable + "'");
         }
 
-        Object result = backendCall(backend, "invoke(" + callable + ")", () -> backend.invoke(invocation));
+        Object result = backendCall(backend, "invoke(" + callable + ")", () -> backend.invoke(backendInvocation));
         Object frozen = freezeValue(result, true);
         validateDeviceOwnership(frozen, backend);
         return frozen;
@@ -271,6 +314,7 @@ public final class GpuRuntime {
 
     public List<?> downloadArray(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
+        array.ensureLive();
         if (array.length > Integer.MAX_VALUE) {
             throw new GpuTransferException(
                     "GpuArray length " + array.length + " cannot be materialized as a host Array/List");
@@ -365,6 +409,7 @@ public final class GpuRuntime {
 
     public StreamHandle stream(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
+        array.ensureLive();
         long nativeHandle = backendCall(array.backend, "openStream",
                 () -> array.backend.openStream(
                         array.elementAbiType, array.nativeHandle, array.length));
@@ -374,6 +419,7 @@ public final class GpuRuntime {
 
     public ArrayHandle collect(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
+        stream.ensureLive();
         CollectedArray collected = backendCall(stream.backend, "collectStream",
                 () -> stream.backend.collectStream(
                         stream.elementAbiType, stream.nativeHandle, stream.lengthHint));
@@ -394,6 +440,9 @@ public final class GpuRuntime {
 
     public void release(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
+        if (!array.released.compareAndSet(false, true)) {
+            throw new GpuTransferException("GpuArray native resource has already been released");
+        }
         backendCallVoid(array.backend, "release(GpuArray)", () -> array.backend.release(array.nativeHandle));
     }
 
@@ -404,6 +453,9 @@ public final class GpuRuntime {
 
     public void release(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
+        if (!stream.released.compareAndSet(false, true)) {
+            throw new GpuTransferException("GpuStream native resource has already been released");
+        }
         backendCallVoid(stream.backend, "release(GpuStream)", () -> stream.backend.release(stream.nativeHandle));
     }
 
@@ -412,6 +464,68 @@ public final class GpuRuntime {
             throw new GpuTransferException(where + " returned/contains invalid native resource handle 0");
         }
         return nativeHandle;
+    }
+
+    private static List<?> lowerBackendArguments(List<?> arguments, Backend expected) {
+        ArrayList<Object> lowered = new ArrayList<>(arguments.size());
+        for (Object argument : arguments) lowered.add(lowerBackendValue(argument, expected));
+        return List.copyOf(lowered);
+    }
+
+    private static Object lowerBackendValue(Object value, Backend expected) {
+        if (value instanceof ArrayHandle array) {
+            array.ensureLive();
+            validateDeviceOwnership(array, expected);
+            return new NativeResourceArg(
+                    array.nativeHandle, ResourceKind.ARRAY, array.elementAbiType, array.length, 0L, 0L);
+        }
+        if (value instanceof MatrixHandle matrix) {
+            matrix.array.ensureLive();
+            validateDeviceOwnership(matrix, expected);
+            return new NativeResourceArg(
+                    matrix.array.nativeHandle,
+                    ResourceKind.MATRIX,
+                    matrix.elementAbiType(),
+                    matrix.length(),
+                    matrix.rows,
+                    matrix.cols);
+        }
+        if (value instanceof StreamHandle stream) {
+            stream.ensureLive();
+            validateDeviceOwnership(stream, expected);
+            return new NativeResourceArg(
+                    stream.nativeHandle,
+                    ResourceKind.STREAM,
+                    stream.elementAbiType,
+                    stream.lengthHint,
+                    0L,
+                    0L);
+        }
+        if (value instanceof OptionValue option) {
+            return option.present()
+                    ? new OptionValue(true, lowerBackendValue(option.value(), expected))
+                    : option;
+        }
+        if (value instanceof List<?> list) {
+            ArrayList<Object> lowered = new ArrayList<>(list.size());
+            for (Object item : list) lowered.add(lowerBackendValue(item, expected));
+            return List.copyOf(lowered);
+        }
+        if (value instanceof Set<?> set) {
+            LinkedHashSet<Object> lowered = new LinkedHashSet<>();
+            for (Object item : set) lowered.add(lowerBackendValue(item, expected));
+            return Collections.unmodifiableSet(lowered);
+        }
+        if (value instanceof Map<?, ?> map) {
+            LinkedHashMap<Object, Object> lowered = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                lowered.put(
+                        lowerBackendValue(entry.getKey(), expected),
+                        lowerBackendValue(entry.getValue(), expected));
+            }
+            return Collections.unmodifiableMap(lowered);
+        }
+        return value;
     }
 
     private static String inferDeviceScalarType(List<?> values) {
@@ -575,6 +689,7 @@ public final class GpuRuntime {
     private static void validateDeviceOwnership(Object value, Backend expected) {
         if (value == null) return;
         if (value instanceof ArrayHandle array) {
+            array.ensureLive();
             if (array.backend != expected) {
                 throw new GpuTransferException(
                         "GpuArray belongs to backend '" + array.backend.name()
@@ -587,6 +702,7 @@ public final class GpuRuntime {
             return;
         }
         if (value instanceof StreamHandle stream) {
+            stream.ensureLive();
             if (stream.backend != expected) {
                 throw new GpuTransferException(
                         "GpuStream belongs to backend '" + stream.backend.name()
