@@ -284,6 +284,63 @@ final class ComputeDataOrientedLanguageTest {
     }
 
     @Test
+    void computeCStyleLoopsRequireProvableMonotonicBounds() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc ascending(Region<int> values, int n): void {
+                  for int i = 0; i < n; i++ {
+                    val x = i;
+                  }
+                  return;
+                }
+                """));
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc descending(Region<int> values, int n): void {
+                  for int i = n; i >= 0; i-- {
+                    val x = i;
+                  }
+                  return;
+                }
+                """));
+
+        assertComputeRejected("""
+                compute fnc wrongWay(Region<int> values, int n): void {
+                  for int i = 0; i < n; i-- {
+                    val x = i;
+                  }
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc constantTrue(Region<int> values): void {
+                  for int i = 0; true; i++ {
+                    val x = i;
+                  }
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc mutatesIndex(Region<int> values, int n): void {
+                  for int i = 0; i < n; i++ {
+                    i = i - 100;
+                  }
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc mutatesBound(Region<int> values, int n): void {
+                  for int i = 0; i < n; i++ {
+                    n = n + 1;
+                  }
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void aspectV0RequiresBeforeAfterZeroArgVoidHandlers() {
         assertComputeRejected("""
                 fnc withArg(int x): void { return; }
