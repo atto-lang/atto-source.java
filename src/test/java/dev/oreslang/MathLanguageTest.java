@@ -117,6 +117,15 @@ final class MathLanguageTest {
     }
 
     @Test
+    void runtimeMatrixConstructionAlsoRejectsDecimalPrecisionLoss() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresMatrix.fromRows(java.util.List.of(
+                        java.util.List.of(new java.math.BigDecimal("0.1")))));
+        assertTrue(error.getMessage().contains("decimal -> f64"));
+    }
+
+    @Test
     void mixedRealComplexLinearAlgebraPromotesToComplex() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc mixed() => Matrix<complex> {
