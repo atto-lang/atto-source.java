@@ -2311,7 +2311,9 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
-        if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value == null || isScalar(value)
+                || value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
         if (value instanceof ChannelRuntime.Channel<?>
                 || value instanceof ChannelRuntime.SelectCase
                 || value instanceof ChannelRuntime.SelectSet) {
@@ -2389,6 +2391,10 @@ public final class ActorRuntime implements AutoCloseable {
                         "SharedMutex payload contains ActorRef from another ActorRuntime");
             }
             return;
+        }
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "SharedMutex payload cannot contain ActorGroup join capabilities");
         }
         if (value instanceof Shared<?> shared) {
             if (!shared.ownedBy(this)) {
@@ -2468,6 +2474,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
+            if (!capability.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "ActorGroup capability belongs to a different ActorRuntime");
+            }
+            return;
+        }
         if (value instanceof Shared<?> shared) {
             requireOwnedActorRefs(shared.value(), visiting, depth + 1);
             return;
@@ -2514,6 +2527,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (!ref.ownedBy(this)) {
                 throw new IllegalArgumentException(
                         "ActorRef belongs to a different ActorRuntime; cross-runtime actor channels require an explicit bridge");
+            }
+            return;
+        }
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
+            if (!capability.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "ActorGroup capability belongs to a different ActorRuntime");
             }
             return;
         }
@@ -2710,6 +2730,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Shared<?>) {
@@ -2783,6 +2804,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
@@ -2825,6 +2847,7 @@ public final class ActorRuntime implements AutoCloseable {
             return shared;
         }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -2892,6 +2915,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
