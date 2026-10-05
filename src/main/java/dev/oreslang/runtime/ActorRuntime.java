@@ -272,6 +272,7 @@ public final class ActorRuntime implements AutoCloseable {
         public static final long DEFAULT_MAX_MESSAGE_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
         public static final int DEFAULT_MIN_POOL_THREADS = 5;
         public static final int DEFAULT_MAX_POOL_THREADS = 20;
+        public static final int HARD_MAX_POOL_THREADS = 1024;
 
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
@@ -285,6 +286,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (maxCompensatingThreads < 0) {
                 throw new IllegalArgumentException("maxCompensatingThreads must be >= 0");
+            }
+            if ((long) privateParallelism + maxCompensatingThreads > HARD_MAX_POOL_THREADS
+                    || (long) sharedParallelism + maxCompensatingThreads > HARD_MAX_POOL_THREADS
+                    || (long) untrustedParallelism + maxCompensatingThreads > HARD_MAX_POOL_THREADS) {
+                throw new IllegalArgumentException(
+                        "each scheduler domain is capped at "
+                                + HARD_MAX_POOL_THREADS
+                                + " carrier threads");
             }
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
             if (maxActors > 1_000_000) {
@@ -5921,11 +5930,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private long nextToken(int slot) {
-            while (true) {
-                long generation = nextGeneration.getAndIncrement() & 0xffff_ffffL;
-                if (generation == 0L) continue;
-                return (generation << 32) | ((slot + 1L) & 0xffff_ffffL);
+            long generation = nextGeneration.getAndIncrement();
+            if (generation <= 0L || generation > 0xffff_ffffL) {
+                throw new IllegalStateException(
+                        "carrier token generation space exhausted; restart the OresVM");
             }
+            return (generation << 32) | ((slot + 1L) & 0xffff_ffffL);
         }
 
         private static int slotOf(long token) {
@@ -6782,13 +6792,13 @@ public final class ActorRuntime implements AutoCloseable {
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
             Thread carrier = Thread.currentThread();
-            observeCarrierAffinity();
             if (!executionLease.compareAndSet(null, carrier)) {
                 ACTOR_CARRIER.remove();
                 fail(new IllegalStateException(
                         "single-executor actor lease violation for " + ref.id()));
                 return;
             }
+            observeCarrierAffinity();
             boolean turnActive = beginTurn();
             long entryDeadline = 0L;
             try {
