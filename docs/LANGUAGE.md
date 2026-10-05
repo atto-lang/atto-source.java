@@ -141,15 +141,23 @@ pub fnc run() -> (() => void) {
 }
 ```
 
-The equivalent lambda-style declaration also uses executable `->` syntax:
+Function expressions are deliberately **not** an alternate named-declaration
+form. A named callable always has a declaration header:
 
 ```ores
-pub fnc run = || -> (() => void) {
-  return || -> {
+pub fnc run() -> (() => void) {
+  let fnc callback = || -> {
     return;
   };
+  return callback;
 }
 ```
+
+Inside executable code, `let fnc`, `val fnc`, or `const fnc` makes the
+declaration/value distinction explicit: the local name is a binding and the
+right-hand side is a function expression. This is valid inside functions,
+routines, methods, and nested executable blocks. A nested declaration such as
+`fnc callback() { ... }` is a compile error.
 
 Here `() => void` is a function **type**, while `->` is executable syntax.
 The fat arrow `=>` is never the return separator for an executable
@@ -396,19 +404,66 @@ const complex z = 3 + 4i;
 
 Numeric widening is loss-aware; real values can widen toward complex values, but silent lossy narrowing is not performed.
 
-## Lambdas
+## Function expressions and nested callable values
 
-Lambdas are lexical closures by default and use `->`. The canonical block
-form keeps returns explicit:
+Function expressions are lexical closures by default and use `->`. The
+canonical block form keeps returns explicit:
 
 ```ores
-val Fnc<int, int> inc = |int x| -> {
+val fnc inc = |int x| -> {
   return x + 1;
 };
 ```
 
-A normal lambda may capture activation-local bindings from its enclosing
-function or block. Captured mutable state remains part of the closure.
+They are **executable-scope-only**. They may appear inside a callable body,
+nested `block`, return expression, call argument, or another executable
+expression. They may not be used as package/file/module/class/actor
+declaration-time initializers. A field may still have a callable type such as
+`Fnc<int, int>`; constructing its function value happens from executable
+code.
+
+Declaration/member modifiers such as `pub`, `private`, `static`,
+`abstract`, and `async` do not apply to a local callable value. Callable
+expression effects instead prefix the expression:
+
+```ores
+let fnc no_capture = nlex || -> {
+  return;
+};
+
+let fnc inspect = pure |int x| -> {
+  let int y = x + 1;
+  return;
+};
+
+let fnc guarded = trap || -> {
+  risky();
+  return;
+};
+
+let fnc strict = pure nlex trap || -> {
+  return;
+};
+```
+
+A normal function expression may capture activation-local bindings from its
+enclosing function or block. `nlex`, `pure`, and `trap` are independent
+contracts and may be combined; duplicate modifiers are rejected.
+
+### Callable scope rules
+
+- File/package/module scope: named `fnc`/`routine` declarations are
+  allowed; function expressions are not declaration-time members.
+- Class/actor scope: methods/static functions and data fields are declarations;
+  function expressions are not member declarations or field initializers.
+- Function/routine/method/function-expression bodies: named nested
+  `fnc`/`routine` declarations are rejected. Use a local function
+  expression binding instead.
+- `pub` and other declaration/member-only modifiers are rejected in
+  executable/local scope.
+
+These rules keep the static declaration graph AOT-friendly while preserving
+first-class callable values where code is actually executing.
 
 ## Non-lexical callables (`nlex`)
 
@@ -424,12 +479,64 @@ Inside an `nlex` region:
 - module members, imports, top-level callables/classes, and built-ins remain
   statically resolvable;
 - enclosing activation-local bindings cannot be captured;
-- lambdas nested in an `nlex fnc`, `nlex routine`, or `nlex` lambda inherit
-  the barrier.
+- function expressions nested in an `nlex fnc`, `nlex routine`, or
+  `nlex` function expression inherit the barrier;
+- an inner `lex`-style behavior cannot punch through an inherited `nlex`
+  barrier; the restriction is one-way.
 
 Actor entry points remain governed by their actor isolation rules. `nlex` may
 add a capture-free guarantee to an actor fnc, but it does not replace mailbox,
 private-slice, or shared-actor isolation.
+
+## Pure callables (`pure`)
+
+`pure` is a compiler-enforced **no-external-write** contract. A pure
+invocation may read parameters, captured/readable outer state, module state,
+and other visible data, but it may not mutate parameters, `self`, captured
+bindings, module/global state, or values reachable through aliases to those
+sources. Locally owned temporaries may be mutated.
+
+The contract is transitive: a pure callable may call only another callable
+whose effects are compiler-proven pure. A function expression created inside a
+pure callable is checked as an independent callable boundary, so it cannot
+launder mutation authority by capturing an outer local and mutating it later.
+
+An explicitly `pure || -> { ... }` function expression receives the same
+write-effect check even when created inside an otherwise impure callable.
+
+The current compiler rejects `pure async` and pure actor entry points until
+their scheduler/effect contracts are modeled explicitly.
+
+## Trapped callables (`trap`)
+
+`trap` establishes a **dynamic invocation boundary** for ordinary runtime
+exceptions. A synchronous exception that reaches the active boundary is
+converted into the compiler-owned two-slot trap result:
+
+```text
+[Option<success>, Option<Exception>]
+```
+
+A successful `void` call uses an empty tuple/unit as its success payload.
+`panic` remains outside this ordinary trap channel.
+
+The boundary is dynamic, not inherited metadata. A normal nested callback
+invoked synchronously while an outer trap is active is covered by that outer
+boundary, but a callback returned from the trapped callable does not retain the
+old boundary. If the callback must own a boundary after it escapes, mark the
+function expression itself:
+
+```ores
+let fnc guarded = trap || -> {
+  risky();
+  return;
+};
+```
+
+A trap boundary is also a proper-tail-call barrier: optimization may not erase
+the activation that owns the exception boundary. The current compiler rejects
+`trap async` and trapped actor entry points until suspension/supervision
+semantics are implemented.
 
 ## Conditionals
 
