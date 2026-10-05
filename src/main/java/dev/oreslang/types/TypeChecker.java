@@ -2873,7 +2873,7 @@ public final class TypeChecker {
             }
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
+        Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
@@ -2902,7 +2902,7 @@ public final class TypeChecker {
             }
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
+        Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         }
@@ -2935,11 +2935,12 @@ public final class TypeChecker {
                         "interface inheritance of " + iface.name());
             }
         }
+        Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
-                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, null),
+                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, interfaceSelf),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
@@ -3442,6 +3443,13 @@ public final class TypeChecker {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
         Function raw = functionType(params, returns, async, generator, all, self);
+        // Contract comparison must preserve the fact that a slot is
+        // receiver-polymorphic without baking in the declaring class. Parent,
+        // child, and interface declarations of (...): self therefore compare
+        // as the same slot shape while concrete (...): Foo remains distinct.
+        if (self instanceof SelfType) {
+            raw = (Function) bindReceiverSelf(raw, new SelfType(Unknown.INSTANCE));
+        }
         if (callableGenerics.isEmpty()) return raw;
 
         Map<String, Type> canonical = new HashMap<>();
@@ -3981,6 +3989,10 @@ public final class TypeChecker {
 
     private Named nominalClassType(Ast.ClassDecl klass) {
         return new Named(qualifiedClassName(klass), klass.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
+    }
+
+    private Named nominalInterfaceType(Ast.InterfaceDecl iface) {
+        return new Named(qualifiedInterfaceName(iface), iface.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
     }
 
     private String qualifiedClassName(Ast.ClassDecl klass) {
