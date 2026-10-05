@@ -187,6 +187,19 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.YieldStmt yielded) {
+            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+                throw error("cannot yield while holding a MutexGuard; release the guard before suspension");
+            }
+            if (scope.hasLiveBorrow()) {
+                throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
+            }
+            ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (containsMutexGuardType(value.type)) {
+                throw error("MutexGuard values cannot be yielded from a generator");
+            }
+            return;
+        }
         if (stmt instanceof Ast.ExprStmt expression) {
             ValueInfo value = checkExpr(expression.expression(), scope, false);
             if (containsMutexGuardType(value.type)) {
@@ -262,8 +275,12 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            if (loop.asyncIteration()
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
+                throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
+            }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
-            Ast.TypeRef elementType = iterableElementType(iterable.type);
+            Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
             for (int i = 0; i < loop.bindings().size(); i++) {
@@ -282,8 +299,12 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
+            if (loop.asyncIteration()
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
+                throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
+            }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
-            Ast.TypeRef elementType = iterableElementType(iterable.type);
+            Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
             loopScope.define(loop.bindingName(), new VarState(
@@ -1026,6 +1047,8 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.YieldStmt yielded) {
+                scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
@@ -1663,9 +1686,16 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
-    private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType) {
+    private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType, boolean asyncIteration) {
         if (iterableType == null) return Ast.TypeRef.inferred();
-        if ((iterableType.name().equals("Array") || iterableType.name().equals("List"))
+        if (asyncIteration) {
+            if (iterableType.name().equals("AsyncGenerator") && iterableType.arguments().size() == 1) {
+                return iterableType.arguments().getFirst();
+            }
+            return Ast.TypeRef.inferred();
+        }
+        if ((iterableType.name().equals("Array") || iterableType.name().equals("List")
+                        || iterableType.name().equals("Generator"))
                 && iterableType.arguments().size() == 1) {
             return iterableType.arguments().getFirst();
         }
@@ -1820,6 +1850,17 @@ public final class OwnershipChecker {
         private boolean hasLiveMutexGuard() {
             for (VarState state : visibleStates()) {
                 if (!state.moved && containsAcquiredMutexGuardType(state.type)) return true;
+            }
+            return false;
+        }
+
+        private boolean hasLiveBorrow() {
+            for (VarState state : visibleStates()) {
+                if (state.moved) continue;
+                if (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                        || state.immutableBorrows > 0 || state.mutableBorrowed) {
+                    return true;
+                }
             }
             return false;
         }
