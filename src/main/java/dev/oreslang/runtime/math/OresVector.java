@@ -5,7 +5,7 @@ import dev.oreslang.runtime.ImmutableGuestValue;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Immutable column vector backed by the same EJML kernels as OresMatrix. */
+/** Immutable column vector backed by Oreslang's portable row-major numeric core. */
 public final class OresVector implements ImmutableGuestValue {
     private final OresMatrix value;
 
