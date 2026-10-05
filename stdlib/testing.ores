@@ -27,7 +27,7 @@ end
 define class TestOptions as
   // Empty means run all. Names are exact hierarchical names:
   // "suite/test" (and property/table cases should use slash-separated names).
-  pub val List<String> only;
+  pub val String only;
   pub val bool fail_fast;
   pub val bool machine;
 end
@@ -106,25 +106,12 @@ pub fnc expect_near_float(
   fi
 }
 
-fnc has_filter(&List<String> filters): bool {
-  for value of filters do
-    return true;
-  done
-  return false;
-}
-
-fnc selected(String full_name, &List<String> filters): bool {
-  if !has_filter(filters); do
+fnc selected(String full_name, String only): bool {
+  if only == ""; do
     return true;
   fi
 
-  for name of filters do
-    if name == full_name; do
-      return true;
-    fi
-  done
-
-  return false;
+  return full_name == only;
 }
 
 fnc emit_status(String status, String full_name, String detail, bool machine): void {
@@ -192,7 +179,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
   for test_case of suite.tests do
     let String full_name = suite.name + "/" + test_case.name;
 
-    if !selected(full_name, &options.only); do
+    if !selected(full_name, options.only); do
       filtered_count = filtered_count + 1;
       continue;
     fi
