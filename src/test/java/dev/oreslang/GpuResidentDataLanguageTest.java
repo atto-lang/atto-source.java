@@ -240,7 +240,7 @@ final class GpuResidentDataLanguageTest {
         }
 
         @Override public String name() { return name; }
-        @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+        @Override public Object invoke(GpuRuntime.BackendInvocation invocation) { return null; }
 
         @Override
         public synchronized long uploadArray(String elementAbiType, List<?> values) {
