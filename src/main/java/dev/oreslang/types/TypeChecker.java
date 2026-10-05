@@ -49,6 +49,12 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private boolean currentMaySuspend;
+    /**
+     * Logical source return type of the currently checked callable. Async
+     * callables store their logical T here rather than Future<T>, so postfix ?
+     * propagates through the callable result without changing await semantics.
+     */
+    private Type currentReturnType;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -246,11 +252,14 @@ public final class TypeChecker {
         }
         Ast.ActorKind previousActorKind = currentActorKind;
         boolean previousMaySuspend = currentMaySuspend;
+        Type previousReturnType = currentReturnType;
         currentActorKind = fn.actorKind();
         currentMaySuspend = fn.async() || fn.actorKind() != Ast.ActorKind.NONE;
+        currentReturnType = returns;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            currentReturnType = previousReturnType;
             currentMaySuspend = previousMaySuspend;
             currentActorKind = previousActorKind;
         }
@@ -354,12 +363,15 @@ public final class TypeChecker {
             Type returns = resolve(method.returnType(), generics, callableSelf);
             Ast.ActorKind previousActorKind = currentActorKind;
             boolean previousMaySuspend = currentMaySuspend;
+            Type previousReturnType = currentReturnType;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentMaySuspend = method.async()
                     || (!method.isStatic() && klass.actorKind() != Ast.ActorKind.NONE);
+            currentReturnType = returns;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
+                currentReturnType = previousReturnType;
                 currentMaySuspend = previousMaySuspend;
                 currentActorKind = previousActorKind;
             }
@@ -478,7 +490,14 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
-        if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            if (containsTryPropagation(defer.expression())) {
+                throw new IllegalArgumentException(
+                        "postfix ? is not legal inside defer; propagation would bypass or reorder lexical cleanup");
+            }
+            typeOf(defer.expression(), env, generics, self);
+            return;
+        }
         if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 requireAssignable(typeOf(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
@@ -617,6 +636,38 @@ public final class TypeChecker {
             Type left = typeOf(conditional.whenTrue(), env, generics, self);
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
             return commonType(left, right);
+        }
+        if (expr instanceof Ast.TryPropagateExpr propagated) {
+            Type operand = deref(typeOf(propagated.expression(), env, generics, self));
+            Type returns = deref(currentReturnType);
+            if (operand instanceof Named named
+                    && named.name().equals("Option")
+                    && named.arguments().size() == 1) {
+                if (!(returns instanceof Named returnNamed)
+                        || !returnNamed.name().equals("Option")
+                        || returnNamed.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Option<T>? requires the enclosing callable to return Option<U>");
+                }
+                return named.arguments().getFirst();
+            }
+            if (operand instanceof Named named
+                    && named.name().equals("Result")
+                    && named.arguments().size() == 2) {
+                if (!(returns instanceof Named returnNamed)
+                        || !returnNamed.name().equals("Result")
+                        || returnNamed.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Result<T,E>? requires the enclosing callable to return Result<U,F>");
+                }
+                requireAssignable(
+                        named.arguments().get(1),
+                        returnNamed.arguments().get(1),
+                        "propagated Result error");
+                return named.arguments().getFirst();
+            }
+            throw new IllegalArgumentException(
+                    "postfix ? requires compiler-approved Option<T> or Result<T,E>; found " + operand);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -1269,10 +1320,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
             boolean previousMaySuspend = currentMaySuspend;
+            Type previousReturnType = currentReturnType;
             currentMaySuspend = lambda.async();
+            currentReturnType = Unknown.INSTANCE;
             try {
                 checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
             } finally {
+                currentReturnType = previousReturnType;
                 currentMaySuspend = previousMaySuspend;
             }
             Type invocationResult = lambda.async() ? futureOf(Unknown.INSTANCE) : Unknown.INSTANCE;
@@ -1415,15 +1469,58 @@ public final class TypeChecker {
         }
 
         boolean previousMaySuspend = currentMaySuspend;
+        Type previousReturnType = currentReturnType;
         currentMaySuspend = lambda.async();
+        currentReturnType = bodyResult;
         try {
             checkBlock(lambda.blockBody(), lambdaEnv, generics, bodyResult, self);
         } finally {
+            currentReturnType = previousReturnType;
             currentMaySuspend = previousMaySuspend;
         }
         if (bodyResult != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
+    }
+
+    private boolean containsTryPropagation(Ast.Expr expr) {
+        if (expr instanceof Ast.TryPropagateExpr) return true;
+        if (expr instanceof Ast.LambdaExpr) return false;
+        if (expr instanceof Ast.UnaryExpr unary) return containsTryPropagation(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return containsTryPropagation(binary.left()) || containsTryPropagation(binary.right());
+        }
+        if (expr instanceof Ast.AssignExpr assignment) {
+            return containsTryPropagation(assignment.target())
+                    || containsTryPropagation(assignment.value());
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return containsTryPropagation(conditional.condition())
+                    || containsTryPropagation(conditional.whenTrue())
+                    || containsTryPropagation(conditional.whenFalse());
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            if (containsTryPropagation(call.callee())) return true;
+            for (Ast.Expr argument : call.arguments()) {
+                if (containsTryPropagation(argument)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.MemberExpr member) return containsTryPropagation(member.receiver());
+        if (expr instanceof Ast.IndexExpr index) {
+            return containsTryPropagation(index.receiver()) || containsTryPropagation(index.index());
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            return created.arguments().stream().anyMatch(this::containsTryPropagation);
+        }
+        if (expr instanceof Ast.AwaitExpr awaited) return containsTryPropagation(awaited.expression());
+        if (expr instanceof Ast.SpawnExpr spawned) return containsTryPropagation(spawned.call());
+        if (expr instanceof Ast.ListExpr list) return list.elements().stream().anyMatch(this::containsTryPropagation);
+        if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().anyMatch(this::containsTryPropagation);
+        if (expr instanceof Ast.ObjectExpr object) {
+            return object.fields().stream().anyMatch(field -> containsTryPropagation(field.value()));
+        }
+        return false;
     }
 
     private Type deref(Type type) {
