@@ -15,6 +15,7 @@ import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresFutures;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -1083,6 +1084,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -1424,6 +1426,19 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof FutureFactory) {
+                return switch (name) {
+                    case "all" -> (Invokable) args -> {
+                        requireOne(args, "Future.all");
+                        return OresFutures.all(asSequence(args.getFirst()));
+                    };
+                    case "race" -> (Invokable) args -> {
+                        requireOne(args, "Future.race");
+                        return OresFutures.race(asSequence(args.getFirst()));
+                    };
+                    default -> throw new IllegalArgumentException("unknown Future member " + name);
+                };
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
@@ -2767,6 +2782,8 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private enum FutureFactory { INSTANCE }
+
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
