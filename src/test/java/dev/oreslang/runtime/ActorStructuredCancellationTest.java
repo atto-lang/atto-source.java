@@ -81,6 +81,36 @@ final class ActorStructuredCancellationTest {
                     runtime.spawnPrivate(() -> (message, context) -> { });
 
             assertThrows(IllegalStateException.class, actor::forceCancel);
+            assertTrue(actor.isAlive(), "denied force cancellation must have no logical side effect");
+            actor.stop();
+        }
+    }
+
+    @Test
+    void structuredCancellationCannotBeSwallowedAsOrdinaryRuntimeFailure() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicBoolean swallowed = new AtomicBoolean();
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                try {
+                    while (true) {
+                        context.runtime().schedulerSafepoint();
+                    }
+                } catch (RuntimeException ordinaryFailure) {
+                    swallowed.set(true);
+                }
+            });
+
+            actor.send("run");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertFalse(swallowed.get(), "actor cancellation is control flow, not a catchable guest failure");
+            assertInstanceOf(
+                    ActorRuntime.ActorCancelledException.class,
+                    actor.failure().orElseThrow());
         }
     }
 
