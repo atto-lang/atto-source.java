@@ -1504,7 +1504,7 @@ public final class TypeChecker {
     }
 
     private List<Type> sequenceDestructureTypes(Type source, List<Ast.DestructureBinding> bindings) {
-        source = deref(source);
+        source = sequenceDestructureSourceType(deref(source));
         int restIndex = restBindingIndex(bindings);
         int fixedArity = restIndex >= 0 ? restIndex : bindings.size();
 
@@ -1546,7 +1546,36 @@ public final class TypeChecker {
             return List.copyOf(joined);
         }
 
-        throw new IllegalArgumentException("sequence destructuring requires a tuple or array/list value");
+        throw new IllegalArgumentException(
+                "sequence destructuring requires a tuple, array/list, or statically typed iterable value");
+    }
+
+    private Type sequenceDestructureSourceType(Type source) {
+        if (!(source instanceof Named named)) return source;
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null) return source;
+
+        ResolvedMethod iteratorTarget =
+                findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
+        if (iteratorTarget == null) return source;
+
+        Ast.MethodDecl iterator = iteratorTarget.method();
+        requireClassMemberVisible(
+                iterator.visibility(),
+                iteratorTarget.owner(),
+                "method",
+                iterator.name());
+
+        Set<String> iteratorGenerics = new HashSet<>(iteratorTarget.owner().genericParameters());
+        iteratorGenerics.addAll(iterator.genericParameters());
+        Type result = resolve(iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
+        result = substituteGenerics(
+                result,
+                classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
+
+        if (result instanceof ListType || result instanceof Tuple) return result;
+        throw new IllegalArgumentException(
+                "[Symbol.iterator]() used for destructuring must return Array<T>, List<T>, or a finite tuple");
     }
 
     private int restBindingIndex(List<Ast.DestructureBinding> bindings) {
