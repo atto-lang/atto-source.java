@@ -689,6 +689,15 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /**
+         * Structured-concurrency parent, when this actor was spawned from
+         * another actor turn. Actor lifetimes are hierarchical even though
+         * message transport remains capability-based.
+         */
+        default Optional<ActorRef<?>> parent() {
+            return Optional.empty();
+        }
     }
 
     public final class ActorRef<M> {
@@ -721,6 +730,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public void stop() {
+            ActorRuntime.this.stop(this);
+        }
+
+        /** Structured cancellation spelling; equivalent to stop for trusted actors. */
+        public void cancel() {
             ActorRuntime.this.stop(this);
         }
 
@@ -1082,6 +1096,10 @@ public final class ActorRuntime implements AutoCloseable {
             requireStatelessActorFactory(behaviorFactory);
         }
 
+        // Concurrency in Oreslang is actor-structured. An actor spawned during
+        // another actor's turn becomes that actor's child automatically.
+        ActorCell<?> parent = currentActor.get();
+
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
@@ -1090,8 +1108,20 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<M> ref = new ActorRef<>(id, kind);
             try {
                 ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
+                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory, parent);
                 actors.put(id, cell);
+                if (parent != null) {
+                    synchronized (parent.lifecycleLock) {
+                        if (parent.stopped.get() || parent.finalized) {
+                            actors.remove(id, cell);
+                            actorCount.decrementAndGet();
+                            cell.stop();
+                            throw new CancellationException(
+                                    "cannot attach child actor to a stopping parent");
+                        }
+                        parent.children.add(cell);
+                    }
+                }
                 return ref;
             } catch (RuntimeException | Error failure) {
                 actorCount.decrementAndGet();
@@ -2625,6 +2655,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
+        private final ActorCell<?> parent;
+        private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
@@ -2643,12 +2675,14 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
-                boolean trustedFactory) {
+                boolean trustedFactory,
+                ActorCell<?> parent) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
+            this.parent = parent;
             this.mailbox = ChannelRuntime.channel(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -2708,6 +2742,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
             }
+            if (parent != null) parent.children.remove(this);
             unregisterActor(this);
             lifecycleLock.notifyAll();
         }
@@ -2849,6 +2884,9 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
+                    @Override public Optional<ActorRef<?>> parent() {
+                        return Optional.ofNullable(parent == null ? null : parent.ref);
+                    }
                 };
 
                 if (behavior == null) {
@@ -2907,6 +2945,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
+                cancelChildrenLocked();
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
@@ -2915,9 +2954,17 @@ public final class ActorRuntime implements AutoCloseable {
         private void stop() {
             synchronized (lifecycleLock) {
                 stopped.set(true);
+                cancelChildrenLocked();
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
+        }
+
+        private void cancelChildrenLocked() {
+            for (ActorCell<?> child : List.copyOf(children)) {
+                child.stop();
+            }
+            children.clear();
         }
     }
 }
