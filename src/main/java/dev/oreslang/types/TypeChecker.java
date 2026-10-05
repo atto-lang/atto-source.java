@@ -865,7 +865,29 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
+                Type rawReceiver = deref(typeOf(member.receiver(), env, generics, self));
+                if (rawReceiver instanceof Named rawNamed
+                        && rawNamed.name().equals("MutexGuard")) {
+                    Type guardMember = builtinMutexMember(rawReceiver, member.member());
+                    if (guardMember instanceof Function guardFn) {
+                        if (call.typeArgumentsPresent()) {
+                            throw new IllegalArgumentException(
+                                    "MutexGuard." + member.member() + " does not accept call-site type arguments");
+                        }
+                        if (guardFn.parameters().size() != call.arguments().size()) {
+                            throw new IllegalArgumentException(
+                                    "MutexGuard." + member.member() + " call arity mismatch");
+                        }
+                        for (int i = 0; i < guardFn.parameters().size(); i++) {
+                            requireAssignable(
+                                    typeOf(call.arguments().get(i), env, generics, self),
+                                    guardFn.parameters().get(i),
+                                    "MutexGuard." + member.member() + " argument " + (i + 1));
+                        }
+                        return guardFn.result();
+                    }
+                }
+                Type receiver = unwrapMutexGuard(rawReceiver);
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
