@@ -185,6 +185,27 @@ public final class OresFuture<T> implements Future<T> {
         return unpackChecked(state.get());
     }
 
+    /**
+     * Runtime/host convenience equivalent to Future.get() without checked
+     * wrapping. Oreslang source uses await; this is not a guest callback API.
+     */
+    public T join() {
+        try {
+            return get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            CancellationException cancelled =
+                    new CancellationException("Oreslang Future join interrupted");
+            cancelled.initCause(interrupted);
+            throw cancelled;
+        } catch (ExecutionException wrapped) {
+            Throwable cause = wrapped.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new RuntimeException(cause);
+        }
+    }
+
     @Override
     public T get(long timeout, TimeUnit unit)
             throws InterruptedException, ExecutionException, TimeoutException {
