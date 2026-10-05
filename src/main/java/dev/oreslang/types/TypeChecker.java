@@ -1835,6 +1835,105 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
+    private Ast.CallExpr expandStaticSpreadCall(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        List<Ast.Expr> expanded = new ArrayList<>();
+        for (Ast.Expr argument : call.arguments()) {
+            if (!(argument instanceof Ast.SpreadExpr spread)) {
+                expanded.add(argument);
+                continue;
+            }
+
+            Type source = deref(typeOf(spread.expression(), env, generics, self));
+            int arity = staticSpreadArity(source);
+            for (int i = 0; i < arity; i++) {
+                expanded.add(new Ast.IndexExpr(
+                        spread.expression(),
+                        new Ast.LiteralExpr((long) i)));
+            }
+        }
+        return new Ast.CallExpr(
+                call.callee(),
+                call.typeArguments(),
+                call.typeArgumentsPresent(),
+                List.copyOf(expanded));
+    }
+
+    private int staticSpreadArity(Type source) {
+        source = deref(source);
+        if (source instanceof Tuple tuple) return tuple.elements().size();
+        if (source instanceof FixedArray fixed) return fixed.length();
+        if (source instanceof Union union) {
+            Integer arity = null;
+            for (Type option : union.options()) {
+                int candidate = staticSpreadArity(option);
+                if (arity == null) arity = candidate;
+                else if (arity != candidate) {
+                    throw new IllegalArgumentException(
+                            "spread union alternatives must have the same compile-time arity");
+                }
+            }
+            if (arity != null) return arity;
+        }
+        if (source instanceof ListType) {
+            throw new IllegalArgumentException(
+                    "a dynamic Array/List cannot spread into a fixed call argument list; "
+                            + "use Tuple/FixedArray or a variadic destination");
+        }
+        throw new IllegalArgumentException(
+                "'...' spread requires a Tuple or FixedArray with compile-time-known arity; got " + source);
+    }
+
+    private Type sequenceIndexType(Type receiver, Ast.Expr indexExpression) {
+        receiver = deref(receiver);
+        Integer constantIndex = constantSequenceIndex(indexExpression);
+
+        if (receiver instanceof ListType list) return list.element();
+
+        if (receiver instanceof FixedArray fixed) {
+            if (constantIndex != null && (constantIndex < 0 || constantIndex >= fixed.length())) {
+                throw new IllegalArgumentException(
+                        "FixedArray index " + constantIndex + " is out of bounds for length " + fixed.length());
+            }
+            return fixed.element();
+        }
+
+        if (receiver instanceof Tuple tuple) {
+            if (constantIndex != null) {
+                if (constantIndex < 0 || constantIndex >= tuple.elements().size()) {
+                    throw new IllegalArgumentException(
+                            "tuple index " + constantIndex + " is out of bounds for arity " + tuple.elements().size());
+                }
+                return tuple.elements().get(constantIndex);
+            }
+            if (tuple.elements().isEmpty()) {
+                throw new IllegalArgumentException("cannot dynamically index an empty tuple");
+            }
+            return Types.unionOf(tuple.elements());
+        }
+
+        if (receiver instanceof Union union) {
+            List<Type> alternatives = new ArrayList<>(union.options().size());
+            for (Type option : union.options()) {
+                alternatives.add(sequenceIndexType(option, indexExpression));
+            }
+            return Types.unionOf(alternatives);
+        }
+
+        throw new IllegalArgumentException(
+                "indexing requires an array/list, FixedArray, tuple, or DynamicStruct");
+    }
+
+    private Integer constantSequenceIndex(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal && literal.value() instanceof Long value) {
+            return Math.toIntExact(value);
+        }
+        return null;
+    }
+
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
@@ -1969,6 +2068,13 @@ public final class TypeChecker {
                         + " element(s), pattern has " + arity);
             }
             return tuple.elements();
+        }
+        if (source instanceof FixedArray fixed) {
+            if (fixed.length() != arity) {
+                throw new IllegalArgumentException("destructure arity mismatch: FixedArray has " + fixed.length()
+                        + " element(s), pattern has " + arity);
+            }
+            return java.util.Collections.nCopies(arity, fixed.element());
         }
         if (source instanceof ListType list) {
             return java.util.Collections.nCopies(arity, list.element());
@@ -2231,6 +2337,7 @@ public final class TypeChecker {
             return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
         }
         if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof FixedArray fixed) return isSharedSafe(fixed.element(), seen, genericBindings);
         if (type instanceof Union union) {
             for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
             return true;
@@ -2569,6 +2676,9 @@ public final class TypeChecker {
         }
 
         if (a instanceof ListType && b instanceof ListType) return true;
+        if (a instanceof FixedArray af && b instanceof FixedArray bf) {
+            return af.length() == bf.length() && typesMayOverlap(af.element(), bf.element());
+        }
         if (a instanceof Tuple at && b instanceof Tuple bt) {
             if (at.elements().size() != bt.elements().size()) return false;
             for (int i = 0; i < at.elements().size(); i++) {
@@ -2586,7 +2696,7 @@ public final class TypeChecker {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;
         }
-        if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
+        if (ref.isBorrow() || ref.isTupleType() || ref.isFixedArrayType() || ref.isRecordType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
                 || ref.name().equals("Fnc")) {
             throw new IllegalArgumentException(
@@ -2609,6 +2719,9 @@ public final class TypeChecker {
                     .map(argument -> resolveSharedGeneric(argument, bindings)).toList());
         }
         if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
+        if (type instanceof FixedArray fixed) {
+            return new FixedArray(resolveSharedGeneric(fixed.element(), bindings), fixed.length());
+        }
         if (type instanceof Tuple tuple) {
             return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList());
         }
@@ -2722,12 +2835,10 @@ public final class TypeChecker {
 
     private Type iterableElementType(Type iterable) {
         if (iterable instanceof ListType list) return list.element();
+        if (iterable instanceof FixedArray fixed) return fixed.element();
         if (iterable instanceof Tuple tuple) {
-            Type result = Unknown.INSTANCE;
-            for (Type element : tuple.elements()) {
-                result = result == Unknown.INSTANCE ? element : commonType(result, element);
-            }
-            return result;
+            if (tuple.elements().isEmpty()) return Unknown.INSTANCE;
+            return Types.unionOf(tuple.elements());
         }
         if (iterable instanceof Named named) {
             if (named.name().equals("Iterator") && named.arguments().size() == 1) {
@@ -3738,6 +3849,10 @@ public final class TypeChecker {
             inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
             return;
         }
+        if (pattern instanceof FixedArray p && actual instanceof FixedArray a && p.length() == a.length()) {
+            inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
+            return;
+        }
         if (pattern instanceof Tuple p && actual instanceof Tuple a && p.elements().size() == a.elements().size()) {
             for (int i = 0; i < p.elements().size(); i++) inferGenericBindings(p.elements().get(i), a.elements().get(i), bindings, fixedBindings, label);
             return;
@@ -3758,6 +3873,7 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
+        if (type instanceof FixedArray fixed) return new FixedArray(substituteGenerics(fixed.element(), bindings), fixed.length());
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
@@ -3776,6 +3892,7 @@ public final class TypeChecker {
         if (type == Unknown.INSTANCE) return true;
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
+        if (type instanceof FixedArray fixed) return containsUnknown(fixed.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
         if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnknown);
@@ -3790,6 +3907,7 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return names.contains(generic.name());
         if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
         if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
+        if (type instanceof FixedArray fixed) return containsGenericNamed(fixed.element(), names);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
@@ -3818,6 +3936,11 @@ public final class TypeChecker {
         }
         if (ref.isTupleType()) {
             return new Tuple(ref.arguments().stream().map(element -> resolve(element, generics, self, allowNullMarker)).toList());
+        }
+        if (ref.isFixedArrayType()) {
+            Type element = resolve(ref.fixedArrayElement(), generics, self, allowNullMarker);
+            if (element == Primitive.VOID) throw new IllegalArgumentException("FixedArray<void, N> is invalid");
+            return new FixedArray(element, ref.fixedArrayLength());
         }
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
