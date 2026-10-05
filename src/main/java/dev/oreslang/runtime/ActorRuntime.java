@@ -1491,7 +1491,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get()) {
                         throw terminated(ref);
                     }
-                    if (!cell.mailbox.offer(envelope)) {
+                    if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
                     mailboxSlotTransferred = true;
@@ -2625,7 +2625,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
-        private final BlockingQueue<MessageEnvelope> mailbox;
+        private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
@@ -2649,7 +2649,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
-            this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
+            this.mailbox = ChannelRuntime.channel(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
@@ -2698,6 +2698,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (finalized || activeTurns != 0 || scheduled.get() || carrierActive) return;
             finalized = true;
             drainMailboxReservations();
+            mailbox.close();
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
@@ -2862,7 +2863,7 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
-                    MessageEnvelope envelope = mailbox.poll();
+                    MessageEnvelope envelope = mailbox.tryRead().orElse(null);
                     if (envelope == null) break;
                     releaseMailboxSlot();
                     try (envelope) {
@@ -2896,7 +2897,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void drainMailboxReservations() {
             MessageEnvelope envelope;
-            while ((envelope = mailbox.poll()) != null) {
+            while ((envelope = mailbox.tryRead().orElse(null)) != null) {
                 releaseMailboxSlot();
                 envelope.close();
             }
