@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,6 +20,86 @@ import java.util.concurrent.locks.ReentrantLock;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
+    @Test
+    void suspendedMailboxTurnResumesBeforeLaterMessage() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Integer> gate = new CompletableFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            CountDownLatch resumed = new CountDownLatch(1);
+            CountDownLatch laterProcessed = new CountDownLatch(1);
+            List<String> events = java.util.Collections.synchronizedList(new ArrayList<>());
+
+            var ref = runtime.<String>spawnShared(factoryContext ->
+                    (message, turnContext) -> {
+                        if (message.equals("wait")) {
+                            events.add("start");
+                            suspended.countDown();
+                            turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
+                                assertNull(failure);
+                                assertEquals(42, value);
+                                events.add("resume");
+                                resumed.countDown();
+                            });
+                            throw new AssertionError(
+                                    "suspendOn must unwind the current actor turn");
+                        }
+                        if (message.equals("after")) {
+                            events.add("after");
+                            laterProcessed.countDown();
+                            return;
+                        }
+                        throw new IllegalArgumentException(
+                                "unexpected mailbox message " + message);
+                    });
+
+            ref.send("wait");
+            assertTrue(suspended.await(2, TimeUnit.SECONDS));
+
+            ref.send("after");
+            Thread.sleep(25);
+            assertEquals(1L, laterProcessed.getCount(),
+                    "later mailbox traffic cannot overtake a suspended logical turn");
+
+            gate.complete(42);
+
+            assertTrue(resumed.await(2, TimeUnit.SECONDS));
+            assertTrue(laterProcessed.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of("start", "resume", "after"), events);
+            assertTrue(ref.isAlive());
+        }
+    }
+
+    @Test
+    void failedMailboxContinuationFailsActorClosed() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Integer> gate = new CompletableFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+
+            var ref = runtime.<String>spawnShared(factoryContext ->
+                    (message, turnContext) -> {
+                        suspended.countDown();
+                        turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
+                            throw new IllegalStateException("resume-boom");
+                        });
+                        throw new AssertionError(
+                                "suspendOn must unwind the current actor turn");
+                    });
+
+            ref.send("wait");
+            assertTrue(suspended.await(2, TimeUnit.SECONDS));
+            gate.complete(1);
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+
+            assertFalse(ref.isAlive(),
+                    "unhandled continuation failure must fail-stop the actor");
+            assertEquals("resume-boom", ref.failure().orElseThrow().getMessage());
+        }
+    }
+
     @Test
     void freezesMessagesBeforeDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
