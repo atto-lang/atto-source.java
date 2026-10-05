@@ -38,6 +38,7 @@ public final class ComputeContractChecker {
 
     private final List<OwnedFlow> flows = new ArrayList<>();
     private final List<OwnedAspect> aspects = new ArrayList<>();
+    private final Map<String, LinkedHashSet<String>> computeCalls = new LinkedHashMap<>();
 
     private ComputeContractChecker(Ast.Program program) {
         index(program);
@@ -148,6 +149,7 @@ public final class ComputeContractChecker {
         }
 
         validateMetadataNames(program);
+        validateComputeCallGraph();
         for (OwnedFlow flow : flows) validateFlow(flow.module(), flow.declaration());
         for (OwnedAspect aspect : aspects) validateAspect(aspect.module(), aspect.declaration());
     }
@@ -188,6 +190,15 @@ public final class ComputeContractChecker {
         }
     }
 
+    private record RegionAccessPath(String root, String field) { }
+
+    private record ComputeScope(
+            String module,
+            String functionId,
+            Ast.FunctionDecl function,
+            Set<String> regionParameters,
+            List<RegionEffect> effects) { }
+
     private void validateFunction(String module, Ast.FunctionDecl fn) {
         boolean compute = isCompute(fn);
         boolean hasEffectMetadata = fn.annotations().stream()
@@ -217,11 +228,29 @@ public final class ComputeContractChecker {
         }
 
         Map<String, Ast.Param> params = new LinkedHashMap<>();
-        for (Ast.Param param : fn.parameters()) params.put(param.name(), param);
+        LinkedHashSet<String> locals = new LinkedHashSet<>();
+        LinkedHashSet<String> regionParameters = new LinkedHashSet<>();
+        for (Ast.Param param : fn.parameters()) {
+            params.put(param.name(), param);
+            locals.add(param.name());
+            Ast.TypeRef type = param.type();
+            if (type != null && (type.name().equals("Region") || type.name().equals("RegionView"))) {
+                regionParameters.add(param.name());
+            }
+        }
 
         validateComputeMetadata(fn, params);
         validateLoopExecution(fn.body(), true, "compute fnc " + qualify(module, fn.name()));
-        validateComputeBody(fn.body(), module, fn.name());
+
+        String functionId = qualify(module, fn.name());
+        computeCalls.putIfAbsent(functionId, new LinkedHashSet<>());
+        ComputeScope scope = new ComputeScope(
+                module,
+                functionId,
+                fn,
+                Set.copyOf(regionParameters),
+                contractOf(fn).effects());
+        validateComputeBody(fn.body(), scope, locals);
     }
 
     private void validateComputeMetadata(Ast.FunctionDecl fn, Map<String, Ast.Param> params) {
@@ -366,126 +395,282 @@ public final class ComputeContractChecker {
         }
     }
 
-    private void validateComputeBody(List<Ast.Stmt> body, String module, String functionName) {
+    private void validateComputeBody(
+            List<Ast.Stmt> body,
+            ComputeScope scope,
+            Set<String> incomingLocals) {
+        LinkedHashSet<String> locals = new LinkedHashSet<>(incomingLocals);
+
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.DeferStmt) {
-                throw unsafe(functionName, "defer");
+                throw unsafe(scope.function().name(), "defer");
             }
             if (stmt instanceof Ast.TryStmt) {
-                throw unsafe(functionName, "try/catch/finally");
+                throw unsafe(scope.function().name(), "try/catch/finally");
             }
+            if (stmt instanceof Ast.LoopStmt) {
+                throw unsafe(scope.function().name(), "unbounded loop");
+            }
+
             if (stmt instanceof Ast.BindingStmt binding) {
-                validateComputeExpr(binding.initializer(), module, functionName);
+                validateComputeExpr(binding.initializer(), scope, locals);
+                locals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
-                validateComputeExpr(destructure.initializer(), module, functionName);
+                validateComputeExpr(destructure.initializer(), scope, locals);
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) locals.add(binding.name());
+                }
             } else if (stmt instanceof Ast.ReturnStmt returned) {
-                validateComputeExpr(returned.value(), module, functionName);
+                validateComputeExpr(returned.value(), scope, locals);
             } else if (stmt instanceof Ast.ExprStmt expression) {
-                validateComputeExpr(expression.expression(), module, functionName);
-            } else if (stmt instanceof Ast.BlockStmt block) {
-                validateComputeBody(block.body(), module, functionName);
+                validateComputeExpr(expression.expression(), scope, locals);
+            } else if (stmt instanceof Ast.BlockStmt nested) {
+                validateComputeBody(nested.body(), scope, locals);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
-                    validateComputeExpr(branch.condition(), module, functionName);
-                    validateComputeBody(branch.body(), module, functionName);
+                    validateComputeExpr(branch.condition(), scope, locals);
+                    validateComputeBody(branch.body(), scope, locals);
                 }
-                validateComputeBody(conditional.elseBody(), module, functionName);
+                validateComputeBody(conditional.elseBody(), scope, locals);
             } else if (stmt instanceof Ast.ForOfStmt loop) {
-                validateComputeExpr(loop.iterable(), module, functionName);
-                validateComputeBody(loop.body(), module, functionName);
+                validateComputeExpr(loop.iterable(), scope, locals);
+                LinkedHashSet<String> loopLocals = new LinkedHashSet<>(locals);
+                loopLocals.add(loop.bindingName());
+                validateComputeBody(loop.body(), scope, loopLocals);
             } else if (stmt instanceof Ast.ForOfDestructureStmt loop) {
-                validateComputeExpr(loop.iterable(), module, functionName);
-                validateComputeBody(loop.body(), module, functionName);
+                validateComputeExpr(loop.iterable(), scope, locals);
+                LinkedHashSet<String> loopLocals = new LinkedHashSet<>(locals);
+                for (Ast.DestructureBinding binding : loop.bindings()) {
+                    if (!binding.isDiscard()) loopLocals.add(binding.name());
+                }
+                validateComputeBody(loop.body(), scope, loopLocals);
             } else if (stmt instanceof Ast.ForStmt loop) {
                 if (loop.condition() == null) {
-                    throw unsafe(functionName, "conditionless/unbounded for loop");
+                    throw unsafe(scope.function().name(), "conditionless/unbounded for loop");
                 }
+                LinkedHashSet<String> loopLocals = new LinkedHashSet<>(locals);
                 if (loop.initializer() instanceof Ast.BindingStmt binding) {
-                    validateComputeExpr(binding.initializer(), module, functionName);
+                    validateComputeExpr(binding.initializer(), scope, loopLocals);
+                    loopLocals.add(binding.name());
                 } else if (loop.initializer() instanceof Ast.ExprStmt expression) {
-                    validateComputeExpr(expression.expression(), module, functionName);
+                    validateComputeExpr(expression.expression(), scope, loopLocals);
                 }
-                validateComputeExpr(loop.condition(), module, functionName);
-                validateComputeExpr(loop.update(), module, functionName);
-                validateComputeBody(loop.body(), module, functionName);
-            } else if (stmt instanceof Ast.LoopStmt) {
-                throw unsafe(functionName, "unbounded loop");
+                validateComputeExpr(loop.condition(), scope, loopLocals);
+                validateComputeExpr(loop.update(), scope, loopLocals);
+                validateComputeBody(loop.body(), scope, loopLocals);
             }
         }
     }
 
-    private void validateComputeExpr(Ast.Expr expr, String module, String owner) {
+    private void validateComputeExpr(
+            Ast.Expr expr,
+            ComputeScope scope,
+            Set<String> locals) {
         if (expr == null || expr instanceof Ast.LiteralExpr) return;
 
+        RegionAccessPath regionPath = regionAccessPath(expr, scope.regionParameters());
+        if (regionPath != null) {
+            validateRegionIndexes(expr, scope, locals);
+            requireRegionPermission(regionPath, scope, false);
+            return;
+        }
+
         if (expr instanceof Ast.NameExpr name) {
-            if (Set.of("stdio", "process", "actor").contains(name.name())) {
-                throw unsafe(owner, "ambient " + name.name() + " capability");
+            if (!locals.contains(name.name())) {
+                throw unsafe(
+                        scope.function().name(),
+                        "ambient/global value '" + name.name()
+                                + "'; pass it explicitly as a parameter or region input");
             }
             return;
         }
-        if (expr instanceof Ast.AwaitExpr) throw unsafe(owner, "await");
-        if (expr instanceof Ast.NewExpr) throw unsafe(owner, "allocation with new");
-        if (expr instanceof Ast.LambdaExpr) throw unsafe(owner, "closure/lambda creation");
+        if (expr instanceof Ast.AwaitExpr) throw unsafe(scope.function().name(), "await");
+        if (expr instanceof Ast.NewExpr) throw unsafe(scope.function().name(), "allocation with new");
+        if (expr instanceof Ast.LambdaExpr) throw unsafe(scope.function().name(), "closure/lambda creation");
         if (expr instanceof Ast.ListExpr || expr instanceof Ast.ObjectExpr) {
-            throw unsafe(owner, "heap-backed collection/object literal allocation");
+            throw unsafe(scope.function().name(), "heap-backed collection/object literal allocation");
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            validateComputeExpr(binary.left(), module, owner);
-            validateComputeExpr(binary.right(), module, owner);
+            validateComputeExpr(binary.left(), scope, locals);
+            validateComputeExpr(binary.right(), scope, locals);
             return;
         }
         if (expr instanceof Ast.UnaryExpr unary) {
-            validateComputeExpr(unary.operand(), module, owner);
+            validateComputeExpr(unary.operand(), scope, locals);
             return;
         }
         if (expr instanceof Ast.AssignExpr assignment) {
-            validateComputeExpr(assignment.target(), module, owner);
-            validateComputeExpr(assignment.value(), module, owner);
+            validateComputeAssignmentTarget(assignment.target(), scope, locals);
+            validateComputeExpr(assignment.value(), scope, locals);
             return;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
-            validateComputeExpr(conditional.condition(), module, owner);
-            validateComputeExpr(conditional.whenTrue(), module, owner);
-            validateComputeExpr(conditional.whenFalse(), module, owner);
+            validateComputeExpr(conditional.condition(), scope, locals);
+            validateComputeExpr(conditional.whenTrue(), scope, locals);
+            validateComputeExpr(conditional.whenFalse(), scope, locals);
             return;
         }
         if (expr instanceof Ast.MemberExpr member) {
-            validateComputeExpr(member.receiver(), module, owner);
+            validateComputeExpr(member.receiver(), scope, locals);
             return;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            validateComputeExpr(indexed.receiver(), module, owner);
-            validateComputeExpr(indexed.index(), module, owner);
+            validateComputeExpr(indexed.receiver(), scope, locals);
+            validateComputeExpr(indexed.index(), scope, locals);
             return;
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            for (Ast.Expr element : tuple.elements()) validateComputeExpr(element, module, owner);
+            for (Ast.Expr element : tuple.elements()) validateComputeExpr(element, scope, locals);
             return;
         }
         if (expr instanceof Ast.CallExpr call) {
-            validateComputeCall(call, module, owner);
+            validateComputeCall(call, scope, locals);
         }
     }
 
-    private void validateComputeCall(Ast.CallExpr call, String module, String owner) {
+    private void validateComputeAssignmentTarget(
+            Ast.Expr target,
+            ComputeScope scope,
+            Set<String> locals) {
+        RegionAccessPath regionPath = regionAccessPath(target, scope.regionParameters());
+        if (regionPath != null) {
+            validateRegionIndexes(target, scope, locals);
+            requireRegionPermission(regionPath, scope, true);
+            return;
+        }
+        if (target instanceof Ast.NameExpr name && locals.contains(name.name())) {
+            return;
+        }
+        throw unsafe(
+                scope.function().name(),
+                "mutation of ambient or non-region object/indexed state");
+    }
+
+    private void validateRegionIndexes(
+            Ast.Expr expr,
+            ComputeScope scope,
+            Set<String> locals) {
+        if (expr instanceof Ast.IndexExpr indexed) {
+            validateComputeExpr(indexed.index(), scope, locals);
+            validateRegionIndexes(indexed.receiver(), scope, locals);
+        } else if (expr instanceof Ast.MemberExpr member) {
+            validateRegionIndexes(member.receiver(), scope, locals);
+        }
+    }
+
+    private static RegionAccessPath regionAccessPath(
+            Ast.Expr expr,
+            Set<String> regionParameters) {
+        if (expr instanceof Ast.NameExpr name) {
+            return regionParameters.contains(name.name())
+                    ? new RegionAccessPath(name.name(), "")
+                    : null;
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return regionAccessPath(indexed.receiver(), regionParameters);
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            RegionAccessPath base = regionAccessPath(member.receiver(), regionParameters);
+            if (base == null) return null;
+            String field = base.field().isEmpty()
+                    ? member.member()
+                    : base.field() + "." + member.member();
+            return new RegionAccessPath(base.root(), field);
+        }
+        return null;
+    }
+
+    private static boolean effectCovers(String declaredField, String actualField) {
+        if (declaredField == null || declaredField.isEmpty()) return true;
+        return declaredField.equals(actualField)
+                || (!actualField.isEmpty() && actualField.startsWith(declaredField + "."));
+    }
+
+    private static void requireRegionPermission(
+            RegionAccessPath path,
+            ComputeScope scope,
+            boolean write) {
+        boolean allowed = false;
+        for (RegionEffect effect : scope.effects()) {
+            if (!effect.rootParameter().equals(path.root())) continue;
+            if (!effectCovers(effect.fieldPath(), path.field())) continue;
+            if (write) {
+                if (effect.privilege().equals("writes")
+                        || effect.privilege().equals("discards")) {
+                    allowed = true;
+                    break;
+                }
+            } else if (effect.privilege().equals("reads")
+                    || effect.privilege().equals("writes")) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed) {
+            throw unsafe(
+                    scope.function().name(),
+                    (write ? "write" : "read")
+                            + " of undeclared region footprint '"
+                            + path.root()
+                            + (path.field().isEmpty() ? "" : "." + path.field())
+                            + "'");
+        }
+    }
+
+    private void validateComputeCall(
+            Ast.CallExpr call,
+            ComputeScope scope,
+            Set<String> locals) {
         for (Ast.Expr argument : call.arguments()) {
-            validateComputeExpr(argument, module, owner);
+            validateComputeExpr(argument, scope, locals);
         }
 
         if (call.callee() instanceof Ast.NameExpr direct) {
-            if (PURE_INTRINSICS.contains(direct.name())) return;
-            Ast.FunctionDecl target = resolveFunction(module, direct.name());
-            if (target != null && isCompute(target)) return;
-            throw unsafe(owner, "call to non-compute callable '" + direct.name() + "'");
+            if (!locals.contains(direct.name()) && PURE_INTRINSICS.contains(direct.name())) return;
+            if (locals.contains(direct.name())) {
+                throw unsafe(
+                        scope.function().name(),
+                        "dynamic/local callable '" + direct.name() + "'");
+            }
+            ResolvedFunction target = resolveFunctionRef(scope.module(), direct.name());
+            if (target != null && isCompute(target.declaration())) {
+                computeCalls.computeIfAbsent(scope.functionId(), ignored -> new LinkedHashSet<>())
+                        .add(target.id());
+                return;
+            }
+            throw unsafe(
+                    scope.function().name(),
+                    "call to non-compute callable '" + direct.name() + "'");
         }
 
         if (call.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr namespace) {
-            Ast.FunctionDecl target = functions.get(qualify(namespace.name(), member.member()));
-            if (target != null && isCompute(target)) return;
+            ResolvedFunction target = resolveFunctionRef(
+                    scope.module(),
+                    namespace.name() + "." + member.member());
+            if (target != null && isCompute(target.declaration())) {
+                computeCalls.computeIfAbsent(scope.functionId(), ignored -> new LinkedHashSet<>())
+                        .add(target.id());
+                return;
+            }
         }
 
-        throw unsafe(owner, "dynamic/member call; compute fnc calls must resolve statically to another compute fnc or pure intrinsic");
+        throw unsafe(
+                scope.function().name(),
+                "dynamic/member call; compute fnc calls must resolve statically "
+                        + "to another compute fnc or pure intrinsic");
+    }
+
+    private void validateComputeCallGraph() {
+        Set<String> visiting = new LinkedHashSet<>();
+        Set<String> visited = new LinkedHashSet<>();
+        for (String function : computeCalls.keySet()) {
+            if (hasCycle(function, computeCalls, visiting, visited)) {
+                throw new IllegalArgumentException(
+                        "compute fnc call graph contains recursion involving '" + function
+                                + "'; the initial device/AOT-safe subset requires finite acyclic calls");
+            }
+        }
     }
 
     private record ResolvedFunction(String id, Ast.FunctionDecl declaration) { }
