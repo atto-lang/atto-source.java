@@ -63,6 +63,14 @@ Runtime-only continuation envelopes use the same mailbox channel but are never
 visible as guest messages. They have bounded reserved headroom so a full user
 mailbox cannot silently discard a resumed `nb select` arm.
 
+Public `Channel<T>`, `SelectCase`, and `SelectSet` values are
+**execution-domain-local capabilities** in this version. They cannot be sent
+through an actor mailbox or used as actor-callable parameters/results.
+Actor-to-actor communication remains `ActorRef`/mailbox transport. This avoids
+letting a raw channel object bypass actor isolation and share mutable guest
+objects by reference. A future cross-actor channel capability would need an
+explicit copy/freeze/ownership-transfer contract before it can be admitted.
+
 ## Parent and child actors
 
 Parenthood is a **structured lifetime/supervision relation**, not a second
@@ -398,7 +406,8 @@ Implemented:
 - mailbox transport backed by Channel<MessageEnvelope>;
 - static/dynamic parser + AST + type/ownership rules;
 - `nb select` serialized actor continuation re-entry;
-- actor-owned cleanup of pending nonblocking select registrations;
+- actor-owned cleanup of pending `nb readch`, `nb writech`, dynamic
+  `nb select from ...`, and deferred static-select registrations;
 - structured parent/child cancellation;
 - uncatchable actor cancellation safepoints;
 - force-cancel isolation-revocation contract;
