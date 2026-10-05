@@ -35,16 +35,27 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.ClassDecl> importedActorClasses;
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
 
-    private OwnershipChecker(Ast.Program program) {
+    private OwnershipChecker(
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> importedActorClasses) {
+        this.importedActorClasses = Map.copyOf(importedActorClasses);
         index(program);
     }
 
     public static Ast.Program check(Ast.Program program) {
-        OwnershipChecker checker = new OwnershipChecker(program);
+        return check(program, Map.of());
+    }
+
+    static Ast.Program check(
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> importedActorClasses) {
+        OwnershipChecker checker =
+                new OwnershipChecker(program, importedActorClasses);
         checker.validate(program);
         return program;
     }
@@ -1401,7 +1412,9 @@ public final class OwnershipChecker {
 
     private Ast.ClassDecl findClass(String name) {
         if (ambiguousClasses.contains(name)) return null;
-        return classes.get(name);
+        Ast.ClassDecl local = classes.get(name);
+        if (local != null) return local;
+        return importedActorClasses.get(name);
     }
 
     private void requireUsable(VarState state, String name, boolean write) {
