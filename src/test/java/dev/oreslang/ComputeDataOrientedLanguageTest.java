@@ -174,6 +174,137 @@ final class ComputeDataOrientedLanguageTest {
     }
 
     @Test
+    void computeBodyMustStayWithinDeclaredRegionEffects() {
+        assertComputeRejected("""
+                compute fnc bad(Region<Particle> particles, int i): void
+                reads particles.position;
+                {
+                  val x = particles[i].velocity;
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc bad(Region<Particle> particles, int i): void
+                reads particles.position;
+                {
+                  particles[i].position = 1;
+                  return;
+                }
+                """);
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc ok(Region<Particle> particles, int i): void
+                writes particles.position;
+                {
+                  val old = particles[i].position;
+                  particles[i].position = old;
+                  return;
+                }
+                """));
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc overwrite(Region<Particle> particles, int i): void
+                discards particles.position;
+                {
+                  particles[i].position = 1;
+                  return;
+                }
+                """));
+
+        assertComputeRejected("""
+                compute fnc badDiscardRead(Region<Particle> particles, int i): void
+                discards particles.position;
+                {
+                  val old = particles[i].position;
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void computeRejectsAmbientGlobalsAndShadowedIntrinsicCalls() {
+        assertComputeRejected("""
+                val int outside = 9;
+
+                compute fnc bad(Region<int> values): int {
+                  return outside;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc bad(Region<int> values, int sqrt): int {
+                  return sqrt(4);
+                }
+                """);
+    }
+
+    @Test
+    void computeRejectsUnboundedLoopsAndRecursiveCallGraphs() {
+        assertComputeRejected("""
+                compute fnc bad(Region<int> values): void {
+                  loop {
+                    return;
+                  }
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc bad(Region<int> values): void {
+                  for val i = 0; ; i++ {
+                    return;
+                  }
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc recurse(Region<int> values): void {
+                  recurse(values);
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc a(Region<int> values): void {
+                  b(values);
+                  return;
+                }
+
+                compute fnc b(Region<int> values): void {
+                  a(values);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void aspectV0RequiresBeforeAfterZeroArgVoidHandlers() {
+        assertComputeRejected("""
+                fnc withArg(int x): void { return; }
+                define aspect Bad as
+                  on task before withArg;
+                end
+                """);
+
+        assertComputeRejected("""
+                fnc returnsValue(): int { return 1; }
+                define aspect Bad as
+                  on task after returnsValue;
+                end
+                """);
+
+        IllegalArgumentException around = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc wrap(): void { return; }
+                        define aspect Bad as
+                          on fnc around wrap;
+                        end
+                        """));
+        assertTrue(around.getMessage().contains("around advice is reserved"));
+    }
+
+    @Test
     void effectTargetsMustBeRegionParameters() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
@@ -261,7 +392,7 @@ final class ComputeDataOrientedLanguageTest {
                           on gpu_launch around wrap;
                         end
                         """));
-        assertTrue(failure.getMessage().contains("around advice is forbidden"));
+        assertTrue(failure.getMessage().contains("around advice is reserved"));
     }
 
     @Test
