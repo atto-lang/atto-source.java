@@ -13,6 +13,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -138,8 +139,53 @@ public final class GpuRuntime {
         default void release(long nativeHandle) { }
     }
 
+    /**
+     * Shared ownership of one backend-native resource. Multiple Oreslang views
+     * (for example Array -> Stream -> collected Array) may intentionally refer
+     * to the same native handle; the backend release hook runs exactly once.
+     */
+    private static final class ResourceLease {
+        private final Backend backend;
+        private final long nativeHandle;
+        private final AtomicInteger references = new AtomicInteger(1);
+        private final AtomicBoolean backendReleased = new AtomicBoolean();
+
+        private ResourceLease(Backend backend, long nativeHandle) {
+            this.backend = Objects.requireNonNull(backend, "backend");
+            this.nativeHandle = requireNativeHandle(nativeHandle, "native resource");
+        }
+
+        private ResourceLease retain() {
+            while (true) {
+                int current = references.get();
+                if (current <= 0 || backendReleased.get()) {
+                    throw new GpuTransferException("native GPU resource has already been released");
+                }
+                if (references.compareAndSet(current, Math.addExact(current, 1))) return this;
+            }
+        }
+
+        private void release(String kind) {
+            int remaining = references.decrementAndGet();
+            if (remaining < 0) {
+                references.incrementAndGet();
+                throw new GpuTransferException(kind + " native resource lease was released too many times");
+            }
+            if (remaining == 0 && backendReleased.compareAndSet(false, true)) {
+                backendCallVoid(backend, "release(" + kind + ")", () -> backend.release(nativeHandle));
+            }
+        }
+
+        private void ensureLive(String kind) {
+            if (references.get() <= 0 || backendReleased.get()) {
+                throw new GpuTransferException(kind + " native resource has already been released");
+            }
+        }
+    }
+
     /** Opaque GPU-resident array resource. Guest code cannot access the native handle. */
     public static final class ArrayHandle {
+        private final ResourceLease lease;
         private final Backend backend;
         private final long nativeHandle;
         private final String elementAbiType;
@@ -147,19 +193,25 @@ public final class GpuRuntime {
         private final AtomicBoolean released = new AtomicBoolean();
 
         private ArrayHandle(Backend backend, long nativeHandle, String elementAbiType, long length) {
-            this.backend = Objects.requireNonNull(backend, "backend");
-            this.nativeHandle = requireNativeHandle(nativeHandle, "GpuArray");
+            this(new ResourceLease(backend, nativeHandle), elementAbiType, length, false);
+        }
+
+        private ArrayHandle(ResourceLease lease, String elementAbiType, long length, boolean retain) {
+            this.lease = retain ? lease.retain() : lease;
+            this.backend = lease.backend;
+            this.nativeHandle = lease.nativeHandle;
             this.elementAbiType = normalizeDeviceScalarType(elementAbiType);
             if (length < 0) throw new IllegalArgumentException("GpuArray length cannot be negative");
             this.length = length;
         }
 
-        public String backendName() { return backend.name(); }
-        public String elementAbiType() { return elementAbiType; }
+        public String backendName() { ensureLive(); return backend.name(); }
+        public String elementAbiType() { ensureLive(); return elementAbiType; }
         public long length() { ensureLive(); return length; }
 
         private void ensureLive() {
             if (released.get()) throw new GpuTransferException("GpuArray native resource has already been released");
+            lease.ensureLive("GpuArray");
         }
     }
 
@@ -200,6 +252,7 @@ public final class GpuRuntime {
 
     /** Opaque GPU-resident sequential stream resource. */
     public static final class StreamHandle {
+        private final ResourceLease lease;
         private final Backend backend;
         private final long nativeHandle;
         private final String elementAbiType;
@@ -207,8 +260,13 @@ public final class GpuRuntime {
         private final AtomicBoolean released = new AtomicBoolean();
 
         private StreamHandle(Backend backend, long nativeHandle, String elementAbiType, long lengthHint) {
-            this.backend = Objects.requireNonNull(backend, "backend");
-            this.nativeHandle = requireNativeHandle(nativeHandle, "GpuStream");
+            this(new ResourceLease(backend, nativeHandle), elementAbiType, lengthHint, false);
+        }
+
+        private StreamHandle(ResourceLease lease, String elementAbiType, long lengthHint, boolean retain) {
+            this.lease = retain ? lease.retain() : lease;
+            this.backend = lease.backend;
+            this.nativeHandle = lease.nativeHandle;
             this.elementAbiType = normalizeDeviceScalarType(elementAbiType);
             if (lengthHint < -1) {
                 throw new IllegalArgumentException("GpuStream length hint must be -1 or non-negative");
@@ -216,12 +274,13 @@ public final class GpuRuntime {
             this.lengthHint = lengthHint;
         }
 
-        public String backendName() { return backend.name(); }
-        public String elementAbiType() { return elementAbiType; }
+        public String backendName() { ensureLive(); return backend.name(); }
+        public String elementAbiType() { ensureLive(); return elementAbiType; }
         public long lengthHint() { ensureLive(); return lengthHint; }
 
         private void ensureLive() {
             if (released.get()) throw new GpuTransferException("GpuStream native resource has already been released");
+            lease.ensureLive("GpuStream");
         }
     }
 
@@ -413,7 +472,9 @@ public final class GpuRuntime {
                 () -> array.backend.openStream(
                         array.elementAbiType, array.nativeHandle, array.length));
         requireNativeHandle(nativeHandle, "GpuStream from backend '" + array.backend.name() + "'");
-        return new StreamHandle(array.backend, nativeHandle, array.elementAbiType, array.length);
+        return nativeHandle == array.nativeHandle
+                ? new StreamHandle(array.lease, array.elementAbiType, array.length, true)
+                : new StreamHandle(array.backend, nativeHandle, array.elementAbiType, array.length);
     }
 
     public ArrayHandle collect(StreamHandle stream) {
@@ -426,11 +487,13 @@ public final class GpuRuntime {
             throw new GpuExecutionException(
                     "GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
         }
-        return new ArrayHandle(
-                stream.backend,
-                collected.nativeHandle(),
-                stream.elementAbiType,
-                collected.length());
+        return collected.nativeHandle() == stream.nativeHandle
+                ? new ArrayHandle(stream.lease, stream.elementAbiType, collected.length(), true)
+                : new ArrayHandle(
+                        stream.backend,
+                        collected.nativeHandle(),
+                        stream.elementAbiType,
+                        collected.length());
     }
 
     public List<?> downloadStream(StreamHandle stream) {
@@ -442,7 +505,7 @@ public final class GpuRuntime {
         if (!array.released.compareAndSet(false, true)) {
             throw new GpuTransferException("GpuArray native resource has already been released");
         }
-        backendCallVoid(array.backend, "release(GpuArray)", () -> array.backend.release(array.nativeHandle));
+        array.lease.release("GpuArray");
     }
 
     public void release(MatrixHandle matrix) {
@@ -455,7 +518,7 @@ public final class GpuRuntime {
         if (!stream.released.compareAndSet(false, true)) {
             throw new GpuTransferException("GpuStream native resource has already been released");
         }
-        backendCallVoid(stream.backend, "release(GpuStream)", () -> stream.backend.release(stream.nativeHandle));
+        stream.lease.release("GpuStream");
     }
 
     private static long requireNativeHandle(long nativeHandle, String where) {
