@@ -572,6 +572,40 @@ final class ParserTest {
     }
 
     @Test
+    void actorFieldInitializersUseStartupEffectContext() {
+        IllegalArgumentException awaited = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          let int value = await 1;
+                          pub run(): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                awaited.getMessage().contains("constructors cannot await")
+                        || awaited.getMessage().contains("cannot await or suspend"),
+                awaited.getMessage());
+
+        IllegalArgumentException shared = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc make_state() -> int {
+                          val state = SharedMutex.new(1);
+                          return 1;
+                        }
+
+                        define actor Worker as
+                          let int value = make_state();
+                          pub run(): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                shared.getMessage().contains("SharedMutex")
+                        || shared.getMessage().contains("external shared mutable state"),
+                shared.getMessage());
+    }
+
+    @Test
     void actorConstructorNoSuspendRulePropagatesThroughPrivateHelpers() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
