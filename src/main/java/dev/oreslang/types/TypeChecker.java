@@ -1960,37 +1960,18 @@ public final class TypeChecker {
                     }
                     yield new Function(List.of(), Primitive.BOOL);
                 }
-                case "send" -> {
-                    if (named.arguments().size() != 1
-                            || !(named.arguments().getFirst() instanceof Named actorType)) {
+                case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
+                        "raw ActorRef mailbox operations are runtime-private; "
+                                + "invoke a declared typed actor protocol method instead");
+                default -> {
+                    if (named.arguments().size() == 1) {
                         throw new IllegalArgumentException(
-                                "ActorRef.send requires ActorRef<ConcreteActor>");
+                                "actor protocol methods are not first-class values; invoke '"
+                                        + member + "(...)' directly through the ActorRef");
                     }
-                    Ast.ClassDecl actorClass = findClass(actorType.name());
-                    if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException(
-                                "ActorRef.send requires a concrete actor class");
-                    }
-                    Ast.MethodDecl receive = actorClass.methods().stream()
-                            .filter(method -> !method.isStatic()
-                                    && method.visibility() == Ast.Visibility.PUBLIC
-                                    && method.name().equals("receive"))
-                            .findFirst()
-                            .orElseThrow(() -> new IllegalArgumentException(
-                                    "actor class '" + actorClass.name()
-                                            + "' has no public receive(message) contract"));
-                    Type message = substituteGenerics(
-                            resolveParam(
-                                    receive.parameters().getFirst(),
-                                    new HashSet<>(actorClass.genericParameters()),
-                                    actorType),
-                            classGenericBindings(actorClass, actorType));
-                    yield new Function(List.of(message), Primitive.VOID);
+                    throw new IllegalArgumentException(
+                            "unknown ActorRef member '" + member + "'");
                 }
-                case "receive", "mailbox" -> throw new IllegalArgumentException(
-                        "actor receive/mailbox is runtime-owned; use ActorRef.send(message)");
-                default -> throw new IllegalArgumentException(
-                        "unknown ActorRef member '" + member + "'");
             };
         }
         return null;
