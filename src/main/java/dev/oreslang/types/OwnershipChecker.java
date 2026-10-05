@@ -175,6 +175,10 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW) {
+                throw error("cannot destructure a borrowed aggregate into owned bindings; "
+                        + "borrow provenance for destructured members is not represented end-to-end");
+            }
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
