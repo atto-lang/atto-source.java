@@ -187,17 +187,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         try {
             registrar.accept(completion);
         } catch (Throwable failure) {
-            // Promise-style constructor semantics: a registrar failure rejects
-            // only if the callback has not already won the single-shot race.
+            // Promise-style constructor semantics: an ordinary registrar
+            // failure rejects only if the callback has not already won the
+            // single-shot race. Fatal VM/thread/linkage failures are never
+            // converted into ordinary Future data, even when they also become
+            // the terminal diagnostic for an otherwise-unsettled Future.
             if (callbackClaimed.compareAndSet(false, true)) {
                 future.failFromRuntime(failure);
-            } else if (failure instanceof VirtualMachineError fatal) {
-                throw fatal;
-            } else if (failure instanceof ThreadDeath fatal) {
-                throw fatal;
-            } else if (failure instanceof LinkageError fatal) {
-                throw fatal;
             }
+            rethrowIfFatal(failure);
         }
         return future;
     }
@@ -504,10 +502,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
 
+        Error firstFatal = null;
         Waiter<T> waiter;
         while ((waiter = waiters.poll()) != null) {
-            notifyWaiter(waiter, terminal);
+            try {
+                notifyWaiter(waiter, terminal);
+            } catch (VirtualMachineError fatal) {
+                if (firstFatal == null) firstFatal = fatal;
+            } catch (ThreadDeath fatal) {
+                if (firstFatal == null) firstFatal = fatal;
+            } catch (LinkageError fatal) {
+                if (firstFatal == null) firstFatal = fatal;
+            }
         }
+        if (firstFatal != null) throw firstFatal;
         return true;
     }
 
@@ -608,6 +616,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     public void obtrudeException(Throwable ex) {
         throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
+    }
+
+    private static void rethrowIfFatal(Throwable failure) {
+        if (failure instanceof VirtualMachineError fatal) throw fatal;
+        if (failure instanceof ThreadDeath fatal) throw fatal;
+        if (failure instanceof LinkageError fatal) throw fatal;
     }
 
     static Throwable unwrap(Throwable failure) {
