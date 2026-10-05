@@ -655,7 +655,8 @@ public final class OwnershipChecker {
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
 
@@ -671,7 +672,8 @@ public final class OwnershipChecker {
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
 
@@ -697,7 +699,8 @@ public final class OwnershipChecker {
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name());
-                    return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                    Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
+                    return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
             }
 
@@ -786,7 +789,8 @@ public final class OwnershipChecker {
                     throw error("method '" + target.owner().name() + "." + method.name()
                             + "' cannot return move-only state through a mutex guard/critical-section borrow");
                 }
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef callResult = callableResultType(signature.result(), method.async(), false);
+                return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
 
@@ -1684,6 +1688,20 @@ public final class OwnershipChecker {
             }
         }
         return Ast.TypeRef.inferred();
+    }
+
+    private Ast.TypeRef callableResultType(
+            Ast.TypeRef result,
+            boolean async,
+            boolean generator) {
+        if (generator) {
+            return new Ast.TypeRef(
+                    async ? "AsyncGenerator" : "Generator",
+                    List.of(result),
+                    false);
+        }
+        if (async) return new Ast.TypeRef("Future", List.of(result), false);
+        return result;
     }
 
     private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType, boolean asyncIteration) {
