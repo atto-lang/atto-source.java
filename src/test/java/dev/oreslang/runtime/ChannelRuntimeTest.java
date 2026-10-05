@@ -117,4 +117,36 @@ final class ChannelRuntimeTest {
         assertTrue(read.isCompletedExceptionally());
         assertThrows(ChannelRuntime.ChannelClosedException.class, () -> channel.tryWrite("nope"));
     }
+
+    @Test
+    void cancellingPendingReadDetachesItBeforeLaterWrites() {
+        var channel = ChannelRuntime.<String>channel(1);
+        var read = channel.read();
+
+        assertTrue(read.cancel(false));
+        assertTrue(channel.tryWrite("preserved"));
+        assertEquals("preserved", channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void cancellingPendingWritePreventsLaterReadFromObservingIt() {
+        var channel = ChannelRuntime.<String>rendezvous();
+        var write = channel.write("cancelled");
+
+        assertTrue(write.cancel(false));
+        assertTrue(channel.tryRead().isEmpty());
+    }
+
+    @Test
+    void cancellationCannotWinAfterChannelCommit() throws Exception {
+        var channel = ChannelRuntime.<String>rendezvous();
+        var read = channel.read();
+
+        var write = channel.write("committed");
+        assertFalse(read.cancel(false), "committed read must reject late cancellation");
+        assertFalse(write.cancel(false), "committed write must reject late cancellation");
+        assertEquals("committed", read.get(1, TimeUnit.SECONDS));
+        assertNull(write.get(1, TimeUnit.SECONDS));
+    }
+
 }
