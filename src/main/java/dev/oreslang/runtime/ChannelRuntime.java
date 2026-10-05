@@ -273,15 +273,20 @@ public final class ChannelRuntime {
         public OresFuture<T> read() {
             List<Runnable> completions = new ArrayList<>();
             AtomicReference<ReadWaiter<T>> holder = new AtomicReference<>();
-            OresFuture<T> pending = new OresFuture<>(() -> {
-                ReadWaiter<T> waiter = holder.get();
-                if (waiter == null) return;
-                List<Runnable> wake = new ArrayList<>();
-                synchronized (Channel.this) {
-                    if (readers.remove(waiter)) snapshotReadinessLocked(wake);
-                }
-                runCompletions(wake);
-            });
+            OresFuture<T> pending = new OresFuture<>(
+                    () -> {
+                        ReadWaiter<T> waiter = holder.get();
+                        if (waiter == null) return false;
+                        List<Runnable> wake = new ArrayList<>();
+                        boolean removed;
+                        synchronized (Channel.this) {
+                            removed = readers.remove(waiter);
+                            if (removed) snapshotReadinessLocked(wake);
+                        }
+                        runCompletions(wake);
+                        return removed;
+                    },
+                    () -> { });
             ReadWaiter<T> waiter = new ReadWaiter<>(pending);
             holder.set(waiter);
 
@@ -311,15 +316,20 @@ public final class ChannelRuntime {
             Objects.requireNonNull(value, "channel values cannot be null");
             List<Runnable> completions = new ArrayList<>();
             AtomicReference<WriteWaiter<T>> holder = new AtomicReference<>();
-            OresFuture<Void> pending = new OresFuture<>(() -> {
-                WriteWaiter<T> waiter = holder.get();
-                if (waiter == null) return;
-                List<Runnable> wake = new ArrayList<>();
-                synchronized (Channel.this) {
-                    if (writers.remove(waiter)) snapshotReadinessLocked(wake);
-                }
-                runCompletions(wake);
-            });
+            OresFuture<Void> pending = new OresFuture<>(
+                    () -> {
+                        WriteWaiter<T> waiter = holder.get();
+                        if (waiter == null) return false;
+                        List<Runnable> wake = new ArrayList<>();
+                        boolean removed;
+                        synchronized (Channel.this) {
+                            removed = writers.remove(waiter);
+                            if (removed) snapshotReadinessLocked(wake);
+                        }
+                        runCompletions(wake);
+                        return removed;
+                    },
+                    () -> { });
             WriteWaiter<T> waiter = new WriteWaiter<>(value, pending);
             holder.set(waiter);
 
