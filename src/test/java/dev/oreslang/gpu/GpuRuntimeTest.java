@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -160,6 +161,27 @@ final class GpuRuntimeTest {
         assertEquals("stream-test", collected.backendName());
         assertEquals(3L, collected.length());
         assertEquals(List.of(1L, 2L, 3L), runtime.downloadArray(collected));
+    }
+
+    @Test
+    void aliasedArrayStreamAndCollectedViewsReleaseNativeHandleExactlyOnce() {
+        TransferBackend backend = new TransferBackend("alias-release");
+        GpuRuntime.installBackend(backend);
+        GpuRuntime runtime = new GpuRuntime();
+
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i64", List.of(1L, 2L, 3L));
+        GpuRuntime.StreamHandle stream = runtime.stream(array);
+        GpuRuntime.ArrayHandle collected = runtime.collect(stream);
+
+        runtime.release(array);
+        assertEquals(List.of(1L, 2L, 3L), runtime.downloadArray(collected));
+
+        runtime.release(stream);
+        assertEquals(List.of(1L, 2L, 3L), runtime.downloadArray(collected));
+        assertEquals(0, backend.releaseCount());
+
+        runtime.release(collected);
+        assertEquals(1, backend.releaseCount());
     }
 
     @Test
@@ -322,6 +344,7 @@ final class GpuRuntimeTest {
         private final String name;
         private final AtomicLong nextHandle = new AtomicLong(1L);
         private final Map<Long, List<?>> buffers = new HashMap<>();
+        private final AtomicInteger releaseCount = new AtomicInteger();
 
         private TransferBackend(String name) {
             this.name = name;
@@ -346,7 +369,12 @@ final class GpuRuntimeTest {
 
         @Override
         public synchronized void release(long nativeHandle) {
-            buffers.remove(nativeHandle);
+            if (buffers.remove(nativeHandle) == null) {
+                throw new IllegalStateException("double/stale native test release " + nativeHandle);
+            }
+            releaseCount.incrementAndGet();
         }
+
+        private int releaseCount() { return releaseCount.get(); }
     }
 }
