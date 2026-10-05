@@ -7,6 +7,59 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class GeneratorRuntimeTest {
     @Test
+    void closeAtYieldWaitsForTheProducerToLeaveItsGuestTurn() throws Exception {
+        CountDownLatch leaving = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try { turn.run(); }
+            finally {
+                leaving.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try { allowExit.await(); break; }
+                    catch (InterruptedException ignored) { interrupted = true; }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        }); var generator = GeneratorRuntime.generator(runtime, emitter -> emitter.emit(1))) {
+            assertEquals(1, generator.nextStep().value());
+            java.util.concurrent.FutureTask<Void> close =
+                    new java.util.concurrent.FutureTask<>(() -> { generator.close(); return null; });
+            Thread closer = Thread.ofVirtual().start(close);
+            try {
+                assertTrue(leaving.await(2, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> close.get(100, TimeUnit.MILLISECONDS));
+            } finally { allowExit.countDown(); }
+            close.get(2, TimeUnit.SECONDS);
+            closer.join();
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
+    void terminalPullWaitsForTheProducerToLeaveItsGuestTurn() throws Exception {
+        CountDownLatch leaving = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            turn.run();
+            leaving.countDown();
+            try { allowExit.await(); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        }); var generator = GeneratorRuntime.generator(runtime, emitter -> {})) {
+            java.util.concurrent.FutureTask<GeneratorRuntime.Step<Object>> pull =
+                    new java.util.concurrent.FutureTask<>(generator::nextStep);
+            Thread consumer = Thread.ofVirtual().start(pull);
+            try {
+                assertTrue(leaving.await(2, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> pull.get(100, TimeUnit.MILLISECONDS));
+            } finally { allowExit.countDown(); }
+            assertTrue(pull.get(2, TimeUnit.SECONDS).done());
+            consumer.join();
+        }
+    }
+    @Test
     void rejectedBackingGuestTurnFailsThePullInsteadOfParkingForever() {
         assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), () -> {
             try (AsyncRuntime runtime = new AsyncRuntime(turn -> {

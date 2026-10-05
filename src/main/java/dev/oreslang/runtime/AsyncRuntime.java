@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -11,6 +13,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -45,6 +48,15 @@ public final class AsyncRuntime implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final ExecutorService executor;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final ConcurrentHashMap<OresFuture<?>, TaskExit> taskExits = new ConcurrentHashMap<>();
+
+    private static final class TaskExit {
+        // 0: not entered, 1: running, 2: guest turn exited/cancelled before entry.
+        private final AtomicInteger state = new AtomicInteger();
+        private final CountDownLatch exited = new CountDownLatch(1);
+        private volatile Thread thread;
+        private volatile OresFuture<?> completion;
+    }
 
     public AsyncRuntime() {
         this(TurnExecutor.direct());
@@ -78,18 +90,45 @@ public final class AsyncRuntime implements AutoCloseable {
         if (closed.get()) throw new RejectedExecutionException("async runtime is closed");
 
         AtomicReference<Future<?>> backing = new AtomicReference<>();
+        TaskExit exit = new TaskExit();
         OresFuture<T> completion = new OresFuture<>(() -> {
             Future<?> carrier = backing.getAndSet(null);
             if (carrier != null) carrier.cancel(true);
+            if (exit.state.compareAndSet(0, 2)) {
+                taskExits.remove(exit.completion, exit);
+                exit.exited.countDown();
+            }
         });
+        exit.completion = completion;
+        taskExits.put(completion, exit);
         final Future<?> scheduled;
         try {
-            scheduled = executor.submit(() -> runTask(task, completion));
+            scheduled = executor.submit(() -> {
+                if (!exit.state.compareAndSet(0, 1)) {
+                    taskExits.remove(completion, exit);
+                    return;
+                }
+                exit.thread = Thread.currentThread();
+                try { runTask(task, completion); }
+                finally {
+                    // TurnExecutor has returned, including its context leave.
+                    exit.state.set(2);
+                    taskExits.remove(completion, exit);
+                    exit.exited.countDown();
+                }
+            });
         } catch (RejectedExecutionException rejected) {
+            taskExits.remove(completion, exit);
+            exit.state.set(2);
+            exit.exited.countDown();
             throw new RejectedExecutionException("async runtime is closed", rejected);
         }
         backing.set(scheduled);
-        if (completion.isCancelled()) scheduled.cancel(true);
+        if (completion.isCancelled()) {
+            scheduled.cancel(true);
+            if (exit.state.compareAndSet(0, 2)) exit.exited.countDown();
+            if (exit.state.get() == 2) taskExits.remove(completion, exit);
+        }
         completion.whenCompleteRuntime((value, failure) -> {
             // Cancellation delivers waiters before invoking the cancellation hook.
             // Leave the carrier attached until that hook has interrupted it.
@@ -99,6 +138,18 @@ public final class AsyncRuntime implements AutoCloseable {
         // Close may race submission after the initial check.
         if (closed.get()) completion.cancel(true);
         return completion;
+    }
+
+    /** Cancellation settles a Future before its carrier leaves the guest turn. */
+    void awaitTaskExit(OresFuture<?> task) {
+        TaskExit exit = taskExits.get(task);
+        if (exit == null || exit.thread == Thread.currentThread()) return;
+        boolean interrupted = false;
+        for (;;) {
+            try { exit.exited.await(); break; }
+            catch (InterruptedException ignored) { interrupted = true; }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
     }
 
     private <T> void runTask(Task<T> task, OresFuture<T> completion) {

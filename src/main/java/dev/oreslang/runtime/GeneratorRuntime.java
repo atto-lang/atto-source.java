@@ -106,6 +106,7 @@ public final class GeneratorRuntime {
          */
         public OresFuture<Step<T>> nextStep() {
             if (engine.isClosed()) {
+                engine.awaitProducerExit();
                 return OresFuture.completed(Step.doneStep());
             }
             return runtime.submit(engine::next);
@@ -132,6 +133,7 @@ public final class GeneratorRuntime {
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicReference<OresFuture<Void>> producerTask = new AtomicReference<>();
+        private final Object launchLock = new Object();
         private volatile boolean done;
         private volatile Throwable backingFailure;
 
@@ -145,13 +147,13 @@ public final class GeneratorRuntime {
         }
 
         private synchronized Step<T> next() {
-            if (done || closed.get()) return Step.doneStep();
+            if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
             throwIfBackingFailed();
             startIfNeeded();
             throwIfBackingFailed();
             putResume();
             Event<T> event = takeEvent();
-            if (closed.get()) return Step.doneStep();
+            if (closed.get()) { awaitProducerExit(); return Step.doneStep(); }
             throwIfBackingFailed();
             if (event instanceof YieldEvent<?> yielded) {
                 @SuppressWarnings("unchecked")
@@ -159,6 +161,7 @@ public final class GeneratorRuntime {
                 return Step.yielded(value);
             }
             done = true;
+            awaitProducerExit();
             if (event instanceof FailedEvent<?> failed) {
                 Throwable failure = failed.failure();
                 if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
@@ -169,38 +172,47 @@ public final class GeneratorRuntime {
         }
 
         private void startIfNeeded() {
-            if (!started.compareAndSet(false, true)) return;
-            OresFuture<Void> task = runtime.submit(() -> {
-                try {
-                    takeResume();
-                    if (!closed.get()) {
-                        producer.run(this::emit);
+            synchronized (launchLock) {
+                if (closed.get() || !started.compareAndSet(false, true)) return;
+                OresFuture<Void> task = runtime.submit(() -> {
+                    try {
+                        takeResume();
+                        if (!closed.get()) {
+                            producer.run(this::emit);
+                        }
+                        publish(new DoneEvent<>());
+                    } catch (CancellationException cancelled) {
+                        if (!closed.get()) publish(new FailedEvent<>(cancelled));
+                    } catch (Throwable failure) {
+                        if (!closed.get()) publish(new FailedEvent<>(failure));
                     }
-                    publish(new DoneEvent<>());
-                } catch (CancellationException cancelled) {
-                    if (!closed.get()) publish(new FailedEvent<>(cancelled));
-                } catch (Throwable failure) {
-                    if (!closed.get()) publish(new FailedEvent<>(failure));
-                }
-                return null;
-            });
-            producerTask.set(task);
-            // Admission/context entry can fail before the producer body runs.
-            // Its catch block then never publishes an event. Deliver that
-            // backing failure without blocking the runtime completion thread.
-            task.whenCompleteRuntime((value, failure) -> {
-                if (failure != null && !closed.get()) {
-                    backingFailure = OresFuture.unwrap(failure);
-                    events.offer(new FailedEvent<>(backingFailure));
-                }
-            });
-            if (closed.get()) task.cancel(true);
+                    return null;
+                });
+                producerTask.set(task);
+                // Admission/context entry can fail before the producer body runs.
+                // Its catch block then never publishes an event. Deliver that
+                // backing failure without blocking the runtime completion thread.
+                task.whenCompleteRuntime((value, failure) -> {
+                    if (failure != null && !closed.get()) {
+                        backingFailure = OresFuture.unwrap(failure);
+                        events.offer(new FailedEvent<>(backingFailure));
+                    }
+                });
+                if (closed.get()) task.cancel(true);
+            }
+        }
+
+        private void awaitProducerExit() {
+            OresFuture<Void> task;
+            synchronized (launchLock) { task = producerTask.get(); }
+            if (task != null) runtime.awaitTaskExit(task);
         }
 
         private void throwIfBackingFailed() {
             Throwable failure = backingFailure;
             if (failure == null) return;
             done = true;
+            awaitProducerExit();
             if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
             if (failure instanceof Error error) throw error;
             throw new RuntimeException(failure);
@@ -259,12 +271,17 @@ public final class GeneratorRuntime {
 
         @Override
         public void close() {
-            if (!closed.compareAndSet(false, true)) return;
-            done = true;
-            OresFuture<Void> task = producerTask.get();
-            if (task != null) task.cancel(true);
-            resumes.offer(RESUME);
-            events.offer(new DoneEvent<>());
+            boolean first = closed.compareAndSet(false, true);
+            if (first) {
+                done = true;
+                synchronized (launchLock) {
+                    OresFuture<Void> task = producerTask.get();
+                    if (task != null) task.cancel(true);
+                }
+                resumes.offer(RESUME);
+                events.offer(new DoneEvent<>());
+            }
+            awaitProducerExit();
         }
     }
 }
