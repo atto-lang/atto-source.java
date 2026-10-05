@@ -1531,7 +1531,7 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(args.getFirst() instanceof OresChannel<?> channel)) {
                             throw new IllegalArgumentException("select.readch expects Channel<T>");
                         }
-                        yield OresChannel.readCase(channel);
+                        return OresChannel.readCase(channel);
                     };
                     case "writech" -> (Invokable) args -> {
                         if (args.size() != 2) {
@@ -1540,7 +1540,7 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(args.get(0) instanceof OresChannel<?> channel)) {
                             throw new IllegalArgumentException("select.writech expects Channel<T> as its first argument");
                         }
-                        yield writeSelectCase(channel, args.get(1));
+                        return writeSelectCase(channel, args.get(1));
                     };
                     default -> throw new IllegalArgumentException("unknown select member " + name);
                 };
