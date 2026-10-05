@@ -464,7 +464,7 @@ final class ReturnedDestructuringTest {
     void objectRestRejectsDynamicShapeAndRemovedMembers() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc dynamic(string key): DynamicStruct<int> {
-                  return obj{\`key\`: 1, v: 2};
+                  return obj{`key`: 1, v: 2};
                 }
 
                 pub fnc main(): void {
