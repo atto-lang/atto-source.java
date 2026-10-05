@@ -58,6 +58,44 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void stoppingSuspendedActorDetachesNeverSettlingFutureWaiter() throws Exception {
+        OresFuture<Integer> never = new OresFuture<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawn(() -> (message, context) ->
+                    context.suspendOn(
+                            never,
+                            (value, failure, resumedContext) ->
+                                    fail("stopped actor continuation must never resume")));
+
+            actor.send("wait");
+
+            long registrationDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (never.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < registrationDeadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(
+                    1,
+                    never.pendingRuntimeWaiterCount(),
+                    "suspended actor must own exactly one detachable Future waiter");
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+
+            long detachDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (never.pendingRuntimeWaiterCount() != 0
+                    && System.nanoTime() < detachDeadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(
+                    0,
+                    never.pendingRuntimeWaiterCount(),
+                    "actor teardown must detach its pending Future waiter");
+        }
+    }
+
+    @Test
     void synchronousAttachedCallbackCannotCompleteChainOnRegistrarStack() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             AtomicBoolean insideRegistrar = new AtomicBoolean();
