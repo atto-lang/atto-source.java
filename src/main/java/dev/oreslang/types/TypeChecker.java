@@ -663,6 +663,46 @@ public final class TypeChecker {
             checkBlock(switched.defaultBody(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.SelectStmt selected) {
+            for (Ast.SelectCase arm : selected.cases()) {
+                Type element = channelElementType(
+                        typeOf(arm.channel(), env, generics, self),
+                        "select " + arm.operation().name().toLowerCase() + " case");
+                Env armEnv = new Env(env);
+                if (arm.operation() == Ast.SelectOperation.READ) {
+                    if (arm.bindingName() != null) {
+                        Type bindingType = arm.bindingType() == null
+                                ? element
+                                : resolve(arm.bindingType(), generics, self);
+                        requireAssignable(element, bindingType, "readch select binding");
+                        armEnv.define(arm.bindingName(), bindingType, Ast.BindingKind.VAL);
+                    }
+                } else {
+                    Type value = typeOf(arm.value(), env, generics, self);
+                    requireAssignable(value, element, "writech select value");
+                }
+                checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+            }
+            if (selected.defaultBody() != null) {
+                checkBlock(selected.defaultBody(), env, generics, expectedReturn, self);
+            }
+            return;
+        }
+        if (stmt instanceof Ast.DynamicSelectStmt selected) {
+            typeOf(selected.entries(), env, generics, self);
+            Env selectedEnv = new Env(env);
+            if (selected.resultBinding() != null) {
+                selectedEnv.define(
+                        selected.resultBinding(),
+                        new Named("SelectResult", List.of(Unknown.INSTANCE)),
+                        Ast.BindingKind.VAL);
+            }
+            checkBlock(selected.body(), selectedEnv, generics, expectedReturn, self);
+            if (selected.defaultBody() != null) {
+                checkBlock(selected.defaultBody(), env, generics, expectedReturn, self);
+            }
+            return;
+        }
         if (stmt instanceof Ast.TryStmt attempted) {
             checkBlock(attempted.body(), env, generics, expectedReturn, self);
             Env caught = new Env(env);
@@ -718,6 +758,9 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("select")) return new Named("$SelectFactory", List.of());
+            if (name.name().equals("channel")) return new Function(List.of(Primitive.INT), new Named("Channel", List.of(Unknown.INSTANCE)));
+            if (name.name().equals("readch") || name.name().equals("writech")) return Unknown.INSTANCE;
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -852,6 +895,53 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("channel")) {
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                    throw new IllegalArgumentException("channel<T>(capacity?) requires exactly one explicit element type");
+                }
+                if (call.arguments().size() > 1) {
+                    throw new IllegalArgumentException("channel<T>(capacity?) accepts zero or one capacity argument");
+                }
+                if (!call.arguments().isEmpty()) {
+                    requireAssignable(
+                            typeOf(call.arguments().getFirst(), env, generics, self),
+                            Primitive.INT,
+                            "channel capacity");
+                }
+                return new Named(
+                        "Channel",
+                        List.of(resolve(call.typeArguments().getFirst(), generics, self)));
+            }
+            if (call.callee() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("readch")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("readch does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException("readch expects exactly one Channel<T>");
+                }
+                return channelElementType(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        "readch");
+            }
+            if (call.callee() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("writech")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("writech does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 2) {
+                    throw new IllegalArgumentException("writech expects Channel<T> and one value");
+                }
+                Type element = channelElementType(
+                        typeOf(call.arguments().get(0), env, generics, self),
+                        "writech");
+                requireAssignable(
+                        typeOf(call.arguments().get(1), env, generics, self),
+                        element,
+                        "writech value");
+                return Primitive.VOID;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -1242,7 +1332,27 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
-            Type sumReceiver = deref(receiver);
+            Type plainReceiver = deref(receiver);
+            if (plainReceiver instanceof Named named && named.name().equals("$SelectFactory")) {
+                return switch (member.member()) {
+                    case "readch" -> new Function(
+                            List.of(new Named("Channel", List.of(Unknown.INSTANCE))),
+                            new Named("SelectEntry", List.of(Unknown.INSTANCE)));
+                    case "writech" -> new Function(
+                            List.of(new Named("Channel", List.of(Unknown.INSTANCE)), Unknown.INSTANCE),
+                            new Named("SelectEntry", List.of(Unknown.INSTANCE)));
+                    default -> throw new IllegalArgumentException("unknown select member '" + member.member() + "'");
+                };
+            }
+            if (plainReceiver instanceof Named named && named.name().equals("SelectResult")) {
+                return switch (member.member()) {
+                    case "index" -> Primitive.INT;
+                    case "key", "value", "channel" -> Unknown.INSTANCE;
+                    case "kind" -> Primitive.STRING;
+                    default -> throw new IllegalArgumentException("unknown SelectResult member '" + member.member() + "'");
+                };
+            }
+            Type sumReceiver = plainReceiver;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
             if (sumReceiver instanceof Named sumNamed
@@ -2158,6 +2268,16 @@ public final class TypeChecker {
             return new Record(members);
         }
         return type;
+    }
+
+    private Type channelElementType(Type raw, String where) {
+        Type channel = deref(raw);
+        if (channel instanceof Named named
+                && named.name().equals("Channel")
+                && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        throw new IllegalArgumentException(where + " requires Channel<T>; got " + channel);
     }
 
     private Type builtinOptionResultMember(Type receiver, String member) {
