@@ -53,6 +53,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    private Ast.ClassDecl currentClassOwner;
     private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
@@ -477,11 +478,14 @@ public final class TypeChecker {
                         "return type of async static function '" + klass.name() + "." + method.name() + "'");
             }
             Ast.ActorKind previousActorKind = currentActorKind;
+            Ast.ClassDecl previousClassOwner = currentClassOwner;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
+            currentClassOwner = klass;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
+                currentClassOwner = previousClassOwner;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -999,7 +1003,9 @@ public final class TypeChecker {
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
-                    validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + klass.name() + "." + fn.name());
+                    Ast.ClassDecl fnOwner = findDeclaringClass(klass, fn, new LinkedHashSet<>());
+                    requireClassMemberVisible(fn.visibility(), fnOwner, "static function", fn.name());
+                    validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + fnOwner.name() + "." + fn.name());
                     List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
                     Type result = checkGenericCallable(
@@ -1045,6 +1051,8 @@ public final class TypeChecker {
                             ResolvedField field = findFieldTarget(
                                     klass, named, member.member(), new LinkedHashSet<>());
                             if (field != null) {
+                                requireClassMemberVisible(
+                                        field.field().visibility(), field.owner(), "field", field.field().name());
                                 if (call.typeArgumentsPresent()) {
                                     throw new IllegalArgumentException(
                                             "function-valued field '" + member.member()
@@ -1080,6 +1088,7 @@ public final class TypeChecker {
                         Ast.MethodDecl method = target.method();
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
+                        requireClassMemberVisible(method.visibility(), owner, "method", method.name());
                         validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + owner.name() + "." + method.name());
                         List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
                         callableGenerics.addAll(method.genericParameters());
@@ -1193,6 +1202,8 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
+                    Ast.ClassDecl fnOwner = findDeclaringClass(klass, fn, new LinkedHashSet<>());
+                    requireClassMemberVisible(fn.visibility(), fnOwner, "static function", fn.name());
                     if (!fn.genericParameters().isEmpty()) {
                         throw new IllegalArgumentException(
                                 "generic static function '" + klass.name() + "." + fn.name()
@@ -1230,6 +1241,8 @@ public final class TypeChecker {
                 if (klass != null) {
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
+                        requireClassMemberVisible(
+                                field.field().visibility(), field.owner(), "field", field.field().name());
                         Type pattern = classFieldType(field.owner(), field.field());
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
@@ -1534,6 +1547,8 @@ public final class TypeChecker {
             if (klass != null) {
                 ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                 if (field != null) {
+                    requireClassMemberVisible(
+                            field.field().visibility(), field.owner(), "field", field.field().name());
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
@@ -2248,6 +2263,43 @@ public final class TypeChecker {
             if (parent != null) collectInterfaceMethodNames(parent, names, seen);
         }
         seen.remove(iface);
+    }
+
+    private void requireClassMemberVisible(
+            Ast.Visibility visibility,
+            Ast.ClassDecl owner,
+            String kind,
+            String name) {
+        if (visibility == Ast.Visibility.PRIVATE && currentClassOwner != owner) {
+            throw new IllegalArgumentException(
+                    "private " + kind + " '" + owner.name() + "." + name
+                            + "' is accessible only from code declared in class " + owner.name());
+        }
+    }
+
+    private Ast.ClassDecl findDeclaringClass(
+            Ast.ClassDecl klass,
+            Ast.MethodDecl target,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method == target) {
+                seen.remove(klass);
+                return klass;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.ClassDecl owner = findDeclaringClass(parent, target, seen);
+            if (owner != null) {
+                seen.remove(klass);
+                return owner;
+            }
+        }
+        seen.remove(klass);
+        throw new IllegalStateException(
+                "cannot find declaring class for method '" + target.name() + "'");
     }
 
     private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
