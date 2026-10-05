@@ -404,14 +404,18 @@ public final class GpuRuntime {
 
     public MatrixHandle uploadMatrix(List<?> rows) {
         Objects.requireNonNull(rows, "rows");
-        List<Object> flat = flattenMatrix(rows);
-        return new MatrixHandle(uploadArray(flat), rows.size(), matrixColumnCount(rows));
+        int columns = matrixColumnCount(rows);
+        validateMatrixShapeForUpload(rows.size(), columns);
+        List<Object> flat = flattenMatrix(rows, columns);
+        return new MatrixHandle(uploadArray(flat), rows.size(), columns);
     }
 
     public MatrixHandle uploadMatrix(String elementAbiType, List<?> rows) {
         Objects.requireNonNull(rows, "rows");
-        List<Object> flat = flattenMatrix(rows);
-        return new MatrixHandle(uploadArray(elementAbiType, flat), rows.size(), matrixColumnCount(rows));
+        int columns = matrixColumnCount(rows);
+        validateMatrixShapeForUpload(rows.size(), columns);
+        List<Object> flat = flattenMatrix(rows, columns);
+        return new MatrixHandle(uploadArray(elementAbiType, flat), rows.size(), columns);
     }
 
     public List<?> downloadMatrix(MatrixHandle matrix) {
@@ -433,9 +437,8 @@ public final class GpuRuntime {
         return new ArrayList<>(rows);
     }
 
-    private static List<Object> flattenMatrix(List<?> rows) {
-        int columns = matrixColumnCount(rows);
-        ArrayList<Object> flat = new ArrayList<>();
+    private static List<Object> flattenMatrix(List<?> rows, int columns) {
+        ArrayList<Object> flat = new ArrayList<>(Math.multiplyExact(rows.size(), columns));
         for (int row = 0; row < rows.size(); row++) {
             Object raw = rows.get(row);
             if (!(raw instanceof List<?> values)) {
@@ -449,6 +452,18 @@ public final class GpuRuntime {
             flat.addAll(values);
         }
         return flat;
+    }
+
+    private static void validateMatrixShapeForUpload(int rows, int cols) {
+        if (rows <= 0 || cols <= 0) {
+            throw new GpuTransferException(
+                    "GpuMatrix dimensions must be positive; zero-dimension matrices are not supported by GPU ABI v3");
+        }
+        try {
+            Math.multiplyExact((long) rows, (long) cols);
+        } catch (ArithmeticException overflow) {
+            throw new GpuTransferException("GpuMatrix dimensions overflow addressable length", overflow);
+        }
     }
 
     private static int matrixColumnCount(List<?> rows) {
@@ -504,7 +519,12 @@ public final class GpuRuntime {
     }
 
     public List<?> downloadStream(StreamHandle stream) {
-        return downloadArray(collect(stream));
+        ArrayHandle collected = collect(stream);
+        try {
+            return downloadArray(collected);
+        } finally {
+            release(collected);
+        }
     }
 
     public void release(ArrayHandle array) {
