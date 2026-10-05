@@ -16,6 +16,38 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ArityOverloadAotTest {
 
     @Test
+    void boundAndStaticCallableValuesParticipateInProperTailCalls() throws Exception {
+        String program = """
+                define class Counter as
+                  pub descend(int n): int {
+                    if n == 0; do return 0; fi
+                    val Fnc<int, int> next = self.descend;
+                    return next(n - 1);
+                  }
+                  pub static fnc count(int n): int {
+                    if n == 0; do return 0; fi
+                    val Fnc<int, int> next = Counter.count;
+                    return next(n - 1);
+                  }
+                end
+                pub routine main(): void {
+                  val counter = new Counter();
+                  stdio.stdout.write(counter.descend(50000));
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(Counter.count(50000));
+                  return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "bound-tailcalls.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("0:0", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void privateCallbackSlotsRetainLexicalAuthorityWithoutBecomingPublic() throws Exception {
         String program = """
                 define class Box as

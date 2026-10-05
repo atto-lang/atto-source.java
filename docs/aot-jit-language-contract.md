@@ -189,15 +189,15 @@ to select an overload. Therefore these declarations are illegal because they
 occupy the same slot:
 
 ```ores
-pub parse(int value) => int { ... }
-pub parse(String value) => String { ... } // illegal: same name + arity
+pub parse(int value): int { ... }
+pub parse(String value): String { ... } // illegal: same name + arity
 ```
 
 Likewise, changing only generic arity does not create another overload:
 
 ```ores
-pub parse<T>(T value) => T { ... }
-pub parse<T, U>(T value) => T { ... } // illegal: same runtime call arity
+pub parse<T>(T value): T { ... }
+pub parse<T, U>(T value): T { ... } // illegal: same runtime call arity
 ```
 
 Static and instance callables have separate selector namespaces, so a class may
@@ -247,7 +247,7 @@ hidden receiver. Direct calls do not allocate a closure or bound-method object.
 A first-class method value is also supported:
 
 ```ores
-val (() -> int) callback = box.pick;
+val Fnc<int> callback = box.pick;
 doWork(self.pick);
 ```
 
@@ -270,15 +270,15 @@ callback type supplies a unique arity, that arity selects the same slot as a
 direct call:
 
 ```ores
-fnc doWork((() -> int) callback) => int {
+fnc doWork(Fnc<int> callback): int {
   return callback();
 }
 
 define class Box as
-  pub pick() => int { return 1; }
-  pub pick(int value) => int { return value; }
+  pub pick(): int { return 1; }
+  pub pick(int value): int { return value; }
 
-  pub run() => int {
+  pub run(): int {
     return doWork(self.pick); // selects instance$pick$arity0
   }
 end

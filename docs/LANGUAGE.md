@@ -962,7 +962,7 @@ The compiler/runtime resolves the shared class method slot and passes `box` as a
 Methods may also be used as first-class callbacks:
 
 ```ores
-val (() -> int) callback = box.get;
+val Fnc<int> callback = box.get;
 doWork(self.get);
 ```
 
@@ -973,15 +973,15 @@ Direct calls allocate no bound-method carrier. First-class extraction logically 
 If a method name is overloaded by arity, an expected function type may select the slot:
 
 ```ores
-fnc doWork((() -> int) callback) => int {
+fnc doWork(Fnc<int> callback): int {
   return callback();
 }
 
 define class Box as
-  pub get() => int { return 1; }
-  pub get(int fallback) => int { return fallback; }
+  pub get(): int { return 1; }
+  pub get(int fallback): int { return fallback; }
 
-  pub run() => int {
+  pub run(): int {
     return doWork(self.get); // selects get/0
   }
 end

@@ -415,6 +415,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation invokableInvocation(Invokable callable, List<?> args) {
+            // Extracted method/static values must enter the same trampoline
+            // slots as direct calls, not recursively start nested trampolines.
+            if (callable instanceof BoundMethod bound) {
+                return bound.receiver.owner.prepareBoundMethodInvocation(
+                        bound.receiver, bound.methodName, objectArguments(args), bound.accessClass);
+            }
+            if (callable instanceof StaticFunctionValue function) {
+                return function.owner.prepareStaticValueInvocation(
+                        function.klass, function.functionName, objectArguments(args), function.accessClass);
+            }
             return new Invocation(this, InvocationKind.INVOKABLE, null, callable, objectArguments(args));
         }
 
@@ -1688,22 +1698,22 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
-        private Object invokeMethod(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
+        private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.instance(name, args.size());
             Ast.MethodDecl method = findMethod(receiver.klass, selector, new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
             requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
             if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
-            return callMethod(receiver, method, args);
+            return methodInvocation(receiver, method, args);
         }
 
-        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
+        private Invocation prepareStaticValueInvocation(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.staticFunction(name, args.size());
             Ast.MethodDecl fn = findStaticFunction(klass, selector, new LinkedHashSet<>());
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
             requireClassMemberVisible(fn.visibility(), declaringClass(fn), accessClass, "static function", name);
             if (!fn.genericParameters().isEmpty()) throw new IllegalArgumentException("generic static function values require direct-call specialization");
-            return callStaticFunction(klass, fn, args);
+            return staticFunctionInvocation(fn, args);
         }
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
@@ -1771,7 +1781,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             @Override public Object call(List<Object> arguments) {
-                return owner.invokeStaticFunction(klass, functionName, arguments, accessClass);
+                return owner.invoke(owner.prepareStaticValueInvocation(klass, functionName, arguments, accessClass));
             }
         }
 
@@ -1787,7 +1797,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             @Override public Object call(List<Object> arguments) {
-                return receiver.owner.invokeMethod(receiver, methodName, arguments, accessClass);
+                return receiver.owner.invoke(receiver.owner.prepareBoundMethodInvocation(receiver, methodName, arguments, accessClass));
             }
         }
 
