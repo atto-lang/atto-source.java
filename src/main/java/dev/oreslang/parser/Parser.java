@@ -925,7 +925,10 @@ public final class Parser {
     }
 
     private Ast.Stmt parseWhile() {
-        Ast.Expr condition = (check(LBRACE) || check(DO)) ? null : parseExpression();
+        if (check(LBRACE) || check(DO)) {
+            throw error(peek(), "while requires a condition; unconditional looping uses the canonical loop statement");
+        }
+        Ast.Expr condition = parseExpression();
         return new Ast.WhileStmt(condition, parseLoopBody());
     }
 
