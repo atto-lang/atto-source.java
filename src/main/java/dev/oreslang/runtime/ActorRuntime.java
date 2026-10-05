@@ -896,19 +896,13 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean ownFuture(ActorCell<?> cell, OresFuture<?> future) {
-        if (cell.stopped.get()
-                || cell.forceKillFenced
-                || cell.finalized
-                || closed.get()) {
+        if (cell.stopped.get() || cell.finalized || closed.get()) {
             future.cancel(false);
             return false;
         }
 
         cell.pendingOperations.add(future);
-        if (cell.stopped.get()
-                || cell.forceKillFenced
-                || cell.finalized
-                || closed.get()) {
+        if (cell.stopped.get() || cell.finalized || closed.get()) {
             cell.pendingOperations.remove(future);
             future.cancel(false);
             return false;
@@ -943,10 +937,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null
-                || cell.stopped.get()
-                || cell.forceKillFenced
-                || closed.get()) return false;
+        if (cell == null || cell.stopped.get() || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -956,10 +947,7 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get()
-                        || cell.forceKillFenced
-                        || cell.finalized
-                        || closed.get()) return false;
+                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
                 admitted = cell.mailbox.tryWrite(
                         MessageEnvelope.continuation(continuation));
             }
@@ -1202,11 +1190,6 @@ public final class ActorRuntime implements AutoCloseable {
         if (caller != null && caller != this) {
             throw new SecurityException(
                     "actor cannot " + operation + " through another ActorRuntime");
-        }
-        ActorCell<?> callerCell = currentActor.get();
-        if (callerCell != null && callerCell.forceKillFenced) {
-            throw new ActorCancellationSignal(
-                    "actor execution is fenced while force cancellation is pending");
         }
     }
 
@@ -2110,7 +2093,7 @@ public final class ActorRuntime implements AutoCloseable {
                 cell.forceKillFenced = false;
                 if (resume
                         && !cell.stopped.get()
-                        && !cell.finalized
+                        && !cell.finalized()
                         && !cell.mailbox.isEmpty()) {
                     resumeCells.add(cell);
                 }
@@ -2240,10 +2223,6 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
-        if (cell != null && cell.forceKillFenced) {
-            throw new ActorCancellationSignal(
-                    "actor force cancellation is pending");
-        }
         if (cell != null && cell.stopped.get()) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
