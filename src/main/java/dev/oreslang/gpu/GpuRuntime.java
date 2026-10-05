@@ -77,9 +77,15 @@ public final class GpuRuntime {
          * resource ID. Zero is invalid. Implementations should use a generation-
          * checked handle table rather than returning raw native addresses.
          */
-        long uploadArray(String elementAbiType, List<?> values);
+        default long uploadArray(String elementAbiType, List<?> values) {
+            throw new GpuCapabilityUnavailableException(
+                    "GPU backend '" + name() + "' does not support GpuArray uploads");
+        }
 
-        List<?> downloadArray(String elementAbiType, long nativeHandle, long length);
+        default List<?> downloadArray(String elementAbiType, long nativeHandle, long length) {
+            throw new GpuCapabilityUnavailableException(
+                    "GPU backend '" + name() + "' does not support GpuArray downloads");
+        }
 
         default long openStream(String elementAbiType, long arrayNativeHandle, long length) {
             return arrayNativeHandle;
