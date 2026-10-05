@@ -1,6 +1,6 @@
 import class {TestOutcome, TestCase, TestSuite, TestOptions, RunSummary} from "std/testing";
 import fnc {pass, fail, run_suite, require_success} from "std/testing";
-import class {List, ArrayList, Vector} from "std/collections";
+import module collections from "std/collections";
 
 fnc twice(int value): int {
   return value * 2;
@@ -19,7 +19,7 @@ fnc add_float(float total, int value): float {
 }
 
 fnc list_functional_contract(): TestOutcome {
-  let List<int> values = new List<int>();
+  let List<int> values = new collections.List<int>();
   values.add(1);
   values.add(2);
   values.add(3);
@@ -46,7 +46,7 @@ fnc list_functional_contract(): TestOutcome {
 }
 
 fnc family_and_generic_contract(): TestOutcome {
-  let ArrayList<int> array_list = new ArrayList<int>();
+  let ArrayList<int> array_list = new collections.ArrayList<int>();
   array_list.add(4);
   array_list.add(5);
   val ArrayList<int> mapped_array = array_list.map(twice);
@@ -57,7 +57,7 @@ fnc family_and_generic_contract(): TestOutcome {
     return fail("ArrayList.reduce must support independent accumulator type");
   fi
 
-  let Vector<int> vector = new Vector<int>();
+  let Vector<int> vector = new collections.Vector<int>();
   vector.add(6);
   vector.add(7);
   val Vector<bool> mapped_vector = vector.map(is_even);
@@ -65,7 +65,7 @@ fnc family_and_generic_contract(): TestOutcome {
     return fail("Vector.map must permit element type transformation");
   fi
 
-  let Vector<int> empty = new Vector<int>();
+  let Vector<int> empty = new collections.Vector<int>();
   if !empty.reduce(add_ints).is_none(); do
     return fail("unseeded reduce on empty sequence must return None");
   fi
@@ -73,7 +73,7 @@ fnc family_and_generic_contract(): TestOutcome {
 }
 
 fnc iterator_snapshot_contract(): TestOutcome {
-  let List<int> values = new List<int>();
+  let List<int> values = new collections.List<int>();
   values.add(10);
   values.add(20);
   values.add(30);
@@ -101,7 +101,7 @@ fnc iterator_snapshot_contract(): TestOutcome {
 }
 
 fnc independent_iterators_contract(): TestOutcome {
-  let Vector<int> values = new Vector<int>();
+  let Vector<int> values = new collections.Vector<int>();
   values.add(1);
   values.add(2);
 
