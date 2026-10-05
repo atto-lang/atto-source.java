@@ -1182,8 +1182,8 @@ public final class Parser {
             return new Ast.IfStmt(branches, elseBody);
         }
 
-        // Keyword-delimited form: if condition then ... elseif condition then ... else ... fi.
-        // 'do' remains accepted as a compatibility spelling for existing source.
+        // Keyword-delimited form: if condition then ... elseif/elif condition then ... else ... fi.
+        // 'then' is canonical; 'do' remains accepted per branch as a compatibility spelling.
         match(SEMICOLON);
         if (!match(THEN, DO)) throw error(peek(), "expected 'then' after if condition");
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
