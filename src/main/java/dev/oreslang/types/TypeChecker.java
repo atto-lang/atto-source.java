@@ -2121,7 +2121,7 @@ public final class TypeChecker {
         }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
-                || ref.name().equals("Fnc")) {
+                || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
                     operator + " requires a nominal/runtime-reifiable type; use 'matches' for structural patterns");
         }
@@ -3291,9 +3291,11 @@ public final class TypeChecker {
                 }
                 yield new Named("SharedMutex", List.of(element));
             }
-            case "Fnc" -> {
+            case "Fnc", "Function" -> {
                 List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
-                if (args.isEmpty()) throw new IllegalArgumentException("Fnc requires at least a result type");
+                if (args.isEmpty()) {
+                    throw new IllegalArgumentException(ref.name() + " requires at least a result type");
+                }
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
