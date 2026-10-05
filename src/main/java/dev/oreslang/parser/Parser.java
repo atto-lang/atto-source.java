@@ -747,9 +747,20 @@ public final class Parser {
 
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
         if (match(LPAREN)) {
-            Ast.TypeRef grouped = parseTypeRef();
+            if (match(RPAREN)) return Ast.TypeRef.tupleType(List.of());
+            Ast.TypeRef first = parseTypeRef();
+            if (match(COMMA)) {
+                List<Ast.TypeRef> elements = new ArrayList<>();
+                elements.add(first);
+                while (!check(RPAREN)) {
+                    elements.add(parseTypeRef());
+                    if (!match(COMMA)) break;
+                }
+                consume(RPAREN, "expected ')' after tuple type");
+                return Ast.TypeRef.tupleType(elements);
+            }
             consume(RPAREN, "expected ')' after grouped type");
-            return grouped;
+            return first;
         }
 
         String name;
@@ -757,6 +768,29 @@ public final class Parser {
         else if (match(SELF)) name = "self";
         else if (match(NULL)) name = "null";
         else name = parseQualifiedName();
+
+        if (name.equals("Tuple") && (check(LBRACKET) || check(LT))) {
+            Token.Type close = match(LBRACKET) ? RBRACKET : GT;
+            List<Ast.TypeRef> elements = new ArrayList<>();
+            if (!check(close)) {
+                do elements.add(parseTypeRef()); while (match(COMMA));
+            }
+            consume(close, "expected closing delimiter after Tuple type arguments");
+            return Ast.TypeRef.tupleType(elements);
+        }
+
+        if (name.equals("FixedArray") && (check(LBRACKET) || check(LT))) {
+            Token.Type close = match(LBRACKET) ? RBRACKET : GT;
+            Ast.TypeRef element = parseTypeRef();
+            consume(COMMA, "FixedArray requires element type and compile-time length");
+            Token lengthToken = consume(INT, "FixedArray length must be a non-negative compile-time integer");
+            long rawLength = Long.parseLong(lengthToken.lexeme().replace("_", ""));
+            if (rawLength > Integer.MAX_VALUE) {
+                throw error(lengthToken, "FixedArray length exceeds implementation limit");
+            }
+            consume(close, "expected closing delimiter after FixedArray type");
+            return Ast.TypeRef.fixedArrayType(element, Math.toIntExact(rawLength));
+        }
 
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
@@ -840,10 +874,12 @@ public final class Parser {
 
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
-            return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
+            return parseDestructure(check(LBRACE) ? Ast.DestructureKind.OBJECT : Ast.DestructureKind.SEQUENCE, inherited);
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
-        if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure(Ast.DestructureKind.SEQUENCE, null);
+        if ((check(LBRACKET) || check(LPAREN)) && looksLikeDestructure()) {
+            return parseDestructure(Ast.DestructureKind.SEQUENCE, null);
+        }
         if (check(LBRACE) && looksLikeDestructure()) return parseDestructure(Ast.DestructureKind.OBJECT, null);
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
@@ -1149,8 +1185,11 @@ public final class Parser {
     private Ast.DestructureStmt parseDestructure(Ast.DestructureKind kind, Ast.BindingKind inheritedKind) {
         Token.Type close;
         if (kind == Ast.DestructureKind.SEQUENCE) {
-            consume(LBRACKET, "expected '['");
-            close = RBRACKET;
+            if (match(LBRACKET)) close = RBRACKET;
+            else {
+                consume(LPAREN, "expected '(' or '['");
+                close = RPAREN;
+            }
         } else {
             consume(LBRACE, "expected '{'");
             close = RBRACE;
@@ -1160,7 +1199,7 @@ public final class Parser {
 
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
         Ast.BindingKind currentKind = inheritedKind;
-        do {
+        while (true) {
             if (isBindingKind(peek().type())) currentKind = parseBindingKind();
 
             if (isDiscardToken(peek())) {
@@ -1169,21 +1208,23 @@ public final class Parser {
                 }
                 advance();
                 bindings.add(Ast.DestructureBinding.discard());
-                continue;
+            } else {
+                if (currentKind == null) {
+                    throw error(peek(), "destructure binding kind must be declared before the first binding");
+                }
+                String name = consume(IDENT, "expected binding name in destructure").lexeme();
+                bindings.add(new Ast.DestructureBinding(currentKind, name));
             }
 
-            if (currentKind == null) {
-                throw error(peek(), "destructure binding kind must be declared before the first binding");
-            }
-            String name = consume(IDENT, "expected binding name in destructure").lexeme();
-            bindings.add(new Ast.DestructureBinding(currentKind, name));
-        } while (match(COMMA));
+            if (!match(COMMA) || check(close)) break;
+        }
 
-        consume(close, kind == Ast.DestructureKind.SEQUENCE ? "expected ']'" : "expected '}'");
+        consume(close, kind == Ast.DestructureKind.SEQUENCE ? "expected ')' or ']'" : "expected '}'");
+        Ast.TypeRef declaredType = match(COLON) ? parseTypeRef() : null;
         consume(EQUAL, "expected '=' after destructure pattern");
         Ast.Expr initializer = parseExpression();
         consumeStatementTerminator("destructure should end with ';'");
-        return new Ast.DestructureStmt(kind, bindings, initializer);
+        return new Ast.DestructureStmt(kind, bindings, declaredType, initializer);
     }
 
     private boolean looksLikeDestructure() {
@@ -1197,6 +1238,7 @@ public final class Parser {
         Token.Type open = tokens.get(current + 1).type();
         Token.Type close;
         if (open == LBRACKET) close = RBRACKET;
+        else if (open == LPAREN) close = RPAREN;
         else if (open == LBRACE) close = RBRACE;
         else return false;
 
@@ -1207,7 +1249,9 @@ public final class Parser {
             else if (type == close) {
                 depth--;
                 if (depth == 0) {
-                    return i + 1 < tokens.size() && tokens.get(i + 1).type() == EQUAL;
+                    if (i + 1 >= tokens.size()) return false;
+                    Token.Type after = tokens.get(i + 1).type();
+                    return after == EQUAL || after == COLON;
                 }
             }
         }
@@ -1713,11 +1757,15 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            if (match(RPAREN)) return new Ast.TupleExpr(List.of());
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                while (!check(RPAREN)) {
+                    items.add(parseExpression());
+                    if (!match(COMMA)) break;
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
@@ -1804,6 +1852,17 @@ public final class Parser {
         List<Ast.Expr> args = new ArrayList<>();
         do args.add(parseExpression()); while (match(COMMA));
         return args;
+    }
+
+    private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do {
+            args.add(match(ELLIPSIS)
+                    ? new Ast.SpreadExpr(parseExpression())
+                    : parseExpression());
+        } while (match(COMMA));
+        return List.copyOf(args);
     }
 
     private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
