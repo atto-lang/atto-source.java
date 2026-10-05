@@ -512,7 +512,8 @@ public final class ChannelRuntime {
             for (SelectRegistration selection : List.copyOf(ACTIVE)) {
                 if (selection.decided) continue;
 
-                CaseRegistration chosen = preferredReadyCaseLocked(selection);
+                CaseRegistration chosen =
+                        preferredCommittableCaseLocked(selection);
                 if (chosen == null) continue;
 
                 Channel<?> channel = chosen.channel();
@@ -587,6 +588,43 @@ public final class ChannelRuntime {
                 }
             }
         } while (progressed);
+    }
+
+    private static CaseRegistration preferredCommittableCaseLocked(
+            SelectRegistration selection) {
+        if (selection.decided) return null;
+
+        for (int index : selection.order) {
+            SelectCase selectCase = selection.set.cases.get(index);
+            if (selectCase instanceof DefaultCase) continue;
+
+            CaseRegistration registration =
+                    findRegistration(selection, index);
+            if (registration == null) continue;
+
+            Channel<?> channel = registration.channel();
+            if (registration.operation() == SelectOperation.READ) {
+                if (!channel.buffer.isEmpty() || channel.closed) {
+                    return registration;
+                }
+                if (findMutualPeerLocked(
+                        registration,
+                        SelectOperation.WRITE) != null) {
+                    return registration;
+                }
+            } else {
+                if (channel.closed
+                        || channel.capacity > channel.buffer.size()) {
+                    return registration;
+                }
+                if (findMutualPeerLocked(
+                        registration,
+                        SelectOperation.READ) != null) {
+                    return registration;
+                }
+            }
+        }
+        return null;
     }
 
     private static CaseRegistration preferredReadyCaseLocked(
@@ -758,10 +796,12 @@ public final class ChannelRuntime {
                 } catch (Throwable mappingFailure) {
                     result.failFromRuntime(mappingFailure);
                 }
+            } else if (source.isCancelled()) {
+                // source is private to this mapping. Its cancellation was
+                // initiated by result.cancel(); allow the outer cancellation
+                // call to perform the authoritative Cancelled settlement.
+                return;
             } else if (!result.isDone()) {
-                // A consumer-initiated cancellation settles result itself after
-                // source cancellation admission returns. Any other terminal
-                // source failure propagates as failure.
                 result.failFromRuntime(failure);
             }
         });
