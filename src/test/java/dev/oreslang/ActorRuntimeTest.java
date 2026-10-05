@@ -1559,4 +1559,28 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void stoppingParentCannotAttachNewChildOrUnderflowActorQuota() throws Exception {
+        CountDownLatch attempted = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        context.self().stop();
+                        assertThrows(
+                                java.util.concurrent.CancellationException.class,
+                                () -> context.runtime().<String>spawnPrivate(
+                                        childFactoryContext ->
+                                                (childMessage, childContext) -> { }));
+                        attempted.countDown();
+                    });
+
+            parent.send("cancel-then-spawn");
+            assertTrue(attempted.await(2, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+
 }
