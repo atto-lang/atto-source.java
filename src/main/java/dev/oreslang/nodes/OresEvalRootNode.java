@@ -1555,6 +1555,17 @@ public final class OresEvalRootNode extends RootNode {
             return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
         }
 
+        /**
+         * Composition callbacks are guest code. Route them through the normal
+         * invocation loop so TailCall markers are consumed by the trampoline
+         * instead of being accidentally wrapped as Option/Result payloads.
+         */
+        private Object invokeCompositionCallback(
+                Invokable callback,
+                List<Object> arguments) {
+            return invoke(invokableInvocation(callback, arguments));
+        }
+
         private Object optionMember(OptionValue option, String name) {
             return switch (name) {
                 case "is_some" -> (Invokable) args -> { requireZero(args, "Option.is_some"); return option.present(); };
@@ -1578,6 +1589,47 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap_or" -> (Invokable) args -> {
                     requireOne(args, "Option.unwrap_or");
                     return option.present() ? option.value() : args.getFirst();
+                };
+                case "map" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(args, "Option.map");
+                    return option.present()
+                            ? new OptionValue(
+                                    true,
+                                    invokeCompositionCallback(
+                                            mapper,
+                                            List.of(option.value())))
+                            : option;
+                };
+                case "flat_map", "and_then" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(args, "Option." + name);
+                    if (!option.present()) return option;
+                    Object mapped = invokeCompositionCallback(
+                            mapper,
+                            List.of(option.value()));
+                    if (!(mapped instanceof OptionValue)) {
+                        throw new IllegalArgumentException(
+                                "Option." + name + " callback must return Option<T>");
+                    }
+                    return mapped;
+                };
+                case "or_else" -> (Invokable) args -> {
+                    Invokable fallback = requireInvokableArg(args, "Option.or_else");
+                    if (option.present()) return option;
+                    Object mapped = invokeCompositionCallback(fallback, List.of());
+                    if (!(mapped instanceof OptionValue)) {
+                        throw new IllegalArgumentException(
+                                "Option.or_else callback must return Option<T>");
+                    }
+                    return mapped;
+                };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Option.flatten");
+                    if (!option.present()) return option;
+                    if (!(option.value() instanceof OptionValue nested)) {
+                        throw new IllegalArgumentException(
+                                "Option.flatten requires Option<Option<T>>");
+                    }
+                    return nested;
                 };
                 default -> throw new IllegalArgumentException("unknown Option member " + name);
             };
@@ -1606,6 +1658,59 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap_or" -> (Invokable) args -> {
                     requireOne(args, "Result.unwrap_or");
                     return result.ok() ? result.value() : args.getFirst();
+                };
+                case "map" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(args, "Result.map");
+                    return result.ok()
+                            ? new ResultValue(
+                                    true,
+                                    invokeCompositionCallback(
+                                            mapper,
+                                            List.of(result.value())))
+                            : result;
+                };
+                case "flat_map", "and_then" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(args, "Result." + name);
+                    if (!result.ok()) return result;
+                    Object mapped = invokeCompositionCallback(
+                            mapper,
+                            List.of(result.value()));
+                    if (!(mapped instanceof ResultValue)) {
+                        throw new IllegalArgumentException(
+                                "Result." + name + " callback must return Result<T,E>");
+                    }
+                    return mapped;
+                };
+                case "map_err" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(args, "Result.map_err");
+                    return result.ok()
+                            ? result
+                            : new ResultValue(
+                                    false,
+                                    invokeCompositionCallback(
+                                            mapper,
+                                            List.of(result.value())));
+                };
+                case "or_else" -> (Invokable) args -> {
+                    Invokable fallback = requireInvokableArg(args, "Result.or_else");
+                    if (result.ok()) return result;
+                    Object mapped = invokeCompositionCallback(
+                            fallback,
+                            List.of(result.value()));
+                    if (!(mapped instanceof ResultValue)) {
+                        throw new IllegalArgumentException(
+                                "Result.or_else callback must return Result<T,E>");
+                    }
+                    return mapped;
+                };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Result.flatten");
+                    if (!result.ok()) return result;
+                    if (!(result.value() instanceof ResultValue nested)) {
+                        throw new IllegalArgumentException(
+                                "Result.flatten requires Result<Result<T,E>,E>");
+                    }
+                    return nested;
                 };
                 default -> throw new IllegalArgumentException("unknown Result member " + name);
             };
@@ -2872,6 +2977,13 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
+    }
+    private static Invokable requireInvokableArg(List<Object> args,String name){
+        requireOne(args,name);
+        if(!(args.getFirst() instanceof Invokable callback)){
+            throw new IllegalArgumentException(name+" expects a function/lambda");
+        }
+        return callback;
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
