@@ -1152,16 +1152,21 @@ public final class ActorRuntime implements AutoCloseable {
 
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
+
+            final ActorCell<M> cell;
             try {
-                ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory, parent);
-                actors.put(id, cell);
+                cell = new ActorCell<>(
+                        ref, kind, effectivePolicy, behaviorFactory, trustedFactory, parent);
+            } catch (RuntimeException | Error failure) {
+                actorCount.decrementAndGet();
+                throw failure;
+            }
+
+            actors.put(id, cell);
+            try {
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
                         if (parent.stopped.get() || parent.finalized) {
-                            actors.remove(id, cell);
-                            actorCount.decrementAndGet();
-                            cell.stop();
                             throw new CancellationException(
                                     "cannot attach child actor to a stopping parent");
                         }
@@ -1170,7 +1175,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
-                actorCount.decrementAndGet();
+                // Once published in actors, ActorCell.stop() owns all cleanup
+                // and quota accounting. Do not decrement actorCount separately.
+                cell.stop();
                 throw failure;
             }
         }
