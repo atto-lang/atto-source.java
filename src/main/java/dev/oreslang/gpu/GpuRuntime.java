@@ -189,14 +189,13 @@ public final class GpuRuntime {
             this.cols = cols;
         }
 
-        public String backendName() { return array.backendName(); }
-        public String elementAbiType() { return array.elementAbiType(); }
-        public long length() { return array.length(); }
-        public long rows() { return rows; }
-        public long cols() { return cols; }
+        public String backendName() { ensureLive(); return array.backendName(); }
+        public String elementAbiType() { ensureLive(); return array.elementAbiType(); }
+        public long length() { ensureLive(); return array.length(); }
+        public long rows() { ensureLive(); return rows; }
+        public long cols() { ensureLive(); return cols; }
 
-        /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
-        public ArrayHandle arrayHandle() { return array; }
+        private void ensureLive() { array.ensureLive(); }
     }
 
     /** Opaque GPU-resident sequential stream resource. */
