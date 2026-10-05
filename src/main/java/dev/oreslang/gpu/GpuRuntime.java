@@ -562,10 +562,19 @@ public final class GpuRuntime {
 
     public List<?> downloadStream(StreamHandle stream) {
         ArrayHandle collected = collect(stream);
+        Throwable primaryFailure = null;
         try {
             return downloadArray(collected);
+        } catch (RuntimeException | Error failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
-            release(collected);
+            try {
+                release(collected);
+            } catch (RuntimeException closeFailure) {
+                if (primaryFailure != null) primaryFailure.addSuppressed(closeFailure);
+                else throw closeFailure;
+            }
         }
     }
 
@@ -614,7 +623,11 @@ public final class GpuRuntime {
             pinDeviceResources(value, expected, seen, pins);
             return List.copyOf(pins);
         } catch (RuntimeException failure) {
-            closePins(pins);
+            try {
+                closePins(pins);
+            } catch (RuntimeException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
             throw failure;
         }
     }
