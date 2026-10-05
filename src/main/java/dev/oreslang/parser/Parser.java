@@ -877,10 +877,10 @@ public final class Parser {
                             + "use 'let fnc name = || -> { ... };' for a local callable value");
         }
         if (check(PUB) || check(PRIVATE) || check(STATIC) || check(ABSTRACT) || check(ASYNC)
-                || check(PURE) || check(TRAP)) {
+                || ((check(PURE) || check(TRAP)) && (checkNext(FNC) || checkNext(ROUTINE)))) {
             throw error(peek(),
-                    "declaration/member modifiers are not valid in executable scope; "
-                            + "local callable values use 'let fnc name = || -> { ... };'");
+                    "declaration/member modifiers are not valid on nested named declarations; "
+                            + "local callable values use 'let fnc name = pure|trap || -> { ... };'");
         }
         if (check(NLEX) && (checkNext(FNC) || checkNext(ROUTINE))) {
             throw error(peek(),
@@ -1745,13 +1745,30 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after arr literal");
             return new Ast.ListExpr(items);
         }
-        if (match(NLEX)) {
-            if (check(PIPE)) return parsePipeLambda(true);
-            if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
-            throw error(previous(), "'nlex' in expression position must prefix a lambda");
+        if (check(NLEX) || check(PURE) || check(TRAP)) {
+            Token firstModifier = peek();
+            boolean nonLexical = false;
+            boolean pure = false;
+            boolean trapped = false;
+            while (check(NLEX) || check(PURE) || check(TRAP)) {
+                if (match(NLEX)) {
+                    if (nonLexical) throw error(previous(), "duplicate 'nlex' function-expression modifier");
+                    nonLexical = true;
+                } else if (match(PURE)) {
+                    if (pure) throw error(previous(), "duplicate 'pure' function-expression modifier");
+                    pure = true;
+                } else if (match(TRAP)) {
+                    if (trapped) throw error(previous(), "duplicate 'trap' function-expression modifier");
+                    trapped = true;
+                }
+            }
+            if (check(PIPE)) return parsePipeLambda(nonLexical, pure, trapped);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(nonLexical, pure, trapped);
+            throw error(firstModifier,
+                    "'nlex', 'pure', and 'trap' in expression position must prefix a function expression");
         }
-        if (check(PIPE)) return parsePipeLambda(false);
-        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
+        if (check(PIPE)) return parsePipeLambda(false, false, false);
+        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, false, false);
         if (match(LPAREN)) {
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
@@ -1795,16 +1812,16 @@ public final class Parser {
         return new Ast.ObjectExpr(fields);
     }
 
-    private Ast.LambdaExpr parseLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parseLambda(boolean nonLexical, boolean pure, boolean trapped) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
         if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, pure, trapped);
     }
 
-    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean pure, boolean trapped) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
@@ -1823,7 +1840,7 @@ public final class Parser {
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
         if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, pure, trapped);
     }
 
     private boolean looksLikeLambda() {
@@ -1853,7 +1870,7 @@ public final class Parser {
 
     private void consumeClassFieldTerminator(String message) {
         if (match(SEMICOLON) || check(AT) || check(END) || check(PUB) || check(PRIVATE)
-                || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(LBRACKET)
+                || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(NLEX) || check(PURE) || check(TRAP) || check(LBRACKET)
                 || isBindingKind(peek().type())
                 || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))) return;
         throw error(peek(), message);
