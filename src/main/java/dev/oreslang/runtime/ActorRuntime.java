@@ -798,6 +798,41 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Bind a cancellable runtime Future to the lifetime of the currently
+     * executing actor. Channel/select registrations created by nb forms use
+     * this so structured actor teardown detaches them even when guest code
+     * drops the Future without explicitly cancelling it.
+     *
+     * <p>Outside an actor turn the Future is returned unchanged; root/external
+     * execution domains own their lifetimes separately.</p>
+     */
+    public <T> OresFuture<T> ownCurrentActorFuture(OresFuture<T> future) {
+        Objects.requireNonNull(future, "future");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) return future;
+        ownFuture(cell, future);
+        return future;
+    }
+
+    private boolean ownFuture(ActorCell<?> cell, OresFuture<?> future) {
+        if (cell.stopped.get() || cell.finalized || closed.get()) {
+            future.cancel(false);
+            return false;
+        }
+
+        cell.pendingOperations.add(future);
+        if (cell.stopped.get() || cell.finalized || closed.get()) {
+            cell.pendingOperations.remove(future);
+            future.cancel(false);
+            return false;
+        }
+
+        future.whenCompleteRuntime((ignored, failure) ->
+                cell.pendingOperations.remove(future));
+        return true;
+    }
+
+    /**
      * Register scheduler plumbing only. Future completion enqueues the supplied
      * continuation back to the captured actor; the callback body itself is not
      * run on the producer/completion thread.
@@ -811,22 +846,10 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
 
         ActorCell<?> cell = actors.get(target.actorId());
-        if (cell == null || cell.stopped.get()) {
-            future.cancel(false);
-            return;
-        }
+        if (cell == null || !ownFuture(cell, future)) return;
 
-        cell.pendingContinuations.add(future);
-        if (cell.stopped.get()) {
-            cell.pendingContinuations.remove(future);
-            future.cancel(false);
-            return;
-        }
-
-        future.whenCompleteRuntime((value, failure) -> {
-            cell.pendingContinuations.remove(future);
-            target.enqueue(() -> continuation.accept(value, failure));
-        });
+        future.whenCompleteRuntime((value, failure) ->
+                target.enqueue(() -> continuation.accept(value, failure)));
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
@@ -2885,7 +2908,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final boolean trustedFactory;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
-        private final Set<OresFuture<?>> pendingContinuations = ConcurrentHashMap.newKeySet();
+        private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -3251,8 +3274,8 @@ public final class ActorRuntime implements AutoCloseable {
                 else mailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
-                pending = List.copyOf(pendingContinuations);
-                pendingContinuations.clear();
+                pending = List.copyOf(pendingOperations);
+                pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
