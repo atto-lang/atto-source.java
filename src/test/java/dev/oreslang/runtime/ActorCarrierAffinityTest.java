@@ -174,6 +174,34 @@ final class ActorCarrierAffinityTest {
     }
 
     @Test
+    void actorAffinityQueueRejectsCpuDataChunksAndGpuKernels() {
+        CarrierRegistry registry = new CarrierRegistry(1);
+        AffinityBlockingQueue queue = new AffinityBlockingQueue(4, registry);
+
+        for (AffinityWorkClass workClass : new AffinityWorkClass[] {
+                AffinityWorkClass.CPU_DATA_CHUNK,
+                AffinityWorkClass.GPU_KERNEL
+        }) {
+            AffinityWork computeWork = new AffinityWork() {
+                private volatile long enqueued;
+
+                @Override public CarrierRegistry affinityRegistry() { return registry; }
+                @Override public AffinityWorkClass affinityWorkClass() { return workClass; }
+                @Override public long preferredCarrierToken() { return 0L; }
+                @Override public long affinityEnqueuedNanos() { return enqueued; }
+                @Override public void affinityEnqueuedNanos(long value) { enqueued = value; }
+                @Override public void run() { }
+            };
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> queue.offer(computeWork));
+            assertTrue(failure.getMessage().contains("heterogeneous compute/dataflow scheduler"));
+            assertTrue(queue.isEmpty());
+        }
+    }
+
+    @Test
     void unboundHeadWinsOverAffinityToPreserveFirstRunFairness() throws Exception {
         CarrierRegistry registry = new CarrierRegistry(1);
         AffinityBlockingQueue queue = new AffinityBlockingQueue(8, registry);
