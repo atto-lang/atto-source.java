@@ -268,8 +268,47 @@ final class ParserTest {
                           return;
                         }
                         """)));
-        assertTrue(rawMailbox.getMessage().contains("runtime-private"),
+        assertTrue(
+                rawMailbox.getMessage().contains("no public actor protocol method")
+                        || rawMailbox.getMessage().contains("no monomorphic actor protocol method"),
                 rawMailbox.getMessage());
+    }
+
+    @Test
+    void sendAndReceiveAreOrdinaryProtocolNamesWhenDeclared() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor MailboxNamed as
+                  pub send(value: int): int { return value + 1; }
+                  pub receive(value: int): int { return value + 2; }
+                end
+
+                async fnc exercise() -> void {
+                  val actor = spawn MailboxNamed();
+                  val a = await actor.send(40);
+                  val b = await actor.receive(40);
+                  stdio.println(a);
+                  stdio.println(b);
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                  pub id(): int { return 1; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                  pub is_alive(value: int): bool { return true; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                  pub mailbox(): void { return; }
+                end
+                """));
     }
 
     @Test
