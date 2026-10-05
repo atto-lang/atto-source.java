@@ -300,28 +300,24 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void infiniteWhileShorthandCanExitThroughReturn() throws Exception {
-        String output = run("""
-                pub routine emit_brace() => void {
+    void whileRequiresConditionAndDoesNotAliasCanonicalLoop() {
+        PolyglotException braceFailure = assertThrows(PolyglotException.class, () -> run("""
+                pub routine main() => void {
                   while {
-                    stdio.stdout.write("a");
                     return;
                   }
                 }
+                """));
+        assertTrue(braceFailure.getMessage().contains("while requires a condition"));
 
-                pub routine emit_done() => void {
+        PolyglotException doneFailure = assertThrows(PolyglotException.class, () -> run("""
+                pub routine main() => void {
                   while do
-                    stdio.stdout.write("b");
                     return
                   done
                 }
-
-                pub routine main() => void {
-                  emit_brace();
-                  emit_done();
-                }
-                """);
-        assertEquals("ab", output);
+                """));
+        assertTrue(doneFailure.getMessage().contains("while requires a condition"));
     }
 
     @Test
