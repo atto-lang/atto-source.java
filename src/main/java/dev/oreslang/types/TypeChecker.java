@@ -1958,12 +1958,28 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         where + " receive(Message) must return void");
             }
-            return substituteGenerics(
+
+            Record effective = (Record) substituteGenerics(
+                    publicClassShape(actorClass, new LinkedHashSet<>()),
+                    classGenericBindings(actorClass, protocolType));
+            Type endpoint = effective.members().get(methodContractKey("receive", 1, 0));
+            if (effective.members().size() != 1 || !(endpoint instanceof Function fn)
+                    || fn.parameters().size() != 1 || fn.result() != Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        where + " actor class must expose exactly receive(Message): void");
+            }
+
+            Type message = substituteGenerics(
                     resolveParam(
                             receive.method().parameters().getFirst(),
                             Set.copyOf(receive.owner().genericParameters()),
                             receive.ownerType()),
                     bindings);
+            if (!Objects.equals(message, fn.parameters().getFirst())) {
+                throw new IllegalArgumentException(
+                        where + " receive(Message) projection is inconsistent with its effective public shape");
+            }
+            return message;
         }
 
         Ast.InterfaceDecl protocol = findInterface(protocolType.name());
