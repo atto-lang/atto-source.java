@@ -27,6 +27,9 @@ import java.util.function.Supplier;
  */
 public final class GpuRuntime {
     private static final AtomicReference<Backend> PROCESS_BACKEND = new AtomicReference<>();
+    private static final int MAX_FREEZE_DEPTH = 256;
+    private static final int MAX_FREEZE_NODES = 100_000;
+    private static final long MAX_FREEZE_BYTES = 16L * 1024L * 1024L;
 
     public enum CallableKind { FNC, ROUTINE }
     public enum ResourceKind { ARRAY, MATRIX, STREAM }
@@ -951,14 +954,27 @@ public final class GpuRuntime {
     }
 
     private static List<?> freezeArguments(List<?> arguments) {
+        FreezeBudget budget = new FreezeBudget();
         ArrayList<Object> frozen = new ArrayList<>(arguments.size());
-        for (Object argument : arguments) frozen.add(freezeValue(argument, false));
+        for (Object argument : arguments) {
+            frozen.add(freezeValue(argument, false, budget, 0));
+        }
         return List.copyOf(frozen);
     }
 
     private static Object freezeValue(Object value, boolean allowRootVoidNull) {
+        return freezeValue(value, allowRootVoidNull, new FreezeBudget(), 0);
+    }
+
+    private static Object freezeValue(
+            Object value,
+            boolean allowRootVoidNull,
+            FreezeBudget budget,
+            int depth) {
+        budget.visit(value, depth);
+
         if (value == null) {
-            if (allowRootVoidNull) return null;
+            if (allowRootVoidNull && depth == 0) return null;
             throw new GpuTransferException(
                     "standalone null cannot cross the Oreslang GPU boundary; use Option");
         }
@@ -972,53 +988,125 @@ public final class GpuRuntime {
             return value;
         }
 
-        if (value instanceof OptionValue option) {
-            return option.present()
-                    ? new OptionValue(true, freezeValue(option.value(), false))
-                    : new OptionValue(false, null);
+        boolean composite = value instanceof Transferable
+                || value instanceof List<?>
+                || value instanceof Set<?>
+                || value instanceof Map<?, ?>
+                || value.getClass().isArray();
+        if (composite && !budget.enter(value)) {
+            throw new GpuTransferException(
+                    "cyclic value graph cannot cross the Oreslang GPU boundary");
         }
 
-        if (value instanceof Transferable transferable) {
-            Object transferred = transferable.freezeForGpu();
-            if (transferred == value) {
-                throw new GpuTransferException(
-                        "GPU transferable values must produce a distinct wire representation");
+        try {
+            if (value instanceof OptionValue option) {
+                return option.present()
+                        ? new OptionValue(
+                                true,
+                                freezeValue(option.value(), false, budget, depth + 1))
+                        : new OptionValue(false, null);
             }
-            return freezeValue(transferred, false);
-        }
 
-        if (value instanceof List<?> list) {
-            ArrayList<Object> frozen = new ArrayList<>(list.size());
-            for (Object item : list) frozen.add(freezeValue(item, false));
-            return List.copyOf(frozen);
-        }
-
-        if (value instanceof Set<?> set) {
-            LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-            for (Object item : set) frozen.add(freezeValue(item, false));
-            return Collections.unmodifiableSet(frozen);
-        }
-
-        if (value instanceof Map<?, ?> map) {
-            LinkedHashMap<Object, Object> frozen = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                frozen.put(freezeValue(entry.getKey(), false), freezeValue(entry.getValue(), false));
+            if (value instanceof Transferable transferable) {
+                Object transferred = transferable.freezeForGpu();
+                if (transferred == value) {
+                    throw new GpuTransferException(
+                            "GPU transferable values must produce a distinct wire representation");
+                }
+                return freezeValue(transferred, false, budget, depth + 1);
             }
-            return Collections.unmodifiableMap(frozen);
-        }
 
-        if (value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            ArrayList<Object> frozen = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) {
-                frozen.add(freezeValue(Array.get(value, i), false));
+            if (value instanceof List<?> list) {
+                ArrayList<Object> frozen = new ArrayList<>(list.size());
+                for (Object item : list) {
+                    frozen.add(freezeValue(item, false, budget, depth + 1));
+                }
+                return List.copyOf(frozen);
             }
-            return List.copyOf(frozen);
+
+            if (value instanceof Set<?> set) {
+                LinkedHashSet<Object> frozen = new LinkedHashSet<>();
+                for (Object item : set) {
+                    frozen.add(freezeValue(item, false, budget, depth + 1));
+                }
+                return Collections.unmodifiableSet(frozen);
+            }
+
+            if (value instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, Object> frozen = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    frozen.put(
+                            freezeValue(entry.getKey(), false, budget, depth + 1),
+                            freezeValue(entry.getValue(), false, budget, depth + 1));
+                }
+                return Collections.unmodifiableMap(frozen);
+            }
+
+            if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                ArrayList<Object> frozen = new ArrayList<>(length);
+                for (int i = 0; i < length; i++) {
+                    frozen.add(freezeValue(Array.get(value, i), false, budget, depth + 1));
+                }
+                return List.copyOf(frozen);
+            }
+        } finally {
+            if (composite) budget.exit(value);
         }
 
         throw new GpuTransferException(
                 "value of type " + value.getClass().getName()
                         + " cannot cross the Oreslang GPU boundary");
+    }
+
+    private static final class FreezeBudget {
+        private int nodes;
+        private long bytes;
+        private final Set<Object> active =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+
+        private void visit(Object value, int depth) {
+            if (depth > MAX_FREEZE_DEPTH) {
+                throw new GpuTransferException(
+                        "GPU transfer exceeds maximum nesting depth " + MAX_FREEZE_DEPTH);
+            }
+            nodes = Math.addExact(nodes, 1);
+            if (nodes > MAX_FREEZE_NODES) {
+                throw new GpuTransferException(
+                        "GPU transfer exceeds maximum node count " + MAX_FREEZE_NODES);
+            }
+            bytes = Math.addExact(bytes, estimatedBytes(value));
+            if (bytes > MAX_FREEZE_BYTES) {
+                throw new GpuTransferException(
+                        "GPU transfer exceeds maximum frozen size " + MAX_FREEZE_BYTES + " bytes");
+            }
+        }
+
+        private boolean enter(Object value) {
+            return active.add(value);
+        }
+
+        private void exit(Object value) {
+            active.remove(value);
+        }
+
+        private static long estimatedBytes(Object value) {
+            if (value == null) return 1L;
+            if (value instanceof String string) {
+                return Math.addExact(24L, Math.multiplyExact((long) string.length(), 2L));
+            }
+            if (value instanceof BigInteger integer) {
+                return 24L + Math.max(1L, (integer.bitLength() + 7L) / 8L);
+            }
+            if (value instanceof BigDecimal decimal) {
+                return 32L + Math.max(1L, (decimal.unscaledValue().bitLength() + 7L) / 8L);
+            }
+            if (value instanceof ComplexValue) return 24L;
+            if (value instanceof ArrayHandle || value instanceof MatrixHandle || value instanceof StreamHandle) return 64L;
+            if (value instanceof Map<?, ?> || value instanceof List<?> || value instanceof Set<?>
+                    || value.getClass().isArray()) return 32L;
+            return 16L;
+        }
     }
 
     public static class GpuException extends RuntimeException {
