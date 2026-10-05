@@ -3465,47 +3465,66 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void endTurn() {
+            boolean finalizedNow = false;
             synchronized (lifecycleLock) {
                 if (activeTurns <= 0) {
                     throw new IllegalStateException("actor active-turn accounting underflow for " + ref.id());
                 }
                 activeTurns--;
-                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                if (stopped.get() && activeTurns == 0) {
+                    finalizedNow = finalizeStopLocked();
+                }
                 lifecycleLock.notifyAll();
             }
+            if (finalizedNow) afterFinalized();
         }
 
-        private void finalizeStopLocked() {
+        private boolean finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
+            //
+            // This method performs only runtime-internal state transitions.
+            // Host callbacks and parent notification happen in afterFinalized()
+            // after lifecycleLock has been released.
             if (finalized
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
-                    || !children.isEmpty()) return;
+                    || !children.isEmpty()) return false;
             finalized = true;
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
+            lifecycleLock.notifyAll();
+            return true;
+        }
+
+        private void afterFinalized() {
+            Error fatal = null;
             try {
                 actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
+            } catch (VirtualMachineError | ThreadDeath | LinkageError hostFatal) {
+                fatal = hostFatal;
             } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
+                // Best-effort host cleanup must never prevent runtime-owned
+                // actor bookkeeping from completing.
+            } finally {
+                unregisterActor(this);
+                if (parent != null) parent.childFinalized(this);
             }
-            unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
-            lifecycleLock.notifyAll();
+            if (fatal != null) throw fatal;
         }
 
         private void childFinalized(ActorCell<?> child) {
+            boolean finalizedNow = false;
             synchronized (lifecycleLock) {
                 children.remove(child);
-                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                if (stopped.get() && activeTurns == 0) {
+                    finalizedNow = finalizeStopLocked();
+                }
                 lifecycleLock.notifyAll();
             }
+            if (finalizedNow) afterFinalized();
         }
 
         private boolean finalized() {
@@ -3527,13 +3546,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void cancelQueuedScheduleOnShutdown() {
+            boolean finalizedNow = false;
             synchronized (lifecycleLock) {
                 if (scheduled.get() && !carrierActive) {
                     scheduled.set(false);
-                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                    if (stopped.get() && activeTurns == 0) {
+                        finalizedNow = finalizeStopLocked();
+                    }
                     lifecycleLock.notifyAll();
                 }
             }
+            if (finalizedNow) afterFinalized();
         }
 
         private void reserveSharedMailbox(long bytes) {
@@ -3591,10 +3614,9 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!scheduled.get()) return;
 
                     if (stopped.get() || closed.get() || forceKillFenced) {
+                        // The finally block owns finalization after this monitor
+                        // is released. Do not invoke host cleanup from here.
                         scheduled.set(false);
-                        if (stopped.get() && activeTurns == 0) {
-                            finalizeStopLocked();
-                        }
                         lifecycleLock.notifyAll();
                         return;
                     }
@@ -3615,10 +3637,13 @@ public final class ActorRuntime implements AutoCloseable {
                 // its own finally block, so clearing this bit any earlier lets
                 // shutdown/finalization race a carrier that still owns guest
                 // context state.
+                boolean finalizedNow = false;
                 synchronized (lifecycleLock) {
                     if (carrierEntered) carrierActive = false;
                     if (scheduled.get()) scheduled.set(false);
-                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                    if (stopped.get() && activeTurns == 0) {
+                        finalizedNow = finalizeStopLocked();
+                    }
                     reschedule = !stopped.get()
                             && !forceKillFenced
                             && !closed.get()
@@ -3627,6 +3652,7 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                 }
                 ACTOR_CARRIER.remove();
+                if (finalizedNow) afterFinalized();
                 if (reschedule) schedule();
             }
         }
@@ -3738,6 +3764,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            boolean finalizedNow;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -3750,7 +3777,7 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
-                finalizeStopLocked();
+                finalizedNow = finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
 
@@ -3763,6 +3790,8 @@ public final class ActorRuntime implements AutoCloseable {
                         child.ref.id(),
                         "parent actor " + ref.id() + " terminated"));
             }
+
+            if (finalizedNow) afterFinalized();
         }
     }
 }

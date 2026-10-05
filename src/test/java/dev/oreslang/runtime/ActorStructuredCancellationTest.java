@@ -749,6 +749,39 @@ final class ActorStructuredCancellationTest {
 
 
     @Test
+    void actorExitHookRunsAfterLifecycleMonitorIsReleased() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch exitHookRan = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorRef<String>> replacement =
+                    new AtomicReference<>();
+
+            runtime.setActorExitHook(executionDomain -> {
+                // A runtime mutation from the hook would deadlock if the dead
+                // actor's lifecycle monitor were still held through parent/
+                // runtime bookkeeping.
+                replacement.set(runtime.spawnShared(
+                        factoryContext -> (message, context) ->
+                                context.self().stop()));
+                exitHookRan.countDown();
+            });
+
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) ->
+                            context.self().stop());
+
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(exitHookRan.await(2, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorRef<String> spawned = replacement.get();
+            assertNotNull(spawned);
+            spawned.send("stop");
+            assertTrue(spawned.awaitTermination(2, TimeUnit.SECONDS));
+        }
+    }
+
+
+    @Test
     void ordinaryActorCannotInvokeForceCancellationAuthority() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicBoolean revokerInvoked = new AtomicBoolean();
