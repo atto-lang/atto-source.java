@@ -5,7 +5,6 @@ import java.lang.ref.ReferenceQueue;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * One-permit native synchronizer used by SharedMutex.
@@ -14,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * deliberately exposes both fair timed acquisition and an explicit barging
  * try-acquire because SharedMutex recovery historically distinguishes them.</p>
  */
-final class NativePermit implements AutoCloseable {
+final class NativePermit {
     private static final ReferenceQueue<NativePermit> RETIRED = new ReferenceQueue<>();
     private static final ConcurrentHashMap<PhantomReference<NativePermit>, Long> HANDLES =
             new ConcurrentHashMap<>();
@@ -25,9 +24,8 @@ final class NativePermit implements AutoCloseable {
                     TimeUnit.SECONDS.toNanos(5),
                     TimeUnit.SECONDS.toNanos(5));
 
-    private final AtomicBoolean closed = new AtomicBoolean();
     private final PhantomReference<NativePermit> cleanupRef;
-    private volatile long handle;
+    private final long handle;
 
     NativePermit() {
         NativeCarrierExecutor.ensureNativeLibraryLoaded();
@@ -68,21 +66,9 @@ final class NativePermit implements AutoCloseable {
         return nativeHasQueuedThreads(requireHandle());
     }
 
-    @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        long retired = handle;
-        handle = 0L;
-        if (HANDLES.remove(cleanupRef, retired)) {
-            cleanupRef.clear();
-            nativeDestroy(retired);
-        }
-    }
-
     private long requireHandle() {
-        long live = handle;
-        if (live == 0L || closed.get()) throw new IllegalStateException("native permit is closed");
-        return live;
+        if (handle == 0L) throw new IllegalStateException("native permit has no handle");
+        return handle;
     }
 
     private static void drainRetired() {
