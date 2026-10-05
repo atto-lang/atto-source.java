@@ -76,6 +76,14 @@ explicit copy/freeze/ownership-transfer contract before it can be admitted.
 Parenthood is a **structured lifetime/supervision relation**, not a second
 hidden communication transport.
 
+Holding an `ActorRef` grants message-send authority, not arbitrary lateral
+termination authority. Inside actor code, lifecycle control is limited to the
+actor itself and its structured descendants. An actor cannot stop/cancel a
+parent, sibling, or unrelated actor merely because it was given that actor's
+reply/recipient reference. Host/supervisor code remains able to control any
+actor in its runtime. Actor-initiated child stop/cancel is nonblocking so it
+never parks a scheduler carrier waiting for child finalization.
+
 When actor A spawns actor B during A's turn:
 
 1. B is registered as A's child.
