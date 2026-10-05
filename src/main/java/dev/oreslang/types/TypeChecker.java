@@ -31,6 +31,8 @@ public final class TypeChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+    private final Set<String> actorProtocolInterfaceChecking = new HashSet<>();
+    private final Set<String> actorProtocolInterfaceChecked = new HashSet<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
@@ -1734,6 +1736,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         where + " ActorRef protocol must name an actor class or interface");
             }
+            if (actorInterface != null) {
+                validateActorProtocolInterface(
+                        actorInterface,
+                        protocolNamed,
+                        actorKind,
+                        where);
+            }
             return;
         }
 
@@ -1749,11 +1758,15 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // Fail closed for nominal runtime/interop types. Adding a new
+            // actor-boundary capability must be an explicit language decision,
+            // not an accidental consequence of being unknown to the checker.
+            if (named.name().equals("ActorId") && named.arguments().isEmpty()) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " uses opaque or unknown nominal type '" + named.name()
+                            + "'; actor-boundary capabilities must be explicitly whitelisted");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
@@ -1763,6 +1776,91 @@ public final class TypeChecker {
         if (!isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " contains state that is not safe to transport across an actor boundary");
+        }
+    }
+
+    private void validateActorProtocolInterface(
+            Ast.InterfaceDecl iface,
+            Named concrete,
+            Ast.ActorKind actorKind,
+            String where) {
+        String key = actorKind + ":" + concrete;
+        if (actorProtocolInterfaceChecked.contains(key)) return;
+        if (!actorProtocolInterfaceChecking.add(key)) return;
+
+        try {
+            Map<String, Type> bindings = genericBindings(
+                    iface.genericParameters(),
+                    concrete.arguments(),
+                    "actor protocol interface " + iface.name());
+            Set<String> generics = Set.copyOf(iface.genericParameters());
+
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Ast.InterfaceDecl parent = findInterface(parentRef.name());
+                if (parent == null) {
+                    throw new IllegalArgumentException(
+                            "unknown parent interface '" + parentRef.name()
+                                    + "' for actor protocol " + iface.name());
+                }
+                Type parentPattern = resolve(parentRef, generics, null);
+                Type parentConcrete = substituteGenerics(parentPattern, bindings);
+                if (!(parentConcrete instanceof Named parentNamed)) {
+                    throw new IllegalArgumentException(
+                            "actor protocol parent must resolve to a named interface");
+                }
+                validateActorProtocolInterface(
+                        parent,
+                        parentNamed,
+                        actorKind,
+                        where + " inherited protocol " + parent.name());
+            }
+
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (member instanceof Ast.InterfaceFieldDecl field) {
+                    throw new IllegalArgumentException(
+                            where + " ActorRef interface '" + iface.name()
+                                    + "' cannot declare field '" + field.name()
+                                    + "'; actor protocols contain methods only");
+                }
+
+                Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) member;
+                if (!fn.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            where + " ActorRef interface method '" + iface.name()
+                                    + "." + fn.name()
+                                    + "' cannot declare method generic parameters");
+                }
+                for (Ast.Param param : fn.parameters()) {
+                    if (param.mutable()) {
+                        throw new IllegalArgumentException(
+                                where + " ActorRef interface method '" + iface.name()
+                                        + "." + fn.name()
+                                        + "' cannot accept 'mut' parameters");
+                    }
+                    Type parameterType = substituteGenerics(
+                            resolveParam(param, generics, null),
+                            bindings);
+                    validateActorCallableBoundaryType(
+                            parameterType,
+                            actorKind,
+                            false,
+                            where + " ActorRef interface parameter '"
+                                    + iface.name() + "." + fn.name()
+                                    + "." + param.name() + "'");
+                }
+                Type result = substituteGenerics(
+                        resolve(fn.returnType(), generics, null),
+                        bindings);
+                validateActorCallableBoundaryType(
+                        result,
+                        actorKind,
+                        true,
+                        where + " ActorRef interface return type '"
+                                + iface.name() + "." + fn.name() + "'");
+            }
+            actorProtocolInterfaceChecked.add(key);
+        } finally {
+            actorProtocolInterfaceChecking.remove(key);
         }
     }
 
