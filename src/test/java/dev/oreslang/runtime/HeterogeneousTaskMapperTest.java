@@ -57,8 +57,9 @@ final class HeterogeneousTaskMapperTest {
 
     @Test
     void certifiedDisjointPartitionsMayRunInParallel() {
-        var left = new HeterogeneousTaskMapper.RegionSlice(7, 701, 99);
-        var right = new HeterogeneousTaskMapper.RegionSlice(7, 702, 99);
+        var family = HeterogeneousTaskMapper.certifyDisjointFamily();
+        var left = HeterogeneousTaskMapper.RegionSlice.certified(7, 701, family);
+        var right = HeterogeneousTaskMapper.RegionSlice.certified(7, 702, family);
         var cpu = new HeterogeneousTaskMapper.Variant("cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
 
         var a = new HeterogeneousTaskMapper.TaskSpec(
@@ -71,6 +72,69 @@ final class HeterogeneousTaskMapperTest {
                 List.of(cpu));
 
         assertTrue(mapper.independent(a, b));
+    }
+
+    @Test
+    void independentlyCertifiedFamiliesDoNotForgeDisjointness() {
+        var familyA = HeterogeneousTaskMapper.certifyDisjointFamily();
+        var familyB = HeterogeneousTaskMapper.certifyDisjointFamily();
+        var left = HeterogeneousTaskMapper.RegionSlice.certified(8, 801, familyA);
+        var right = HeterogeneousTaskMapper.RegionSlice.certified(8, 802, familyB);
+
+        assertTrue(left.mayAlias(right));
+    }
+
+    @Test
+    void variantSelectionIsDeterministicRatherThanDeclarationOrdered() {
+        var region = HeterogeneousTaskMapper.RegionSlice.root(9);
+        var generic = new HeterogeneousTaskMapper.Variant(
+                "generic", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
+        var zSpecialized = new HeterogeneousTaskMapper.Variant(
+                "z-specialized", HeterogeneousTaskMapper.ProcessorKind.CPU, 100);
+        var aSpecialized = new HeterogeneousTaskMapper.Variant(
+                "a-specialized", HeterogeneousTaskMapper.ProcessorKind.CPU, 100);
+
+        var forward = new HeterogeneousTaskMapper.TaskSpec(
+                "forward",
+                List.of(HeterogeneousTaskMapper.Access.read(region)),
+                List.of(generic, zSpecialized, aSpecialized));
+        var reverse = new HeterogeneousTaskMapper.TaskSpec(
+                "reverse",
+                List.of(HeterogeneousTaskMapper.Access.read(region)),
+                List.of(aSpecialized, zSpecialized, generic));
+        var machine = new HeterogeneousTaskMapper.Machine(false, 0);
+
+        assertEquals(
+                "a-specialized",
+                mapper.map(
+                        forward,
+                        HeterogeneousTaskMapper.PlacementHint.CPU,
+                        200,
+                        machine,
+                        Set.of()).variant().name());
+        assertEquals(
+                "a-specialized",
+                mapper.map(
+                        reverse,
+                        HeterogeneousTaskMapper.PlacementHint.CPU,
+                        200,
+                        machine,
+                        Set.of()).variant().name());
+    }
+
+    @Test
+    void duplicateVariantNamesAreRejected() {
+        var cpu = new HeterogeneousTaskMapper.Variant(
+                "same", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
+        var gpu = new HeterogeneousTaskMapper.Variant(
+                "same", HeterogeneousTaskMapper.ProcessorKind.GPU, 0);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new HeterogeneousTaskMapper.TaskSpec(
+                        "ambiguous",
+                        List.of(),
+                        List.of(cpu, gpu)));
     }
 
     @Test
