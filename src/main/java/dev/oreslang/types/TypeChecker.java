@@ -1046,6 +1046,18 @@ public final class TypeChecker {
                                     "ActorRef mailbox operations do not accept method type arguments");
                         }
 
+                        if (member.member().equals("is_alive")) {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.is_alive expects no arguments");
+                            }
+                            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                                throw new IllegalArgumentException(
+                                        "untrusted actors cannot inspect ActorRef lifecycle state");
+                            }
+                            return Primitive.BOOL;
+                        }
+
                         Ast.ClassDecl actorClass = findClass(actorType.name());
                         if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
                             throw new IllegalArgumentException(
