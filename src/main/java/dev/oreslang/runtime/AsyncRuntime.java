@@ -77,14 +77,24 @@ public final class AsyncRuntime implements AutoCloseable {
         Objects.requireNonNull(task, "task");
         if (closed.get()) throw new RejectedExecutionException("async runtime is closed");
 
-        OresFuture<T> completion = new OresFuture<>();
+        AtomicReference<Future<?>> backing = new AtomicReference<>();
+        OresFuture<T> completion = new OresFuture<>(() -> {
+            Future<?> carrier = backing.getAndSet(null);
+            if (carrier != null) carrier.cancel(true);
+        });
         final Future<?> scheduled;
         try {
             scheduled = executor.submit(() -> runTask(task, completion));
         } catch (RejectedExecutionException rejected) {
             throw new RejectedExecutionException("async runtime is closed", rejected);
         }
-        completion.attachBacking(scheduled);
+        backing.set(scheduled);
+        if (completion.isCancelled()) scheduled.cancel(true);
+        completion.whenCompleteRuntime((value, failure) -> {
+            // Cancellation delivers waiters before invoking the cancellation hook.
+            // Leave the carrier attached until that hook has interrupted it.
+            if (!completion.isCancelled()) backing.set(null);
+        });
 
         // Close may race submission after the initial check.
         if (closed.get()) completion.cancel(true);
