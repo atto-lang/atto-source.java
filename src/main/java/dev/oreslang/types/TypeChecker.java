@@ -1399,7 +1399,13 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            Ast.ClassDecl previousClassOwner = currentClassOwner;
+            if (nonLexical) currentClassOwner = null;
+            try {
+                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            } finally {
+                currentClassOwner = previousClassOwner;
+            }
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
@@ -1490,9 +1496,16 @@ public final class TypeChecker {
         Type declared = param.type().name().equals("$infer$") ? expectedParameter : resolveParam(param, generics, self);
         requireAssignable(expectedParameter, declared, "mutex callback parameter " + param.name());
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
-        Env lambdaEnv = new Env(parent);
+        boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
+        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+        Ast.ClassDecl previousClassOwner = currentClassOwner;
+        if (nonLexical) currentClassOwner = null;
+        try {
+            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+        } finally {
+            currentClassOwner = previousClassOwner;
+        }
     }
 
 
@@ -1519,7 +1532,13 @@ public final class TypeChecker {
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
-        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        Ast.ClassDecl previousClassOwner = currentClassOwner;
+        if (nonLexical) currentClassOwner = null;
+        try {
+            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        } finally {
+            currentClassOwner = previousClassOwner;
+        }
         if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
