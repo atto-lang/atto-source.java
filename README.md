@@ -2,6 +2,8 @@
 
 Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
 
+Oreslang supports object-oriented/actor domain modeling **and** data-oriented compute. `Region<T>` / `RegionView<T>`, compiler-visible read/write/discard/reduce/atomic effects, physical layout metadata (AoS/SoA/AoSoA/tiled), CPU/GPU placement, parallel/SIMD loop modes, static dataflow DAGs, and constrained AOT-friendly aspects are specified in [docs/data-oriented-compute.md](docs/data-oriented-compute.md). Logical types and ownership remain independent of physical layout and processor placement.
+
 This repository contains the Java/Truffle reference implementation.
 
 The language is intentionally opinionated:
