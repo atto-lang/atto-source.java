@@ -618,6 +618,22 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private Object trapFunctionExpression(Invokable body, List<Object> args) {
+            try {
+                Object value = body.call(args);
+                Object success = value == null ? List.of() : value;
+                return List.of(
+                        new OptionValue(true, success),
+                        new OptionValue(false, null));
+            } catch (OresPanic panic) {
+                throw panic;
+            } catch (RuntimeException failure) {
+                return List.of(
+                        new OptionValue(false, null),
+                        new OptionValue(true, failure));
+            }
+        }
+
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             return invoke(methodInvocation(receiver, method, args));
         }
@@ -1364,7 +1380,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
-                return tailCallable(args -> {
+                Invokable body = args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
@@ -1373,14 +1389,12 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     try {
                         if (lambda.expressionBody() != null) {
-                            // An expression-bodied lambda's sole expression is
-                            // inherently in tail position. Route it through the
-                            // same tail-return lowering as an explicit
-                            // `return expr;` in a block-bodied lambda.
-                            returnFrom(lambda.expressionBody(), local, false);
+                            returnFrom(lambda.expressionBody(), local, lambda.trapped());
                             throw new AssertionError("lambda expression return did not transfer control");
                         }
-                        executeBlock(lambda.blockBody(), local);
+                        // A function expression with its own trap must keep that
+                        // boundary alive until its invocation returns.
+                        executeBlock(lambda.blockBody(), local, lambda.trapped());
                         return null;
                     } catch (TailCallSignal signal) {
                         return new TailCall(signal.invocation);
@@ -1389,7 +1403,11 @@ public final class OresEvalRootNode extends RootNode {
                     } catch (BreakSignal | ContinueSignal signal) {
                         throw new IllegalStateException("loop control cannot cross a lambda boundary", signal);
                     }
-                });
+                };
+                Invokable effective = lambda.trapped()
+                        ? args -> trapFunctionExpression(body, args)
+                        : body;
+                return tailCallable(effective);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
