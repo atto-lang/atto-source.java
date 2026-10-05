@@ -305,6 +305,45 @@ public final class HeterogeneousTaskMapper {
     }
 
     /**
+     * CPU work decomposition for dense region/archetype traversal. A chunk is a
+     * scheduler unit, not an entity. SIMD width rounds chunk boundaries so SoA
+     * and AoSoA backends can keep vector lanes full except for the final tail.
+     */
+    public record CpuChunkPlan(
+            long workItemsPerChunk,
+            int chunkCount,
+            int parallelism,
+            int simdWidth) {
+        public CpuChunkPlan {
+            if (workItemsPerChunk < 0) throw new IllegalArgumentException("workItemsPerChunk cannot be negative");
+            if (chunkCount < 0) throw new IllegalArgumentException("chunkCount cannot be negative");
+            if (parallelism <= 0) throw new IllegalArgumentException("parallelism must be positive");
+            if (simdWidth <= 0) throw new IllegalArgumentException("simdWidth must be positive");
+        }
+    }
+
+    public CpuChunkPlan planCpuChunks(
+            long workItems,
+            int parallelism,
+            int simdWidth,
+            long minimumChunkWorkItems) {
+        if (workItems < 0) throw new IllegalArgumentException("workItems cannot be negative");
+        if (parallelism <= 0) throw new IllegalArgumentException("parallelism must be positive");
+        if (simdWidth <= 0) throw new IllegalArgumentException("simdWidth must be positive");
+        if (minimumChunkWorkItems <= 0) {
+            throw new IllegalArgumentException("minimumChunkWorkItems must be positive");
+        }
+        if (workItems == 0) return new CpuChunkPlan(0, 0, parallelism, simdWidth);
+
+        long targetChunks = Math.min((long) parallelism, ceilDiv(workItems, minimumChunkWorkItems));
+        targetChunks = Math.max(1L, targetChunks);
+        long raw = ceilDiv(workItems, targetChunks);
+        long aligned = alignUp(raw, simdWidth);
+        int chunks = Math.toIntExact(ceilDiv(workItems, aligned));
+        return new CpuChunkPlan(aligned, chunks, parallelism, simdWidth);
+    }
+
+    /**
      * Conservative non-interference check.
      *
      * <p>Disjoint partitions and disjoint field footprints may overlap in time.
@@ -336,14 +375,40 @@ public final class HeterogeneousTaskMapper {
             long workItems,
             Machine machine,
             Set<RegionIdentity> gpuResidentRootRegions) {
+        return map(
+                task,
+                hint,
+                workItems,
+                -1L,
+                machine,
+                gpuResidentRootRegions);
+    }
+
+    /**
+     * Placement with an optional estimated physical working-set size. Pass -1
+     * when unknown. A known GPU working set must fit the declared device budget;
+     * AUTO falls back to CPU, while explicit GPU placement fails closed.
+     */
+    public Mapping map(
+            TaskSpec task,
+            PlacementHint hint,
+            long workItems,
+            long estimatedWorkingSetBytes,
+            Machine machine,
+            Set<RegionIdentity> gpuResidentRootRegions) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(hint, "hint");
         Objects.requireNonNull(machine, "machine");
         Objects.requireNonNull(gpuResidentRootRegions, "gpuResidentRootRegions");
         if (workItems < 0) throw new IllegalArgumentException("workItems cannot be negative");
+        if (estimatedWorkingSetBytes < -1L) {
+            throw new IllegalArgumentException("estimatedWorkingSetBytes must be -1 (unknown) or non-negative");
+        }
 
         Variant cpu = bestEligible(task, ProcessorKind.CPU, workItems);
         Variant gpu = bestEligible(task, ProcessorKind.GPU, workItems);
+        boolean gpuMemoryFits = estimatedWorkingSetBytes < 0
+                || estimatedWorkingSetBytes <= machine.gpuMemoryBudgetBytes();
 
         if (hint == PlacementHint.CPU) {
             if (cpu == null) throw new IllegalStateException("task has no eligible CPU variant");
@@ -354,10 +419,14 @@ public final class HeterogeneousTaskMapper {
                 throw new IllegalStateException("GPU placement requested but no GPU backend is available");
             }
             if (gpu == null) throw new IllegalStateException("task has no eligible GPU variant");
+            if (!gpuMemoryFits) {
+                throw new IllegalStateException(
+                        "GPU placement working set exceeds device memory budget");
+            }
             return new Mapping(gpu, ProcessorKind.GPU);
         }
 
-        if (machine.gpuAvailable() && gpu != null) {
+        if (machine.gpuAvailable() && gpu != null && gpuMemoryFits) {
             Set<RegionIdentity> roots = new LinkedHashSet<>();
             for (Access access : task.accesses()) roots.add(access.slice().rootIdentity());
             long nonResident = roots.stream().filter(root -> !gpuResidentRootRegions.contains(root)).count();
@@ -373,8 +442,28 @@ public final class HeterogeneousTaskMapper {
         }
 
         if (cpu != null) return new Mapping(cpu, ProcessorKind.CPU);
-        if (machine.gpuAvailable() && gpu != null) return new Mapping(gpu, ProcessorKind.GPU);
+        if (machine.gpuAvailable() && gpu != null && gpuMemoryFits) {
+            return new Mapping(gpu, ProcessorKind.GPU);
+        }
+        if (machine.gpuAvailable() && gpu != null && !gpuMemoryFits) {
+            throw new IllegalStateException(
+                    "task has no eligible CPU variant and GPU working set exceeds device memory budget");
+        }
         throw new IllegalStateException("task has no eligible variant for this machine/work estimate");
+    }
+
+    private static long ceilDiv(long numerator, long denominator) {
+        return numerator / denominator + (numerator % denominator == 0 ? 0 : 1);
+    }
+
+    private static long alignUp(long value, long alignment) {
+        long remainder = value % alignment;
+        if (remainder == 0) return value;
+        try {
+            return Math.addExact(value, alignment - remainder);
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE - (Long.MAX_VALUE % alignment);
+        }
     }
 
     private Variant bestEligible(TaskSpec task, ProcessorKind processor, long workItems) {
