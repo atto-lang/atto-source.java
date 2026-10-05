@@ -381,6 +381,11 @@ public final class Parser {
                                 + "unsupported modifiers must not be silently discarded");
             }
             CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
+            if (!callableStructural.annotations().isEmpty()) {
+                throw error(previous(),
+                        "interface-member annotations are not represented by the current AST; "
+                                + "only @structural is accepted here and unsupported annotations must not be silently discarded");
+            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
