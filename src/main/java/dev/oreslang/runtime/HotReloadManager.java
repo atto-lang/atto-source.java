@@ -105,6 +105,24 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
+    /**
+     * Supervisor-owned hard cancellation boundary.
+     *
+     * <p>Unlike cooperative actor stop, this does not require guest code to
+     * reach a safepoint. Graal is instructed to cancel execution immediately.
+     * Untrusted actors must be hosted in a generation/context whose lifetime is
+     * no broader than the actor (or an explicitly kill-together ActorGroup), so
+     * this operation never terminates unrelated trusted work.</p>
+     */
+    public synchronized void cancelNow(long generationId) {
+        Generation generation = generations.remove(generationId);
+        if (generation != null) {
+            active.compareAndSet(generation, null);
+            activeByCodeUnit.remove(generation.codeUnitId(), generation);
+            generation.cancelNow();
+        }
+    }
+
     public synchronized int liveGenerations() { return generations.size(); }
 
     @Override
@@ -164,9 +182,19 @@ public final class HotReloadManager implements AutoCloseable {
             }
         }
 
+        /**
+         * Force-cancel guest execution. No cooperation from guest code is
+         * required and guest defer/finally execution is not guaranteed.
+         * Runtime-owned resources must therefore be registered outside the
+         * guest context and reclaimed by the supervisor/domain teardown path.
+         */
+        public void cancelNow() {
+            if (closed.compareAndSet(false, true)) context.close(true);
+        }
+
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) context.close(true);
+            cancelNow();
         }
     }
 }
