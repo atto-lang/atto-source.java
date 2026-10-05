@@ -1743,7 +1743,7 @@ public final class OresEvalRootNode extends RootNode {
             List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
             if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-            Env env = new Env(null);
+            Env env = new Env(null, false, klass);
             for (int i = 0; i < classFields.size(); i++) {
                 Ast.FieldDecl field = classFields.get(i);
                 Object value;
