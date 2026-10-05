@@ -294,6 +294,53 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void linkedGenericActorImportPreservesTypeArguments() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> valid = Map.of(
+                "worker.ores", """
+                        define actor Box<T> as
+                          let T value;
+
+                          constructor(initial: T) {
+                            self.value = initial;
+                          }
+
+                          pub receive(message: T): void {
+                            self.value = message;
+                            return;
+                          }
+                        end
+                        """,
+                "app.ores", """
+                        import actor {Box as RemoteBox} from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val box = spawn RemoteBox<String>("initial");
+                          box.send("next");
+                          return;
+                        }
+                        """);
+
+        assertDoesNotThrow(() -> compiler.compile(valid));
+
+        Map<String, String> invalid = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor * as Actors from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val box = spawn Actors.Box<String>("initial");
+                          box.send(42);
+                          return;
+                        }
+                        """);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(invalid));
+    }
+
+    @Test
     void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var build = compiler.compile(Map.of(
