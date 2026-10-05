@@ -331,9 +331,15 @@ val b = 2.0 * a;      // scalar scaling; * is deliberately not matrix multiply
 val at = a.transpose();
 val inv = a.inverse();
 val n = a.norm();
+val kf = a.condition_frobenius(); // ||A||_F * ||pinv(A)||_F
 ```
 
 `@` is reserved for linear-algebra multiplication. This avoids the common ambiguity between element-wise/scalar multiplication and matrix multiplication. Matrix shape compatibility is checked at runtime; numeric category compatibility is checked statically. Oreslang defines the reference dense semantics itself using contiguous row-major primitive storage and Oreslang-compatible complex arithmetic; no Java numerical library defines the result. The Truffle implementation is only a VM representation. Optional native BLAS/GPU/JNI backends may accelerate the same operations, but they must preserve Oreslang's shape, aliasing, precision, complex-arithmetic, and failure semantics. Numeric values remain immutable at the guest-language boundary, so trusted actors can transport them without exposing mutable host objects; mailbox/memory quotas still charge their logical primitive-buffer footprint.
+
+`Matrix.condition_frobenius()` is deliberately explicit. Unqualified
+`Matrix.condition()` is reserved for a true spectral/2-norm condition number and
+currently fails static checking rather than silently returning a different norm.
+
 
 The `math` facade contains constants and complex helpers:
 
