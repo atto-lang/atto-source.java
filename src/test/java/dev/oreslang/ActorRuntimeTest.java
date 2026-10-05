@@ -992,6 +992,63 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void invokeWaitsForOneShotActorFinalizationBeforeReturning() throws Exception {
+        CountDownLatch finalizing = new CountDownLatch(1);
+        CountDownLatch releaseFinalization = new CountDownLatch(1);
+        CountDownLatch returned = new CountDownLatch(1);
+        AtomicReference<Integer> result = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(ignored -> {
+                finalizing.countDown();
+                boolean interrupted = false;
+                try {
+                    while (true) {
+                        try {
+                            releaseFinalization.await();
+                            return;
+                        } catch (InterruptedException caught) {
+                            interrupted = true;
+                        }
+                    }
+                } finally {
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+            });
+
+            Thread caller = new Thread(() -> {
+                try {
+                    result.set(runtime.invoke(
+                            ActorRuntime.ActorKind.SHARED,
+                            41,
+                            (value, context) -> value + 1));
+                } catch (Throwable caught) {
+                    failure.set(caught);
+                } finally {
+                    returned.countDown();
+                }
+            });
+            caller.start();
+
+            try {
+                assertTrue(finalizing.await(2, TimeUnit.SECONDS));
+                assertFalse(
+                        returned.await(150, TimeUnit.MILLISECONDS),
+                        "invoke returned before the one-shot actor fully finalized");
+            } finally {
+                releaseFinalization.countDown();
+            }
+
+            assertTrue(returned.await(2, TimeUnit.SECONDS));
+            caller.join(2_000);
+            assertFalse(caller.isAlive());
+            assertNull(failure.get());
+            assertEquals(42, result.get());
+        }
+    }
+
+    @Test
     void closeWaitsForCarrierToLeaveTurnExecutorAfterActorFinalizes() throws Exception {
         CountDownLatch turnExecutorAfterGuestTurn = new CountDownLatch(1);
         CountDownLatch releaseCarrier = new CountDownLatch(1);
