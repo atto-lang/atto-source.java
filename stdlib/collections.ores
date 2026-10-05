@@ -119,6 +119,10 @@ define module collections
       return copy;
     }
 
+    // Snapshot iteration is part of the core collection contract. Consumers
+    // such as rx-ores obtain an independent iterable view per subscription;
+    // later explicit mutation of this collection cannot alter an in-flight
+    // iterator.
     [Symbol.iterator](): Array<T> {
       return self.to_array();
     }
