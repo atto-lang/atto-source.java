@@ -3,6 +3,7 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -104,7 +105,9 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Map<String, Ast.InterfaceDecl> importedInterfaces =
+                    ImportGraph.resolveImportedInterfaces(id, parsed, normalizedImportResolutions);
+            Ast.Program checked = TypeChecker.check(parsed.get(id), importedInterfaces);
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -137,6 +140,9 @@ public final class IncrementalCompiler {
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
+            for (Ast.TypeRef contract : module.contracts()) {
+                abi.append(" module-contract ").append(typeRef(contract)).append('\n');
+            }
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
