@@ -359,7 +359,10 @@ public final class OresMatrix implements ImmutableGuestValue {
         if (bi != null && rhs.imaginary != null) System.arraycopy(rhs.imaginary, 0, bi, 0, rhs.imaginary.length);
 
         double scale = maxMagnitude(ar, ai);
-        double tolerance = Math.max(1.0, scale) * Math.ulp(1.0) * Math.max(16.0, n * 8.0);
+        if (!Double.isFinite(scale)) {
+            throw new IllegalArgumentException("matrix factorization requires finite numeric values");
+        }
+        double tolerance = scale * Math.ulp(1.0) * Math.max(16.0, n * 8.0);
 
         for (int pivot = 0; pivot < n; pivot++) {
             int best = pivot;
@@ -440,7 +443,10 @@ public final class OresMatrix implements ImmutableGuestValue {
         double[] ai = isComplex() ? Arrays.copyOf(imaginary, imaginary.length) : null;
         int sign = 1;
         double scale = maxMagnitude(ar, ai);
-        double tolerance = Math.max(1.0, scale) * Math.ulp(1.0) * Math.max(16.0, rows * 8.0);
+        if (!Double.isFinite(scale)) {
+            throw new IllegalArgumentException("matrix factorization requires finite numeric values");
+        }
+        double tolerance = scale * Math.ulp(1.0) * Math.max(16.0, rows * 8.0);
 
         for (int pivot = 0; pivot < rows; pivot++) {
             int best = pivot;
