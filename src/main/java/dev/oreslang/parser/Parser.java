@@ -92,20 +92,22 @@ public final class Parser {
                 throw error(peek(), "function imports use 'import fnc', not 'import fn'");
             }
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
+            else if (match(ACTOR)) kind = Ast.ImportKind.ACTOR;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
-            else throw error(peek(), "expected module, class, fnc, or * after import");
+            else if (match(INTERFACE)) kind = Ast.ImportKind.INTERFACE;
+            else if (match(TRAIT)) kind = Ast.ImportKind.TRAIT;
+            else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
+            else if (match(TYPE)) kind = Ast.ImportKind.TYPE;
+            else if (match(TYPES)) kind = Ast.ImportKind.TYPES;
+            else throw error(peek(), "expected module, actor, class, fnc, interface, trait, struct, type, types, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
                 consume(AS, "wildcard import requires 'as <namespace>'");
                 namespace = consume(IDENT, "expected import namespace").lexeme();
-            } else if (match(LBRACE)) {
-                if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consumeImportName(kind)); while (match(COMMA));
-                consume(RBRACE, "expected '}' after imported names");
             } else {
-                names.add(consumeImportName(kind));
+                parseImportSelection(kind, names);
             }
 
             if (!wildcard && match(AS)) {
@@ -121,6 +123,24 @@ public final class Parser {
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+    }
+
+    private void parseImportSelection(Ast.ImportKind kind, List<String> names) {
+        Token.Type closing = null;
+        if (match(LBRACE)) closing = RBRACE;
+        else if (match(LPAREN)) closing = RPAREN;
+
+        if (closing != null) {
+            if (check(closing)) throw error(peek(), "import selection cannot be empty");
+            do names.add(consumeImportName(kind)); while (match(COMMA));
+            consume(closing, closing == RBRACE
+                    ? "expected '}' after imported names"
+                    : "expected ')' after imported names");
+            return;
+        }
+
+        names.add(consumeImportName(kind));
+        while (match(COMMA)) names.add(consumeImportName(kind));
     }
 
     private String consumeImportName(Ast.ImportKind kind) {
