@@ -241,6 +241,21 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
+    void channelAndSelectCapabilitiesCannotCrossActorBoundaries() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub actor fnc bad(Channel<int> channel): int {
+                  return 1;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub actor fnc bad_result(Array<SelectCase> cases): SelectResult {
+                  return select from cases;
+                }
+                """)));
+    }
+
+    @Test
     void rejectsMalformedChannelAndSelectForms() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Channel<int> ch): void {
