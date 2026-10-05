@@ -314,7 +314,9 @@ Ordinary actor cancellation is structured:
 - mark the actor stopped immediately;
 - close its mailbox channel;
 - prevent new message/continuation admission;
-- cancel its pending deferred channel/select registrations;
+- cancel its pending actor-owned channel/select registrations, including raw
+  `nb readch`, `nb writech`, dynamic `nb select from ...`, and deferred
+  static-select continuations;
 - drain/release mailbox resource reservations;
 - cascade cancellation to structured child actors;
 - running trusted/co-resident actor code observes an uncatchable control-plane
