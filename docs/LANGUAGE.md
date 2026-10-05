@@ -252,7 +252,7 @@ find(self Box)(int key): self {
 }
 ```
 
-The receiver variable name is always `self`.
+The receiver variable name is always `self`. Because `self` is also a type, a leading parameter such as `same_as(self other)` is an ordinary parameter typed with the receiver-polymorphic `self` type. The explicit receiver form is distinguished by its second parameter list: `find(self Box)(int key)`.
 
 ### Receiver-polymorphic `self` type
 
