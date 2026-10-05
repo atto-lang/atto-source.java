@@ -634,7 +634,7 @@ public final class PureEffectChecker {
         Binding binding = found.binding();
         if (found.crossedCallableBoundary()) {
             throw error("pure callable '" + callable
-                    + "' cannot mutate captured binding '" + root.name() + "'");
+                    + "' cannot mutate captured/outside binding '" + root.name() + "'");
         }
 
         if (target instanceof Ast.NameExpr) {
