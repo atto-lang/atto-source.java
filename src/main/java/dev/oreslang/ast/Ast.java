@@ -33,7 +33,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, ComponentDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -176,6 +176,16 @@ public final class Ast {
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
             this(name, isAbstract, ActorKind.NONE, genericParameters, List.of(), List.of(), fields, methods);
+        }
+    }
+
+    /** Data-only ECS component declaration. Behavior is intentionally impossible here. */
+    public record ComponentDecl(
+            String name,
+            Visibility visibility,
+            List<FieldDecl> fields) implements Decl {
+        public ComponentDecl {
+            fields = List.copyOf(fields);
         }
     }
 
