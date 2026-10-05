@@ -2845,6 +2845,147 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        private Object iteratorMember(IteratorValue iterator, String name) {
+            return switch (name) {
+                case "next" -> (Invokable) args -> {
+                    requireZero(args, "Iterator.next");
+                    return iterator.nextValue();
+                };
+                case "map" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(args, "Iterator.map");
+                    return new IteratorValue(() -> {
+                        OptionValue next = iterator.nextValue();
+                        if (!next.present()) return next;
+                        return new OptionValue(
+                                true,
+                                mapper.call(List.of(next.value())));
+                    });
+                };
+                case "flat_map", "and_then" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(
+                            args, "Iterator." + name);
+                    final class FlatMapState {
+                        private IteratorValue inner;
+
+                        private OptionValue next() {
+                            while (true) {
+                                if (inner != null) {
+                                    OptionValue nested = inner.nextValue();
+                                    if (nested.present()) return nested;
+                                    inner = null;
+                                }
+
+                                OptionValue outer = iterator.nextValue();
+                                if (!outer.present()) return outer;
+                                Object mapped = mapper.call(List.of(outer.value()));
+                                if (!(mapped instanceof IteratorValue nested)) {
+                                    throw new IllegalArgumentException(
+                                            "Iterator." + name
+                                                    + " callback must return Iterator<T>");
+                                }
+                                inner = nested;
+                            }
+                        }
+                    }
+                    FlatMapState state = new FlatMapState();
+                    return new IteratorValue(state::next);
+                };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Iterator.flatten");
+                    Invokable identity = values -> {
+                        requireOne(values, "Iterator.flatten identity");
+                        Object nested = values.getFirst();
+                        if (!(nested instanceof IteratorValue)) {
+                            throw new IllegalArgumentException(
+                                    "Iterator.flatten requires Iterator<Iterator<T>>");
+                        }
+                        return nested;
+                    };
+                    return ((Invokable) iteratorMember(
+                            iterator, "flat_map")).call(List.of(identity));
+                };
+                default -> throw new IllegalArgumentException(
+                        "unknown Iterator member " + name);
+            };
+        }
+
+        private Object streamMember(StreamValue stream, String name) {
+            return switch (name) {
+                case "next" -> (Invokable) args -> {
+                    requireZero(args, "Stream.next");
+                    return stream.nextValue();
+                };
+                case "map" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(args, "Stream.map");
+                    return new StreamValue(() ->
+                            stream.nextValue().mapOn(
+                                    asyncScheduler(),
+                                    next -> next.present()
+                                            ? new OptionValue(
+                                                    true,
+                                                    mapper.call(List.of(next.value())))
+                                            : next));
+                };
+                case "flat_map", "and_then" -> (Invokable) args -> {
+                    Invokable mapper = requireInvokableArg(
+                            args, "Stream." + name);
+                    final class FlatMapState {
+                        private StreamValue inner;
+
+                        private OresFuture<OptionValue> next() {
+                            StreamValue current = inner;
+                            if (current != null) {
+                                return current.nextValue().flatMapOn(
+                                        asyncScheduler(),
+                                        nested -> {
+                                            if (nested.present()) {
+                                                return OresFuture.completed(nested);
+                                            }
+                                            if (inner == current) inner = null;
+                                            return next();
+                                        });
+                            }
+
+                            return stream.nextValue().flatMapOn(
+                                    asyncScheduler(),
+                                    outer -> {
+                                        if (!outer.present()) {
+                                            return OresFuture.completed(outer);
+                                        }
+                                        Object mapped =
+                                                mapper.call(List.of(outer.value()));
+                                        if (!(mapped instanceof StreamValue nested)) {
+                                            throw new IllegalArgumentException(
+                                                    "Stream." + name
+                                                            + " callback must return Stream<T>");
+                                        }
+                                        inner = nested;
+                                        return next();
+                                    });
+                        }
+                    }
+                    FlatMapState state = new FlatMapState();
+                    return new StreamValue(state::next);
+                };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Stream.flatten");
+                    Invokable identity = values -> {
+                        requireOne(values, "Stream.flatten identity");
+                        Object nested = values.getFirst();
+                        if (!(nested instanceof StreamValue)) {
+                            throw new IllegalArgumentException(
+                                    "Stream.flatten requires Stream<Stream<T>>");
+                        }
+                        return nested;
+                    };
+                    return ((Invokable) streamMember(
+                            stream, "flat_map")).call(List.of(identity));
+                };
+                default -> throw new IllegalArgumentException(
+                        "unknown Stream member " + name);
+            };
+        }
+
         @SuppressWarnings("unchecked")
         private Object rwLockMember(OresRwLock<?> rawLock, String name) {
             context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "RwLock." + name);
@@ -3183,6 +3324,112 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return List.copyOf(result.values());
+        }
+
+        @FunctionalInterface
+        private interface IteratorPull {
+            OptionValue pull();
+        }
+
+        private final class IteratorValue {
+            private final IteratorPull pull;
+            private boolean pulling;
+
+            private IteratorValue(IteratorPull pull) {
+                this.pull = Objects.requireNonNull(pull, "pull");
+            }
+
+            private synchronized OptionValue nextValue() {
+                if (pulling) {
+                    throw new IllegalStateException(
+                            "Iterator.next is not re-entrant");
+                }
+                pulling = true;
+                try {
+                    return Objects.requireNonNull(
+                            pull.pull(),
+                            "Iterator pull returned null");
+                } finally {
+                    pulling = false;
+                }
+            }
+        }
+
+        private final class IteratorFactory {
+            private Object fromValues(List<Object> args) {
+                requireOne(args, "Iterator.from_values");
+                List<?> source = iterableValues(args.getFirst());
+                ArrayList<Object> snapshot = new ArrayList<>(source);
+                final class State {
+                    private int index;
+                    private synchronized OptionValue next() {
+                        if (index >= snapshot.size()) {
+                            return new OptionValue(false, null);
+                        }
+                        return new OptionValue(true, snapshot.get(index++));
+                    }
+                }
+                State state = new State();
+                return new IteratorValue(state::next);
+            }
+        }
+
+        @FunctionalInterface
+        private interface StreamPull {
+            OresFuture<OptionValue> pull();
+        }
+
+        private final class StreamValue {
+            private final StreamPull pull;
+
+            private StreamValue(StreamPull pull) {
+                this.pull = Objects.requireNonNull(pull, "pull");
+            }
+
+            private OresFuture<OptionValue> nextValue() {
+                return Objects.requireNonNull(
+                        pull.pull(),
+                        "Stream pull returned null");
+            }
+        }
+
+        private final class StreamFactory {
+            private Object fromValues(List<Object> args) {
+                requireOne(args, "Stream.from_values");
+                List<?> source = iterableValues(args.getFirst());
+                ArrayList<Object> snapshot = new ArrayList<>(source);
+                final class State {
+                    private int index;
+                    private synchronized OresFuture<OptionValue> next() {
+                        OptionValue value = index >= snapshot.size()
+                                ? new OptionValue(false, null)
+                                : new OptionValue(true, snapshot.get(index++));
+                        return OresFuture.completed(value);
+                    }
+                }
+                State state = new State();
+                return new StreamValue(state::next);
+            }
+
+            private Object fromFuture(List<Object> args) {
+                requireOne(args, "Stream.from_future");
+                OresFuture<?> source = awaitableFuture(args.getFirst());
+                final class State {
+                    private boolean consumed;
+                    private synchronized OresFuture<OptionValue> next() {
+                        if (consumed) {
+                            return OresFuture.completed(
+                                    new OptionValue(false, null));
+                        }
+                        consumed = true;
+                        return source.mapOn(
+                                asyncScheduler(),
+                                value -> new OptionValue(true, value));
+                    }
+                }
+                State state = new State();
+                return new StreamValue(state::next);
+            }
         }
 
         private List<?> iterableValues(Object value) {
