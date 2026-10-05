@@ -1,6 +1,13 @@
 package dev.oreslang.runtime.math;
 
-/** Electrical-engineering primitives built on Oreslang complex128 values. */
+/**
+ * Transitional bootstrap shim for the legacy built-in ee facade.
+ *
+ * Canonical reusable EE formulas are migrating to stdlib/math/electrical.ores.
+ * Keep this class small and parity-tested; do not add new domain semantics here.
+ * It may disappear once the compiler-owned std/* loader is in this branch's stack.
+ */
+@Deprecated(forRemoval = true)
 public final class ElectricalMath {
     private ElectricalMath() { }
 
