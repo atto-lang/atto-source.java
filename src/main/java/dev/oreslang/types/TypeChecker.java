@@ -1335,10 +1335,11 @@ public final class TypeChecker {
                     if (candidates.size() == 1) {
                         Map.Entry<String, Type> candidate = candidates.getFirst();
                         int genericArity = Integer.parseInt(candidate.getKey().substring(prefix.length()));
-                        if (!(candidate.getValue() instanceof Function fn)) {
+                        if (!(candidate.getValue() instanceof Function rawFunction)) {
                             throw new IllegalArgumentException(
                                     "structural method contract for '" + member.member() + "' is not callable");
                         }
+                        Function fn = (Function) bindReceiverSelf(rawFunction, receiverValueType);
 
                         String label = "structural method " + member.member();
                         Set<String> canonicalGenerics = new LinkedHashSet<>();
@@ -1402,7 +1403,7 @@ public final class TypeChecker {
                                     "cannot infer generic return type for " + label
                                             + "; provide explicit type arguments or an inferable value parameter");
                         }
-                        return bindReceiverSelf(result, receiverValueType);
+                        return result;
                     }
                 }
 
