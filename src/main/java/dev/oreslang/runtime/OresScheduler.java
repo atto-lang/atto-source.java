@@ -119,28 +119,18 @@ public final class OresScheduler implements AutoCloseable {
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
 
-        AtomicInteger carrierId = new AtomicInteger();
-        ThreadFactory factory = task -> Thread.ofPlatform()
-                .daemon(true)
-                .name(name + "-carrier-" + carrierId.getAndIncrement())
-                .unstarted(() -> {
-                    SCHEDULER_CARRIER.set(Boolean.TRUE);
-                    try {
-                        task.run();
-                    } finally {
-                        SCHEDULER_CARRIER.remove();
-                    }
-                });
-        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+        ExecutorService pool = createCarrierExecutor(
+                name,
                 parallelism,
-                parallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(queueCapacity),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
-        pool.prestartAllCoreThreads();
-        this.executor = pool;
+                queueCapacity);
+        this.executor = task -> pool.execute(() -> {
+            SCHEDULER_CARRIER.set(Boolean.TRUE);
+            try {
+                task.run();
+            } finally {
+                SCHEDULER_CARRIER.remove();
+            }
+        });
         this.ownedExecutor = pool;
     }
 
@@ -223,6 +213,69 @@ public final class OresScheduler implements AutoCloseable {
     public boolean isClosed() {
         return closed.get();
     }
+
+    public boolean usesNativeCarriers() {
+        return ownedExecutor instanceof NativeCarrierExecutor;
+    }
+
+    private static ExecutorService createCarrierExecutor(
+            String name,
+            int parallelism,
+            int queueCapacity) {
+        String requested = System.getProperty("ores.runtime.carriers", "auto")
+                .trim()
+                .toLowerCase(java.util.Locale.ROOT);
+        if (!requested.equals("auto")
+                && !requested.equals("native")
+                && !requested.equals("java")) {
+            throw new IllegalArgumentException(
+                    "ores.runtime.carriers must be one of auto, native, java");
+        }
+
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        boolean unix = os.contains("linux")
+                || os.contains("mac")
+                || os.contains("darwin");
+
+        if (!requested.equals("java")
+                && (requested.equals("native") || unix)) {
+            if (!unix) {
+                throw new IllegalStateException(
+                        "native OresScheduler carriers currently require Linux or macOS");
+            }
+            try {
+                return new NativeCarrierExecutor(
+                        parallelism,
+                        parallelism,
+                        queueCapacity,
+                        name + "-carrier-");
+            } catch (UnsatisfiedLinkError | SecurityException unavailable) {
+                if (requested.equals("native")) {
+                    throw new IllegalStateException(
+                            "native OresScheduler carriers were required but liboresthread could not be loaded",
+                            unavailable);
+                }
+            }
+        }
+
+        AtomicInteger carrierId = new AtomicInteger();
+        ThreadFactory factory = task -> Thread.ofPlatform()
+                .daemon(true)
+                .name(name + "-compat-carrier-" + carrierId.getAndIncrement())
+                .unstarted(task);
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+                parallelism,
+                parallelism,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(queueCapacity),
+                factory,
+                new ThreadPoolExecutor.AbortPolicy());
+        pool.prestartAllCoreThreads();
+        return pool;
+    }
+
 
     /** Scheduler currently executing this Ores task turn, if any. */
     public static OresScheduler current() {
