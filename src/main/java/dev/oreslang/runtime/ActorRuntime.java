@@ -2578,15 +2578,27 @@ public final class ActorRuntime implements AutoCloseable {
     private record ProtocolRequest(
             String method,
             OresFuture<Object> reply,
+            ActorId callerId,
             ActorKind callerKind,
-            long callerReplyLimit) {
+            long callerReplyLimit,
+            AtomicReference<MemoryReservation> callerReplyReservation) {
         private ProtocolRequest {
             Objects.requireNonNull(method, "method");
             Objects.requireNonNull(reply, "reply");
+            Objects.requireNonNull(callerReplyReservation, "callerReplyReservation");
+            if ((callerId == null) != (callerKind == null)) {
+                throw new IllegalArgumentException(
+                        "actor protocol caller id/kind must either both be present or both be absent");
+            }
             if (callerReplyLimit < 0) {
                 throw new IllegalArgumentException(
                         "actor protocol caller reply limit cannot be negative");
             }
+        }
+
+        private void releaseCallerReplyReservation() {
+            MemoryReservation reservation = callerReplyReservation.getAndSet(null);
+            if (reservation != null) reservation.close();
         }
     }
 
@@ -3247,8 +3259,8 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(arguments, "arguments");
         validateProtocolMethodName(method);
-        OresFuture<Object> reply = new OresFuture<>();
         ActorCell<?> caller = currentActor.get();
+        ActorId callerId = caller == null ? null : caller.ref.id();
         ActorKind callerKind = caller == null ? null : caller.kind;
         long callerReplyLimit = Long.MAX_VALUE;
         if (caller != null && caller.kind.memoryIsolated()) {
@@ -3259,14 +3271,25 @@ public final class ActorRuntime implements AutoCloseable {
                         caller.untrustedLimits.maxMailboxReturnBytes());
             }
         }
+
+        AtomicReference<MemoryReservation> callerReplyReservation =
+                new AtomicReference<>();
+        OresFuture<Object> reply = new OresFuture<>(() -> {
+            MemoryReservation reservation =
+                    callerReplyReservation.getAndSet(null);
+            if (reservation != null) reservation.close();
+        });
+
         enqueueMessage(
                 ref,
                 List.copyOf(arguments),
                 new ProtocolRequest(
                         method,
                         reply,
+                        callerId,
                         callerKind,
-                        callerReplyLimit));
+                        callerReplyLimit,
+                        callerReplyReservation));
         return reply;
     }
 
@@ -6725,10 +6748,14 @@ public final class ActorRuntime implements AutoCloseable {
                                                     arguments,
                                                     protocolContext);
                                             Object preparedReply = prepareProtocolReply(result, protocol);
-                                            protocol.reply().completeFromRuntime(preparedReply);
+                                            if (!protocol.reply().completeFromRuntime(preparedReply)
+                                                    && protocol.reply().isCancelled()) {
+                                                protocol.releaseCallerReplyReservation();
+                                            }
                                         } catch (ActorTurnSuspendedSignal suspended) {
                                             throw suspended;
                                         } catch (Throwable failure) {
+                                            protocol.releaseCallerReplyReservation();
                                             protocol.reply().failFromRuntime(failure);
                                             throw failure;
                                         }
@@ -6810,14 +6837,40 @@ public final class ActorRuntime implements AutoCloseable {
             if (protocol != null
                     && protocol.callerKind() != null
                     && protocol.callerKind().memoryIsolated()) {
+                MemoryReservation reservation = null;
                 try {
                     estimatePrivateTransportBytes(
                             outbound,
                             new IdentityHashMap<>(),
                             0,
                             protocol.callerReplyLimit());
-                    return isolateCopy(outbound);
+
+                    ActorCell<?> caller = actors.get(protocol.callerId());
+                    if (caller == null
+                            || caller.stopped.get()
+                            || caller.finalized
+                            || caller.memorySlice == null) {
+                        protocol.reply().cancel(false);
+                        return null;
+                    }
+
+                    Object isolated = isolateCopy(outbound);
+                    reservation = caller.memorySlice.reserveInbox(isolated);
+                    if (!protocol.callerReplyReservation().compareAndSet(
+                            null,
+                            reservation)) {
+                        reservation.close();
+                        throw new IllegalStateException(
+                                "actor protocol reply memory was already reserved");
+                    }
+                    return isolated;
                 } catch (IllegalArgumentException | IllegalStateException denied) {
+                    if (reservation != null
+                            && protocol.callerReplyReservation().compareAndSet(
+                                    reservation,
+                                    null)) {
+                        reservation.close();
+                    }
                     throw new SecurityException(
                             "actor protocol reply is not admissible in "
                                     + protocol.callerKind()
@@ -6854,8 +6907,10 @@ public final class ActorRuntime implements AutoCloseable {
             Object prepared = prepareProtocolReply(value, protocol);
             if (!protocol.reply().completeFromRuntime(prepared)) {
                 if (protocol.reply().isCancelled()) {
+                    protocol.releaseCallerReplyReservation();
                     return; // cancellation won the settlement race
                 }
+                protocol.releaseCallerReplyReservation();
                 throw new IllegalStateException(
                         "typed actor protocol reply was already settled");
             }
@@ -6870,6 +6925,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             ProtocolRequest protocol = suspendedProtocolRequest();
             if (protocol != null && !protocol.reply().isDone()) {
+                protocol.releaseCallerReplyReservation();
                 protocol.reply().failFromRuntime(failure);
             }
         }
