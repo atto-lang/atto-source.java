@@ -692,7 +692,16 @@ public final class OresEvalRootNode extends RootNode {
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
             } catch (ReturnSignal signal) {
-                return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
+                Object returned = shapeReturnedValue(
+                        method.returnType(), signal.value, "method " + method.name());
+                if (method.returnType().name().equals("self")
+                        && method.returnType().arguments().isEmpty()
+                        && returned != receiver) {
+                    throw new IllegalStateException(
+                            "method " + method.name()
+                                    + " declared ': self' but returned a different receiver instance");
+                }
+                return returned;
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a method boundary", signal);
             }
