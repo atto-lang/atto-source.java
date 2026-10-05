@@ -60,6 +60,33 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
+    void anotherValueAlreadyTypedAsSelfMayBeReturned() throws Exception {
+        String output = run("""
+                define module m
+                  define class Base as
+                    pub choose(self other): self {
+                      return other;
+                    }
+                  end
+
+                  define class Child extends Base as
+                    pub child_only(): int {
+                      return 8;
+                    }
+                  end
+                end
+
+                pub routine main(): void {
+                  val left = new m.Child();
+                  val right = new m.Child();
+                  stdio.stdout.write(left.choose(right).child_only());
+                }
+                """);
+
+        assertEquals("8", output);
+    }
+
+    @Test
     void inheritedSelfReturnRebindsToTheActualChildReceiverForFluentChaining() throws Exception {
         String output = run("""
                 define module m
