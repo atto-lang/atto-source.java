@@ -58,6 +58,9 @@ final class GpuResidentDataLanguageTest {
                           val collected = stream.collect();
                           let cpu_again = collected.copy_to_cpu();
                           cpu_again[0] = 99;
+                          collected.release();
+                          stream.release();
+                          values.release();
                           return;
                         }
                         """);
@@ -103,6 +106,7 @@ final class GpuResidentDataLanguageTest {
                           val n = matrix.length();
                           let cpu_again = matrix.copy_to_cpu();
                           cpu_again[0][0] = 99.0;
+                          matrix.release();
                           return;
                         }
                         """);
