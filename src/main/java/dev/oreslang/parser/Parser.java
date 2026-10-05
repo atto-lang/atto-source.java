@@ -1612,7 +1612,7 @@ public final class Parser {
 
     private boolean isSafeStatementBoundary() {
         return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
-                || check(CATCH) || check(FINALLY) || check(EOF);
+                || check(CATCH) || check(FINALLY) || isBareDoneDelimiter() || check(EOF);
     }
 
     private Ast.BindingKind parseBindingKind() {
