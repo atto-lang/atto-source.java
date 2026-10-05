@@ -54,6 +54,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -833,7 +834,11 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || cell.stopped.get() || closed.get()) return false;
-        if (!cell.reserveMailboxSlot()) return false;
+        if (!cell.reserveContinuationSlot()) {
+            cell.fail(new IllegalStateException(
+                    "actor internal continuation queue overflow for " + actorId));
+            return false;
+        }
 
         boolean admitted = false;
         try {
@@ -2901,7 +2906,11 @@ public final class ActorRuntime implements AutoCloseable {
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.parent = parent;
-            this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
+            int mailboxCapacity = policy.maxMailboxMessages() >
+                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
+                    ? Integer.MAX_VALUE
+                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
+            this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
@@ -2911,6 +2920,18 @@ public final class ActorRuntime implements AutoCloseable {
             while (true) {
                 int current = queuedMessages.get();
                 if (current >= policy.maxMailboxMessages()) return false;
+                if (queuedMessages.compareAndSet(current, current + 1)) return true;
+            }
+        }
+
+        private boolean reserveContinuationSlot() {
+            int limit = policy.maxMailboxMessages() >
+                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
+                    ? Integer.MAX_VALUE
+                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
+            while (true) {
+                int current = queuedMessages.get();
+                if (current >= limit) return false;
                 if (queuedMessages.compareAndSet(current, current + 1)) return true;
             }
         }
