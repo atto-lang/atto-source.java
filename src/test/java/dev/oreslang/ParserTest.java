@@ -482,6 +482,30 @@ final class ParserTest {
     }
 
     @Test
+    void actorBoundaryOpaqueNominalsFailClosedButActorIdIsExplicitlySafe() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub leak(handle: OpaqueRuntimeHandle): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("explicitly whitelisted"),
+                failure.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  pub inspect(id: ActorId): ActorId {
+                    return id;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void actorConstructorParametersCannotBeMut() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Worker as
