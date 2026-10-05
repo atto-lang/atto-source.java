@@ -2618,7 +2618,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue result) {
                 return containsLiveMutexGuard(result.value(), seen);
             }
-            if (value instanceof OresMutex.GuardFuture<?> future) {
+            if (value instanceof OresFuture<?> future) {
                 return future.isDone()
                         && !future.isCancelled()
                         && !future.isCompletedExceptionally()
@@ -2682,7 +2682,7 @@ public final class OresEvalRootNode extends RootNode {
                 releaseMutexGuardsInValue(result.value(), failed, seen);
                 return;
             }
-            if (value instanceof OresMutex.GuardFuture<?> future) {
+            if (value instanceof OresFuture<?> future) {
                 if (!future.isDone()) {
                     future.cancel(true);
                     return;
