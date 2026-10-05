@@ -3275,18 +3275,19 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "actor protocol method name must contain 1..256 characters");
         }
-        int first = method.codePointAt(0);
-        if (first != '_' && !Character.isUnicodeIdentifierStart(first)) {
+        char first = method.charAt(0);
+        if (!(Character.isLetter(first) || first == '_')) {
             throw new IllegalArgumentException(
-                    "actor protocol method must be a valid identifier");
+                    "actor protocol method must match the Oreslang identifier grammar");
         }
-        for (int offset = Character.charCount(first); offset < method.length();) {
-            int cp = method.codePointAt(offset);
-            if (!Character.isUnicodeIdentifierPart(cp)) {
+        for (int i = 1; i < method.length(); i++) {
+            char ch = method.charAt(i);
+            if (!(Character.isLetter(ch)
+                    || ch == '_'
+                    || (ch >= '0' && ch <= '9'))) {
                 throw new IllegalArgumentException(
-                        "actor protocol method must be a valid identifier");
+                        "actor protocol method must match the Oreslang identifier grammar");
             }
-            offset += Character.charCount(cp);
         }
     }
 
