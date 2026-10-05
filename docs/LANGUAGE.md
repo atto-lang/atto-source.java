@@ -643,6 +643,35 @@ let Fnc<int, int> fact = |int n| -> {
 };
 ```
 
+Callable types also support a signature-inside-generics spelling:
+
+```ores
+val Fnc<int(int)> doubler = |int value| -> {
+  return value * 2;
+};
+
+val Fnc<String(int, bool)> describe = |int value, bool enabled| -> {
+  return enabled ? "enabled" : "disabled";
+};
+```
+
+The type before the inner parentheses is the result type, and the types inside
+the parentheses are the parameter types. Optional documentation-only parameter
+names are accepted, so `Fnc<String(int value, bool enabled)>` is equivalent.
+
+The existing comma form remains supported for compatibility, with parameter
+types first and the result type last:
+
+```ores
+Fnc<String(int, bool)>   // signature form: returns String
+Fnc<int, bool, String>   // comma form: exactly the same type
+(int, bool) => String    // ordinary function-type form: exactly the same type
+```
+
+`Function<...>` is an alias of `Fnc<...>` and accepts both generic spellings.
+All of these forms normalize to the same callable type; they do not create
+distinct overload, ABI, runtime, or closure representations.
+
 ## Semicolons
 
 Semicolons are strongly recommended. They remain the canonical formatter output.
