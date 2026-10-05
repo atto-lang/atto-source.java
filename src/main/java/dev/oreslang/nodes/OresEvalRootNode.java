@@ -1161,7 +1161,14 @@ public final class OresEvalRootNode extends RootNode {
 
         private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
             ArrayList<Object> values = new ArrayList<>(arguments.size());
-            for (Ast.Expr argument : arguments) values.add(eval(argument, env));
+            for (Ast.Expr argument : arguments) {
+                if (argument instanceof Ast.SpreadExpr spread) {
+                    Object expanded = eval(spread.expression(), env);
+                    values.addAll(asSequence(expanded));
+                } else {
+                    values.add(eval(argument, env));
+                }
+            }
             return List.copyOf(values);
         }
 
@@ -1407,6 +1414,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args);
+            }
+            if (expr instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException("'...' spread is only valid directly in a call argument list");
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -2682,7 +2692,24 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < fixed.length; i++) {
                     fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]", resolving);
                 }
-                return java.util.Arrays.asList(fixed);
+                return List.copyOf(java.util.Arrays.asList(fixed));
+            }
+
+            if (declared.isFixedArrayType()) {
+                List<?> items = asSequence(value);
+                if (items.size() != declared.fixedArrayLength()) {
+                    throw new IllegalArgumentException(callable + " returned " + items.size()
+                            + " FixedArray element(s), expected " + declared.fixedArrayLength());
+                }
+                ArrayList<Object> shaped = new ArrayList<>(items.size());
+                for (int i = 0; i < items.size(); i++) {
+                    shaped.add(shapeReturnedValue(
+                            declared.fixedArrayElement(),
+                            items.get(i),
+                            callable + " FixedArray[" + i + "]",
+                            resolving));
+                }
+                return shaped;
             }
 
             if (declared.isRecordType()) {
