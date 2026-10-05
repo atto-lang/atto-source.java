@@ -1,0 +1,306 @@
+// Oreslang-owned collection semantics.
+//
+// Array<T> remains a VM/native storage primitive. Public collection behavior
+// belongs in Oreslang so API semantics are identical across JIT/AOT/hybrid
+// execution and do not depend on java.util collection implementations.
+
+define module collections
+
+  // Shared implementation for the growable sequence families. Storage is the
+  // native Array<T> primitive; algorithms and API behavior are Oreslang.
+  define class SequenceCore<T> as
+    let Array<T> items = new Array<T>();
+
+    pub size(): int {
+      return self.items.size;
+    }
+
+    pub is_empty(): bool {
+      return self.items.size == 0;
+    }
+
+    pub get(int index): T {
+      return self.items.get(index);
+    }
+
+    pub set(int index, T value): T {
+      return self.items.set(index, value);
+    }
+
+    pub add(T value): void {
+      self.items.add(value);
+      return;
+    }
+
+    pub push(T value): void {
+      self.items.add(value);
+      return;
+    }
+
+    pub pop(): Option<T> {
+      if self.items.size == 0; do
+        return None;
+      fi
+      return Some(self.items.remove(self.items.size - 1));
+    }
+
+    pub first(): Option<T> {
+      if self.items.size == 0; do
+        return None;
+      fi
+      return Some(self.items.get(0));
+    }
+
+    pub last(): Option<T> {
+      if self.items.size == 0; do
+        return None;
+      fi
+      return Some(self.items.get(self.items.size - 1));
+    }
+
+    pub remove_at(int index): T {
+      return self.items.remove(index);
+    }
+
+    pub contains(T value): bool {
+      for item of self.items do
+        if item == value; do
+          return true;
+        fi
+      done
+      return false;
+    }
+
+    pub index_of(T value): int {
+      let int index = 0;
+      for item of self.items do
+        if item == value; do
+          return index;
+        fi
+        index = index + 1;
+      done
+      return -1;
+    }
+
+    pub clear(): void {
+      self.items.clear();
+      return;
+    }
+
+    pub to_array(): Array<T> {
+      let Array<T> copy = new Array<T>();
+      for item of self.items do
+        copy.add(item);
+      done
+      return copy;
+    }
+
+    [Symbol.iterator](): Array<T> {
+      return self.to_array();
+    }
+  end
+
+  // List is the general-purpose growable sequence.
+  define class List<T> extends SequenceCore<T> as
+  end
+
+  // ArrayList names the contiguous growable-array implementation explicitly.
+  define class ArrayList<T> extends SequenceCore<T> as
+  end
+
+  // Vector is a growable contiguous vector. Synchronization is intentionally
+  // not implicit; shared mutation belongs behind Oreslang Mutex/RwLock policy.
+  define class Vector<T> extends SequenceCore<T> as
+  end
+
+  define class Stack<T> extends SequenceCore<T> as
+    pub peek(): Option<T> {
+      return self.last();
+    }
+  end
+
+  define class Queue<T> extends SequenceCore<T> as
+    pub enqueue(T value): void {
+      self.add(value);
+      return;
+    }
+
+    pub dequeue(): Option<T> {
+      if self.size() == 0; do
+        return None;
+      fi
+      return Some(self.remove_at(0));
+    }
+
+    pub peek(): Option<T> {
+      return self.first();
+    }
+  end
+
+  // Map policy is implemented in Oreslang over native Array storage. This
+  // intentionally keeps key comparison, replacement, iteration order, and
+  // removal semantics out of Java. The first implementation is insertion-
+  // ordered and linear-search; a hash-index primitive can optimize it later
+  // without changing the public API.
+  define class MapCore<K, V> as
+    let Array<K> keys_store = new Array<K>();
+    let Array<V> values_store = new Array<V>();
+
+    find_index(K key): int {
+      let int index = 0;
+      for current of self.keys_store do
+        if current == key; do
+          return index;
+        fi
+        index = index + 1;
+      done
+      return -1;
+    }
+
+    pub size(): int {
+      return self.keys_store.size;
+    }
+
+    pub is_empty(): bool {
+      return self.keys_store.size == 0;
+    }
+
+    pub contains_key(K key): bool {
+      return self.find_index(key) >= 0;
+    }
+
+    pub has(K key): bool {
+      return self.contains_key(key);
+    }
+
+    pub get(K key): Option<V> {
+      val int index = self.find_index(key);
+      if index < 0; do
+        return None;
+      fi
+      return Some(self.values_store.get(index));
+    }
+
+    pub get_or(K key, V fallback): V {
+      val int index = self.find_index(key);
+      if index < 0; do
+        return fallback;
+      fi
+      return self.values_store.get(index);
+    }
+
+    pub put(K key, V value): Option<V> {
+      val int index = self.find_index(key);
+      if index >= 0; do
+        val V previous = self.values_store.set(index, value);
+        return Some(previous);
+      fi
+
+      self.keys_store.add(key);
+      self.values_store.add(value);
+      return None;
+    }
+
+    pub set(K key, V value): Option<V> {
+      return self.put(key, value);
+    }
+
+    pub remove(K key): Option<V> {
+      val int index = self.find_index(key);
+      if index < 0; do
+        return None;
+      fi
+
+      val V previous = self.values_store.remove(index);
+      self.keys_store.remove(index);
+      return Some(previous);
+    }
+
+    pub clear(): void {
+      self.keys_store.clear();
+      self.values_store.clear();
+      return;
+    }
+
+    pub keys(): Array<K> {
+      let Array<K> copy = new Array<K>();
+      for key of self.keys_store do
+        copy.add(key);
+      done
+      return copy;
+    }
+
+    pub values(): Array<V> {
+      let Array<V> copy = new Array<V>();
+      for value of self.values_store do
+        copy.add(value);
+      done
+      return copy;
+    }
+  end
+
+  define class Map<K, V> extends MapCore<K, V> as
+  end
+
+  define class OrderedMap<K, V> extends MapCore<K, V> as
+  end
+
+  define class Set<T> as
+    let Array<T> items = new Array<T>();
+
+    pub size(): int {
+      return self.items.size;
+    }
+
+    pub is_empty(): bool {
+      return self.items.size == 0;
+    }
+
+    pub contains(T value): bool {
+      for item of self.items do
+        if item == value; do
+          return true;
+        fi
+      done
+      return false;
+    }
+
+    pub add(T value): bool {
+      if self.contains(value); do
+        return false;
+      fi
+      self.items.add(value);
+      return true;
+    }
+
+    pub remove(T value): bool {
+      let int index = 0;
+      for item of self.items do
+        if item == value; do
+          self.items.remove(index);
+          return true;
+        fi
+        index = index + 1;
+      done
+      return false;
+    }
+
+    pub clear(): void {
+      self.items.clear();
+      return;
+    }
+
+    pub to_array(): Array<T> {
+      let Array<T> copy = new Array<T>();
+      for item of self.items do
+        copy.add(item);
+      done
+      return copy;
+    }
+
+    [Symbol.iterator](): Array<T> {
+      return self.to_array();
+    }
+  end
+
+end
