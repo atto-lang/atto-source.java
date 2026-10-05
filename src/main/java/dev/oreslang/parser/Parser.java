@@ -1489,11 +1489,11 @@ public final class Parser {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
-                List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
@@ -1741,6 +1741,17 @@ public final class Parser {
             }
         }
         return false;
+    }
+
+    private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do {
+            boolean spread = match(ELLIPSIS);
+            Ast.Expr argument = parseExpression();
+            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+        } while (match(COMMA));
+        return args;
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
