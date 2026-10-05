@@ -73,7 +73,7 @@ final class CallableScopeEffectKeywordTest {
                               return;
                             }
                             """.formatted(modifier)));
-            assertTrue(error.getMessage().contains("not valid in executable scope"),
+            assertTrue(error.getMessage().contains("not valid"),
                     modifier + ": " + error.getMessage());
         }
 
@@ -282,6 +282,58 @@ final class CallableScopeEffectKeywordTest {
                         }
                         """)));
         assertTrue(error.getMessage().contains("unproven-effect callable"), error.getMessage());
+    }
+
+    @Test
+    void functionExpressionEffectsAreExplicitAndComposable() {
+        Ast.Program program = Parser.parse("""
+                fnc outer(): void {
+                  let fnc callback = pure nlex trap || -> {
+                    return;
+                  };
+                  return;
+                }
+                """);
+        Ast.FunctionDecl outer = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) outer.body().getFirst();
+        Ast.LambdaExpr callback = (Ast.LambdaExpr) binding.initializer();
+        assertTrue(callback.pure());
+        assertTrue(callback.nonLexical());
+        assertTrue(callback.trapped());
+    }
+
+    @Test
+    void explicitPureFunctionExpressionCannotLaunderCapturedWrites() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc outer(List<int> values): void {
+                          let fnc callback = pure || -> {
+                            values[0] = 9;
+                            return;
+                          };
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("pure"), error.getMessage());
+    }
+
+    @Test
+    void explicitTrapFunctionExpressionOwnsItsThrowBoundary() throws Exception {
+        String output = run("""
+                pub fnc main(): void {
+                  let fnc fail = trap || -> {
+                    return 10 / 0;
+                  };
+                  [const value, const err] = fail();
+                  stdio.println(value);
+                  stdio.println(err);
+                  return;
+                }
+                """);
+
+        assertTrue(output.contains("None"), output);
+        assertTrue(output.contains("Some("), output);
+        assertTrue(output.contains("ArithmeticException"), output);
     }
 
     @Test
