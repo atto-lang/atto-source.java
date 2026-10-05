@@ -64,13 +64,19 @@ actor. Each actor stores primitive hot metadata:
 
 Each actor-domain dispatcher owns a dense, bounded `AtomicLongArray` carrier
 registry. A token contains a slot plus generation, so carrier lifecycle checks
-are contiguous array reads instead of pointer chasing. The `ActorCell` itself
-is the queued runnable, eliminating the previous per-turn affinity-wrapper
-allocation.
+are contiguous array reads instead of pointer chasing. The ready queue is
+array-backed (`ArrayBlockingQueue`) rather than linked-node-backed, and the
+`ActorCell` itself is the queued runnable. Together those choices eliminate
+the prior per-turn affinity wrapper and linked queue-node allocation.
+
+The actor ready queue also admits only `ACTOR_TURN` work. CPU data chunks and
+GPU kernels are rejected at admission and must go through the heterogeneous
+compute/dataflow scheduler, where Region layout, residency, transfer, and effect
+metadata are available.
 
 This is an implementation layout choice, not a source-level promise. A future
-backend may replace the Java queue with a ring/chunk/deque implementation while
-preserving the same scheduling contract.
+backend may replace the Java ring with a chunked deque/work-stealing structure
+while preserving the same scheduling contract.
 
 ## CPU versus GPU
 
