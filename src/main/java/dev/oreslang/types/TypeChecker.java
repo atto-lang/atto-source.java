@@ -3414,6 +3414,13 @@ public final class TypeChecker {
         if (!Set.of("Array", "List", "Vector", "Slice", "FixedArray", "FixedList").contains(name)) return;
         List<Ast.TypeRef> dimensions = sequenceShapeDimensions(declared);
         if (dimensions.isEmpty() || dimensions.size() > 1) return;
+        Integer declaredRank = metadataRank(namedTypeParameters(declared));
+        if (declaredRank != null && declaredRank > 1) {
+            // Nested list literals are checked against the fully resolved rank-N
+            // type by the ordinary assignability pass below. Phase-by-phase
+            // flat sequence validation only applies to rank-1 collections.
+            return;
+        }
 
         Ast.TypeRef shape = dimensions.getFirst();
         if (name.equals("FixedArray") || name.equals("FixedList")) {
