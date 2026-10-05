@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionStage;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
@@ -470,7 +471,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                if (!fn.async()) return callFunctionBodyRaw(fn, normalized);
+                if (!fn.async()) return callFunctionBody(fn, normalized);
 
                 List<?> detached = detachAsyncArguments(normalized);
                 return context.asyncRuntime().submit(() ->
@@ -618,6 +619,28 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private Object callFunctionBody(Ast.FunctionDecl fn, List<?> args) {
+            if (!fn.trapped()) return callFunctionBodyRaw(fn, args);
+            try {
+                Object value = callFunctionBodyRaw(fn, args);
+                Object success = value == null ? List.of() : value;
+                return List.of(
+                        new OptionValue(true, success),
+                        new OptionValue(false, null));
+            } catch (OresPanic panic) {
+                // Panic is an invariant/recovery channel, not an ordinary throw.
+                throw panic;
+            } catch (CancellationException cancelled) {
+                // Cancellation is scheduler/lifetime control flow and must never
+                // be converted into an ordinary trapped guest error.
+                throw cancelled;
+            } catch (RuntimeException failure) {
+                return List.of(
+                        new OptionValue(false, null),
+                        new OptionValue(true, failure));
+            }
+        }
+
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -625,7 +648,9 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
-                executeBlock(fn.body(), env);
+                // Reuse the runtime's existing tail barrier so a tail call
+                // cannot erase the dynamic trap boundary.
+                executeBlock(fn.body(), env, fn.trapped());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -667,6 +692,24 @@ public final class OresEvalRootNode extends RootNode {
             } finally {
                 if (previous == null) activeGeneratorEmitter.remove();
                 else activeGeneratorEmitter.set(previous);
+            }
+        }
+
+        private Object trapFunctionExpression(Invokable body, List<Object> args) {
+            try {
+                Object value = body.call(args);
+                Object success = value == null ? List.of() : value;
+                return List.of(
+                        new OptionValue(true, success),
+                        new OptionValue(false, null));
+            } catch (OresPanic panic) {
+                throw panic;
+            } catch (CancellationException cancelled) {
+                throw cancelled;
+            } catch (RuntimeException failure) {
+                return List.of(
+                        new OptionValue(false, null),
+                        new OptionValue(true, failure));
             }
         }
 
@@ -1447,7 +1490,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
-                return tailCallable(args -> {
+                Invokable body = args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
@@ -1456,14 +1499,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     try {
                         if (lambda.expressionBody() != null) {
-                            // An expression-bodied lambda's sole expression is
-                            // inherently in tail position. Route it through the
-                            // same tail-return lowering as an explicit
-                            // `return expr;` in a block-bodied lambda.
-                            returnFrom(lambda.expressionBody(), local, false);
+                            returnFrom(lambda.expressionBody(), local, lambda.trapped());
                             throw new AssertionError("lambda expression return did not transfer control");
                         }
-                        executeBlock(lambda.blockBody(), local);
+                        executeBlock(lambda.blockBody(), local, lambda.trapped());
                         return null;
                     } catch (TailCallSignal signal) {
                         return new TailCall(signal.invocation);
@@ -1472,7 +1511,11 @@ public final class OresEvalRootNode extends RootNode {
                     } catch (BreakSignal | ContinueSignal signal) {
                         throw new IllegalStateException("loop control cannot cross a lambda boundary", signal);
                     }
-                });
+                };
+                Invokable effective = lambda.trapped()
+                        ? args -> trapFunctionExpression(body, args)
+                        : body;
+                return tailCallable(effective);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
