@@ -115,6 +115,37 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void carrierInterruptIsNotActorCancellationIdentity() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch continuedAfterSafepoint = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        Thread.currentThread().interrupt();
+                        try {
+                            context.runtime().schedulerSafepoint();
+                            continuedAfterSafepoint.countDown();
+                        } finally {
+                            // Do not leak this host-side test interrupt into a
+                            // pooled carrier after the actor turn completes.
+                            Thread.interrupted();
+                            context.self().stop();
+                        }
+                    });
+
+            actor.send("interrupt-carrier");
+
+            assertTrue(
+                    continuedAfterSafepoint.await(2, TimeUnit.SECONDS),
+                    "carrier interrupt must not be interpreted as actor cancellation");
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(
+                    actor.failure().isEmpty(),
+                    "carrier interrupt must not record an actor failure/cancellation");
+        }
+    }
+
+    @Test
     void forceCancellationDelegatesToOuterIsolationRevoker() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicBoolean invoked = new AtomicBoolean();
