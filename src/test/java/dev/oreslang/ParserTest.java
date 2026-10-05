@@ -530,6 +530,21 @@ final class ParserTest {
                         """)));
         assertTrue(future.getMessage().contains("Future"), future.getMessage());
 
+        IllegalArgumentException reserved = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          fnc id(): int;
+                        end
+
+                        define actor Holder as
+                          pub accept(target: ActorRef<BadAPI>): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                reserved.getMessage().contains("reserved ActorRef control member"),
+                reserved.getMessage());
+
         IllegalArgumentException sharedAuthority = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
