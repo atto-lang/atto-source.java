@@ -74,7 +74,13 @@ public final class ChannelRuntime {
         @Override
         public Selection tryPerform(int index) {
             Optional<T> value = channel.tryRead();
-            return value.map(item -> new Selection(index, key, Operation.READ, item)).orElse(null);
+            if (value.isPresent()) {
+                return new Selection(index, key, Operation.READ, value.get());
+            }
+            if (channel.isClosed()) {
+                throw new ChannelClosedException("selected read channel is closed");
+            }
+            return null;
         }
     }
 
@@ -565,7 +571,13 @@ public final class ChannelRuntime {
             try {
                 do {
                     reprobe.set(false);
-                    Selection selected = scan();
+                    final Selection selected;
+                    try {
+                        selected = scan();
+                    } catch (RuntimeException failure) {
+                        if (future.failFromRuntime(failure)) detach();
+                        return;
+                    }
                     if (selected != null) {
                         if (future.completeFromRuntime(selected)) detach();
                         return;
