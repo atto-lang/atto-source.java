@@ -14,6 +14,26 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class OresSchedulerTest {
+    @Test
+    void nativeModeRunsSchedulerTurnsOnJniPthreads() throws Exception {
+        String previous = System.getProperty("ores.runtime.carriers");
+        System.setProperty("ores.runtime.carriers", "native");
+        try (OresScheduler scheduler = new OresScheduler(1, 16)) {
+            assertTrue(scheduler.usesNativeCarriers());
+            OresFuture<Long> result = scheduler.start(resume -> {
+                assertTrue(OresScheduler.isSchedulerCarrierThread());
+                assertTrue(NativeCarrierExecutor.isNativeCarrierThread());
+                long nativeId = NativeCarrierExecutor.currentNativeThreadId();
+                assertNotEquals(0L, nativeId);
+                return OresScheduler.done(nativeId);
+            });
+            assertNotEquals(0L, result.get(5, TimeUnit.SECONDS).longValue());
+        } finally {
+            if (previous == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previous);
+        }
+    }
+
 
     @Test
     void awaitResumesOnlyOnOwningSchedulerNotProducerThread() throws Exception {
