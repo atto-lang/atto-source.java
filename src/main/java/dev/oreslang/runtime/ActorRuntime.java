@@ -678,6 +678,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final CompletableFuture<Void> carrierQuiesced = new CompletableFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -1170,6 +1171,22 @@ public final class ActorRuntime implements AutoCloseable {
                     if (ref.isAlive()) throw alreadyStopping;
                 }
             }
+            awaitInvocationCarrierQuiescence(ref);
+        }
+    }
+
+    private void awaitInvocationCarrierQuiescence(ActorRef<?> ref) {
+        try {
+            ref.carrierQuiesced.get(CLOSE_WAIT_NANOS, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("interrupted while waiting for actor callable carrier exit");
+        } catch (TimeoutException timedOut) {
+            throw new IllegalStateException(
+                    "actor callable returned before its carrier left the runtime/Truffle boundary",
+                    timedOut);
+        } catch (ExecutionException impossible) {
+            throw new IllegalStateException("actor callable carrier quiescence failed", impossible.getCause());
         }
     }
 
@@ -2549,6 +2566,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
+        private int activeCarriers;
         private boolean finalized;
         private Behavior<M> behavior;
 
@@ -2619,7 +2637,31 @@ public final class ActorRuntime implements AutoCloseable {
                 // are best-effort and retryable by the process collector.
             }
             unregisterActor(this);
+            completeCarrierQuiescenceLocked();
             lifecycleLock.notifyAll();
+        }
+
+        private void carrierEntered() {
+            synchronized (lifecycleLock) {
+                activeCarriers++;
+            }
+        }
+
+        private void carrierExited() {
+            synchronized (lifecycleLock) {
+                if (activeCarriers <= 0) {
+                    throw new IllegalStateException("actor carrier accounting underflow for " + ref.id());
+                }
+                activeCarriers--;
+                completeCarrierQuiescenceLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void completeCarrierQuiescenceLocked() {
+            if (finalized && activeCarriers == 0 && !scheduled.get()) {
+                ref.carrierQuiesced.complete(null);
+            }
         }
 
         private boolean finalized() {
@@ -2684,6 +2726,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void runBatch() {
+            carrierEntered();
             ACTOR_CARRIER.set(Boolean.TRUE);
             try {
                 turnExecutor.execute(this::runBatchEntered);
@@ -2695,6 +2738,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
                 ACTOR_CARRIER.remove();
+                carrierExited();
             }
         }
 
