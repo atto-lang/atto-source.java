@@ -86,7 +86,12 @@ final class ImportSelectorSyntaxTest {
                   fnc value() => int;
                 }
 
+                pub interface ExtraApi {
+                  fnc value() => int;
+                }
+
                 type Identifier = int;
+                type OtherIdentifier = int;
                 """);
 
         Files.writeString(main, """
@@ -95,7 +100,7 @@ final class ImportSelectorSyntaxTest {
                 import class Box from './models';
                 import interface Api from './models';
                 import type Identifier from './models';
-                import types Api, Identifier from './models';
+                import types ExtraApi, OtherIdentifier from './models';
 
                 pub routine main(): void { return; }
                 """);
