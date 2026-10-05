@@ -18,7 +18,7 @@ Current surface:
 - immutable test definitions instead of a process-global mutable registry;
 - deterministic source order;
 - hierarchical slash-separated names such as `math/mean/empty`;
-- exact-name filtering through `TestOptions.only`;
+- one exact hierarchical-name filter through `TestOptions.only` (`""` runs all);
 - explicit skips with reasons;
 - fail-fast as an option, not a semantic default;
 - stable human-readable output;
@@ -59,11 +59,9 @@ pub routine main(): void {
     "math",
     arr[new TestCase("adds", adds, false, "")]
   );
-  val RunSummary summary = run_suite(
-    suite,
-    new TestOptions(arr[], false, false)
-  );
-  require_success(summary);
+  val TestOptions options = new TestOptions("", false, false);
+  val RunSummary summary = run_suite(&suite, &options);
+  require_success(&summary);
   return;
 }
 ```
