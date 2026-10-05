@@ -217,35 +217,47 @@ public final class ActorEventBus implements AutoCloseable {
         }
         ActorRuntime.ActorId publisher = group.currentMemberOrSystem("update ActorGroup reductions");
         DoubleReductionState reduction = requireDoubleReduction(name);
-        double current = reduction.reduce(candidate);
-        boolean changed = Double.doubleToRawLongBits(current)
-                == Double.doubleToRawLongBits(candidate);
-
-        // A candidate equal to the existing value is not an improvement.
-        if (changed && reduction.wasLastMutation(candidate)) {
-            PublishReceipt receipt = publishFrozen(
-                    requireTopic(name),
-                    runtime.freezeActorGroupEventPayload(current),
-                    publisher);
-            return new DoubleReductionResult(current, true, receipt);
-        }
-
         TopicState topic = requireTopic(name);
-        return new DoubleReductionResult(
-                current,
-                false,
-                new PublishReceipt(
-                        topic.subscriptions.size(),
-                        0,
-                        0,
-                        0,
-                        OresFuture.completed(List.of())));
+
+        /*
+         * Keep state mutation and its LATEST notification in one reduction-local
+         * critical section. Without this, two concurrent improvements could
+         * publish out of order (for example MIN: 90 after 80), briefly exposing
+         * a stale bound even though the atomic state itself was correct.
+         *
+         * This lock is per reduction, not global to the bus, so unrelated topics
+         * and reductions remain fully concurrent.
+         */
+        synchronized (reduction) {
+            double current = reduction.current();
+            if (!reduction.improves(candidate, current)) {
+                return new DoubleReductionResult(
+                        current,
+                        false,
+                        new PublishReceipt(
+                                topic.subscriptions.size(),
+                                0,
+                                0,
+                                0,
+                                OresFuture.completed(List.of())));
+            }
+
+            reduction.set(candidate);
+            PublishReceipt receipt = publishFrozen(
+                    topic,
+                    runtime.freezeActorGroupEventPayload(candidate),
+                    publisher);
+            return new DoubleReductionResult(candidate, true, receipt);
+        }
     }
 
     public double readDoubleReduction(String name) {
         requireOpen();
         group.currentMemberOrSystem("read ActorGroup reductions");
-        return requireDoubleReduction(name).current();
+        DoubleReductionState reduction = requireDoubleReduction(name);
+        synchronized (reduction) {
+            return reduction.current();
+        }
     }
 
     void removeActor(ActorRuntime.ActorId actorId) {
@@ -405,8 +417,6 @@ public final class ActorEventBus implements AutoCloseable {
         private final String name;
         private final DoubleReductionKind kind;
         private final AtomicLong bits;
-        private final AtomicLong mutationSequence = new AtomicLong();
-        private final ThreadLocal<Long> callerMutation = new ThreadLocal<>();
 
         private DoubleReductionState(
                 String name,
@@ -421,32 +431,15 @@ public final class ActorEventBus implements AutoCloseable {
             return Double.longBitsToDouble(bits.get());
         }
 
-        private double reduce(double candidate) {
-            callerMutation.remove();
-            while (true) {
-                long observedBits = bits.get();
-                double observed = Double.longBitsToDouble(observedBits);
-                boolean improves = switch (kind) {
-                    case MIN -> Double.compare(candidate, observed) < 0;
-                    case MAX -> Double.compare(candidate, observed) > 0;
-                };
-                if (!improves) return observed;
-
-                long candidateBits = Double.doubleToRawLongBits(candidate);
-                if (bits.compareAndSet(observedBits, candidateBits)) {
-                    long sequence = mutationSequence.incrementAndGet();
-                    callerMutation.set(sequence);
-                    return candidate;
-                }
-            }
+        private boolean improves(double candidate, double observed) {
+            return switch (kind) {
+                case MIN -> Double.compare(candidate, observed) < 0;
+                case MAX -> Double.compare(candidate, observed) > 0;
+            };
         }
 
-        private boolean wasLastMutation(double candidate) {
-            Long sequence = callerMutation.get();
-            callerMutation.remove();
-            return sequence != null
-                    && Double.doubleToRawLongBits(current())
-                    == Double.doubleToRawLongBits(candidate);
+        private void set(double candidate) {
+            bits.set(Double.doubleToRawLongBits(candidate));
         }
     }
 
