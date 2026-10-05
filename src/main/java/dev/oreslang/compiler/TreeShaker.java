@@ -214,6 +214,7 @@ public final class TreeShaker {
                 return created.arguments().stream().anyMatch(this::containsLambda);
             }
             if (expression instanceof Ast.AwaitExpr awaited) return containsLambda(awaited.expression());
+            if (expression instanceof Ast.SpreadExpr spread) return containsLambda(spread.expression());
             if (expression instanceof Ast.ListExpr list) {
                 return list.elements().stream().anyMatch(this::containsLambda);
             }
@@ -328,6 +329,9 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(substitute(awaited.expression(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.SpreadExpr spread) {
+                return new Ast.SpreadExpr(substitute(spread.expression(), substitutions, shadowed));
             }
             if (expression instanceof Ast.ListExpr list) {
                 List<Ast.Expr> elements = new ArrayList<>();
@@ -592,7 +596,7 @@ public final class TreeShaker {
                     if (!binding.isDiscard()) locals.put(binding.name(), UNKNOWN);
                 }
                 return List.of(new Ast.DestructureStmt(
-                        destructure.kind(), destructure.bindings(), initializer));
+                        destructure.kind(), destructure.bindings(), destructure.declaredType(), initializer));
             }
             if (statement instanceof Ast.ReturnStmt returned) {
                 return List.of(new Ast.ReturnStmt(
@@ -829,6 +833,9 @@ public final class TreeShaker {
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(rewriteExpression(awaited.expression(), module, locals));
             }
+            if (expression instanceof Ast.SpreadExpr spread) {
+                return new Ast.SpreadExpr(rewriteExpression(spread.expression(), module, locals));
+            }
             if (expression instanceof Ast.ListExpr list) {
                 List<Ast.Expr> elements = new ArrayList<>();
                 for (Ast.Expr element : list.elements()) {
@@ -1028,6 +1035,7 @@ public final class TreeShaker {
                     scanExpression(module, binding.initializer(), locals);
                     locals.add(binding.name());
                 } else if (statement instanceof Ast.DestructureStmt destructure) {
+                    scanType(destructure.declaredType());
                     scanExpression(module, destructure.initializer(), locals);
                     for (Ast.DestructureBinding binding : destructure.bindings()) {
                         if (!binding.isDiscard()) locals.add(binding.name());
@@ -1163,6 +1171,8 @@ public final class TreeShaker {
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
                 scanExpression(module, awaited.expression(), locals);
+            } else if (expression instanceof Ast.SpreadExpr spread) {
+                scanExpression(module, spread.expression(), locals);
             } else if (expression instanceof Ast.ListExpr list) {
                 for (Ast.Expr element : list.elements()) scanExpression(module, element, locals);
             } else if (expression instanceof Ast.TupleExpr tuple) {
