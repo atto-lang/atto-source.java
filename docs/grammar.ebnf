@@ -172,7 +172,8 @@ multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
 unary           = ( "!" | "-" | "+" | "await" | "spawn" ) unary
                 | "&" [ "mut" ] unary
                 | postfix ;
-postfix         = primary { call_suffix | member_suffix | index_suffix } ;
+postfix         = primary { call_suffix | member_suffix | index_suffix | propagate_suffix } ;
+propagate_suffix= "?" ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." IDENT ;
 index_suffix    = "[" expression "]" ;
@@ -292,6 +293,18 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      actor statement/expression execution and call/recursion boundaries are
      metered as additional checkpoints.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
+   - Postfix "?" is a sealed Try-like propagation operator. It accepts
+     Option<T> and Result<T,E> only. None/Err returns the residual wrapper from
+     the enclosing callable; Some/Ok yields its payload.
+   - A QUESTION token with a same-expression-depth ":" remains the existing
+     ternary operator. Parentheses explicitly disambiguate nested combinations.
+   - Postfix "?" is forbidden inside defer expressions so propagation cannot
+     bypass or reorder lexical cleanup.
+   - Option/Result/Future/Iterator/Stream expose map + flat_map/and_then
+     composition. Iterator is lazy pull-based; Stream is asynchronous and
+     next() returns Future<Option<T>>.
+   - Stateful Iterator/Stream values are non-shareable capabilities and may not
+     cross actor boundaries by value.
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
