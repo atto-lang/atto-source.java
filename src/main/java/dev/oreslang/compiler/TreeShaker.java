@@ -636,6 +636,17 @@ public final class TreeShaker {
                         rewriteStatements(tried.catchBody(), module, catchLocals),
                         rewriteStatements(tried.finallyBody(), module, new LinkedHashMap<>(locals))));
             }
+            if (statement instanceof Ast.ForOfDestructureStmt loop) {
+                Ast.Expr iterable = rewriteExpression(loop.iterable(), module, locals);
+                LinkedHashMap<String, Object> bodyLocals = new LinkedHashMap<>(locals);
+                for (Ast.DestructureBinding binding : loop.bindings()) {
+                    if (!binding.isDiscard()) bodyLocals.put(binding.name(), UNKNOWN);
+                }
+                return List.of(new Ast.ForOfDestructureStmt(
+                        loop.bindings(),
+                        iterable,
+                        rewriteStatements(loop.body(), module, bodyLocals)));
+            }
             if (statement instanceof Ast.ForOfStmt loop) {
                 Ast.Expr iterable = rewriteExpression(loop.iterable(), module, locals);
                 LinkedHashMap<String, Object> bodyLocals = new LinkedHashMap<>(locals);
@@ -969,6 +980,13 @@ public final class TreeShaker {
                     if (tried.errorName() != null) catchLocals.add(tried.errorName());
                     scanStatements(module, tried.catchBody(), catchLocals);
                     scanStatements(module, tried.finallyBody(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.ForOfDestructureStmt loop) {
+                    scanExpression(module, loop.iterable(), locals);
+                    LinkedHashSet<String> bodyLocals = new LinkedHashSet<>(locals);
+                    for (Ast.DestructureBinding binding : loop.bindings()) {
+                        if (!binding.isDiscard()) bodyLocals.add(binding.name());
+                    }
+                    scanStatements(module, loop.body(), bodyLocals);
                 } else if (statement instanceof Ast.ForOfStmt loop) {
                     scanExpression(module, loop.iterable(), locals);
                     LinkedHashSet<String> bodyLocals = new LinkedHashSet<>(locals);

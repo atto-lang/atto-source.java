@@ -601,6 +601,36 @@ public final class OresEvalRootNode extends RootNode {
                 } finally { executeBlock(tried.finallyBody(), env, true); }
                 return;
             }
+            if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+                Object iterable = eval(loop.iterable(), env);
+                for (Object item : iterableValues(iterable)) {
+                    context.schedulerSafepoint();
+                    List<?> items = asSequence(item);
+                    if (items.size() != loop.bindings().size()) {
+                        throw new IllegalArgumentException(
+                                "for-of destructure arity mismatch: value has " + items.size()
+                                        + " element(s), pattern has " + loop.bindings().size());
+                    }
+                    Env iteration = new Env(env);
+                    for (int i = 0; i < items.size(); i++) {
+                        Ast.DestructureBinding binding = loop.bindings().get(i);
+                        if (!binding.isDiscard()) {
+                            iteration.define(binding.name(), items.get(i), binding.kind());
+                        }
+                    }
+                    try {
+                        executeBlock(
+                                loop.body(),
+                                iteration,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                    } catch (ContinueSignal ignored) {
+                        continue;
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
+                }
+                return;
+            }
             if (stmt instanceof Ast.ForOfStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
                 for (Object item : iterableValues(iterable)) {

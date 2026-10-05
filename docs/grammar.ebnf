@@ -159,7 +159,11 @@ for_stmt        = "for" "(" for_of_head ")" loop_body
                 | "for" "(" [ for_init ] ";" [ expression ] ";" [ expression ] ")" loop_body
                 | "for" for_of_head loop_body ;
 
-for_of_head     = [ binding_kind ] IDENT "of" expression ;
+for_of_head     = [ binding_kind ] for_of_pattern "of" expression ;
+for_of_pattern  = IDENT
+                | "[" for_of_destructure_item { "," for_of_destructure_item } "]" ;
+for_of_destructure_item
+                = "_" | [ binding_kind ] IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 for_init        = binding_kind [ type_ref ] IDENT "=" expression
                 | expression ;
@@ -256,6 +260,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    Semantic restrictions:
    - "block" followed by "{" is a standalone lexical scope. It has no implicit
      scheduling behavior and declarations inside it do not escape the scope.
+   - for-of sequence patterns default bindings to val. An outer binding kind
+     (for example "for let [k, v] of entries") seeds the pattern; an explicit
+     binding kind inside the pattern propagates to subsequent names exactly as
+     in ordinary sequence destructuring. "_" discards one sequence position.
    - "loop" accepts either "{ ... }" or "do ... done". Iterator and
      conventional for-loops accept the same body forms. The canonical iterator
      shorthand is "for x of iterable do ... done"; parenthesized headers remain

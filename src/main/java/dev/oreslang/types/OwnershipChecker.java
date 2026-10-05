@@ -232,6 +232,26 @@ public final class OwnershipChecker {
             checkBlock(attempted.finallyBody(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
+            Ast.TypeRef elementType = iterableElementType(iterable.type);
+            Map<VarState,Boolean> before = movedSnapshot(scope);
+            Scope loopScope = new Scope(scope);
+            for (int i = 0; i < loop.bindings().size(); i++) {
+                Ast.DestructureBinding binding = loop.bindings().get(i);
+                if (binding.isDiscard()) continue;
+                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i);
+                loopScope.define(binding.name(), new VarState(
+                        bindingType,
+                        binding.kind() == Ast.BindingKind.LET,
+                        kindOfType(bindingType),
+                        Origin.LOCAL));
+            }
+            checkLoopBlock(loop.body(), loopScope, returnType);
+            loopScope.close();
+            rejectLoopMoves(before, scope);
+            return;
+        }
         if (stmt instanceof Ast.ForOfStmt loop) {
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
             Ast.TypeRef elementType = iterableElementType(iterable.type);
@@ -969,6 +989,13 @@ public final class OwnershipChecker {
                 caught.add(s.errorName());
                 scanStatements(s.catchBody(), caught, outer, recursiveBinding, captures);
                 scanStatements(s.finallyBody(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.ForOfDestructureStmt s) {
+                scanExpr(s.iterable(), blockLocals, outer, recursiveBinding, captures, false);
+                Set<String> loop = new HashSet<>(blockLocals);
+                for (Ast.DestructureBinding binding : s.bindings()) {
+                    if (!binding.isDiscard()) loop.add(binding.name());
+                }
+                scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ForOfStmt s) {
                 scanExpr(s.iterable(), blockLocals, outer, recursiveBinding, captures, false);
                 Set<String> loop = new HashSet<>(blockLocals);
@@ -1432,13 +1459,23 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
+    private Ast.TypeRef sequenceDestructureBindingType(Ast.TypeRef source, int index) {
+        if (source == null) return Ast.TypeRef.inferred();
+        Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
+        if (concrete.isTupleType() && index < concrete.arguments().size()) {
+            return concrete.arguments().get(index);
+        }
+        if ((concrete.name().equals("Array") || concrete.name().equals("List"))
+                && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+        return Ast.TypeRef.inferred();
+    }
+
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
         if (source == null) return Ast.TypeRef.inferred();
         if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
-            if (source.isTupleType() && index < source.arguments().size()) return source.arguments().get(index);
-            if ((source.name().equals("Array") || source.name().equals("List")) && source.arguments().size() == 1) {
-                return source.arguments().getFirst();
-            }
+            return sequenceDestructureBindingType(source, index);
         } else {
             Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
             if (concrete.isRecordType()) {

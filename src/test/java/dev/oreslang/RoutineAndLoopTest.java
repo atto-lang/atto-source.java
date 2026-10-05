@@ -219,6 +219,42 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void forOfSequencePatternsDestructureTupleElements() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  for [key, value] of arr[(1, "a"), (2, "b")] do
+                    stdio.stdout.write(key)
+                    stdio.stdout.write(value)
+                  done
+
+                  for [_, let value] of arr[(9, 3), (8, 4)] {
+                    value = value + 1;
+                    stdio.stdout.write(value)
+                  }
+                  return;
+                }
+                """);
+
+        assertEquals("1a2b45", output);
+    }
+
+    @Test
+    void forOfSequencePatternsRejectKnownArityMismatch() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          for [a, b, c] of arr[(1, 2)] do
+                            stdio.stdout.write(a)
+                          done
+                          return;
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains("destructure arity mismatch"));
+    }
+
+    @Test
     void customJavascriptStyleIteratorDrivesForOf() throws Exception {
         String output = run("""
                 define module collections

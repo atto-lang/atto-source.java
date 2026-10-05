@@ -583,6 +583,17 @@ public final class TypeChecker {
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            Type iterable = typeOf(loop.iterable(), env, generics, self);
+            Type element = iterableElementType(iterable);
+            List<Type> elementTypes = sequenceDestructureTypes(element, loop.bindings().size());
+            Env loopEnv = new Env(env);
+            for (int i = 0; i < loop.bindings().size(); i++) {
+                defineDestructureBinding(loopEnv, loop.bindings().get(i), elementTypes.get(i));
+            }
+            checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
             Type element = iterableElementType(iterable);
@@ -2296,6 +2307,9 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(attempted.body(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.catchBody(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.finallyBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.ForOfDestructureStmt loop) {
+                rejectStaticClassGenericReferences(loop.iterable(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ForOfStmt loop) {
                 rejectStaticClassGenericReferences(loop.iterable(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
