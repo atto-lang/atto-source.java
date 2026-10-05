@@ -251,6 +251,38 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void ordinaryActorCannotInvokeForceCancellationAuthority() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicBoolean revokerInvoked = new AtomicBoolean();
+            CountDownLatch denied = new CountDownLatch(1);
+
+            runtime.setForceCancellationHook((actorId, executionDomain) -> {
+                revokerInvoked.set(true);
+                return true;
+            });
+
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            context.self().forceCancel();
+                        } catch (SecurityException expected) {
+                            denied.countDown();
+                            context.self().stop();
+                        }
+                    });
+
+            actor.send("attempt-force-cancel");
+
+            assertTrue(denied.await(2, TimeUnit.SECONDS));
+            assertFalse(
+                    revokerInvoked.get(),
+                    "ordinary actor code must never reach host isolate-revocation authority");
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
     void forceCancellationDelegatesToOuterIsolationRevoker() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicBoolean invoked = new AtomicBoolean();
