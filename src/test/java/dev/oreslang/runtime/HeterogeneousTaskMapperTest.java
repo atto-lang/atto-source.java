@@ -174,6 +174,58 @@ final class HeterogeneousTaskMapperTest {
                         HeterogeneousTaskMapper.Layout.auto()));
     }
 
+
+    @Test
+    void cpuChunkPlanningUsesCoarseSimdAlignedSchedulerUnits() {
+        var plan = mapper.planCpuChunks(10_000, 8, 16, 512);
+
+        assertTrue(plan.chunkCount() <= 8);
+        assertTrue(plan.workItemsPerChunk() >= 512);
+        assertEquals(0, plan.workItemsPerChunk() % 16);
+        assertTrue((long) plan.chunkCount() * plan.workItemsPerChunk() >= 10_000);
+
+        var tiny = mapper.planCpuChunks(7, 32, 8, 256);
+        assertEquals(1, tiny.chunkCount());
+        assertEquals(8, tiny.workItemsPerChunk(),
+                "small workloads should stay one vector-aligned chunk rather than one task per item");
+    }
+
+    @Test
+    void gpuPlacementHonorsKnownWorkingSetMemoryBudget() {
+        var root = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var region = HeterogeneousTaskMapper.RegionSlice.root(root);
+        var cpu = new HeterogeneousTaskMapper.Variant(
+                "cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
+        var gpu = new HeterogeneousTaskMapper.Variant(
+                "gpu", HeterogeneousTaskMapper.ProcessorKind.GPU, 0);
+        var task = new HeterogeneousTaskMapper.TaskSpec(
+                "integrate",
+                List.of(HeterogeneousTaskMapper.Access.read(region)),
+                List.of(cpu, gpu));
+        var machine = new HeterogeneousTaskMapper.Machine(true, 0, 1024);
+
+        var auto = mapper.map(
+                task,
+                HeterogeneousTaskMapper.PlacementHint.AUTO,
+                10_000,
+                2048,
+                machine,
+                Set.of(root));
+        assertEquals(HeterogeneousTaskMapper.ProcessorKind.CPU, auto.processor(),
+                "AUTO must not choose a GPU whose memory budget cannot hold the known working set");
+
+        var explicitFailure = assertThrows(
+                IllegalStateException.class,
+                () -> mapper.map(
+                        task,
+                        HeterogeneousTaskMapper.PlacementHint.GPU,
+                        10_000,
+                        2048,
+                        machine,
+                        Set.of(root)));
+        assertTrue(explicitFailure.getMessage().contains("memory budget"));
+    }
+
     private static HeterogeneousTaskMapper.TaskSpec task(
             String name,
             HeterogeneousTaskMapper.Access access,
