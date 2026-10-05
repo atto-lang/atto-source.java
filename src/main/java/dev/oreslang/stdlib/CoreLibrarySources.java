@@ -18,6 +18,7 @@ public final class CoreLibrarySources {
     private static final String IMPORT_PREFIX = "std/";
     private static final String UNIT_PREFIX = "@std/";
     private static final String RESOURCE_PREFIX = "dev/oreslang/std/";
+    private static final int MAX_SOURCE_BYTES = 1024 * 1024;
 
     private CoreLibrarySources() { }
 
@@ -38,7 +39,13 @@ public final class CoreLibrarySources {
                 throw new IllegalArgumentException(
                         "unknown Oreslang core-library module: " + importPath);
             }
-            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            byte[] bytes = input.readNBytes(MAX_SOURCE_BYTES + 1);
+            if (bytes.length > MAX_SOURCE_BYTES) {
+                throw new IllegalStateException(
+                        "Oreslang core-library module exceeds " + MAX_SOURCE_BYTES
+                                + " bytes: " + importPath);
+            }
+            return new String(bytes, StandardCharsets.UTF_8);
         }
     }
 
