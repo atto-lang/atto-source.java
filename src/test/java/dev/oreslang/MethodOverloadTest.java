@@ -522,7 +522,7 @@ final class MethodOverloadTest {
                         end
                         """)));
 
-        assertTrue(error.getMessage().contains("conflicting member 'pick$arity1"));
+        assertTrue(error.getMessage().contains("conflicting member 'instance$pick$arity1"), error.getMessage());
     }
 
     @Test
@@ -754,7 +754,7 @@ final class MethodOverloadTest {
                         end
                         """)));
 
-        assertTrue(error.getMessage().contains("conflicting member 'identity$arity1"));
+        assertTrue(error.getMessage().contains("conflicting member 'instance$identity$arity1"), error.getMessage());
     }
 
     @Test
@@ -795,7 +795,7 @@ final class MethodOverloadTest {
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("conflicting member 'identity$arity1"));
+        assertTrue(error.getMessage().contains("conflicting member 'instance$identity$arity1"), error.getMessage());
     }
 
     @Test
@@ -930,7 +930,7 @@ final class MethodOverloadTest {
                         end
                         """)));
 
-        assertTrue(error.getMessage().contains("conflicting member 'pick$arity1"));
+        assertTrue(error.getMessage().contains("conflicting member 'instance$pick$arity1"), error.getMessage());
     }
 
     @Test
