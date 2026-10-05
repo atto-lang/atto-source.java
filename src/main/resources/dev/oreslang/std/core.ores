@@ -28,10 +28,12 @@ define module core
 
     if value < lower; do
       return lower;
-    elseif value > upper
-      return upper;
     else
-      return value;
+      if value > upper; do
+        return upper;
+      else
+        return value;
+      fi
     fi
   }
 
