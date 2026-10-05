@@ -56,12 +56,19 @@ public final class Parser {
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
+                if (match(COMPONENT)) {
+                    if (afterDefineAbstract || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
+                        throw error(previous(), "components do not accept async, nlex, static, or abstract modifiers");
+                    }
+                    rootDeclarations.add(parseComponent(modifiers.visibility));
+                    continue;
+                }
                 if (match(INTERFACE)) {
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                throw error(previous(), "expected module, class, component, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -152,11 +159,17 @@ public final class Parser {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
+            if (match(COMPONENT)) {
+                if (afterDefineAbstract || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
+                    throw error(previous(), "components do not accept async, nlex, static, or abstract modifiers");
+                }
+                return parseComponent(modifiers.visibility);
+            }
             if (match(INTERFACE)) {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class or interface after 'define'");
+            throw error(previous(), "expected class, component, or interface after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -269,6 +282,39 @@ public final class Parser {
         }
         consume(END, "expected 'end' to close class " + name);
         return new Ast.ClassDecl(name, isAbstract, Ast.ActorKind.NONE, generics, parents, interfaces, fields, methods);
+    }
+
+    private Ast.ComponentDecl parseComponent(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected component name").lexeme();
+        consume(AS, "expected 'as' after component header");
+
+        List<Ast.FieldDecl> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        while (!check(END) && !check(EOF)) {
+            if (!check(IDENT) || !checkNext(COLON)) {
+                throw error(peek(),
+                        "components are data-only; expected a field in 'name: Type' form (methods, initializers, annotations, and field modifiers are forbidden)");
+            }
+            String fieldName = advance().lexeme();
+            if (!names.add(fieldName)) {
+                throw error(previous(), "duplicate component field '" + fieldName + "'");
+            }
+            consume(COLON, "expected ':' after component field name");
+            Ast.TypeRef type = parseTypeRef();
+            if (match(EQUAL)) {
+                throw error(previous(), "component fields cannot have initializers; component values are supplied when entities are spawned");
+            }
+            consumeClassFieldTerminator("component field declaration should end with ';'");
+            fields.add(new Ast.FieldDecl(
+                    fieldName,
+                    Ast.Visibility.PUBLIC,
+                    Ast.BindingKind.LET,
+                    type,
+                    List.of(),
+                    null));
+        }
+        consume(END, "expected 'end' to close component " + name);
+        return new Ast.ComponentDecl(name, visibility, fields);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -1452,7 +1498,7 @@ public final class Parser {
     private static boolean isMemberNameToken(Token.Type type) {
         return switch (type) {
             case IDENT,
-                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
+                    DEFINE, CLASS, COMPONENT, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
