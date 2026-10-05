@@ -1340,7 +1340,9 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
+                    // Generator declarations are deliberately restricted to top-level/module
+                    // callables, so class static functions cannot produce generator activations.
+                    return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
