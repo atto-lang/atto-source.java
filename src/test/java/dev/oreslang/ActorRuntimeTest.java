@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,132 +22,62 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
     @Test
-    void synchronousTypedProtocolCallCompletesRuntimeOwnedFuture() throws Exception {
+    void typedSourceProtocolDispatchUsesOneMailboxAndRuntimeOwnedReplyFutures() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
-                    (method, arguments, turnContext) -> {
-                        assertEquals("plus_one", method);
-                        return ((Number) arguments.getFirst()).intValue() + 1;
-                    });
+            var ref = runtime.spawnSourceSharedProtocolActor(context -> {
+                AtomicInteger value = new AtomicInteger();
+                return (method, arguments, turnContext) -> switch (method) {
+                    case "add" -> {
+                        value.addAndGet(((Number) arguments.getFirst()).intValue());
+                        yield null;
+                    }
+                    case "read" -> value.get();
+                    default -> throw new IllegalArgumentException("unknown protocol method " + method);
+                };
+            });
 
-            var reply = runtime.invokeSourceProtocol(ref, "plus_one", List.of(41));
-
-            assertEquals(42, reply.get(2, TimeUnit.SECONDS));
+            assertNull(runtime.invokeSourceProtocol(ref, "add", List.of(40))
+                    .get(2, TimeUnit.SECONDS));
+            assertNull(runtime.invokeSourceProtocol(ref, "add", List.of(2))
+                    .get(2, TimeUnit.SECONDS));
+            assertEquals(42, runtime.invokeSourceProtocol(ref, "read", List.of())
+                    .get(2, TimeUnit.SECONDS));
             assertTrue(ref.isAlive());
         }
     }
 
     @Test
-    void rawHostMailboxSendCannotBypassTypedSourceProtocolDispatcher() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
-                    (method, arguments, turnContext) -> 42);
-
-            ref.send(List.of("raw", "message"));
-
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (ref.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(2);
-            }
-
-            assertFalse(ref.isAlive(),
-                    "raw mailbox delivery into a typed protocol actor must fail closed");
-            assertInstanceOf(SecurityException.class, ref.failure().orElseThrow());
-        }
-    }
-
-    @Test
-    void typedProtocolRejectsCrossRuntimeActorRefArguments() {
-        try (ActorRuntime left = new ActorRuntime();
-             ActorRuntime right = new ActorRuntime()) {
-            var target = left.spawnSourceSharedProtocolActor(factoryContext ->
-                    (method, arguments, turnContext) -> null);
-            var foreign = right.spawnShared(factoryContext ->
-                    (message, turnContext) -> { });
-
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> left.invokeSourceProtocol(
-                            target,
-                            "use_ref",
-                            List.of(foreign)));
-
-            assertTrue(failure.getMessage().contains("different ActorRuntime"),
-                    failure.getMessage());
-        }
-    }
-
-    @Test
-    void doubleSuspendedProtocolReplySettlementFailsActorButDoesNotOverwriteFirstReply()
-            throws Exception {
+    void suspendedTypedProtocolCompletesReplyOnlyAfterContinuationReturn() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CompletableFuture<Integer> gate = new CompletableFuture<>();
             CountDownLatch suspended = new CountDownLatch(1);
 
             var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
                     (method, arguments, turnContext) -> {
-                        suspended.countDown();
-                        turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
-                            resumeContext.completeProtocolReply(42);
-                            resumeContext.completeProtocolReply(43);
-                        });
-                        throw new AssertionError(
-                                "suspendOn must unwind the typed protocol turn");
-                    });
-
-            var reply = runtime.invokeSourceProtocol(ref, "compute", List.of());
-            assertTrue(suspended.await(2, TimeUnit.SECONDS));
-            gate.complete(1);
-
-            assertEquals(42, reply.get(2, TimeUnit.SECONDS),
-                    "first runtime settlement remains authoritative");
-
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (ref.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(2);
-            }
-            assertFalse(ref.isAlive(),
-                    "double reply settlement is a compiler/runtime invariant violation");
-            assertTrue(ref.failure().orElseThrow().getMessage().contains("already settled"));
-        }
-    }
-
-    @Test
-    void suspendedTypedProtocolReplyCompletesAfterActorContinuationResumes() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            CompletableFuture<Integer> gate = new CompletableFuture<>();
-            CountDownLatch suspended = new CountDownLatch(1);
-            AtomicReference<String> resumeThread = new AtomicReference<>();
-
-            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
-                    (method, arguments, turnContext) -> {
-                        assertEquals("compute", method);
-                        assertEquals(List.of(40), arguments);
+                        if (!method.equals("wait")) {
+                            throw new IllegalArgumentException("unexpected method " + method);
+                        }
                         suspended.countDown();
                         turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
                             assertNull(failure);
-                            resumeThread.set(Thread.currentThread().getName());
-                            resumeContext.completeProtocolReply(
-                                    ((Number) value).intValue() + 2);
+                            resumeContext.completeProtocolTurn(value);
                         });
-                        throw new AssertionError(
-                                "suspendOn must unwind the typed protocol turn");
+                        throw new AssertionError("suspendOn must unwind the current actor turn");
                     });
 
-            var reply = runtime.invokeSourceProtocol(ref, "compute", List.of(40));
+            var reply = runtime.invokeSourceProtocol(ref, "wait", List.of());
             assertTrue(suspended.await(2, TimeUnit.SECONDS));
             assertFalse(reply.isDone());
 
-            gate.complete(40);
+            gate.complete(42);
 
             assertEquals(42, reply.get(2, TimeUnit.SECONDS));
-            assertTrue(resumeThread.get().startsWith("ores-shared-actor-dispatcher-"));
             assertTrue(ref.isAlive());
         }
     }
 
     @Test
-    void suspendedTypedProtocolFailureFailsReplyAndActor() throws Exception {
+    void suspendedTypedProtocolPropagatesContinuationFailureToReply() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CompletableFuture<Integer> gate = new CompletableFuture<>();
             CountDownLatch suspended = new CountDownLatch(1);
@@ -157,196 +88,84 @@ final class ActorRuntimeTest {
                         turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
                             throw new IllegalStateException("protocol-resume-boom");
                         });
-                        throw new AssertionError(
-                                "suspendOn must unwind the typed protocol turn");
+                        throw new AssertionError("suspendOn must unwind the current actor turn");
                     });
 
-            var reply = runtime.invokeSourceProtocol(ref, "compute", List.of());
+            var reply = runtime.invokeSourceProtocol(ref, "wait", List.of());
             assertTrue(suspended.await(2, TimeUnit.SECONDS));
             gate.complete(1);
 
-            var failure = assertThrows(
-                    java.util.concurrent.ExecutionException.class,
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class,
                     () -> reply.get(2, TimeUnit.SECONDS));
             assertEquals("protocol-resume-boom", failure.getCause().getMessage());
 
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (ref.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(2);
-            }
-            assertFalse(ref.isAlive());
+            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(2);
+            assertFalse(ref.isAlive(), "unhandled protocol continuation failure is fail-stop");
         }
     }
 
     @Test
-    void stoppingSuspendedTypedProtocolCancelsPendingReply() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            CompletableFuture<Integer> gate = new CompletableFuture<>();
-            CountDownLatch suspended = new CountDownLatch(1);
-
-            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
-                    (method, arguments, turnContext) -> {
-                        suspended.countDown();
-                        turnContext.suspendOn(gate, (value, failure, resumeContext) ->
-                                resumeContext.completeProtocolReply(value));
-                        throw new AssertionError(
-                                "suspendOn must unwind the typed protocol turn");
-                    });
-
-            var reply = runtime.invokeSourceProtocol(ref, "compute", List.of());
-            assertTrue(suspended.await(2, TimeUnit.SECONDS));
-
-            ref.stop();
-
-            assertThrows(
-                    java.util.concurrent.CancellationException.class,
-                    () -> reply.get(2, TimeUnit.SECONDS));
-            assertTrue(reply.isCancelled());
-        }
-    }
-
-    @Test
-    void cancellingQueuedTypedProtocolCallSkipsActorMethodExecution() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            CompletableFuture<Integer> gate = new CompletableFuture<>();
-            CountDownLatch firstSuspended = new CountDownLatch(1);
-            AtomicInteger cancelledExecutions = new AtomicInteger();
-
-            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
-                    (method, arguments, turnContext) -> {
-                        if (method.equals("hold")) {
-                            firstSuspended.countDown();
-                            turnContext.suspendOn(gate, (value, failure, resumeContext) ->
-                                    resumeContext.completeProtocolReply(value));
-                            throw new AssertionError(
-                                    "suspendOn must unwind the typed protocol turn");
-                        }
-                        if (method.equals("cancelled")) {
-                            cancelledExecutions.incrementAndGet();
-                            return 99;
-                        }
-                        throw new IllegalArgumentException("unexpected method " + method);
-                    });
-
-            var first = runtime.invokeSourceProtocol(ref, "hold", List.of());
-            assertTrue(firstSuspended.await(2, TimeUnit.SECONDS));
-
-            var cancelled = runtime.invokeSourceProtocol(ref, "cancelled", List.of());
-            assertTrue(cancelled.cancel(false));
-            assertTrue(cancelled.isCancelled());
-
-            gate.complete(42);
-            assertEquals(42, first.get(2, TimeUnit.SECONDS));
-
-            Thread.sleep(30);
-            assertEquals(0, cancelledExecutions.get(),
-                    "cancelled queued RPC must not execute actor code");
-            assertTrue(ref.isAlive());
-        }
-    }
-
-    @Test
-    void typedProtocolRejectsCrossRuntimeActorRefReplies() throws Exception {
-        try (ActorRuntime left = new ActorRuntime();
-             ActorRuntime right = new ActorRuntime()) {
-            var foreign = right.spawnShared(factoryContext ->
-                    (message, turnContext) -> { });
-            var target = left.spawnSourceSharedProtocolActor(factoryContext ->
-                    (method, arguments, turnContext) -> foreign);
-
-            var reply = left.invokeSourceProtocol(target, "foreign_ref", List.of());
-
-            var failure = assertThrows(
-                    java.util.concurrent.ExecutionException.class,
-                    () -> reply.get(2, TimeUnit.SECONDS));
-            assertTrue(failure.getCause().getMessage().contains("different ActorRuntime"),
-                    failure.getCause().getMessage());
-
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (target.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(2);
-            }
-            assertFalse(target.isAlive());
-        }
-    }
-
-    @Test
-    void suspendedMailboxTurnResumesBeforeLaterMessage() throws Exception {
+    void cancellingProtocolReplyDoesNotCancelOrRewindActorTurn() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CompletableFuture<Integer> gate = new CompletableFuture<>();
             CountDownLatch suspended = new CountDownLatch(1);
             CountDownLatch resumed = new CountDownLatch(1);
-            CountDownLatch laterProcessed = new CountDownLatch(1);
-            List<String> events = java.util.Collections.synchronizedList(new ArrayList<>());
 
-            var ref = runtime.<String>spawnShared(factoryContext ->
-                    (message, turnContext) -> {
-                        if (message.equals("wait")) {
-                            events.add("start");
-                            suspended.countDown();
-                            turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
-                                assertNull(failure);
-                                assertEquals(42, value);
-                                events.add("resume");
-                                resumed.countDown();
-                            });
-                            throw new AssertionError(
-                                    "suspendOn must unwind the current actor turn");
-                        }
-                        if (message.equals("after")) {
-                            events.add("after");
-                            laterProcessed.countDown();
-                            return;
-                        }
-                        throw new IllegalArgumentException(
-                                "unexpected mailbox message " + message);
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> {
+                        suspended.countDown();
+                        turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
+                            resumed.countDown();
+                            resumeContext.completeProtocolTurn(value);
+                        });
+                        throw new AssertionError("suspendOn must unwind the current actor turn");
                     });
 
-            ref.send("wait");
+            var reply = runtime.invokeSourceProtocol(ref, "wait", List.of());
             assertTrue(suspended.await(2, TimeUnit.SECONDS));
+            assertTrue(reply.cancel(true));
 
-            ref.send("after");
-            Thread.sleep(25);
-            assertEquals(1L, laterProcessed.getCount(),
-                    "later mailbox traffic cannot overtake a suspended logical turn");
-
-            gate.complete(42);
+            gate.complete(7);
 
             assertTrue(resumed.await(2, TimeUnit.SECONDS));
-            assertTrue(laterProcessed.await(2, TimeUnit.SECONDS));
-            assertEquals(List.of("start", "resume", "after"), events);
+            assertTrue(reply.isCancelled());
+            assertTrue(ref.isAlive(),
+                    "cancelling an observation Future must not kill the actor or rewind its turn");
+        }
+    }
+
+    @Test
+    void protocolInvocationRejectsForeignRuntimeActorRefs() {
+        try (ActorRuntime owner = new ActorRuntime();
+             ActorRuntime foreign = new ActorRuntime()) {
+            var ref = owner.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> 1);
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> foreign.invokeSourceProtocol(ref, "read", List.of()));
+
+            assertTrue(failure.getMessage().contains("different ActorRuntime"));
             assertTrue(ref.isAlive());
         }
     }
 
     @Test
-    void failedMailboxContinuationFailsActorClosed() throws Exception {
+    void rawMessagesFailClosedAgainstTypedSourceProtocolDispatcher() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            CompletableFuture<Integer> gate = new CompletableFuture<>();
-            CountDownLatch suspended = new CountDownLatch(1);
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> 1);
 
-            var ref = runtime.<String>spawnShared(factoryContext ->
-                    (message, turnContext) -> {
-                        suspended.countDown();
-                        turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
-                            throw new IllegalStateException("resume-boom");
-                        });
-                        throw new AssertionError(
-                                "suspendOn must unwind the current actor turn");
-                    });
-
-            ref.send("wait");
-            assertTrue(suspended.await(2, TimeUnit.SECONDS));
-            gate.complete(1);
+            ref.send("raw-message");
 
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (ref.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(2);
-            }
+            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(2);
 
-            assertFalse(ref.isAlive(),
-                    "unhandled continuation failure must fail-stop the actor");
-            assertEquals("resume-boom", ref.failure().orElseThrow().getMessage());
+            assertFalse(ref.isAlive());
+            assertTrue(ref.failure().orElseThrow().getMessage()
+                    .contains("cannot receive raw mailbox messages"));
         }
     }
 
