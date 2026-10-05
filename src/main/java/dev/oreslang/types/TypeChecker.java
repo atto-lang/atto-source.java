@@ -69,7 +69,8 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
+                "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "print", "Some", "None", "Ok", "Err",
                 "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
@@ -717,7 +718,17 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio")
+                    || name.name().equals("process")
+                    || name.name().equals("actor")
+                    || name.name().equals("fs")
+                    || name.name().equals("File")
+                    || name.name().equals("network")
+                    || name.name().equals("net")
+                    || name.name().equals("http")
+                    || name.name().equals("env")) {
+                return new Named(name.name(), List.of());
+            }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -1240,6 +1251,7 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
+                if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = deref(receiver);
@@ -1256,8 +1268,20 @@ public final class TypeChecker {
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
+            if (receiver instanceof Named named
+                    && named.name().equals("stdio.stdin")
+                    && member.member().equals("read_line")) {
+                return new Function(List.of(), Primitive.STRING);
+            }
             if (member.receiver() instanceof Ast.NameExpr name
-                    && (name.name().equals("process") || name.name().equals("actor"))) return Unknown.INSTANCE;
+                    && (name.name().equals("process")
+                        || name.name().equals("actor")
+                        || name.name().equals("fs")
+                        || name.name().equals("File")
+                        || name.name().equals("network")
+                        || name.name().equals("net")
+                        || name.name().equals("http")
+                        || name.name().equals("env"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
