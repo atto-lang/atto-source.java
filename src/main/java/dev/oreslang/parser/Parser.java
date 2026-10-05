@@ -942,12 +942,20 @@ public final class Parser {
 
     private List<Ast.Stmt> parseLoopBody() {
         if (check(LBRACE)) return parseBlock();
-        if (match(DO)) {
-            List<Ast.Stmt> body = parseUntil(DONE);
-            consume(DONE, "expected 'done' to close loop body");
-            return body;
+        if (!match(DO)) {
+            throw error(peek(), "expected '{' or 'do' to start loop body");
         }
-        throw error(peek(), "expected '{' or 'do' to start loop body");
+
+        List<Ast.Stmt> body = new ArrayList<>();
+        while (!check(EOF) && !isBareDoneDelimiter()) {
+            body.add(parseStatement());
+        }
+        consume(DONE, "expected 'done' to close loop body");
+        return body;
+    }
+
+    private boolean isBareDoneDelimiter() {
+        return check(DONE) && !reservedCallableNameFollowedByInvocation(current);
     }
 
     private void closeForHeader(boolean parenthesized) {
