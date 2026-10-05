@@ -240,6 +240,30 @@ final class GpuRuntimeTest {
     }
 
     @Test
+    void backendInvocationReceivesNativeResourceDescriptorsNotGuestHandles() {
+        TransferBackend backend = new TransferBackend("wire-args") {
+            @Override
+            public Object invoke(GpuRuntime.BackendInvocation invocation) {
+                assertEquals(1, invocation.arguments().size());
+                GpuRuntime.NativeResourceArg resource = assertInstanceOf(
+                        GpuRuntime.NativeResourceArg.class,
+                        invocation.arguments().getFirst());
+                assertEquals(GpuRuntime.ResourceKind.ARRAY, resource.kind());
+                assertEquals("i32", resource.elementAbiType());
+                assertEquals(2L, resource.length());
+                assertTrue(resource.nativeHandle() != 0L);
+                return 7L;
+            }
+        };
+        GpuRuntime.installBackend(backend);
+        GpuRuntime runtime = new GpuRuntime();
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i32", List.of(1L, 2L));
+
+        assertEquals(7L, runtime.dispatch(
+                "test.consume", GpuRuntime.CallableKind.FNC, List.of(array)));
+    }
+
+    @Test
     void nativeResourceHandleZeroIsAlwaysRejected() {
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
             @Override public String name() { return "zero-handle"; }
@@ -263,7 +287,8 @@ final class GpuRuntimeTest {
         assertEquals(List.of(1L, 2L), runtime.downloadArray(array));
 
         runtime.release(array);
-        assertThrows(GpuRuntime.GpuExecutionException.class, () -> runtime.downloadArray(array));
+        assertThrows(GpuRuntime.GpuTransferException.class, () -> runtime.downloadArray(array));
+        assertThrows(GpuRuntime.GpuTransferException.class, () -> runtime.release(array));
     }
 
     @Test
@@ -293,7 +318,7 @@ final class GpuRuntimeTest {
         assertTrue(failure.getMessage().contains("invoke(test.boom)"));
     }
 
-    private static final class TransferBackend implements GpuRuntime.Backend {
+    private static class TransferBackend implements GpuRuntime.Backend {
         private final String name;
         private final AtomicLong nextHandle = new AtomicLong(1L);
         private final Map<Long, List<?>> buffers = new HashMap<>();
