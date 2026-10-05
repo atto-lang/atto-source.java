@@ -524,13 +524,16 @@ public final class ChannelRuntime {
         private final AtomicBoolean probing = new AtomicBoolean();
         private final AtomicBoolean reprobe = new AtomicBoolean();
         private final List<ReadinessRegistration> registrations = new ArrayList<>();
+        private final Object arbitrationLock = new Object();
+        private boolean cancellationClaimed;
+        private boolean operationCommitted;
         private final OresFuture<Selection> future;
 
         private Selector(List<SelectCase> cases, SelectPolicy policy, int start) {
             this.cases = cases;
             this.policy = policy;
             this.start = start;
-            this.future = new OresFuture<>(this::detach);
+            this.future = new OresFuture<>(this::admitCancellation, this::detach);
         }
 
         private OresFuture<Selection> arm() {
@@ -584,10 +587,30 @@ public final class ChannelRuntime {
             int first = policy == SelectPolicy.FAIR ? start : 0;
             for (int offset = 0; offset < size; offset++) {
                 int index = (first + offset) % size;
-                Selection selected = cases.get(index).tryPerform(index);
-                if (selected != null) return selected;
+
+                // A select cancellation and a committed channel operation are
+                // mutually exclusive. Hold this small arbitration lock only
+                // around a nonblocking tryRead/tryWrite; it never spans a wait.
+                synchronized (arbitrationLock) {
+                    if (cancellationClaimed || operationCommitted || future.isDone()) {
+                        return null;
+                    }
+                    Selection selected = cases.get(index).tryPerform(index);
+                    if (selected != null) {
+                        operationCommitted = true;
+                        return selected;
+                    }
+                }
             }
             return null;
+        }
+
+        private boolean admitCancellation() {
+            synchronized (arbitrationLock) {
+                if (operationCommitted) return false;
+                cancellationClaimed = true;
+                return true;
+            }
         }
 
         private void detach() {
