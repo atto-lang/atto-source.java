@@ -276,6 +276,7 @@ public final class TypeChecker {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
+                    || fn.structural()
                     || fn.nonLexical()
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
@@ -285,7 +286,7 @@ public final class TypeChecker {
                     || !initReturn.arguments().isEmpty()
                     || initReturn.inferArguments()) {
                 throw new IllegalArgumentException(
-                        "init hook must be a private synchronous non-actor non-generic zero-arity "
+                        "init hook must be a private synchronous non-structural non-actor non-generic zero-arity "
                                 + "fnc/routine returning void");
             }
         }
@@ -2170,6 +2171,15 @@ public final class TypeChecker {
                     .map(option -> resolveSharedGeneric(option, bindings))
                     .toList());
         }
+        if (type instanceof Function fn) {
+            return new Function(
+                    fn.parameters().stream()
+                            .map(parameter -> resolveSharedGeneric(parameter, bindings))
+                            .toList(),
+                    fn.mutableParameters(),
+                    fn.async(),
+                    resolveSharedGeneric(fn.result(), bindings));
+        }
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
@@ -2821,6 +2831,8 @@ public final class TypeChecker {
             Type self) {
         return new Function(
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
+                params.stream().map(Ast.Param::mutable).toList(),
+                async,
                 asyncResult(async, resolve(returns, generics, self)));
     }
 
@@ -3187,6 +3199,8 @@ public final class TypeChecker {
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
+                fn.mutableParameters(),
+                fn.async(),
                 substituteGenerics(fn.result(), bindings));
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -3402,6 +3416,8 @@ public final class TypeChecker {
         // structural method signatures.
         if (actual instanceof Function source && expected instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
+            if (source.async() != target.async()) return false;
+            if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!assignable(target.parameters().get(i), source.parameters().get(i))) return false;
             }
