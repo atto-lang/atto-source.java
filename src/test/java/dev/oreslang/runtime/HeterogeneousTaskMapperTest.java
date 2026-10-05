@@ -12,7 +12,8 @@ final class HeterogeneousTaskMapperTest {
 
     @Test
     void readReadMayOverlapButAliasingWritesSerialize() {
-        var region = HeterogeneousTaskMapper.RegionSlice.root(1);
+        var regionId = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var region = HeterogeneousTaskMapper.RegionSlice.root(regionId);
         var cpu = new HeterogeneousTaskMapper.Variant("cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
 
         var readerA = new HeterogeneousTaskMapper.TaskSpec(
@@ -35,7 +36,8 @@ final class HeterogeneousTaskMapperTest {
 
     @Test
     void disjointFieldWritesOnSameRegionMayRunInParallel() {
-        var region = HeterogeneousTaskMapper.RegionSlice.root(3);
+        var regionId = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var region = HeterogeneousTaskMapper.RegionSlice.root(regionId);
         var cpu = new HeterogeneousTaskMapper.Variant("cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
 
         var positions = new HeterogeneousTaskMapper.TaskSpec(
@@ -57,9 +59,10 @@ final class HeterogeneousTaskMapperTest {
 
     @Test
     void certifiedDisjointPartitionsMayRunInParallel() {
+        var regionId = HeterogeneousTaskMapper.allocateRegionIdentity();
         var family = HeterogeneousTaskMapper.certifyDisjointFamily();
-        var left = HeterogeneousTaskMapper.RegionSlice.certified(7, 701, family);
-        var right = HeterogeneousTaskMapper.RegionSlice.certified(7, 702, family);
+        var left = HeterogeneousTaskMapper.RegionSlice.certified(regionId, 701, family);
+        var right = HeterogeneousTaskMapper.RegionSlice.certified(regionId, 702, family);
         var cpu = new HeterogeneousTaskMapper.Variant("cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
 
         var a = new HeterogeneousTaskMapper.TaskSpec(
@@ -76,17 +79,29 @@ final class HeterogeneousTaskMapperTest {
 
     @Test
     void independentlyCertifiedFamiliesDoNotForgeDisjointness() {
+        var regionId = HeterogeneousTaskMapper.allocateRegionIdentity();
         var familyA = HeterogeneousTaskMapper.certifyDisjointFamily();
         var familyB = HeterogeneousTaskMapper.certifyDisjointFamily();
-        var left = HeterogeneousTaskMapper.RegionSlice.certified(8, 801, familyA);
-        var right = HeterogeneousTaskMapper.RegionSlice.certified(8, 802, familyB);
+        var left = HeterogeneousTaskMapper.RegionSlice.certified(regionId, 801, familyA);
+        var right = HeterogeneousTaskMapper.RegionSlice.certified(regionId, 802, familyB);
 
         assertTrue(left.mayAlias(right));
     }
 
     @Test
+    void separatelyAllocatedRootsDoNotDependOnCallerChosenNumbers() {
+        var rootA = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var rootB = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var left = HeterogeneousTaskMapper.RegionSlice.root(rootA);
+        var right = HeterogeneousTaskMapper.RegionSlice.root(rootB);
+
+        assertFalse(left.mayAlias(right));
+    }
+
+    @Test
     void variantSelectionIsDeterministicRatherThanDeclarationOrdered() {
-        var region = HeterogeneousTaskMapper.RegionSlice.root(9);
+        var regionId = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var region = HeterogeneousTaskMapper.RegionSlice.root(regionId);
         var generic = new HeterogeneousTaskMapper.Variant(
                 "generic", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
         var zSpecialized = new HeterogeneousTaskMapper.Variant(
@@ -139,7 +154,8 @@ final class HeterogeneousTaskMapperTest {
 
     @Test
     void autoPlacementAccountsForGpuCrossoverAndDataResidency() {
-        var region = HeterogeneousTaskMapper.RegionSlice.root(11);
+        var regionId = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var region = HeterogeneousTaskMapper.RegionSlice.root(regionId);
         var task = new HeterogeneousTaskMapper.TaskSpec(
                 "transform",
                 List.of(HeterogeneousTaskMapper.Access.read(region)),
@@ -154,7 +170,7 @@ final class HeterogeneousTaskMapperTest {
 
         assertEquals(
                 HeterogeneousTaskMapper.ProcessorKind.GPU,
-                mapper.map(task, HeterogeneousTaskMapper.PlacementHint.AUTO, 150, machine, Set.of(11L)).processor());
+                mapper.map(task, HeterogeneousTaskMapper.PlacementHint.AUTO, 150, machine, Set.of(regionId)).processor());
 
         assertEquals(
                 HeterogeneousTaskMapper.ProcessorKind.GPU,
@@ -184,7 +200,8 @@ final class HeterogeneousTaskMapperTest {
 
     @Test
     void reductionsRemainOrderedUntilOperatorSafetyIsRegistered() {
-        var region = HeterogeneousTaskMapper.RegionSlice.root(21);
+        var regionId = HeterogeneousTaskMapper.allocateRegionIdentity();
+        var region = HeterogeneousTaskMapper.RegionSlice.root(regionId);
         var cpu = new HeterogeneousTaskMapper.Variant("cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
         var reduceA = new HeterogeneousTaskMapper.TaskSpec(
                 "reduce-a",
