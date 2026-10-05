@@ -258,19 +258,25 @@ final class ComputeDataOrientedLanguageTest {
                 """);
 
         assertComputeRejected("""
-                compute fnc recurse(Region<int> values): void {
+                compute fnc recurse(Region<int> values): void
+                reads values;
+                {
                   recurse(values);
                   return;
                 }
                 """);
 
         assertComputeRejected("""
-                compute fnc a(Region<int> values): void {
+                compute fnc a(Region<int> values): void
+                reads values;
+                {
                   b(values);
                   return;
                 }
 
-                compute fnc b(Region<int> values): void {
+                compute fnc b(Region<int> values): void
+                reads values;
+                {
                   a(values);
                   return;
                 }
@@ -302,6 +308,71 @@ final class ComputeDataOrientedLanguageTest {
                         end
                         """));
         assertTrue(around.getMessage().contains("around advice is reserved"));
+    }
+
+    @Test
+    void computeCallsMustFitCallerEffects() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc child(Region<Particle> particles, int i): void
+                writes particles.position;
+                {
+                  particles[i].position = 1;
+                  return;
+                }
+
+                compute fnc parent(Region<Particle> particles, int i): void
+                writes particles.position;
+                {
+                  child(particles, i);
+                  return;
+                }
+                """));
+
+        assertComputeRejected("""
+                compute fnc child(Region<Particle> particles, int i): void
+                writes particles.position;
+                {
+                  particles[i].position = 1;
+                  return;
+                }
+
+                compute fnc parent(Region<Particle> particles, int i): void
+                reads particles.position;
+                {
+                  child(particles, i);
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc child(Region<Particle> particles): void
+                reduces particles.mass by sum;
+                {
+                  return;
+                }
+
+                compute fnc parent(Region<Particle> particles): void
+                reduces particles.mass by max;
+                {
+                  child(particles);
+                  return;
+                }
+                """);
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc child(Region<Particle> particles): void
+                reduces particles.mass by sum;
+                {
+                  return;
+                }
+
+                compute fnc parent(Region<Particle> particles): void
+                reduces particles.mass by sum;
+                {
+                  child(particles);
+                  return;
+                }
+                """));
     }
 
     @Test
