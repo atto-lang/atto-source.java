@@ -1004,6 +1004,14 @@ device allocation. `stream()` / `GpuStream.from_array()` preserve device ownersh
 and `collect()` materializes a device-resident array without routing elements through
 the host.
 
+Resident GPU values also expose host-side `release()`. Release is deterministic: using a
+released value or releasing the same Oreslang handle twice is an error. Array/stream/
+collected-array views may share one backend-native allocation; the runtime holds a shared
+resource lease and invokes the physical backend's release hook exactly once after the last
+live view is released. `release()` is forbidden inside GPU code. Future ownership/drop
+lowering may insert the same operation automatically at scope end; explicit release is the
+current portable lifetime surface.
+
 The compiler emits hidden lengths for every flat buffer and bounds-checks indexed access.
 Kernel-entry buffers emitted with `restrict` carry a no-alias launch contract that
 the physical launcher must enforce. Internal GPU helper parameters deliberately omit
