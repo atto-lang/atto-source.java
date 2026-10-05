@@ -62,7 +62,44 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            ActorCancellationScope cancellationScope) { }
+
+    /**
+     * Runtime-owned lifetime registry. Guest code never receives this object;
+     * channel/select/Future plumbing created during an actor turn is attached
+     * automatically and cancelled when the actor lifetime ends.
+     */
+    private static final class ActorCancellationScope {
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+        private final Set<OresFuture<?>> pending = ConcurrentHashMap.newKeySet();
+
+        private <T> OresFuture<T> track(OresFuture<T> future) {
+            Objects.requireNonNull(future, "future");
+            if (future.isDone()) return future;
+            if (cancelled.get()) {
+                future.cancel(false);
+                return future;
+            }
+
+            pending.add(future);
+            future.whenCompleteRuntime((value, failure) -> pending.remove(future));
+
+            // Close the add-vs-cancel race.
+            if (cancelled.get() && pending.remove(future)) {
+                future.cancel(false);
+            }
+            return future;
+        }
+
+        private void cancel() {
+            if (!cancelled.compareAndSet(false, true)) return;
+            for (OresFuture<?> future : Set.copyOf(pending)) {
+                future.cancel(false);
+            }
+            pending.clear();
+        }
+    }
 
     @FunctionalInterface
     public interface TurnExecutor {
@@ -108,6 +145,15 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object currentActorExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.executionDomain();
+    }
+
+    /**
+     * Attach runtime Future work to the currently executing actor lifetime.
+     * Outside actor execution this is a no-op.
+     */
+    static <T> OresFuture<T> trackCurrentFuture(OresFuture<T> future) {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? future : current.cancellationScope().track(future);
     }
 
     public enum ActorKind { PRIVATE, SHARED }
@@ -2661,6 +2707,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        private final ActorCancellationScope cancellationScope = new ActorCancellationScope();
         private final AtomicInteger queuedMessages = new AtomicInteger();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
@@ -2871,7 +2918,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void runBatchEntered() {
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain, cancellationScope));
             boolean turnActive = beginTurn();
             try {
                 if (!turnActive) return;
@@ -2945,6 +2992,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
+                cancellationScope.cancel();
                 cancelChildrenLocked();
                 drainMailboxReservations();
                 finalizeStopLocked();
@@ -2954,6 +3002,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void stop() {
             synchronized (lifecycleLock) {
                 stopped.set(true);
+                cancellationScope.cancel();
                 cancelChildrenLocked();
                 drainMailboxReservations();
                 finalizeStopLocked();
