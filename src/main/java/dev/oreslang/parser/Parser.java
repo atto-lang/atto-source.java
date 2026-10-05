@@ -231,17 +231,10 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
 
         if (match(EQUAL)) {
-            consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
-            List<Ast.Param> params = parseDeclaredPipeParameters();
-            consume(PIPE, "expected closing '|' in lambda-style callable declaration");
-            consume(ARROW, "lambda-style callable declarations use the slim arrow '->'");
-            Ast.TypeRef returnType = check(LBRACE)
-                    ? Ast.TypeRef.simple("void")
-                    : parseTypeRef();
-            List<Ast.Stmt> body = parseBlock();
-            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical,
-                    modifiers.pure, modifiers.trapped, actorKind, generics, params,
-                    returnType, annotations, body);
+            throw error(previous(),
+                    "function expressions are executable-scope-only; named fnc/routine declarations "
+                            + "must use '(...)' parameters, while local callable values use "
+                            + "'let fnc name = || -> { ... };'");
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
