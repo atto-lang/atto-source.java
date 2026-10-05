@@ -3381,6 +3381,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
+        private boolean finalizationClaimed;
         private boolean finalized;
         private Behavior<M> behavior;
 
@@ -3488,14 +3489,14 @@ public final class ActorRuntime implements AutoCloseable {
             // Host callbacks and parent notification happen in afterFinalized()
             // after lifecycleLock has been released.
             if (finalized
+                    || finalizationClaimed
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return false;
-            finalized = true;
+            finalizationClaimed = true;
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
-            lifecycleLock.notifyAll();
             return true;
         }
 
@@ -3510,6 +3511,11 @@ public final class ActorRuntime implements AutoCloseable {
                 // actor bookkeeping from completing.
             } finally {
                 unregisterActor(this);
+                synchronized (lifecycleLock) {
+                    finalized = true;
+                    finalizationClaimed = false;
+                    lifecycleLock.notifyAll();
+                }
                 if (parent != null) parent.childFinalized(this);
             }
             if (fatal != null) throw fatal;
@@ -3766,7 +3772,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<OresFuture<?>> pending;
             boolean finalizedNow;
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                if (finalized || finalizationClaimed) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
