@@ -655,6 +655,9 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            ValueInfo compositionCall =
+                    checkBuiltinCompositionCall(member, call, scope);
+            if (compositionCall != null) return compositionCall;
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
 
@@ -777,6 +780,75 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private ValueInfo checkBuiltinCompositionCall(
+            Ast.MemberExpr member,
+            Ast.CallExpr call,
+            Scope scope) {
+        String operation = member.member();
+        ValueInfo receiver = checkExpr(member.receiver(), scope, false);
+        Ast.TypeRef type = receiver.type;
+        if (type == null || type.isBorrow()) return null;
+
+        String family = type.name();
+        boolean recognized = switch (family) {
+            case "Option" -> java.util.Set.of(
+                    "map", "flat_map", "and_then", "or_else", "flatten")
+                    .contains(operation);
+            case "Result" -> java.util.Set.of(
+                    "map", "flat_map", "and_then", "map_err", "or_else", "flatten")
+                    .contains(operation);
+            default -> false;
+        };
+        if (!recognized) return null;
+
+        if (member.receiver() instanceof Ast.NameExpr receiverName) {
+            VarState state = scope.lookup(receiverName.name());
+            if (state != null && state.kind == ValueKind.MOVE_ONLY) {
+                move(state, receiverName.name());
+            }
+        }
+
+        for (Ast.Expr argument : call.arguments()) {
+            ValueInfo callback = checkExpr(argument, scope, true);
+            if (containsMutexGuardType(callback.type)) {
+                throw error(family + "." + operation
+                        + " callback cannot contain MutexGuard");
+            }
+        }
+
+        if (operation.equals("flatten")
+                && !type.arguments().isEmpty()
+                && type.arguments().getFirst().name().equals(family)) {
+            Ast.TypeRef nested = type.arguments().getFirst();
+            return new ValueInfo(nested, kindOfType(nested), null);
+        }
+
+        if (family.equals("Option") && operation.equals("or_else")) {
+            return new ValueInfo(type, kindOfType(type), null);
+        }
+
+        Ast.TypeRef output = call.typeArguments().size() == 1
+                ? call.typeArguments().getFirst()
+                : Ast.TypeRef.inferred();
+        Ast.TypeRef result = switch (family) {
+            case "Option" -> new Ast.TypeRef("Option", List.of(output), false);
+            case "Result" -> {
+                Ast.TypeRef ok = type.arguments().size() > 0
+                        ? type.arguments().get(0)
+                        : Ast.TypeRef.inferred();
+                Ast.TypeRef error = type.arguments().size() > 1
+                        ? type.arguments().get(1)
+                        : Ast.TypeRef.inferred();
+                if (operation.equals("map_err") || operation.equals("or_else")) {
+                    yield new Ast.TypeRef("Result", List.of(ok, output), false);
+                }
+                yield new Ast.TypeRef("Result", List.of(output, error), false);
+            }
+            default -> Ast.TypeRef.inferred();
+        };
+        return new ValueInfo(result, kindOfType(result), null);
     }
 
     private ValueInfo checkBuiltinSumCall(Ast.MemberExpr member, List<Ast.Expr> arguments, Scope scope) {
