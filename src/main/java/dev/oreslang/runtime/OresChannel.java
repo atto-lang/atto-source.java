@@ -3,13 +3,13 @@ package dev.oreslang.runtime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -25,8 +25,10 @@ import java.util.concurrent.locks.ReentrantLock;
  * scalable implementation while preserving the same contract.</p>
  *
  * <p>Actor dispatcher carriers are never parked. A blocking read/write/select
- * may complete immediately on a carrier, but if it would wait the runtime fails
- * closed until actor continuation lowering suspends the mailbox turn.</p>
+ * may complete immediately on a carrier, but an unready blocking operation
+ * fails closed until actor continuation lowering can suspend the mailbox turn.
+ * Non-blocking (`nb select`) registration uses {@link #selectAsync(List)} and
+ * therefore never parks a carrier.</p>
  */
 public final class OresChannel<T> {
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
@@ -37,6 +39,16 @@ public final class OresChannel<T> {
     public enum Operation {
         READ,
         WRITE
+    }
+
+    /**
+     * FAIR is deterministic rotating fairness per logical execution domain.
+     * ORDERED is deterministic source/list order and may intentionally starve
+     * later cases when an earlier case is permanently ready.
+     */
+    public enum SelectionPolicy {
+        FAIR,
+        ORDERED
     }
 
     public sealed interface SelectEntry permits ReadEntry, WriteEntry {
@@ -101,12 +113,38 @@ public final class OresChannel<T> {
     private static final class Selection {
         private final List<SelectEntry> entries;
         private final Object executionDomain;
+        private final SelectionPolicy policy;
         private final ArrayList<Registration> registrations = new ArrayList<>();
+        private final SelectionFuture future;
         private SelectionResult result;
 
-        private Selection(List<SelectEntry> entries) {
+        private Selection(List<SelectEntry> entries, SelectionPolicy policy, boolean asynchronous) {
             this.entries = entries;
             this.executionDomain = ActorRuntime.currentExecutionDomain();
+            this.policy = Objects.requireNonNull(policy, "policy");
+            this.future = asynchronous ? new SelectionFuture(this) : null;
+        }
+    }
+
+    private static final class SelectionFuture extends CompletableFuture<SelectionResult> {
+        private final Selection selection;
+
+        private SelectionFuture(Selection selection) {
+            this.selection = selection;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            COORDINATOR.lock();
+            try {
+                if (selection.result != null || isDone()) return false;
+                unregister(selection);
+                boolean cancelled = super.cancel(mayInterruptIfRunning);
+                CHANGED.signalAll();
+                return cancelled;
+            } finally {
+                COORDINATOR.unlock();
+            }
         }
     }
 
@@ -181,20 +219,76 @@ public final class OresChannel<T> {
     }
 
     public static SelectionResult select(List<? extends SelectEntry> rawEntries) {
-        return selectInternal(copyEntries(rawEntries), true)
+        return select(rawEntries, SelectionPolicy.FAIR);
+    }
+
+    public static SelectionResult select(
+            List<? extends SelectEntry> rawEntries,
+            SelectionPolicy policy) {
+        return selectInternal(copyEntries(rawEntries), true, policy)
                 .orElseThrow(() -> new IllegalStateException("blocking select unexpectedly produced no result"));
     }
 
     public static Optional<SelectionResult> trySelect(List<? extends SelectEntry> rawEntries) {
-        return selectInternal(copyEntries(rawEntries), false);
+        return trySelect(rawEntries, SelectionPolicy.FAIR);
+    }
+
+    public static Optional<SelectionResult> trySelect(
+            List<? extends SelectEntry> rawEntries,
+            SelectionPolicy policy) {
+        return selectInternal(copyEntries(rawEntries), false, policy);
+    }
+
+    /**
+     * Register a select without waiting. The returned Future completes exactly
+     * once when one case commits. Cancelling the Future atomically unregisters
+     * all still-pending cases, so detached/non-blocking selections do not leak
+     * channel registrations.
+     */
+    public static CompletableFuture<SelectionResult> selectAsync(
+            List<? extends SelectEntry> rawEntries) {
+        return selectAsync(rawEntries, SelectionPolicy.FAIR);
+    }
+
+    public static CompletableFuture<SelectionResult> selectAsync(
+            List<? extends SelectEntry> rawEntries,
+            SelectionPolicy policy) {
+        List<SelectEntry> entries = copyEntries(rawEntries);
+        COORDINATOR.lock();
+        try {
+            Selection selection = new Selection(entries, policy, true);
+            register(selection);
+            pumpAffected(selection);
+            return selection.future;
+        } finally {
+            COORDINATOR.unlock();
+        }
     }
 
     public static SelectionResult selectDynamic(Object entries) {
-        return select(coerceEntries(entries));
+        return selectDynamic(entries, SelectionPolicy.FAIR);
+    }
+
+    public static SelectionResult selectDynamic(Object entries, SelectionPolicy policy) {
+        return select(coerceEntries(entries), policy);
     }
 
     public static Optional<SelectionResult> trySelectDynamic(Object entries) {
-        return trySelect(coerceEntries(entries));
+        return trySelectDynamic(entries, SelectionPolicy.FAIR);
+    }
+
+    public static Optional<SelectionResult> trySelectDynamic(Object entries, SelectionPolicy policy) {
+        return trySelect(coerceEntries(entries), policy);
+    }
+
+    public static CompletableFuture<SelectionResult> selectDynamicAsync(Object entries) {
+        return selectDynamicAsync(entries, SelectionPolicy.FAIR);
+    }
+
+    public static CompletableFuture<SelectionResult> selectDynamicAsync(
+            Object entries,
+            SelectionPolicy policy) {
+        return selectAsync(coerceEntries(entries), policy);
     }
 
     /**
@@ -256,13 +350,16 @@ public final class OresChannel<T> {
         return List.copyOf(entries);
     }
 
-    private static Optional<SelectionResult> selectInternal(List<SelectEntry> entries, boolean blocking) {
+    private static Optional<SelectionResult> selectInternal(
+            List<SelectEntry> entries,
+            boolean blocking,
+            SelectionPolicy policy) {
         if (entries.isEmpty()) {
             throw new IllegalArgumentException("select requires at least one case");
         }
 
         COORDINATOR.lock();
-        Selection selection = new Selection(entries);
+        Selection selection = new Selection(entries, policy, false);
         try {
             register(selection);
             pumpAffected(selection);
@@ -280,7 +377,7 @@ public final class OresChannel<T> {
                 unregister(selection);
                 throw new IllegalStateException(
                         "blocking channel select would park an actor dispatcher carrier; "
-                                + "use try select/default until actor select continuation lowering is available");
+                                + "use nb select, a default arm, or continuation-lowered await");
             }
 
             while (selection.result == null) {
@@ -301,7 +398,9 @@ public final class OresChannel<T> {
 
     private static void register(Selection selection) {
         int size = selection.entries.size();
-        int cursor = Math.floorMod(FAIRNESS_CURSOR.getOrDefault(selection.executionDomain, 0), size);
+        int cursor = selection.policy == SelectionPolicy.FAIR
+                ? Math.floorMod(FAIRNESS_CURSOR.getOrDefault(selection.executionDomain, 0), size)
+                : 0;
         for (int offset = 0; offset < size; offset++) {
             int index = (cursor + offset) % size;
             SelectEntry entry = selection.entries.get(index);
@@ -398,6 +497,7 @@ public final class OresChannel<T> {
                 registration.entry.channel());
         rotateFairness(selection, registration.index);
         unregister(selection);
+        if (selection.future != null) selection.future.complete(selection.result);
         CHANGED.signalAll();
     }
 
@@ -428,11 +528,13 @@ public final class OresChannel<T> {
         rotateFairness(writeSelection, writer.index);
         unregister(readSelection);
         unregister(writeSelection);
+        if (readSelection.future != null) readSelection.future.complete(readSelection.result);
+        if (writeSelection.future != null) writeSelection.future.complete(writeSelection.result);
         CHANGED.signalAll();
     }
 
     private static void rotateFairness(Selection selection, int selectedIndex) {
-        if (!selection.entries.isEmpty()) {
+        if (selection.policy == SelectionPolicy.FAIR && !selection.entries.isEmpty()) {
             FAIRNESS_CURSOR.put(
                     selection.executionDomain,
                     (selectedIndex + 1) % selection.entries.size());
