@@ -1132,6 +1132,18 @@ public final class OresEvalRootNode extends RootNode {
                 return invokableInvocation(invokable, args);
             }
 
+            if (call.callee() instanceof Ast.NameExpr importedName) {
+                ImportedBinding directImport = namedImports.get(importedName.name());
+                if (directImport != null
+                        && directImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
+                    List<Object> args = evaluateArguments(call.arguments(), env);
+                    return importedTarget(directImport.declaration()).prepareImportedInvocation(
+                            Ast.ImportKind.FUNCTION,
+                            directImport.sourceName(),
+                            args);
+                }
+            }
+
             Object callee = eval(call.callee(), env);
             List<Object> args = evaluateArguments(call.arguments(), env);
             if (!(callee instanceof Invokable invokable)) {
@@ -1264,7 +1276,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
-                if (name.name().equals("BooleanOps")) return BooleanOpsNamespace.INSTANCE;
+                if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
+                    return BooleanOpsNamespace.INSTANCE;
+                }
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
