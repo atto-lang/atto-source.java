@@ -279,7 +279,7 @@ final class MutexLanguageTest {
         var program = Parser.parse("""
                 define module model
                   define class UnsafeBox as
-                    pub val Fnc<void> callback = || -> { return; };
+                    pub val Mutex<int> inner;
                   end
                 end
 
