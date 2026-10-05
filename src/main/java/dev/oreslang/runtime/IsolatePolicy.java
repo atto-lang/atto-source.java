@@ -130,6 +130,18 @@ public record IsolatePolicy(
     public Context.Builder restrictedContextBuilder(
             ExecutionProfile profile,
             Set<String> allowedHostClasses) {
+        return restrictedContextBuilder(
+                profile,
+                allowedHostClasses,
+                RuntimePermissions.fromCapabilities(capabilities),
+                PermissionCheckMode.COMPILE);
+    }
+
+    public Context.Builder restrictedContextBuilder(
+            ExecutionProfile profile,
+            Set<String> allowedHostClasses,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode) {
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
         if (!hostClasses.isEmpty()) {
             require(Capability.JAVA_INTEROP, "Java host imports");
@@ -160,7 +172,7 @@ public record IsolatePolicy(
                 .in(new ByteArrayInputStream(new byte[0]))
                 .out(new ByteArrayOutputStream())
                 .err(new ByteArrayOutputStream())
-                .arguments(OresLanguage.ID, applicationArguments(profile));
+                .arguments(OresLanguage.ID, applicationArguments(profile, permissions, permissionCheckMode));
 
         /*
          * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
@@ -280,16 +292,28 @@ public record IsolatePolicy(
     }
 
     public String[] applicationArguments(ExecutionProfile profile) {
+        return applicationArguments(
+                profile,
+                RuntimePermissions.fromCapabilities(capabilities),
+                PermissionCheckMode.COMPILE);
+    }
+
+    public String[] applicationArguments(
+            ExecutionProfile profile,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode) {
         String caps = capabilities.stream().map(Enum::name).sorted().collect(Collectors.joining(","));
-        return new String[] {
+        java.util.ArrayList<String> args = new java.util.ArrayList<>(java.util.List.of(
                 "--ores-capabilities=" + caps,
                 "--ores-max-heap-bytes=" + maxHeapBytes,
                 "--ores-max-mailbox-messages=" + maxMailboxMessages,
                 "--ores-max-wall-ms=" + maxWallTime.toMillis(),
                 "--ores-adversarial=" + adversarial,
                 "--ores-execution-mode=" + profile.mode().name(),
-                "--ores-platform=" + profile.platform().name()
-        };
+                "--ores-platform=" + profile.platform().name(),
+                "--ores-permission-check=" + permissionCheckMode.name().toLowerCase(Locale.ROOT)));
+        args.addAll(java.util.List.of(permissions.applicationArguments()));
+        return args.toArray(String[]::new);
     }
 
     public static IsolatePolicy fromApplicationArguments(String[] args) {
