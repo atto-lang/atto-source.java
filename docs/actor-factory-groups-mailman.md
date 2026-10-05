@@ -20,11 +20,11 @@ A persistent actor is a class with an `ActorKind`:
 - `isoactor` / `extends IsoActor` -> PRIVATE
 - `untrusted actor` / `extends UntrustedActor` -> UNTRUSTED
 
-The execution-domain base may optionally carry the explicit persistent ABI
-`<Message, Reply, Error>`.
+The intrinsic bases define execution/isolation domain only. They do not carry a
+second `Actor<Message, Reply, Error>` protocol.
 
 ```ores
-define class Counter extends Actor<int, int, CounterError> as
+define actor Counter as
   let int value = 0;
 
   constructor(initial: int) {
@@ -35,73 +35,84 @@ define class Counter extends Actor<int, int, CounterError> as
     return delta;
   }
 
-  pub receive(delta: int): void {
+  pub add(delta: int): void {
     self.value = self.value + self.normalized(delta);
     return;
+  }
+
+  pub current(): int {
+    return self.value;
   }
 end
 ```
 
-Every concrete persistent actor has exactly one **effective public**
-`receive(Message): void` ingress. All other actor methods are private helpers.
-A child may inherit `receive` or override it compatibly, but it may not create a
-second public endpoint or narrow an inherited public receive.
+Public instance methods form the typed source protocol. Private methods are
+direct `self` calls inside the active actor turn.
 
-When `Actor<Message, Reply, Error>` metadata is present, `Message` must match
-that effective receive parameter exactly. `Reply` and `Error` are stable
-response-channel ABI metadata; they do not create additional public methods.
+There is still exactly one runtime mailbox. The compiler lowers the complete
+public method set into one hidden tagged request/reply dispatcher. A source
+method named `receive` has no special privilege.
 
-There is exactly one runtime mailbox and one runtime-owned receive loop. The
-source `receive` method is a turn handler invoked by that loop, not a loop that
-user code owns.
+Conceptually:
 
-## 2. ActorRef is a bounded mailbox capability
+```text
+Counter.add(int): void
+Counter.current(): int
 
-External code receives `ActorRef<Counter>` or a receive-only
+      lowers to
+
+hidden CounterProtocol =
+    Add(int, Reply<void>)
+  | Current(Reply<int>)
+```
+
+## 2. ActorRef is typed protocol authority
+
+External code receives `ActorRef<Counter>` or an interface-narrowed
 `ActorRef<CounterAPI>`.
 
 ```ores
 val counter = spawn Counter(40);
-counter.send(2);
+
+await counter.add(2);
+val value = await counter.current();
 ```
 
-`send(Message)` is statically checked against the effective receive parameter.
-It returns after bounded mailbox admission and does not synchronously invoke the
-actor or wait for the turn to finish.
+The source projection is:
 
-The following are not source-level actor capabilities:
+```text
+Counter.add(int): void
+ActorRef<Counter>.add(int): Future<void>
 
-- direct `counter.receive(...)`;
-- a public mailbox object;
-- arbitrary public actor methods such as `counter.add(...)`;
-- hidden method-name RPC dispatch.
+Counter.current(): int
+ActorRef<Counter>.current(): Future<int>
+```
 
-When application code needs a reply or typed error, that authority is carried by
-an explicit response capability/message field or another explicit protocol
-object. Reply authority is not synthesized from an arbitrary method call.
+Raw `send`, `receive`, and mailbox access are runtime-private actor-class
+operations. Guest code invokes declared typed protocol methods only.
 
-## 3. Inheritance and receive-only interfaces
+Protocol methods are not first-class bound callback objects. Use an explicit
+closure when callback behavior is desired so capture/lifetime/suspension remain
+visible to the compiler.
 
-Actor inheritance preserves the execution/isolation domain and the singular
-public ingress. The effective public actor shape must remain exactly
-`receive(Message): void`.
+## 3. Inheritance and protocol interfaces
 
-For abstraction and hot loading, an actor may implement an interface:
+Actor inheritance preserves execution/isolation domain and protocol visibility.
+A child may inherit its entire public protocol and may add endpoints, but it
+cannot narrow an inherited public endpoint to private.
+
+For abstraction and hot loading, an actor may implement a multi-method
+interface:
 
 ```ores
 define interface CounterAPI
-  fnc receive(delta: int): void;
-end
-
-define actor Counter implements CounterAPI as
-  pub receive(delta: int): void { return; }
+  fnc add(delta: int): void;
+  fnc current(): int;
 end
 ```
 
-`ActorRef<Counter>` may narrow to a compatible `ActorRef<CounterAPI>`, but an
-interface containing additional methods is not an actor protocol interface and
-must be rejected. This lets interfaces hide implementation details without
-reopening extra actor entrypoints.
+`ActorRef<Counter>` may narrow to a compatible `ActorRef<CounterAPI>`. The
+interface is an ABI boundary, not a way to expose the mutable actor object.
 
 ## 4. Boundary rules
 
@@ -165,7 +176,7 @@ descriptor/factory that:
 5. publishes READY only after initialization succeeds.
 
 The SHARED reference evaluator uses the privileged
-`spawnSourceSharedActor` lowering path. PRIVATE and UNTRUSTED source
+`spawnSourceSharedProtocolActor` lowering path. PRIVATE and UNTRUSTED source
 actor classes require their isolation-aware OresVM lowering and must not be
 silently routed through the shared evaluator.
 
@@ -181,7 +192,7 @@ workers/worker.ores::Worker
 ```
 
 The existing descriptor `inputType` should be read as the compiler-generated
-single-message actor ABI for a persistent actor class, not as evidence that
+hidden protocol-envelope ABI for a persistent actor class, not as evidence that
 source actors have one public `receive(In)` method. `outputType` describes
 the group's typed emitted-output contract where applicable.
 
@@ -343,26 +354,27 @@ pinned to their birth generation until drained/terminated.
 Compiler/type system:
 
 - actor classes are persistent; actor fnc/routine callables remain one-shot;
-- exactly one effective public `receive(Message): void` exists;
-- inherited receive counts and cannot be narrowed to private;
-- no other public actor instance methods or public actor state fields exist;
-- optional `Actor<Message, Reply, Error>` metadata is exact and ABI-significant;
-- actor protocol interfaces are receive-only;
-- `ActorRef.send(Message)` is checked against the effective receive type;
-- direct `receive`, mailbox access, and arbitrary ActorRef method calls fail closed;
-- constructor/receive boundary sendability is checked;
+- at least one effective public actor protocol endpoint exists;
+- inherited endpoints count and cannot be narrowed to private;
+- actors may implement multi-method protocol interfaces;
+- `ActorRef<Concrete>` may narrow to a compatible `ActorRef<Interface>`;
+- direct ActorRef protocol calls return `Future<T>`;
+- public protocol methods are monomorphic at method level and non-reifiable;
+- raw send/receive/mailbox access fails closed for actor classes;
+- constructor and every protocol parameter/return pass boundary sendability;
 - actor effect restrictions propagate through helper call graphs;
 - imported effect-unknown calls fail closed in actor context.
 
 Runtime:
 
 - one mailbox and one execution lease exist per actor;
-- mailbox admission validates ownership, memory, quota, and capability boundaries;
-- source actor execution uses ordinary message delivery to the one receive turn;
-- there is no runtime-private method-name request/reply dispatcher;
+- typed actor protocol calls use runtime-private request/reply metadata;
+- only user arguments/replies pass transport validation and memory accounting;
+- suspended protocol calls retain their request envelope until final continuation settlement;
+- stop/failure settles pending protocol Futures and releases reservations exactly once;
+- raw mailbox messages cannot enter a typed source-protocol dispatcher;
 - await/timer/next-tick continuations resume only through the owning scheduler;
 - queue/memory/fuel/lifetime limits are enforced before admission;
 - PRIVATE/UNTRUSTED actor memory is reclaimable at actor termination;
 - group/generation/quota reservations release exactly once;
 - hot-reload code generations remain pinned for actor lifetime.
-
