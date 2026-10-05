@@ -322,7 +322,7 @@ final class CallableScopeEffectKeywordTest {
         String output = run("""
                 pub fnc main(): void {
                   let fnc fail = trap || -> {
-                    return 10 / 0;
+                    return [1][2];
                   };
                   [const value, const err] = fail();
                   stdio.println(value);
@@ -333,7 +333,7 @@ final class CallableScopeEffectKeywordTest {
 
         assertTrue(output.contains("None"), output);
         assertTrue(output.contains("Some("), output);
-        assertTrue(output.contains("ArithmeticException"), output);
+        assertTrue(output.contains("IndexOutOfBoundsException"), output);
     }
 
     @Test
@@ -341,7 +341,7 @@ final class CallableScopeEffectKeywordTest {
         String output = run("""
                 trap fnc outer(): int {
                   let fnc fail = || -> {
-                    return 10 / 0;
+                    return [1][2];
                   };
                   return fail();
                 }
@@ -356,7 +356,7 @@ final class CallableScopeEffectKeywordTest {
 
         assertTrue(output.contains("None"), output);
         assertTrue(output.contains("Some("), output);
-        assertTrue(output.contains("ArithmeticException"), output);
+        assertTrue(output.contains("IndexOutOfBoundsException"), output);
     }
 
     @Test
@@ -364,7 +364,7 @@ final class CallableScopeEffectKeywordTest {
         assertThrows(Exception.class, () -> run("""
                 trap fnc make_failure(): Fnc<int> {
                   let fnc fail = || -> {
-                    return 10 / 0;
+                    return [1][2];
                   };
                   return fail;
                 }
