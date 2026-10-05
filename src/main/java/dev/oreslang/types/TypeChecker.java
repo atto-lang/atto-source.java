@@ -736,10 +736,10 @@ public final class TypeChecker {
                 }
             }
 
-            // The value binding and the type-level spelling `self` carry an
-            // identity proof, not merely the enclosing nominal class type.
-            // This is what rejects `return new Foo()` from a `: self`
-            // method while still allowing aliases/chained self-returning calls.
+            // The value binding and the type-level spelling `self` carry the
+            // receiver-polymorphic type, not merely the enclosing nominal class.
+            // This rejects `return new Foo()` because the runtime receiver may
+            // be a subtype, while allowing values already typed as `self`.
             Type callableSelf = method.isStatic() ? null : new SelfType(self);
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
@@ -2070,7 +2070,7 @@ public final class TypeChecker {
         return type instanceof Borrow borrow ? borrow.target() : type;
     }
 
-    /** Nominal/structural view used only to resolve members on an exact receiver. */
+    /** Nominal/structural view used only to resolve members on a polymorphic receiver. */
     private Type receiverDispatchType(Type type) {
         return type instanceof SelfType receiverSelf ? receiverSelf.bound() : type;
     }
@@ -3026,8 +3026,8 @@ public final class TypeChecker {
     private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         if (field.type() != null) {
-            // A field declaration has no receiver identity at the declaration
-            // site. Keep `self` as a receiver-bearing method type rather than
+            // A field declaration has no receiver-polymorphic type variable at
+            // the declaration site. Keep `self` as a receiver-bearing method type rather than
             // silently degrading it into the enclosing nominal class.
             return resolve(field.type(), generics, null);
         }
