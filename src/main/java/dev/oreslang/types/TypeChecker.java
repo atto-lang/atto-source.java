@@ -467,7 +467,7 @@ public final class TypeChecker {
             Ast.ClassDecl parent) {
         Map<String, Type> bindings = classGenericBindings(child, childType);
         Type rawParent = resolve(parentRef, Set.copyOf(child.genericParameters()), childType);
-        Type substituted = resolveSharedGeneric(rawParent, bindings);
+        Type substituted = substituteGenerics(rawParent, bindings);
         if (!(substituted instanceof Named named)) {
             throw new IllegalArgumentException("parent class view for '" + parentRef.name() + "' is not nominal");
         }
@@ -484,15 +484,6 @@ public final class TypeChecker {
                     + klass.genericParameters().size() + " type argument(s), got " + view.arguments().size());
         }
         return new Named(qualifiedClassName(klass), view.arguments());
-    }
-
-    private Map<String, Type> classGenericBindings(Ast.ClassDecl klass, Named klassType) {
-        Named canonical = canonicalClassView(klass, klassType);
-        Map<String, Type> bindings = new HashMap<>();
-        for (int i = 0; i < klass.genericParameters().size(); i++) {
-            bindings.put(klass.genericParameters().get(i), canonical.arguments().get(i));
-        }
-        return bindings;
     }
 
     private String methodOriginLabel(MethodOrigin origin) {
