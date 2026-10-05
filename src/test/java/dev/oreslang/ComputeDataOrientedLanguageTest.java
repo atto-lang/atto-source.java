@@ -212,6 +212,46 @@ final class ComputeDataOrientedLanguageTest {
     }
 
     @Test
+    void flowCycleDetectionCanonicalizesModuleLocalAndQualifiedStageNames() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define module sim
+                          compute fnc a(Region<int> values): void { return; }
+                          compute fnc b(Region<int> values): void { return; }
+
+                          define flow bad as
+                            a -> sim.b;
+                            b -> sim.a;
+                          end
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("contains a cycle"));
+    }
+
+    @Test
+    void flowAndAspectNamesCannotCollideWithRuntimeDeclarations() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc pipeline(): void { return; }
+
+                        define flow pipeline as
+                        end
+                        """));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Audit as
+                        end
+
+                        define aspect Audit as
+                        end
+                        """));
+    }
+
+    @Test
     void aroundAdviceCannotInterceptComputeDeviceOrSchedulerJoinPoints() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
