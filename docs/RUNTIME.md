@@ -172,11 +172,11 @@ Async callable arguments/results are detached at the evaluator boundary. This is
 
 ## HungryActor: explicit dedicated CPU carrier
 
-`HungryActor<M>` is the deliberate exception to the ordinary multiplexed actor rule. It is a runtime primitive for sustained CPU-bound or thread-affine work and owns one dedicated **platform thread** from construction until `release()`/termination.
+`HungryActor<M>` is the deliberate exception to the ordinary multiplexed actor rule. It is a runtime primitive for sustained CPU-bound or thread-affine work and owns one dedicated **JNI-attached pthread carrier** from construction until `release()`/termination. It does not create a Java platform thread.
 
 Its invariants are:
 
-- exactly one dedicated platform carrier per live HungryActor;
+- exactly one dedicated native pthread carrier per live HungryActor;
 - bounded nonblocking mailbox admission;
 - messages are frozen before delivery;
 - serial message execution;
