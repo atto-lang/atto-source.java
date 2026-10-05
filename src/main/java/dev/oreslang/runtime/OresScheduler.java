@@ -747,16 +747,23 @@ public final class OresScheduler implements AutoCloseable {
                 StructuredTask child,
                 Throwable failure,
                 boolean cancelled) {
+            if (failure != null) {
+                // Fail the scope before removing the failing child. This closes
+                // the race where the parent body returns concurrently and
+                // could otherwise observe an empty child set and publish
+                // success before the child failure becomes authoritative.
+                failTerminal(failure);
+                synchronized (childLock) {
+                    children.remove(child);
+                }
+                return;
+            }
+
             boolean removed;
             synchronized (childLock) {
                 removed = children.remove(child);
             }
             if (!removed) return;
-
-            if (failure != null) {
-                failTerminal(failure);
-                return;
-            }
 
             // Explicit child cancellation is a terminal child outcome but is
             // not itself a failure of the parent scope. Parent-originated
