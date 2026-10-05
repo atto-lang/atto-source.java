@@ -397,6 +397,9 @@ public final class ComputeContractChecker {
                 validateComputeExpr(loop.iterable(), module, functionName);
                 validateComputeBody(loop.body(), module, functionName);
             } else if (stmt instanceof Ast.ForStmt loop) {
+                if (loop.condition() == null) {
+                    throw unsafe(functionName, "conditionless/unbounded for loop");
+                }
                 if (loop.initializer() instanceof Ast.BindingStmt binding) {
                     validateComputeExpr(binding.initializer(), module, functionName);
                 } else if (loop.initializer() instanceof Ast.ExprStmt expression) {
@@ -405,8 +408,8 @@ public final class ComputeContractChecker {
                 validateComputeExpr(loop.condition(), module, functionName);
                 validateComputeExpr(loop.update(), module, functionName);
                 validateComputeBody(loop.body(), module, functionName);
-            } else if (stmt instanceof Ast.LoopStmt loop) {
-                validateComputeBody(loop.body(), module, functionName);
+            } else if (stmt instanceof Ast.LoopStmt) {
+                throw unsafe(functionName, "unbounded loop");
             }
         }
     }
@@ -542,24 +545,20 @@ public final class ComputeContractChecker {
             if (handler.kind() != Ast.CallableKind.FNC
                     || handler.actorKind() != Ast.ActorKind.NONE
                     || handler.async()
-                    || !handler.genericParameters().isEmpty()) {
+                    || !handler.genericParameters().isEmpty()
+                    || !handler.parameters().isEmpty()
+                    || handler.returnType() == null
+                    || !handler.returnType().name().equals("void")) {
                 throw new IllegalArgumentException(
                         "aspect handler '" + rule.handler()
-                                + "' must be a synchronous non-actor non-generic fnc");
+                                + "' must be a synchronous zero-argument void, "
+                                + "non-actor, non-generic fnc");
             }
 
-            if (rule.adviceKind() == Ast.AspectAdviceKind.AROUND
-                    && Set.of(
-                            Ast.AspectJoinPoint.TASK,
-                            Ast.AspectJoinPoint.AWAIT_SUSPEND,
-                            Ast.AspectJoinPoint.AWAIT_RESUME,
-                            Ast.AspectJoinPoint.REGION_TRANSFER,
-                            Ast.AspectJoinPoint.GPU_LAUNCH)
-                    .contains(rule.joinPoint())) {
+            if (rule.adviceKind() == Ast.AspectAdviceKind.AROUND) {
                 throw new IllegalArgumentException(
-                        "around advice is forbidden for compute/device/scheduler join point "
-                                + rule.joinPoint().name().toLowerCase()
-                                + "; use before/after so optimizer and scheduler semantics remain analyzable");
+                        "around advice is reserved until Oreslang has an explicit statically typed "
+                                + "proceed/continuation ABI; use before/after for now");
             }
 
             String key = rule.joinPoint() + ":" + rule.adviceKind() + ":" + rule.handler();
