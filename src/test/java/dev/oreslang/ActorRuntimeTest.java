@@ -375,6 +375,68 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void isolatedProtocolRepliesConsumeCallerMemoryBudgetCumulatively() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy smallPrivate = new IsolatePolicy(
+                base.capabilities(),
+                16L * 1024 * 1024,
+                base.maxMailboxMessages(),
+                base.maxWallTime(),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(base)) {
+            String largeReply = "x".repeat(5 * 1024 * 1024);
+            var target = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> largeReply);
+
+            AtomicReference<OresFuture<Object>> first = new AtomicReference<>();
+            AtomicReference<OresFuture<Object>> second = new AtomicReference<>();
+            CountDownLatch secondIssued = new CountDownLatch(1);
+
+            var caller = runtime.<String>spawnPrivateTrusted(
+                    smallPrivate,
+                    factoryContext -> (message, turnContext) -> {
+                        OresFuture<Object> firstReply =
+                                runtime.invokeSourceProtocol(target, "read", List.of());
+                        first.set(firstReply);
+                        turnContext.suspendOn(
+                                firstReply,
+                                (value, failure, resumeContext) -> {
+                                    assertNull(failure);
+                                    second.set(runtime.invokeSourceProtocol(
+                                            target,
+                                            "read",
+                                            List.of()));
+                                    secondIssued.countDown();
+                                });
+                    });
+
+            caller.send("go");
+            assertTrue(secondIssued.await(2, TimeUnit.SECONDS));
+            assertEquals(largeReply, first.get().get(2, TimeUnit.SECONDS));
+            assertTrue(
+                    runtime.privateMemoryBytes() >= 10L * 1024 * 1024,
+                    "settled reply retained by a private caller must remain charged to its memory slice");
+
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class,
+                    () -> second.get().get(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, failure.getCause());
+            assertTrue(
+                    failure.getCause().getMessage().contains("caller domain"),
+                    failure.getCause().getMessage());
+
+            caller.stop();
+            assertEquals(
+                    0L,
+                    runtime.privateMemoryBytes(),
+                    "terminating the private caller must release retained protocol-reply reservations");
+
+            if (target.isAlive()) target.stop();
+        }
+    }
+
+    @Test
     void protocolInvocationRejectsForeignRuntimeActorRefs() {
         try (ActorRuntime owner = new ActorRuntime();
              ActorRuntime foreign = new ActorRuntime()) {
