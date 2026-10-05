@@ -1091,6 +1091,29 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        private List<Ast.MethodDecl> findMethodsByName(
+                Ast.ClassDecl klass,
+                String name,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return List.of();
+            LinkedHashMap<Integer, Ast.MethodDecl> result = new LinkedHashMap<>();
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.name().equals(name)) {
+                    result.put(method.parameters().size(), method);
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                for (Ast.MethodDecl method : findMethodsByName(parent, name, seen)) {
+                    result.putIfAbsent(method.parameters().size(), method);
+                }
+            }
+            seen.remove(klass);
+            return List.copyOf(result.values());
+        }
+
         private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl fn : klass.methods()) {
