@@ -147,8 +147,45 @@ public final class ComputeContractChecker {
             }
         }
 
+        validateMetadataNames(program);
         for (OwnedFlow flow : flows) validateFlow(flow.module(), flow.declaration());
         for (OwnedAspect aspect : aspects) validateAspect(aspect.module(), aspect.declaration());
+    }
+
+    private void validateMetadataNames(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            LinkedHashMap<String, String> occupied = new LinkedHashMap<>();
+            for (Ast.Decl declaration : module.declarations()) {
+                String name = null;
+                String kind = null;
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    name = fn.name(); kind = "callable";
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    name = klass.name(); kind = "class";
+                } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    name = iface.name(); kind = "interface";
+                } else if (declaration instanceof Ast.FieldDecl field) {
+                    name = field.name(); kind = "binding";
+                } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    name = alias.name(); kind = "type alias";
+                } else if (declaration instanceof Ast.FlowDecl flow) {
+                    name = flow.name(); kind = "flow";
+                } else if (declaration instanceof Ast.AspectDecl aspect) {
+                    name = aspect.name(); kind = "aspect";
+                }
+                if (name == null) continue;
+                String previous = occupied.putIfAbsent(name, kind);
+                if (previous != null
+                        && (kind.equals("flow")
+                            || kind.equals("aspect")
+                            || previous.equals("flow")
+                            || previous.equals("aspect"))) {
+                    throw new IllegalArgumentException(
+                            "compile-time declaration '" + qualify(module.name(), name)
+                                    + "' collides between " + previous + " and " + kind);
+                }
+            }
+        }
     }
 
     private void validateFunction(String module, Ast.FunctionDecl fn) {
@@ -448,21 +485,23 @@ public final class ComputeContractChecker {
         throw unsafe(owner, "dynamic/member call; compute fnc calls must resolve statically to another compute fnc or pure intrinsic");
     }
 
+    private record ResolvedFunction(String id, Ast.FunctionDecl declaration) { }
+
     private void validateFlow(String module, Ast.FlowDecl flow) {
         LinkedHashMap<String, LinkedHashSet<String>> outgoing = new LinkedHashMap<>();
         for (Ast.FlowEdge edge : flow.edges()) {
-            Ast.FunctionDecl from = resolveFunction(module, edge.from());
-            Ast.FunctionDecl to = resolveFunction(module, edge.to());
-            if (from == null || !isCompute(from)) {
+            ResolvedFunction from = resolveFunctionRef(module, edge.from());
+            ResolvedFunction to = resolveFunctionRef(module, edge.to());
+            if (from == null || !isCompute(from.declaration())) {
                 throw new IllegalArgumentException(
                         "flow '" + flow.name() + "' source '" + edge.from() + "' is not a compute fnc");
             }
-            if (to == null || !isCompute(to)) {
+            if (to == null || !isCompute(to.declaration())) {
                 throw new IllegalArgumentException(
                         "flow '" + flow.name() + "' target '" + edge.to() + "' is not a compute fnc");
             }
-            outgoing.computeIfAbsent(edge.from(), ignored -> new LinkedHashSet<>()).add(edge.to());
-            outgoing.computeIfAbsent(edge.to(), ignored -> new LinkedHashSet<>());
+            outgoing.computeIfAbsent(from.id(), ignored -> new LinkedHashSet<>()).add(to.id());
+            outgoing.computeIfAbsent(to.id(), ignored -> new LinkedHashSet<>());
         }
 
         Set<String> visiting = new LinkedHashSet<>();
@@ -532,9 +571,26 @@ public final class ComputeContractChecker {
     }
 
     private Ast.FunctionDecl resolveFunction(String module, String name) {
-        Ast.FunctionDecl local = functions.get(qualify(module, name));
-        if (local != null) return local;
-        return resolveAnyFunction(name);
+        ResolvedFunction resolved = resolveFunctionRef(module, name);
+        return resolved == null ? null : resolved.declaration();
+    }
+
+    private ResolvedFunction resolveFunctionRef(String module, String name) {
+        if (name.contains(".")) {
+            Ast.FunctionDecl qualified = functions.get(name);
+            return qualified == null ? null : new ResolvedFunction(name, qualified);
+        }
+
+        String localId = qualify(module, name);
+        Ast.FunctionDecl local = functions.get(localId);
+        if (local != null) return new ResolvedFunction(localId, local);
+
+        Ast.FunctionDecl target = resolveAnyFunction(name);
+        if (target == null) return null;
+        for (Map.Entry<String, Ast.FunctionDecl> entry : functions.entrySet()) {
+            if (entry.getValue() == target) return new ResolvedFunction(entry.getKey(), target);
+        }
+        throw new IllegalStateException("indexed function has no canonical id: " + name);
     }
 
     private Ast.FunctionDecl resolveAnyFunction(String name) {
