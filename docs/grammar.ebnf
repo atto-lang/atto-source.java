@@ -15,9 +15,12 @@ import_names    = IDENT [ "as" IDENT ]
 top_level_item  = annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
+                | compute_fnc_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
+                | flow_decl
+                | aspect_decl
                 | type_decl
                 | binding_decl ;
 
@@ -26,9 +29,12 @@ annotated_module_decl = { annotation } "define" "module" IDENT
 
 module_member   = actor_decl
                 | actor_callable_decl
+                | compute_fnc_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
+                | flow_decl
+                | aspect_decl
                 | type_decl
                 | binding_decl ;
 
@@ -40,6 +46,42 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
+
+compute_fnc_decl
+                = { annotation } visibility "compute" "fnc" callable_name [ generic_params ]
+                  "(" [ param_list ] ")" return_spec { compute_clause } block ;
+
+compute_clause   = ( "reads" | "writes" | "discards" | "atomic" )
+                    region_path { "," region_path } stmt_terminator
+                | "reduces" region_path "by" qualified_name stmt_terminator
+                | "layout" IDENT layout_kind stmt_terminator
+                | "place" placement_kind stmt_terminator ;
+region_path      = IDENT { "." IDENT } ;
+layout_kind      = "auto" | "aos" | "soa" | "aosoa" | "tiled" ;
+placement_kind   = "auto" | "cpu" | "gpu" ;
+
+flow_decl        = "define" "flow" IDENT "as" { flow_chain } "end" ;
+flow_chain       = qualified_name "->" qualified_name
+                   { "->" qualified_name } stmt_terminator ;
+
+aspect_decl      = "define" "aspect" IDENT "as"
+                   { "on" aspect_join_point aspect_advice qualified_name stmt_terminator }
+                   "end" ;
+aspect_join_point
+                = "fnc"
+                | "task"
+                | "actor_message"
+                | "actor_spawn"
+                | "await" [ "suspend" | "resume" ]
+                | "await_suspend"
+                | "await_resume"
+                | "io"
+                | "region_transfer"
+                | "gpu_launch"
+                | "error"
+                | "rpc"
+                | "database" ;
+aspect_advice    = "before" | "after" | "around" ;
 
 actor_callable_decl
                 = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" callable_name [ generic_params ]
@@ -155,10 +197,12 @@ condition_and   = equality { "," equality } ;
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
-for_stmt        = "for" "(" for_of_head ")" loop_body
-                | "for" "(" c_for_head ")" loop_body
-                | "for" for_of_head loop_body
-                | "for" c_for_head loop_body ;
+for_stmt        = [ loop_execution ]
+                  ( "for" "(" for_of_head ")" loop_body
+                  | "for" "(" c_for_head ")" loop_body
+                  | "for" for_of_head loop_body
+                  | "for" c_for_head loop_body ) ;
+loop_execution  = "parallel" [ "simd" ] | "simd" ;
 
 c_for_head      = [ for_init ] ";" [ expression ] ";" [ for_update ] ;
 for_init        = binding_kind [ type_ref ] IDENT "=" expression
@@ -265,6 +309,21 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    Semantic restrictions:
    - "block" followed by "{" is a standalone lexical scope. It has no implicit
      scheduling behavior and declarations inside it do not escape the scope.
+   - compute/flow/aspect/effect/layout/placement and parallel/simd words are
+     contextual language forms, not general-purpose globally reserved identifiers.
+   - "compute fnc" is a synchronous non-actor data-transformation contract.
+     Region effect/layout/place clauses are compiler metadata; effect roots must
+     be Region<T>/RegionView<T> parameters. The initial device/AOT-safe subset
+     rejects await, ambient I/O/process/actor authority, dynamic allocation,
+     closures, try/defer, and arbitrary dynamic/member calls.
+   - parallel/simd loop modes are legal only inside compute fnc. They are
+     optimization/execution requests; a backend must still prove a legal
+     race-free lowering and the reference interpreter may execute them
+     sequentially.
+   - flow declarations form static DAG metadata over compute fnc stages.
+     aspect declarations are statically woven metadata rather than runtime
+     monkey-patching; around advice is forbidden for device/scheduler join
+     points that must stay compiler-analyzable.
    - Unparenthesized C-style headers are distinguished by their semicolon
      clauses: "for int i = 0; i < n; i++ do ... done". A typed initializer
      without an explicit binding kind creates an implicit mutable let binding.
