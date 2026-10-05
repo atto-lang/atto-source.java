@@ -1772,9 +1772,14 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell != null && cell.stopped.get()) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
-        if (Thread.currentThread().isInterrupted()) {
-            throw new ActorCancellationSignal("actor execution interrupted");
-        }
+
+        // Carrier identity is not actor identity. A shared carrier thread may
+        // be interrupted by executor shutdown, host code, or unrelated runtime
+        // machinery; that interrupt must never be reinterpreted as cancellation
+        // of whichever actor happens to be multiplexed onto the carrier now.
+        // Structured actor cancellation is represented by ActorCell/runtime
+        // state above. Non-cooperative untrusted termination belongs to the
+        // host-owned revocable isolate boundary used by FORCE_ISOLATED.
         Thread.yield();
     }
 
@@ -2729,9 +2734,11 @@ public final class ActorRuntime implements AutoCloseable {
         for (ActorCell<?> cell : snapshot) cell.stop();
 
         if (firstClose) {
-            // Interrupt carrier workers. Actor turns that deliberately consume
-            // the interrupt are still tracked below and prevent close from
-            // reporting success until they actually leave the runtime.
+            // Stop executor carriers so queued work is rejected/removed and
+            // blocked host-side executor operations can wake. This interrupt is
+            // backend shutdown mechanics only; it is never an actor
+            // cancellation identity. Every ActorCell above was already marked
+            // stopped through the structured runtime lifecycle.
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
 
