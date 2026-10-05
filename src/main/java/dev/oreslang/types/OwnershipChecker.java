@@ -545,6 +545,66 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr sequenceFactoryCall
+                && sequenceFactoryCall.receiver() instanceof Ast.NameExpr sequenceFactory
+                && (sequenceFactory.name().equals("Iterator")
+                        || sequenceFactory.name().equals("Stream"))) {
+            String member = sequenceFactoryCall.member();
+            if (member.equals("from_values") && call.arguments().size() == 1) {
+                ValueInfo source = checkExpr(call.arguments().getFirst(), scope, true);
+                if (source.type != null && source.type.isBorrow()) {
+                    throw error(sequenceFactory.name()
+                            + ".from_values requires owned iterable state");
+                }
+                if (containsMutexGuardType(source.type)) {
+                    throw error(sequenceFactory.name()
+                            + ".from_values cannot capture guard-bearing state");
+                }
+                Ast.TypeRef element = collectionElementType(source.type);
+                return new ValueInfo(
+                        new Ast.TypeRef(sequenceFactory.name(), List.of(element), false),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+            if (sequenceFactory.name().equals("Stream")
+                    && member.equals("from_future")
+                    && call.arguments().size() == 1) {
+                ValueInfo source = checkExpr(call.arguments().getFirst(), scope, true);
+                if (containsMutexGuardType(source.type)) {
+                    throw error("Stream.from_future cannot capture guard-bearing state");
+                }
+                Ast.TypeRef payload = source.type != null
+                        && !source.type.isBorrow()
+                        && source.type.name().equals("Future")
+                        && source.type.arguments().size() == 1
+                        ? source.type.arguments().getFirst()
+                        : Ast.TypeRef.inferred();
+                return new ValueInfo(
+                        new Ast.TypeRef("Stream", List.of(payload), false),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr futureFactoryCall
+                && futureFactoryCall.receiver() instanceof Ast.NameExpr futureFactory
+                && futureFactory.name().equals("Future")
+                && futureFactoryCall.member().equals("from_callback")) {
+            for (Ast.Expr argument : call.arguments()) {
+                ValueInfo callback = checkExpr(argument, scope, true);
+                if (containsMutexGuardType(callback.type)) {
+                    throw error("Future.from_callback cannot capture guard-bearing state");
+                }
+            }
+            Ast.TypeRef payload = call.typeArguments().size() == 1
+                    ? call.typeArguments().getFirst()
+                    : Ast.TypeRef.inferred();
+            return new ValueInfo(
+                    new Ast.TypeRef("Future", List.of(payload), false),
+                    ValueKind.MOVE_ONLY,
+                    null);
+        }
+
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex")
