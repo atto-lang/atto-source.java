@@ -889,37 +889,59 @@ public final class OwnershipChecker {
     }
 
     private void ensureMutableReceiver(Ast.Expr receiver, Scope scope, String what) {
-        if (receiver instanceof Ast.NameExpr name) {
-            VarState state = requireState(scope, name.name());
-            requireUsable(state, name.name(), true);
-            if (isMutexGuardType(state.type)) return;
-            boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
-            if (!state.mutable && !mutableBorrow) {
-                throw error("cannot mutate " + what + " through immutable parameter/binding '" + name.name() + "'; declare the owned parameter as 'mut' or pass '&mut'");
-            }
-            if (state.kind == ValueKind.IMM_BORROW || (state.type.isBorrow() && !state.type.mutableBorrow())) {
-                throw error("cannot mutate " + what + " through immutable borrow '" + name.name() + "'");
-            }
-            if (state.kind != ValueKind.MUT_BORROW && (state.immutableBorrows > 0 || state.mutableBorrowed)) {
-                throw error("cannot mutate '" + name.name() + "' while borrowed");
-            }
-            return;
-        }
-        if (receiver instanceof Ast.IndexExpr indexed) {
-            ensureMutableReceiver(indexed.receiver(), scope, what);
-            checkExpr(indexed.index(), scope, false);
-            return;
-        }
-        if (receiver instanceof Ast.MemberExpr member) {
-            ensureMutableReceiver(member.receiver(), scope, what);
-            return;
-        }
         if (receiver instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
             VarState owner = borrowOwner(unary.operand(), scope);
             validateBorrow(owner, true);
             return;
         }
-        throw error("mutation target must be rooted in a mutable local/parameter or &mut borrow");
+
+        String rootName = mutationRootName(receiver);
+        if (rootName == null) {
+            throw error("mutation target must be rooted in a mutable local/parameter or &mut borrow");
+        }
+
+        VarState state = requireState(scope, rootName);
+        requireUsable(state, rootName, true);
+        if (!isMutexGuardType(state.type)) {
+            boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW
+                    || (state.type.isBorrow() && state.type.mutableBorrow());
+            if (!state.mutable && !mutableBorrow) {
+                throw error("cannot mutate " + what
+                        + " through immutable parameter/binding '" + rootName
+                        + "'; declare the owned parameter as 'mut' or grant a compute write effect");
+            }
+            if (state.kind == ValueKind.IMM_BORROW
+                    || (state.type.isBorrow() && !state.type.mutableBorrow())) {
+                throw error("cannot mutate " + what
+                        + " through immutable borrow '" + rootName + "'");
+            }
+            if (state.kind != ValueKind.MUT_BORROW
+                    && (state.immutableBorrows > 0 || state.mutableBorrowed)) {
+                throw error("cannot mutate '" + rootName + "' while borrowed");
+            }
+        }
+
+        checkProjectionIndexes(receiver, scope);
+    }
+
+    private static String mutationRootName(Ast.Expr expression) {
+        if (expression instanceof Ast.NameExpr name) return name.name();
+        if (expression instanceof Ast.IndexExpr indexed) {
+            return mutationRootName(indexed.receiver());
+        }
+        if (expression instanceof Ast.MemberExpr member) {
+            return mutationRootName(member.receiver());
+        }
+        return null;
+    }
+
+    private void checkProjectionIndexes(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.IndexExpr indexed) {
+            checkProjectionIndexes(indexed.receiver(), scope);
+            checkExpr(indexed.index(), scope, false);
+        } else if (expression instanceof Ast.MemberExpr member) {
+            checkProjectionIndexes(member.receiver(), scope);
+        }
     }
 
     private VarState borrowOwner(Ast.Expr operand, Scope scope) {
