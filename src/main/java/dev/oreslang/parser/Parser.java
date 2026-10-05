@@ -1738,7 +1738,7 @@ public final class Parser {
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
