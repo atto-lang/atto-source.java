@@ -149,11 +149,13 @@ public final class GeneratorRuntime {
             startIfNeeded();
             putResume();
             Event<T> event = takeEvent();
-            if (event instanceof YieldEvent<T> yielded) {
-                return Step.yielded(yielded.value());
+            if (event instanceof YieldEvent<?> yielded) {
+                @SuppressWarnings("unchecked")
+                T value = (T) yielded.value();
+                return Step.yielded(value);
             }
             done = true;
-            if (event instanceof FailedEvent<T> failed) {
+            if (event instanceof FailedEvent<?> failed) {
                 Throwable failure = failed.failure();
                 if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
                 if (failure instanceof Error error) throw error;
@@ -232,7 +234,7 @@ public final class GeneratorRuntime {
         }
 
         @Override
-        public synchronized void close() {
+        public void close() {
             if (!closed.compareAndSet(false, true)) return;
             done = true;
             if (producerTask != null) producerTask.cancel(true);
