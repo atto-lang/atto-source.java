@@ -549,6 +549,31 @@ final class ParserTest {
     }
 
     @Test
+    void actorBoundaryCollectionCannotBeUpgradedToMutableHelperAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> {
+                    Ast.Program typed = TypeChecker.check(Parser.parse("""
+                            fnc mutate(Array<int> mut items) -> void {
+                              return;
+                            }
+
+                            define actor Worker as
+                              pub run(items: Array<int>): void {
+                                mutate(items);
+                                return;
+                              }
+                            end
+                            """));
+                    OwnershipChecker.check(typed);
+                });
+
+        assertTrue(
+                failure.getMessage().contains("cannot upgrade actor-boundary input"),
+                failure.getMessage());
+    }
+
+    @Test
     void actorBoundaryOpaqueNominalsFailClosedButActorIdIsExplicitlySafe() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
