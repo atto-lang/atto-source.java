@@ -6559,36 +6559,35 @@ public final class ActorRuntime implements AutoCloseable {
                             try {
                                 ProtocolRequest protocol = envelope.protocolRequest();
                                 if (protocol != null) {
-                                    if (protocol.reply().isCancelled()) {
-                                        // Cancellation before dispatch revokes
-                                        // the queued request. Do not run guest
-                                        // actor code for an abandoned RPC.
-                                        continue;
+                                    if (!protocol.reply().isCancelled()) {
+                                        if (!(behavior instanceof ProtocolDispatchBehavior dispatcher)) {
+                                            throw new SecurityException(
+                                                    "ActorRef protocol call targeted an actor without a typed source protocol dispatcher");
+                                        }
+                                        if (!(envelope.value() instanceof List<?> arguments)) {
+                                            throw new IllegalStateException(
+                                                    "typed actor protocol envelope must contain an argument list");
+                                        }
+                                        @SuppressWarnings("unchecked")
+                                        ActorContext<Object> protocolContext =
+                                                (ActorContext<Object>) context;
+                                        try {
+                                            Object result = dispatcher.invokeProtocol(
+                                                    protocol.method(),
+                                                    arguments,
+                                                    protocolContext);
+                                            Object preparedReply = prepareProtocolReply(result);
+                                            protocol.reply().completeFromRuntime(preparedReply);
+                                        } catch (ActorTurnSuspendedSignal suspended) {
+                                            throw suspended;
+                                        } catch (Throwable failure) {
+                                            protocol.reply().failFromRuntime(failure);
+                                            throw failure;
+                                        }
                                     }
-                                    if (!(behavior instanceof ProtocolDispatchBehavior dispatcher)) {
-                                        throw new SecurityException(
-                                                "ActorRef protocol call targeted an actor without a typed source protocol dispatcher");
-                                    }
-                                    if (!(envelope.value() instanceof List<?> arguments)) {
-                                        throw new IllegalStateException(
-                                                "typed actor protocol envelope must contain an argument list");
-                                    }
-                                    @SuppressWarnings("unchecked")
-                                    ActorContext<Object> protocolContext =
-                                            (ActorContext<Object>) context;
-                                    try {
-                                        Object result = dispatcher.invokeProtocol(
-                                                protocol.method(),
-                                                arguments,
-                                                protocolContext);
-                                        Object preparedReply = prepareProtocolReply(result);
-                                        protocol.reply().completeFromRuntime(preparedReply);
-                                    } catch (ActorTurnSuspendedSignal suspended) {
-                                        throw suspended;
-                                    } catch (Throwable failure) {
-                                        protocol.reply().failFromRuntime(failure);
-                                        throw failure;
-                                    }
+                                    // A cancelled request intentionally does no
+                                    // guest work, but it still counts against
+                                    // this carrier quantum below.
                                 } else {
                                     behavior.onMessage((M) envelope.value(), context);
                                 }
