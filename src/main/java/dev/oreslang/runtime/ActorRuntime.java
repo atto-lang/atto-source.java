@@ -73,6 +73,24 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Captured serialized actor lane used by detached continuations such as
+     * nb-select winners. Scheduling through this target never runs the
+     * continuation inline and never allows it to overlap another turn.
+     */
+    public interface ContinuationTarget {
+        boolean schedule(Runnable continuation);
+        void track(CompletableFuture<?> pending);
+    }
+
+    public static ContinuationTarget captureCurrentContinuationTarget() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null) return null;
+        ActorCell<?> cell = current.runtime().currentActor.get();
+        if (cell == null) return null;
+        return current.runtime().new ActorContinuationTarget(cell);
+    }
+
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
     }
@@ -108,6 +126,24 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object currentActorExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.executionDomain();
+    }
+
+    private final class ActorContinuationTarget implements ContinuationTarget {
+        private final ActorCell<?> cell;
+
+        private ActorContinuationTarget(ActorCell<?> cell) {
+            this.cell = cell;
+        }
+
+        @Override
+        public boolean schedule(Runnable continuation) {
+            return cell.enqueueContinuation(continuation);
+        }
+
+        @Override
+        public void track(CompletableFuture<?> pending) {
+            cell.trackContinuation(pending);
+        }
     }
 
     public enum ActorKind { PRIVATE, SHARED }
@@ -2626,6 +2662,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
         private final BlockingQueue<MessageEnvelope> mailbox;
+        private final BlockingQueue<Runnable> continuations;
+        private final Set<CompletableFuture<?>> pendingContinuations = ConcurrentHashMap.newKeySet();
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
@@ -2650,9 +2688,43 @@ public final class ActorRuntime implements AutoCloseable {
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
+            this.continuations = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        private boolean enqueueContinuation(Runnable continuation) {
+            Objects.requireNonNull(continuation, "continuation");
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get()) return false;
+                if (!continuations.offer(continuation)) {
+                    throw new IllegalStateException(
+                            "actor continuation queue limit exceeded for " + ref.id());
+                }
+            }
+            schedule();
+            return true;
+        }
+
+        private void trackContinuation(CompletableFuture<?> pending) {
+            Objects.requireNonNull(pending, "pending");
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get()) {
+                    pending.cancel(true);
+                    return;
+                }
+                pendingContinuations.add(pending);
+            }
+            pending.whenComplete((ignored, failure) -> pendingContinuations.remove(pending));
+        }
+
+        private void cancelPendingContinuations() {
+            for (CompletableFuture<?> pending : pendingContinuations) {
+                pending.cancel(true);
+            }
+            pendingContinuations.clear();
+            continuations.clear();
         }
 
         private boolean reserveMailboxSlot() {
@@ -2697,6 +2769,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized || activeTurns != 0 || scheduled.get() || carrierActive) return;
             finalized = true;
+            cancelPendingContinuations();
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
             try {
@@ -2823,7 +2896,7 @@ public final class ActorRuntime implements AutoCloseable {
                     reschedule = !stopped.get()
                             && !closed.get()
                             && !finalized
-                            && !mailbox.isEmpty();
+                            && (!mailbox.isEmpty() || !continuations.isEmpty());
                     lifecycleLock.notifyAll();
                 }
                 ACTOR_CARRIER.remove();
@@ -2861,21 +2934,30 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 int processed = 0;
+                boolean preferContinuation = true;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
-                    MessageEnvelope envelope = mailbox.poll();
-                    if (envelope == null) break;
-                    releaseMailboxSlot();
-                    try (envelope) {
-                        behavior.onMessage((M) envelope.value(), context);
-                        if (kind == ActorKind.PRIVATE && !trustedFactory) {
-                            // Private state that survives a mailbox turn must
-                            // remain in actor-owned storage/capabilities. This
-                            // catches behavior fields that were null/immutable
-                            // at construction but later retain a mutable JVM
-                            // object across turns.
-                            validatePrivateBehaviorState(ref.id(), behavior);
+                    Runnable continuation = preferContinuation ? continuations.poll() : null;
+                    MessageEnvelope envelope = continuation == null ? mailbox.poll() : null;
+                    if (continuation == null && envelope == null && !preferContinuation) {
+                        continuation = continuations.poll();
+                    }
+                    if (continuation == null && envelope == null) break;
+
+                    if (continuation != null) {
+                        continuation.run();
+                    } else {
+                        releaseMailboxSlot();
+                        try (envelope) {
+                            behavior.onMessage((M) envelope.value(), context);
                         }
                     }
+
+                    if (kind == ActorKind.PRIVATE && !trustedFactory) {
+                        // State that survives any actor work item, including an
+                        // nb-select continuation, must remain actor-confined.
+                        validatePrivateBehaviorState(ref.id(), behavior);
+                    }
+                    preferContinuation = !preferContinuation;
                     processed++;
                 }
             } catch (Throwable failure) {
@@ -2906,6 +2988,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
+                cancelPendingContinuations();
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
