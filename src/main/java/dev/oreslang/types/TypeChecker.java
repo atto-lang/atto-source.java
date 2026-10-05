@@ -10,6 +10,7 @@ import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
+import dev.oreslang.types.Types.FixedArray;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
@@ -74,7 +75,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
-                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Object", "Array", "List", "Tuple", "FixedArray", "Option", "Result", "Future",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
@@ -861,7 +862,16 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
-            Type source = deref(typeOf(destructure.initializer(), env, generics, self));
+            Type declared = destructure.declaredType() == null
+                    ? null
+                    : resolve(destructure.declaredType(), generics, self);
+            Type actual = declared == null
+                    ? typeOf(destructure.initializer(), env, generics, self)
+                    : typeOfAgainstExpected(destructure.initializer(), declared, env, generics, self);
+            if (declared != null) {
+                requireAssignable(actual, declared, "destructure initializer");
+            }
+            Type source = deref(declared == null ? actual : declared);
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings().size());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
@@ -1072,8 +1082,12 @@ public final class TypeChecker {
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list index");
                     if (receiver instanceof ListType list) targetType = list.element();
-                    else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                    else throw new IllegalArgumentException("indexed assignment requires an array/list, tuple, or DynamicStruct");
+                    else if (receiver instanceof FixedArray fixed) targetType = fixed.element();
+                    else if (receiver instanceof Tuple) {
+                        throw new IllegalArgumentException(
+                                "tuple slots are immutable product positions; assign a new tuple value instead");
+                    } else throw new IllegalArgumentException(
+                            "indexed assignment requires an array/list, FixedArray, or DynamicStruct");
                 }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
@@ -1153,7 +1167,13 @@ public final class TypeChecker {
                 default -> Unknown.INSTANCE;
             };
         }
+        if (expr instanceof Ast.SpreadExpr) {
+            throw new IllegalArgumentException("'...' spread is only valid directly in a call or constructor argument list");
+        }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.arguments().stream().anyMatch(argument -> argument instanceof Ast.SpreadExpr)) {
+                return typeOf(expandStaticSpreadCall(call, env, generics, self), env, generics, self);
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -1694,9 +1714,7 @@ public final class TypeChecker {
                 return record.members().values().stream().reduce(Unknown.INSTANCE, this::commonType);
             }
             requireAssignable(index, Primitive.INT, "array/list index");
-            if (receiver instanceof ListType list) return list.element();
-            if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-            throw new IllegalArgumentException("indexing requires an array/list, tuple, or DynamicStruct");
+            return sequenceIndexType(receiver, indexed.index());
         }
         if (expr instanceof Ast.NewExpr created) {
             if (created.type().name().equals("DynamicStruct")) {
@@ -1827,6 +1845,20 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list) {
+            if (expected instanceof FixedArray fixed) {
+                if (list.elements().size() != fixed.length()) {
+                    throw new IllegalArgumentException(
+                            "FixedArray literal length mismatch: expected " + fixed.length()
+                                    + " element(s), got " + list.elements().size());
+                }
+                for (int i = 0; i < list.elements().size(); i++) {
+                    requireAssignable(
+                            typeOf(list.elements().get(i), env, generics, self),
+                            fixed.element(),
+                            "FixedArray element " + i);
+                }
+                return fixed;
+            }
             if (expected instanceof Tuple) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
             }
