@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -55,6 +56,44 @@ final class NativeCoreLibraryTest {
                             + err.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(entry);
+        }
+    }
+
+
+    @Test
+    void everyPackagedStdModuleIsPureOreslangAndHasOnlyStdDependencies() throws Exception {
+        Path root = Path.of("src/main/resources/dev/oreslang/std");
+        assertTrue(Files.isDirectory(root), "packaged stdlib source root must exist");
+
+        try (var stream = Files.walk(root)) {
+            List<Path> modules = stream
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.toString().endsWith(".ores"))
+                    .sorted()
+                    .toList();
+            assertFalse(modules.isEmpty(), "native-first stdlib must contain Oreslang modules");
+
+            for (Path module : modules) {
+                String source = Files.readString(module);
+                String relative = root.relativize(module).toString().replace('\\', '/');
+                String importPath = "std/" + relative.substring(0, relative.length() - ".ores".length());
+                MixedSourceUnit unit = MixedSourceUnit.parse(
+                        CoreLibrarySources.unitId(importPath),
+                        module.getFileName().toString(),
+                        source);
+
+                assertFalse(unit.hasJavaSource(),
+                        () -> relative + " contains Java source islands");
+                assertFalse(source.contains("java:"),
+                        () -> relative + " contains a java: host import");
+
+                var program = dev.oreslang.parser.Parser.parse(unit.oresSource());
+                for (var imported : program.imports()) {
+                    assertTrue(
+                            CoreLibrarySources.isCoreImport(imported.path()),
+                            () -> relative + " depends on non-std module " + imported.path());
+                }
+            }
         }
     }
 
