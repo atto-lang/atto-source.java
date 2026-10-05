@@ -86,6 +86,50 @@ public final class OwnershipChecker {
     }
 
     private void checkClass(Ast.ClassDecl klass) {
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            for (Ast.FieldDecl field : klass.fields()) {
+                Ast.TypeRef declared = ownershipFieldType(field);
+                if (declared.isBorrow()) {
+                    throw error(
+                            "actor field '" + klass.name() + "." + field.name()
+                                    + "' cannot persist a borrow across mailbox turns");
+                }
+                if (containsMutexGuardType(declared)) {
+                    throw error(
+                            "actor field '" + klass.name() + "." + field.name()
+                                    + "' cannot persist MutexGuard state across mailbox turns");
+                }
+
+                if (field.initializer() != null) {
+                    Scope initializerScope = new Scope(null);
+                    initializerScope.define("self", new VarState(
+                            Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
+                            false,
+                            ValueKind.MUT_BORROW,
+                            Origin.PARAM));
+                    ValueInfo initialized = checkExpr(
+                            field.initializer(),
+                            initializerScope,
+                            true);
+                    Ast.TypeRef stored = field.type() == null
+                            ? initialized.type
+                            : field.type();
+                    if (stored.isBorrow() || initialized.type.isBorrow()) {
+                        throw error(
+                                "actor field '" + klass.name() + "." + field.name()
+                                        + "' cannot persist a borrow across mailbox turns");
+                    }
+                    if (containsMutexGuardType(stored)
+                            || containsMutexGuardType(initialized.type)) {
+                        throw error(
+                                "actor field '" + klass.name() + "." + field.name()
+                                        + "' cannot persist MutexGuard state across mailbox turns");
+                    }
+                    initializerScope.close();
+                }
+            }
+        }
+
         for (Ast.MethodDecl method : klass.methods()) {
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
