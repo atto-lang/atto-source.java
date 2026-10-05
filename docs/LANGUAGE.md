@@ -188,6 +188,132 @@ fnc named(): {foo: int, bar: string} {
 
 The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. A record type names required members; extra members remain compatible with the structural type system.
 
+## Collection shapes and named type metadata
+
+Collection syntax deliberately separates three concerns:
+
+- `[...]` describes the element/sequence shape;
+- `<name=value, ...>` carries compile-time type/storage metadata;
+- `(...)` carries runtime construction state such as an initial size or
+  capacity.
+
+For exact finite storage, counted repetition is part of the shape:
+
+```ores
+val xs: FixedArray[3 of int, 3 of string] =
+    [10, 20, 30, "foo", "bar", "baz"];
+```
+
+The type above has six exact positions. `N of T` is a compile-time sequence
+pattern, not a generic value argument.
+
+Runtime-extent collections distinguish arbitrary elements from repeating flat
+patterns:
+
+```ores
+val arbitrary: Vector[int | string | bool] =
+    [5, "foo", true, false, 9];
+
+val patterned: Vector[...(int, string, bool)] =
+    [5, "foo", true, 6, "bar", false];
+```
+
+`Vector[int | string | bool]` allows those element types in any order.
+`Vector[...(int, string, bool)]` requires zero or more complete
+`int, string, bool` groups. Consequently, bare
+`Vector[int, string, bool]` is rejected: a finite sequence shape conflicts
+with the resizable vector contract. Use a `FixedArray`, an explicit `...`
+repeat, a union, or a vector of tuple values depending on intent.
+
+Counted and unbounded patterns compose:
+
+```ores
+val records: Vector[...(3 of int, 2 of string)] =
+    [1, 2, 3, "a", "b",
+     4, 5, 6, "c", "d"];
+```
+
+Compile-time collection policy is named and order-independent:
+
+```ores
+val xs: Vector<
+    growth_policy=GP.Foo,
+    allocator=Arena,
+    align=64,
+    inline_capacity=32,
+    max_capacity=4096
+>[int] = [1, 2, 3];
+```
+
+Named parameters are canonicalized by name, so source ordering is not part of
+type identity. The compiler currently recognizes `growth_policy`,
+`allocator`, `align`, `inline_capacity`, `max_capacity`, `storage`,
+and `rank` for the built-in collection family. Alignment must be a positive
+power of two.
+
+Metadata annotations lower to the exact same compiler representation:
+
+```ores
+@NamedParams<
+    growth_policy=GP.Foo,
+    allocator=Arena,
+    align=64
+>
+val xs: Vector[...(int, string, bool)] = [5, "foo", true];
+```
+
+is equivalent to:
+
+```ores
+val xs: Vector<
+    growth_policy=GP.Foo,
+    allocator=Arena,
+    align=64
+>[...(int, string, bool)] = [5, "foo", true];
+```
+
+Specialized aliases are also accepted:
+
+```ores
+@GrowthPolicy<GP.Foo>
+@Allocator<Arena>
+@Align<64>
+val xs: Vector[...(int, string, bool)] = [5, "foo", true];
+```
+
+Conflicting inline and annotation metadata is an error; there is deliberately
+no precedence rule.
+
+Current size and capacity are not properties of a mutable collection's type.
+They belong to runtime construction:
+
+```ores
+// type/storage policy
+val xs: Vector<growth_policy=GP.Foo>[int] = [1, 2, 3];
+
+// size/capacity belong in constructor/runtime state, never:
+// Vector<size=3>[int]
+// Vector<capacity=32>[int]
+```
+
+This distinction ensures that a type cannot become false merely because a
+vector grows.
+
+Repeated bracket suffixes provide homogeneous multidimensional shorthand:
+
+```ores
+val matrix: Vector[int][int] =
+    [[1, 2], [3, 4]];
+
+// Explicit rank metadata is equivalent for a homogeneous shape:
+val matrix2: Vector<rank=2>[int] =
+    [[1, 2], [3, 4]];
+```
+
+The compiler canonicalizes both to nested rank-2 collection semantics. This is
+distinct from an exact fixed multidimensional layout, whose extents belong in
+finite sequence shapes.
+
 ## Bindings
 
 Every local binding is declared as exactly one of:
