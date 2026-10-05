@@ -229,17 +229,23 @@ public record IsolatePolicy(
             throw new SecurityException("Java host class is blocked from class-level interop: " + className);
         }
 
-        if (className.startsWith("java.io.") || className.startsWith("java.nio.file.")) {
-            require(Capability.FILESYSTEM_READ, "Java host class " + className);
-            require(Capability.FILESYSTEM_WRITE, "Java host class " + className);
-        }
-        if (className.startsWith("java.net.")) {
-            require(Capability.NETWORK, "Java host class " + className);
-        }
-        if (className.startsWith("java.nio.channels.")) {
-            require(Capability.NETWORK, "Java host class " + className);
-            require(Capability.FILESYSTEM_READ, "Java host class " + className);
-            require(Capability.FILESYSTEM_WRITE, "Java host class " + className);
+        /*
+         * Scoped Ores permissions are enforced only at Ores-owned native I/O
+         * boundaries. Handing guest code a raw JDK filesystem/socket/channel
+         * class would hand it an authority that cannot be narrowed to a path,
+         * host, port, or explicit deny rule. Keep those packages behind the
+         * Ores fs/network/http APIs instead.
+         *
+         * Trusted mixed Java source remains a deliberately stronger,
+         * separately gated escape hatch under JAVA_SOURCE_INTEROP.
+         */
+        if (className.startsWith("java.io.")
+                || className.startsWith("java.nio.file.")
+                || className.startsWith("java.net.")
+                || className.startsWith("java.nio.channels.")) {
+            throw new SecurityException(
+                    "direct Java host I/O is blocked from class-level interop; "
+                            + "use Oreslang fs/network/http APIs: " + className);
         }
         if (className.startsWith("java.util.concurrent.")) {
             require(Capability.THREAD_CREATE, "Java host class " + className);
