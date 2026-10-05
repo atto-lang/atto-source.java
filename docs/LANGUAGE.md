@@ -116,7 +116,7 @@ pub fnc run(): (() => void) {
 }
 ```
 
-The equivalent lambda-style declaration keeps executable `->` syntax:
+Named executable callables may spell their return type with either `: T` or `-> T`; both forms are equivalent. The equivalent lambda-style declaration also uses executable `->` syntax:
 
 ```ores
 pub fnc run = || -> (() => void) {
@@ -1020,7 +1020,8 @@ Static data fields are intentionally not part of v0.5 yet; `static` on a class b
 The arrows have distinct jobs:
 
 - `:` declares the return type of a **named executable callable/method**.
-- `->` is executable syntax for lambdas and lambda-style callable declarations.
+- `->` is executable syntax for lambdas and lambda-style callable declarations, and is also accepted as an alternative named-callable return separator: `fnc f() -> int { ... }`.
+- `:` remains an equivalent named-callable return separator: `fnc f(): int { ... }`.
 - `=>` is type-level syntax for function types and interface callable signatures.
 
 Function aliases can use `typeof fnc`:
