@@ -1163,13 +1163,12 @@ public final class ActorRuntime implements AutoCloseable {
             if (cause instanceof Error error) throw error;
             throw new RuntimeException(cause);
         } finally {
-            if (ref.isAlive()) {
-                try {
-                    stop(ref);
-                } catch (IllegalStateException alreadyStopping) {
-                    if (ref.isAlive()) throw alreadyStopping;
-                }
-            }
+            // completion is published from inside the actor turn, so the
+            // stopped flag may already be true while the carrier is still
+            // inside the Truffle context. Always synchronize with finalization
+            // before returning to the caller; isAlive() is intentionally not
+            // sufficient because it becomes false as soon as stop is requested.
+            stop(ref);
         }
     }
 
