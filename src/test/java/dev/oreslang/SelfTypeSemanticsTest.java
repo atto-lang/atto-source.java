@@ -64,7 +64,7 @@ final class SelfTypeSemanticsTest {
         String output = run("""
                 define module m
                   define class Base as
-                    pub choose(self other): self {
+                    pub choose(int ignored, self other): self {
                       return other;
                     }
                   end
@@ -79,7 +79,7 @@ final class SelfTypeSemanticsTest {
                 pub routine main(): void {
                   val left = new m.Child();
                   val right = new m.Child();
-                  stdio.stdout.write(left.choose(right).child_only());
+                  stdio.stdout.write(left.choose(0, right).child_only());
                 }
                 """);
 
