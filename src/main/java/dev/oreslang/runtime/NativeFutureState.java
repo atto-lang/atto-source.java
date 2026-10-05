@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.lang.ref.Cleaner;
+import java.lang.ref.Reference;
 
 /**
  * Opaque JNI-backed state machine for OresFuture settlement arbitration.
@@ -60,7 +61,9 @@ final class NativeFutureState {
     }
 
     boolean tryBeginSettlement() {
-        return nativeTryBeginSettlement(allocation.handle());
+        boolean won = nativeTryBeginSettlement(allocation.handle());
+        Reference.reachabilityFence(this);
+        return won;
     }
 
     void publish(int terminalState) {
@@ -71,10 +74,13 @@ final class NativeFutureState {
                     "native Future terminal state must be success/failure/cancelled");
         }
         nativePublish(allocation.handle(), terminalState);
+        Reference.reachabilityFence(this);
     }
 
     int state() {
-        return nativeState(allocation.handle());
+        int observed = nativeState(allocation.handle());
+        Reference.reachabilityFence(this);
+        return observed;
     }
 
     boolean isDone() {
