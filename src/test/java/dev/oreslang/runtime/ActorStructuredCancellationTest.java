@@ -648,6 +648,33 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void throwingForceRevokerClearsFenceAndActorCanResume() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) ->
+                            delivered.countDown());
+
+            runtime.setForceCancellationTreeHook(request -> {
+                throw new IllegalStateException("synthetic revoker failure");
+            });
+
+            ActorRuntime.ActorControlHandle control =
+                    runtime.controlHandle(actor);
+            IllegalStateException failed = assertThrows(
+                    IllegalStateException.class,
+                    control::kill);
+            assertTrue(failed.getMessage().contains("revoker failed"));
+            assertTrue(actor.isAlive());
+
+            actor.send("resume");
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            actor.stop();
+        }
+    }
+
+
+    @Test
     void forceKillFenceRejectsNewMailboxWorkUntilRevocationCompletes()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {

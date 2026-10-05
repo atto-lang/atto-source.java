@@ -370,6 +370,8 @@ public final class ActorRuntime implements AutoCloseable {
      * domain is retired. Guest code cannot mutate this hook.
      */
     public void setActorExitHook(Consumer<Object> actorExitHook) {
+        requireNoForceCancellationHookReentry("install actor-exit hooks");
+        requireSupervisorContext("install actor-exit hooks");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
@@ -398,8 +400,10 @@ public final class ActorRuntime implements AutoCloseable {
      * Install VM/sandbox authority capable of revoking a complete structured
      * actor subtree. Guest code cannot install/replace this authority.
      *
-     * <p>The hook must not re-enter ActorRuntime lifecycle/spawn APIs because
-     * it executes while actor spawn topology is frozen.</p>
+     * <p>The target subtree is fenced before this hook runs, but the global
+     * runtime lifecycle monitor is deliberately not held across host code. The
+     * hook must not re-enter ActorRuntime lifecycle/spawn APIs. Revocation must
+     * be idempotent for an already-dead target and atomic for the request.</p>
      */
     public void setForceCancellationTreeHook(
             ForceCancellationHook forceCancellationHook) {
@@ -977,7 +981,7 @@ public final class ActorRuntime implements AutoCloseable {
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
         public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
-            requireSupervisorContext("synchronously wait for actor termination");
+            requireBlockingHostContext("synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             ActorCell<?> cell = actors.get(id);
@@ -1197,6 +1201,15 @@ public final class ActorRuntime implements AutoCloseable {
         if (inActorExecution()) {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
+        }
+    }
+
+    private static void requireBlockingHostContext(String operation) {
+        if (inActorExecution() || OresScheduler.current() != null) {
+            throw new SecurityException(
+                    operation
+                            + " is a host/embedder blocking operation; actor and scheduler turns "
+                            + "must use nonblocking cancellation plus Future/Awaitable suspension");
         }
     }
 
@@ -1943,10 +1956,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         cell.stop();
 
-        // Only a host/supervisor stop is a synchronization point. Actor turns
-        // may stop self/descendants but must never park a bounded carrier while
-        // waiting for another actor to finalize.
-        if (currentActor.get() != null) return;
+        // Only a true host/embedder stop is a synchronization point. Actor and
+        // OresScheduler turns must never park a bounded carrier while waiting
+        // for another actor to finalize.
+        if (currentActor.get() != null || OresScheduler.current() != null) return;
 
         try {
             cell.awaitFinalized(CLOSE_WAIT_NANOS);
@@ -2033,7 +2046,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "force cancellation requires VM-owned atomic "
                             + "revocation of the complete actor subtree; "
-                            + "no logical actor state was changed");
+                            + "no logical cancellation/teardown was published");
         }
 
         try {
