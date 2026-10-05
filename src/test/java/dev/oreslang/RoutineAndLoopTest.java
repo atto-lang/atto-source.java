@@ -184,7 +184,7 @@ final class RoutineAndLoopTest {
         String output = run("""
                 pub routine main() => void {
                   for [key, value] of arr[(1, "a"), (2, "b")] do
-                    stdio.stdout.write(key)
+                    stdio.stdout.write(key);
                     stdio.stdout.write(value)
                   done
                 }
@@ -198,7 +198,7 @@ final class RoutineAndLoopTest {
         String output = run("""
                 pub routine main() => void {
                   for [key, value] of arr[(1, "a"), (2, "b")] do
-                    stdio.stdout.write(key + 10)
+                    stdio.stdout.write(key + 10);
                     stdio.stdout.write(value + "!")
                   done
                 }
@@ -263,8 +263,8 @@ final class RoutineAndLoopTest {
                 pub routine main() => void {
                   let pairs = arr[(new Box(1), new Box(2))];
                   for [let a, b] of pairs do
-                    a = new Box(9)
-                    stdio.stdout.write(a.value)
+                    a = new Box(9);
+                    stdio.stdout.write(a.value);
                     stdio.stdout.write(b.value)
                   done
 
