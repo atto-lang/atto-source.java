@@ -265,8 +265,19 @@ detached `void` continuation scope:
 - `return value;` is invalid;
 - `break`/`continue` cannot escape into an enclosing loop that has already
   continued;
-- ownership checking rejects moving outer move-only state into a fire-and-forget
-  arm while the parent continuation still owns it.
+- Copy values and locally-copyable channel/select handles may be captured while
+  the current turn continues;
+- move-only owned locals referenced by any arm transfer into the armed
+  selection, so the continuing outer code cannot use them afterward;
+- mutable captures transfer exclusively into the continuation;
+- ordinary borrowed locals and MutexGuard-bearing values cannot outlive the
+  current turn through an `nb select` arm;
+- actor `self` is the deliberate borrowed exception because the arm can only
+  re-enter the same actor under its single-turn execution lease.
+
+Capture transfer is conservative across the whole arm set: if any possible arm
+owns a move-only value, that value belongs to the armed selection until one arm
+wins or the selection is cancelled.
 
 If the owning actor terminates before the select wins, actor teardown cancels
 the pending select Future and detaches all channel registrations.
@@ -416,7 +427,9 @@ Implemented:
 - deterministic FAIR / explicit PRIORITY / opt-in RANDOM selection;
 - dynamic SelectSet from iterable/map;
 - mailbox transport backed by Channel<MessageEnvelope>;
-- static/dynamic parser + AST + type/ownership rules;
+- static/dynamic parser + AST + type/ownership rules, including complete
+  closure-capture scanning for channel/select syntax and explicit deferred
+  `nb select` capture transfer;
 - `nb select` serialized actor continuation re-entry;
 - actor-owned cleanup of pending `nb readch`, `nb writech`, dynamic
   `nb select from ...`, and deferred static-select registrations;
