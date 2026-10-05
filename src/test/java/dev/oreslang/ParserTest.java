@@ -134,7 +134,7 @@ final class ParserTest {
     }
 
     @Test
-    void actorPublicSurfaceIsExactlyReceive() {
+    void actorPublicMethodsFormTypedProtocol() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   let int count = 0;
@@ -147,47 +147,51 @@ final class ParserTest {
                     return self.count;
                   }
 
-                  pub receive(value: int): void {
+                  pub add(value: int): void {
                     self.count = self.count + value;
                     return;
+                  }
+
+                  pub current(): int {
+                    return self.helper();
                   }
                 end
                 """));
 
         Ast.ClassDecl actor =
                 (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
-        assertEquals(List.of("constructor", "helper", "receive"),
+        assertEquals(
+                List.of("constructor", "helper", "add", "current"),
                 actor.methods().stream().map(Ast.MethodDecl::name).toList());
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Bad as
-                  pub receive(value: int): void { return; }
+                  pub run<T>(value: T): void { return; }
+                end
+                """));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Good as
+                  pub compute(value: int): int { return value + 1; }
                   pub reset(): void { return; }
                 end
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor Bad as
-                  pub receive<T>(value: T): void { return; }
-                end
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor Bad as
-                  pub receive(value: int): int { return value; }
-                end
-                """));
+                """)));
     }
 
     @Test
-    void classExtendingIntrinsicActorCarriesMessageReplyErrorContract() {
+    void classExtendingIntrinsicActorUsesMethodProtocolWithoutTypeArguments() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                define class Worker extends Actor<int, void, String> as
+                define class Worker extends Actor as
                   let int count = 0;
 
-                  pub receive(value: int): void {
+                  pub add(value: int): void {
                     self.count = self.count + value;
                     return;
+                  }
+
+                  pub current(): int {
+                    return self.count;
                   }
                 end
                 """));
@@ -195,20 +199,19 @@ final class ParserTest {
         Ast.ClassDecl actor =
                 (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
-        assertTrue(actor.parents().isEmpty(),
+        assertTrue(
+                actor.parents().isEmpty(),
                 "compiler-intrinsic Actor base normalizes into actorKind");
-        assertEquals(3, actor.actorProtocolTypes().size());
-        assertEquals("int", actor.actorProtocolTypes().getFirst().name());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Bad extends Actor<String, void, String> as
-                  pub receive(value: int): void { return; }
+                define class Bad extends Actor<int, void, String> as
+                  pub run(value: int): void { return; }
                 end
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Bad extends Actor<int, void> as
-                  pub receive(value: int): void { return; }
+                define class Bad extends IsoActor<int> as
+                  pub run(value: int): void { return; }
                 end
                 """));
     }
