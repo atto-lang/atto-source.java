@@ -23,28 +23,53 @@ public final class HeterogeneousTaskMapper {
     public enum Privilege { READ, WRITE, REDUCE }
 
     /**
-     * Logical region/slice identity. A non-zero disjointFamilyId is a
-     * compiler/runtime-issued proof that distinct slice ids in the same family
-     * do not overlap. Guest source must never be allowed to forge this proof.
+     * Opaque proof that sibling slices belong to one compiler/runtime-certified
+     * disjoint partition. The constructor is deliberately private: callers can
+     * hold and propagate a proof, but arbitrary host/guest code cannot manufacture
+     * one from a numeric identifier.
      */
-    public record RegionSlice(long rootRegionId, long sliceId, long disjointFamilyId) {
+    public static final class DisjointFamily {
+        private DisjointFamily() { }
+    }
+
+    /**
+     * Internal authority boundary used by the compiler/runtime when it has
+     * actually proved a partition disjoint. This is package-private on purpose;
+     * it is not guest or general host API.
+     */
+    static DisjointFamily certifyDisjointFamily() {
+        return new DisjointFamily();
+    }
+
+    /**
+     * Logical region/slice identity. Distinct sibling slices are considered
+     * disjoint only when they carry the exact same opaque certified-family
+     * capability. A null family is conservative and may alias.
+     */
+    public record RegionSlice(long rootRegionId, long sliceId, DisjointFamily disjointFamily) {
         public RegionSlice {
             if (rootRegionId <= 0) throw new IllegalArgumentException("rootRegionId must be positive");
             if (sliceId <= 0) throw new IllegalArgumentException("sliceId must be positive");
-            if (disjointFamilyId < 0) throw new IllegalArgumentException("disjointFamilyId cannot be negative");
         }
 
         public static RegionSlice root(long regionId) {
-            return new RegionSlice(regionId, regionId, 0);
+            return new RegionSlice(regionId, regionId, null);
+        }
+
+        static RegionSlice certified(long rootRegionId, long sliceId, DisjointFamily family) {
+            return new RegionSlice(
+                    rootRegionId,
+                    sliceId,
+                    Objects.requireNonNull(family, "family"));
         }
 
         public boolean mayAlias(RegionSlice other) {
             Objects.requireNonNull(other, "other");
             if (rootRegionId != other.rootRegionId) return false;
             if (sliceId == other.sliceId) return true;
-            return disjointFamilyId == 0
-                    || other.disjointFamilyId == 0
-                    || disjointFamilyId != other.disjointFamilyId;
+            return disjointFamily == null
+                    || other.disjointFamily == null
+                    || disjointFamily != other.disjointFamily;
         }
     }
 
@@ -129,6 +154,12 @@ public final class HeterogeneousTaskMapper {
             accesses = List.copyOf(Objects.requireNonNull(accesses, "accesses"));
             variants = List.copyOf(Objects.requireNonNull(variants, "variants"));
             if (variants.isEmpty()) throw new IllegalArgumentException("task requires at least one processor variant");
+            Set<String> variantNames = new LinkedHashSet<>();
+            for (Variant variant : variants) {
+                if (!variantNames.add(variant.name())) {
+                    throw new IllegalArgumentException("duplicate task variant name: " + variant.name());
+                }
+            }
         }
     }
 
@@ -193,8 +224,8 @@ public final class HeterogeneousTaskMapper {
         Objects.requireNonNull(gpuResidentRootRegions, "gpuResidentRootRegions");
         if (workItems < 0) throw new IllegalArgumentException("workItems cannot be negative");
 
-        Variant cpu = firstEligible(task, ProcessorKind.CPU, workItems);
-        Variant gpu = firstEligible(task, ProcessorKind.GPU, workItems);
+        Variant cpu = bestEligible(task, ProcessorKind.CPU, workItems);
+        Variant gpu = bestEligible(task, ProcessorKind.GPU, workItems);
 
         if (hint == PlacementHint.CPU) {
             if (cpu == null) throw new IllegalStateException("task has no eligible CPU variant");
@@ -226,12 +257,22 @@ public final class HeterogeneousTaskMapper {
         throw new IllegalStateException("task has no eligible variant for this machine/work estimate");
     }
 
-    private Variant firstEligible(TaskSpec task, ProcessorKind processor, long workItems) {
+    /**
+     * Deterministic eligibility policy: prefer the most specialized eligible
+     * threshold (largest minimumWorkItems), then the lexicographically smaller
+     * stable variant name. Declaration/list order is never semantic.
+     */
+    private Variant bestEligible(TaskSpec task, ProcessorKind processor, long workItems) {
+        Variant best = null;
         for (Variant variant : task.variants()) {
-            if (variant.processor() == processor && workItems >= variant.minimumWorkItems()) {
-                return variant;
+            if (variant.processor() != processor || workItems < variant.minimumWorkItems()) continue;
+            if (best == null
+                    || variant.minimumWorkItems() > best.minimumWorkItems()
+                    || (variant.minimumWorkItems() == best.minimumWorkItems()
+                        && variant.name().compareTo(best.name()) < 0)) {
+                best = variant;
             }
         }
-        return null;
+        return best;
     }
 }
