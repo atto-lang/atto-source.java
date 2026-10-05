@@ -1291,6 +1291,8 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                Type receiverValueType = receiver;
+                receiver = receiverDispatchType(receiver);
 
                 if (receiver instanceof Named guard
                         && guard.name().equals("MutexGuard")
@@ -1316,6 +1318,7 @@ public final class TypeChecker {
                     // Unwrap only for call resolution; plain guard.method remains
                     // non-reifiable through the ordinary MemberExpr path.
                     receiver = unwrapMutexGuard(receiver);
+                    receiverValueType = receiver;
                 }
 
                 if (receiver instanceof Record record) {
@@ -1398,7 +1401,7 @@ public final class TypeChecker {
                                     "cannot infer generic return type for " + label
                                             + "; provide explicit type arguments or an inferable value parameter");
                         }
-                        return result;
+                        return bindReceiverSelf(result, receiverValueType);
                     }
                 }
 
@@ -1499,13 +1502,16 @@ public final class TypeChecker {
                         String label = "method " + owner.name() + "." + method.name();
                         Map<String, Type> bindings = new HashMap<>(classGenericBindings(owner, ownerType));
                         bindings.putAll(explicitGenericBindings(method.genericParameters(), call.typeArguments(), generics, self, label));
+                        Type callableReceiver = receiverValueType instanceof SelfType
+                                ? receiverValueType
+                                : named;
                         return checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
                                 call.arguments(),
                                 env, generics, self,
-                                ownerType,
+                                callableReceiver,
                                 bindings,
                                 label);
                     }
@@ -1532,13 +1538,16 @@ public final class TypeChecker {
                         bindings.putAll(explicitGenericBindings(
                                 method.genericParameters(), call.typeArguments(), generics, self, label));
 
+                        Type callableReceiver = receiverValueType instanceof SelfType
+                                ? receiverValueType
+                                : named;
                         return checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
                                 call.arguments(),
                                 env, generics, self,
-                                null,
+                                callableReceiver,
                                 bindings,
                                 label);
                     }
