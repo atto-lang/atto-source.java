@@ -106,15 +106,15 @@ pub fnc expect_near_float(
   fi
 }
 
-fnc has_filter(List<String> filters): bool {
+fnc has_filter(&List<String> filters): bool {
   for value of filters do
     return true;
   done
   return false;
 }
 
-fnc selected(String full_name, List<String> filters): bool {
-  if !has_filter(filters); do
+fnc selected(String full_name, &List<String> filters): bool {
+  if !has_filter(&filters); do
     return true;
   fi
 
@@ -149,7 +149,7 @@ fnc emit_status(String status, String full_name, String detail, bool machine): v
   return;
 }
 
-fnc emit_summary(RunSummary summary, bool machine): void {
+fnc emit_summary(&RunSummary summary, bool machine): void {
   if machine; do
     stdio.stdout.write("ORES_TEST|SUMMARY|total=");
     stdio.stdout.write(summary.total);
@@ -182,7 +182,7 @@ fnc emit_summary(RunSummary summary, bool machine): void {
   return;
 }
 
-pub fnc run_suite(TestSuite suite, TestOptions options): RunSummary {
+pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
   let int total = 0;
   let int passed_count = 0;
   let int failed_count = 0;
@@ -192,7 +192,7 @@ pub fnc run_suite(TestSuite suite, TestOptions options): RunSummary {
   for test_case of suite.tests do
     let String full_name = suite.name + "/" + test_case.name;
 
-    if !selected(full_name, options.only); do
+    if !selected(full_name, &options.only); do
       filtered_count = filtered_count + 1;
       continue;
     fi
@@ -222,7 +222,7 @@ pub fnc run_suite(TestSuite suite, TestOptions options): RunSummary {
           skipped_count,
           filtered_count
         );
-        emit_summary(early, options.machine);
+        emit_summary(&early, options.machine);
         return early;
       fi
     fi
@@ -235,11 +235,11 @@ pub fnc run_suite(TestSuite suite, TestOptions options): RunSummary {
     skipped_count,
     filtered_count
   );
-  emit_summary(summary, options.machine);
+  emit_summary(&summary, options.machine);
   return summary;
 }
 
-pub fnc require_success(RunSummary summary): void {
+pub fnc require_success(&RunSummary summary): void {
   if summary.failed > 0; do
     val Result<bool, String> failure = Err("one or more Oreslang tests failed");
     failure.expect("native Oreslang test suite failed");
