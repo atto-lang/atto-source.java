@@ -299,6 +299,19 @@ OresScheduler. Their await lowering continues to target the actor cell:
 Each actor retains its atomic single-executor lease, so at most one carrier can
 execute that actor's code at a time, including resumed await continuations.
 
+Actor placement inside that selected domain uses **soft last-carrier affinity**.
+After a turn, yield, or await wakeup, the actor's runnable is tagged with its
+preferred carrier. The domain's bounded ready queue lets that carrier select its
+own actor ahead of foreign-affine work. Other workers give the home carrier only
+a tiny grace interval; if it remains occupied they may steal the turn. Repeated
+migration adaptively re-homes the actor. Affinity is therefore a cache-locality
+optimization, never a liveness or correctness condition.
+
+The runtime does not promise source-visible CPU/core pinning. Platform-specific
+logical-CPU or NUMA placement may later strengthen physical locality, but actor
+semantics depend only on scheduler-domain isolation and the single-executor
+lease.
+
 ## Async source rule
 
 Ordinary `await` is permitted only inside an explicitly `async` ordinary
