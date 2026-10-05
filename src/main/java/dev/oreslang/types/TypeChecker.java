@@ -105,7 +105,7 @@ public final class TypeChecker {
         checker.validateEntryExport(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
-        OwnershipChecker.check(program);
+        OwnershipChecker.check(program, checker.importedActorClasses);
         return program;
     }
 
