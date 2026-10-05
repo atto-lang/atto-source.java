@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -109,6 +110,25 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public enum ActorKind { PRIVATE, SHARED }
+
+    /**
+     * Structured cancellation requests actor shutdown and cascades through the
+     * actor's child tree. FORCE_ISOLATED additionally requires a host-owned
+     * isolation revoker that can make non-cooperating guest execution
+     * impossible before the call returns.
+     */
+    public enum CancellationMode { STRUCTURED, FORCE_ISOLATED }
+
+    public static final class ActorCancelledException extends CancellationException {
+        private final ActorId actorId;
+
+        private ActorCancelledException(ActorId actorId, String message) {
+            super(message);
+            this.actorId = actorId;
+        }
+
+        public ActorId actorId() { return actorId; }
+    }
 
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
 
@@ -202,6 +222,16 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+
+    /**
+     * Host/isolate boundary hook. Returning true means the execution domain
+     * rooted at the supplied actor (including descendants owned by that
+     * isolation boundary) has been revoked strongly enough that guest code
+     * cannot continue running. The default runtime has no such authority.
+     */
+    private volatile BiPredicate<ActorId, Object> forceCancellationHook =
+            (actorId, executionDomain) -> false;
+
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
@@ -272,6 +302,19 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
+
+    /**
+     * Install force-cancellation authority from an outer isolate/sandbox
+     * manager. Guest actor code cannot install or replace this hook.
+     */
+    public void setForceCancellationHook(
+            BiPredicate<ActorId, Object> forceCancellationHook) {
+        requireSupervisorContext("install force-cancellation authority");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        this.forceCancellationHook = Objects.requireNonNull(
+                forceCancellationHook, "forceCancellationHook");
+    }
+
     public int actorCount() { return actorCount.get(); }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
@@ -722,6 +765,37 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime.this.stop(this);
         }
 
+        /**
+         * Structured cancellation is non-blocking: it revokes future mailbox
+         * work immediately and cascades to descendants. Running trusted actor
+         * code observes cancellation at the next scheduler boundary.
+         */
+        public boolean cancel() {
+            return ActorRuntime.this.cancel(this, CancellationMode.STRUCTURED);
+        }
+
+        /**
+         * Force cancellation is valid only when the host configured an
+         * isolation revoker (for example, an untrusted secondary Graal/native
+         * isolate). It never relies on guest cooperation.
+         */
+        public boolean forceCancel() {
+            return ActorRuntime.this.cancel(this, CancellationMode.FORCE_ISOLATED);
+        }
+
+        public Optional<ActorId> parentId() {
+            ActorCell<?> cell = actors.get(id);
+            return cell == null || cell.parent == null
+                    ? Optional.empty()
+                    : Optional.of(cell.parent.ref.id());
+        }
+
+        public List<ActorId> childIds() {
+            ActorCell<?> cell = actors.get(id);
+            if (cell == null) return List.of();
+            return cell.children.stream().map(child -> child.ref.id()).toList();
+        }
+
         @Override
         public String toString() {
             return "ActorRef[" + kind + ":" + id.value() + "]";
@@ -1080,18 +1154,40 @@ public final class ActorRuntime implements AutoCloseable {
             requireStatelessActorFactory(behaviorFactory);
         }
 
+        ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
 
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
+            ActorCell<M> cell = null;
+            boolean linkedToParent = false;
             try {
-                ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
-                actors.put(id, cell);
+                cell = new ActorCell<>(
+                        ref,
+                        kind,
+                        effectivePolicy,
+                        behaviorFactory,
+                        trustedFactory,
+                        parent);
+
+                if (parent != null) {
+                    synchronized (parent.lifecycleLock) {
+                        if (parent.stopped.get() || parent.finalized) {
+                            throw new CancellationException(
+                                    "cannot spawn a child from a stopping actor " + parent.ref.id());
+                        }
+                        parent.children.add(cell);
+                        linkedToParent = true;
+                        actors.put(id, cell);
+                    }
+                } else {
+                    actors.put(id, cell);
+                }
                 return ref;
             } catch (RuntimeException | Error failure) {
+                if (linkedToParent && cell != null) parent.children.remove(cell);
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -1384,9 +1480,8 @@ public final class ActorRuntime implements AutoCloseable {
         cell.stop();
 
         // A host/supervisor stop is a synchronization point: once it returns,
-        // private actor memory and actor-count quota have been reclaimed. A
-        // self-stop from inside the actor turn cannot wait for itself; endTurn()
-        // finalizes it immediately after the current turn unwinds.
+        // the actor and its structured children have finalized. A self-stop
+        // cannot wait for itself; endTurn() completes the unwind later.
         if (currentActor.get() == cell) return;
 
         try {
@@ -1399,8 +1494,41 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (!cell.finalized()) {
             throw new IllegalStateException(
-                    "actor " + ref.id() + " did not finalize within the stop deadline");
+                    "actor " + ref.id()
+                            + " or one of its child actors did not finalize within the stop deadline");
         }
+    }
+
+    public boolean cancel(ActorRef<?> ref) {
+        return cancel(ref, CancellationMode.STRUCTURED);
+    }
+
+    public boolean cancel(ActorRef<?> ref, CancellationMode mode) {
+        requireCallerRuntimeAffinity("cancel actors");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(mode, "mode");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
+
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.finalized()) return false;
+
+        ActorCancelledException cancellation = new ActorCancelledException(
+                ref.id(),
+                "actor " + ref.id() + " was cancelled");
+        cell.cancel(cancellation);
+
+        if (mode == CancellationMode.FORCE_ISOLATED) {
+            boolean revoked = forceCancellationHook.test(
+                    ref.id(), cell.executionDomain);
+            if (!revoked) {
+                throw new IllegalStateException(
+                        "force cancellation requires a host-owned isolated execution domain; "
+                                + "ordinary shared/private actor carriers can only be cancelled structurally");
+            }
+        }
+        return true;
     }
 
     private ActorTerminatedException terminated(ActorRef<?> ref) {
@@ -2623,6 +2751,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
+        private final ActorCell<?> parent;
+        private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -2642,12 +2772,14 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
-                boolean trustedFactory) {
+                boolean trustedFactory,
+                ActorCell<?> parent) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
+            this.parent = parent;
             this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -2694,7 +2826,11 @@ public final class ActorRuntime implements AutoCloseable {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
-            if (finalized || activeTurns != 0 || scheduled.get() || carrierActive) return;
+            if (finalized
+                    || activeTurns != 0
+                    || scheduled.get()
+                    || carrierActive
+                    || !children.isEmpty()) return;
             finalized = true;
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
@@ -2707,7 +2843,16 @@ public final class ActorRuntime implements AutoCloseable {
                 // are best-effort and retryable by the process collector.
             }
             unregisterActor(this);
+            if (parent != null) parent.childFinalized(this);
             lifecycleLock.notifyAll();
+        }
+
+        private void childFinalized(ActorCell<?> child) {
+            synchronized (lifecycleLock) {
+                children.remove(child);
+                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
         }
 
         private boolean finalized() {
@@ -2902,21 +3047,37 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void fail(Throwable failure) {
-            synchronized (lifecycleLock) {
-                ref.terminationCause.compareAndSet(null, failure);
-                stopped.set(true);
-                mailbox.close(failure);
-                drainMailboxReservations();
-                finalizeStopLocked();
-            }
+            terminateTree(failure, true);
         }
 
         private void stop() {
+            terminateTree(null, false);
+        }
+
+        private void cancel(ActorCancelledException cancellation) {
+            terminateTree(cancellation, true);
+        }
+
+        private void terminateTree(Throwable cause, boolean recordCause) {
+            List<ActorCell<?>> descendants;
             synchronized (lifecycleLock) {
+                if (finalized) return;
+                if (recordCause && cause != null) {
+                    ref.terminationCause.compareAndSet(null, cause);
+                }
                 stopped.set(true);
-                mailbox.close();
+                if (cause == null) mailbox.close();
+                else mailbox.close(cause);
                 drainMailboxReservations();
+                descendants = List.copyOf(children);
                 finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+
+            for (ActorCell<?> child : descendants) {
+                child.cancel(new ActorCancelledException(
+                        child.ref.id(),
+                        "parent actor " + ref.id() + " terminated"));
             }
         }
     }
