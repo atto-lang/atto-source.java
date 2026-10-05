@@ -346,6 +346,10 @@ separate from actor identity.
 
 ### Force cancellation for untrusted actors
 
+Force cancellation is a **host/supervisor authority**, not an ordinary actor
+capability. Actor turns may request normal structured cancellation, but they
+cannot invoke the isolate-revocation hook themselves.
+
 Untrusted code cannot be expected to poll, yield, honor callbacks, or run
 cleanup. Therefore **untrusted actors must run inside a host-revocable execution
 boundary** (for example the dedicated untrusted Graal/native isolate/domain in
