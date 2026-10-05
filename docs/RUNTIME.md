@@ -111,10 +111,17 @@ The GPU artifact declares device requirements explicitly. In particular, `cl_khr
 The evaluator now executes **resident-data host orchestration** through `GpuRuntime`:
 `GpuArray.from_cpu`, `GpuArray.length`, `GpuArray.stream`, `GpuArray.copy_to_cpu`,
 `GpuMatrix.from_cpu`, `GpuMatrix.rows`, `GpuMatrix.cols`, `GpuMatrix.length`,
-`GpuMatrix.copy_to_cpu`, `GpuStream.from_array`, `GpuStream.collect`, and
-`GpuStream.copy_to_cpu`. Uploads
+`GpuMatrix.copy_to_cpu`, `GpuStream.from_array`, `GpuStream.collect`,
+`GpuStream.copy_to_cpu`, and resident-value `release()`. Uploads
 freeze/copy host inputs before handing them to the backend; downloads return a fresh
 detached mutable host Array/List.
+
+Guest resident handles never contain Java backend objects or raw native pointers. Before
+dispatch, the runtime lowers live handles into immutable backend-only
+`NativeResourceArg` descriptors containing an opaque non-zero u64 ID, resource kind,
+exact scalar ABI, length and matrix shape. Aliased Array/Stream/collected views share a
+reference-counted runtime lease so the backend release hook runs exactly once. Released
+handles fail before driver invocation. See `GPU_NATIVE_ABI.md` for the JNI/native contract.
 
 The evaluator still does not emulate or CPU-fallback GPU **kernel execution**. If a
 GPU-targeted named function, static function, lambda, or batch reaches the evaluator
