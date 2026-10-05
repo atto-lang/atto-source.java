@@ -520,6 +520,11 @@ public final class TypeChecker {
                 .toList();
 
         for (Ast.MethodDecl endpoint : publicInstance) {
+            if (isReservedActorRefControlMember(endpoint.name())) {
+                throw new IllegalArgumentException(
+                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
+                                + "' collides with a reserved ActorRef control member");
+            }
             if (!endpoint.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
                         "public actor protocol method '" + klass.name() + "." + endpoint.name()
@@ -1892,6 +1897,12 @@ public final class TypeChecker {
                 }
 
                 Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) member;
+                if (isReservedActorRefControlMember(fn.name())) {
+                    throw new IllegalArgumentException(
+                            where + " ActorRef interface method '" + iface.name()
+                                    + "." + fn.name()
+                                    + "' collides with a reserved ActorRef control member");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             where + " ActorRef interface method '" + iface.name()
@@ -3360,6 +3371,12 @@ public final class TypeChecker {
 
     private void requireAssignable(Type actual, Type expected, String where) {
         if (!assignable(actual, expected)) throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
+    }
+
+    private boolean isReservedActorRefControlMember(String name) {
+        return name.equals("id")
+                || name.equals("is_alive")
+                || name.equals("mailbox");
     }
 
     private String methodKey(String name, int arity) {
