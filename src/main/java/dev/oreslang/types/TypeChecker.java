@@ -942,6 +942,36 @@ public final class TypeChecker {
                         "writech value");
                 return Primitive.VOID;
             }
+            if (call.callee() instanceof Ast.MemberExpr selectCall
+                    && selectCall.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("select")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("select case constructors do not accept call-site type arguments");
+                }
+                if (selectCall.member().equals("readch")) {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException("select.readch expects exactly one Channel<T>");
+                    }
+                    Type element = channelElementType(
+                            typeOf(call.arguments().getFirst(), env, generics, self),
+                            "select.readch");
+                    return new Named("SelectEntry", List.of(element));
+                }
+                if (selectCall.member().equals("writech")) {
+                    if (call.arguments().size() != 2) {
+                        throw new IllegalArgumentException("select.writech expects Channel<T> and one value");
+                    }
+                    Type element = channelElementType(
+                            typeOf(call.arguments().get(0), env, generics, self),
+                            "select.writech");
+                    requireAssignable(
+                            typeOf(call.arguments().get(1), env, generics, self),
+                            element,
+                            "select.writech value");
+                    return new Named("SelectEntry", List.of(element));
+                }
+                throw new IllegalArgumentException("unknown select member '" + selectCall.member() + "'");
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -3004,6 +3034,22 @@ public final class TypeChecker {
                     rejectStaticClassGenericReferences(arm.body(), classGenerics, klass, method);
                 }
                 rejectStaticClassGenericReferences(switched.defaultBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.SelectStmt selected) {
+                for (Ast.SelectCase arm : selected.cases()) {
+                    rejectStaticClassGenericReferences(arm.channel(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(arm.value(), classGenerics, klass, method);
+                    rejectStaticClassGenericReference(arm.bindingType(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(arm.body(), classGenerics, klass, method);
+                }
+                if (selected.defaultBody() != null) {
+                    rejectStaticClassGenericReferences(selected.defaultBody(), classGenerics, klass, method);
+                }
+            } else if (statement instanceof Ast.DynamicSelectStmt selected) {
+                rejectStaticClassGenericReferences(selected.entries(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(selected.body(), classGenerics, klass, method);
+                if (selected.defaultBody() != null) {
+                    rejectStaticClassGenericReferences(selected.defaultBody(), classGenerics, klass, method);
+                }
             } else if (statement instanceof Ast.TryStmt attempted) {
                 rejectStaticClassGenericReferences(attempted.body(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.catchBody(), classGenerics, klass, method);
@@ -3636,6 +3682,16 @@ public final class TypeChecker {
                     && !switched.defaultBody().isEmpty()
                     && switched.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))
                     && definitelyReturns(switched.defaultBody())) return true;
+            if (stmt instanceof Ast.SelectStmt selected
+                    && selected.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))) {
+                if (!selected.nonBlocking() && !selected.hasDefault()) return true;
+                if (selected.hasDefault() && definitelyReturns(selected.defaultBody())) return true;
+            }
+            if (stmt instanceof Ast.DynamicSelectStmt selected
+                    && definitelyReturns(selected.body())) {
+                if (!selected.nonBlocking() && !selected.hasDefault()) return true;
+                if (selected.hasDefault() && definitelyReturns(selected.defaultBody())) return true;
+            }
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
@@ -3662,6 +3718,16 @@ public final class TypeChecker {
                     if (containsBreakForCurrentLoop(arm.body())) return true;
                 }
                 if (containsBreakForCurrentLoop(switched.defaultBody())) return true;
+            } else if (stmt instanceof Ast.SelectStmt selected) {
+                for (Ast.SelectCase arm : selected.cases()) {
+                    if (containsBreakForCurrentLoop(arm.body())) return true;
+                }
+                if (selected.defaultBody() != null
+                        && containsBreakForCurrentLoop(selected.defaultBody())) return true;
+            } else if (stmt instanceof Ast.DynamicSelectStmt selected) {
+                if (containsBreakForCurrentLoop(selected.body())) return true;
+                if (selected.defaultBody() != null
+                        && containsBreakForCurrentLoop(selected.defaultBody())) return true;
             } else if (stmt instanceof Ast.TryStmt attempted) {
                 if (containsBreakForCurrentLoop(attempted.body())
                         || containsBreakForCurrentLoop(attempted.catchBody())
