@@ -54,6 +54,8 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    private boolean currentGenerator;
+    private boolean currentAsyncCallable;
     private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
@@ -276,6 +278,7 @@ public final class TypeChecker {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
+                    || fn.generator()
                     || fn.nonLexical()
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
@@ -285,13 +288,17 @@ public final class TypeChecker {
                     || !initReturn.arguments().isEmpty()
                     || initReturn.inferArguments()) {
                 throw new IllegalArgumentException(
-                        "init hook must be a private synchronous non-actor non-generic zero-arity "
+                        "init hook must be a private synchronous non-generator non-actor non-generic zero-arity "
                                 + "fnc/routine returning void");
             }
         }
-        if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
+        if (fn.name().equals("main") && (fn.actorKind() != Ast.ActorKind.NONE || fn.generator())) {
             throw new IllegalArgumentException(
-                    "program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
+                    "program entrypoint 'main' cannot be an actor or generator fnc; main must run synchronously and explicitly launch work");
+        }
+        if (fn.generator() && fn.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor callables cannot be generators because a generator activation would escape a mailbox turn");
         }
         if (fn.async() && fn.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
@@ -301,7 +308,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "generic async callables require an explicit task-safe/sendable generic bound, which is not available yet");
         }
-        Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+
+        Set<String> generics = uniqueGenerics(
+                fn.genericParameters(),
+                (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
@@ -323,7 +333,15 @@ public final class TypeChecker {
                     parameterType,
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
+
+        // For a generator declaration the source return annotation is the
+        // yielded element type. The call result is Generator<T> or
+        // AsyncGenerator<T>; bare return only terminates the sequence.
         Type returns = resolve(fn.returnType(), generics, null);
+        if (returns == Primitive.VOID && fn.generator()) {
+            throw new IllegalArgumentException(
+                    "generator '" + module + "." + fn.name() + "' must declare a non-void yielded element type");
+        }
         if (fn.actorKind() != Ast.ActorKind.NONE) {
             validateActorCallableBoundaryType(
                     returns,
@@ -335,20 +353,32 @@ public final class TypeChecker {
             validateAsyncBoundaryType(
                     returns,
                     true,
-                    "return type of async callable '" + module + "." + fn.name() + "'");
+                    (fn.generator() ? "yield type of async generator '" : "return type of async callable '")
+                            + module + "." + fn.name() + "'");
         }
+
         Ast.ActorKind previousActorKind = currentActorKind;
+        boolean previousGenerator = currentGenerator;
+        boolean previousAsync = currentAsyncCallable;
         currentActorKind = fn.actorKind();
+        currentGenerator = fn.generator();
+        currentAsyncCallable = fn.async();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
             currentActorKind = previousActorKind;
+            currentGenerator = previousGenerator;
+            currentAsyncCallable = previousAsync;
         }
-        if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
-            throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
+
+        if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
+            throw new IllegalArgumentException(
+                    "non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name()
+                            + "' must explicitly return on every path");
         }
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
-            throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+            throw new IllegalArgumentException(
+                    "public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
         }
     }
 
@@ -618,6 +648,13 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (currentGenerator) {
+                if (ret.value() != null) {
+                    throw new IllegalArgumentException(
+                            "generator return cannot carry a value; use 'yield value' and bare 'return;' to finish");
+                }
+                return;
+            }
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
@@ -625,6 +662,14 @@ public final class TypeChecker {
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
+            return;
+        }
+        if (stmt instanceof Ast.YieldStmt yielded) {
+            if (!currentGenerator) {
+                throw new IllegalArgumentException("'yield' may only appear inside a generator fnc or routine");
+            }
+            Type actual = typeOfAgainstExpected(yielded.value(), expectedReturn, env, generics, self);
+            requireAssignable(actual, expectedReturn, "yield value");
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
@@ -673,7 +718,15 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
-            Type element = iterableElementType(iterable);
+            Type element;
+            if (loop.asyncIteration()) {
+                if (!currentAsyncCallable) {
+                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                }
+                element = asyncIterableElementType(iterable);
+            } else {
+                element = iterableElementType(iterable);
+            }
             List<Type> elementTypes = sequenceDestructureTypes(element, loop.bindings().size());
             Env loopEnv = new Env(env);
             for (int i = 0; i < loop.bindings().size(); i++) {
@@ -684,7 +737,15 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
-            Type element = iterableElementType(iterable);
+            Type element;
+            if (loop.asyncIteration()) {
+                if (!currentAsyncCallable) {
+                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                }
+                element = asyncIterableElementType(iterable);
+            } else {
+                element = iterableElementType(iterable);
+            }
             Env loopEnv = new Env(env);
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
