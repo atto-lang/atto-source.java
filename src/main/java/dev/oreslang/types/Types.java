@@ -21,10 +21,10 @@ public final class Types {
      * Receiver-polymorphic type carried by the implicit instance receiver.
      *
      * <p>The bound is the nominal type whose members are available while checking
-     * the method body.  A SelfType value may widen to that nominal type, but a
-     * fresh value of the nominal type cannot narrow back to SelfType: only the
-     * exact receiver identity (or an alias/value proven to preserve it) has this
-     * type.
+     * the method body. A SelfType value may widen to that nominal type, but a
+     * fresh value of the nominal type cannot narrow back to SelfType because the
+     * actual receiver may be a more-derived subtype. Values already proven to
+     * have the receiver-polymorphic self type may flow through aliases/parameters.
      */
     public record SelfType(Type bound) implements Type {
         public SelfType { Objects.requireNonNull(bound, "self bound"); }
@@ -76,7 +76,7 @@ public final class Types {
             }
             return isAssignable(source.bound(), to);
         }
-        // Nominal values cannot manufacture the receiver-identity proof.
+        // A nominal base value cannot manufacture the receiver-polymorphic proof.
         if (to instanceof SelfType) return false;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
 
