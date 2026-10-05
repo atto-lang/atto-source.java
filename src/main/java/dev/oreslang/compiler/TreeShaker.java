@@ -363,7 +363,9 @@ public final class TreeShaker {
                         lambda.parameters(),
                         substitute(lambda.expressionBody(), substitutions, nestedShadowed),
                         lambda.blockBody(),
-                        lambda.nonLexical());
+                        lambda.nonLexical(),
+                        lambda.pure(),
+                        lambda.trapped());
             }
             throw new IllegalStateException(
                     "unhandled expression during specialization " + expression.getClass().getSimpleName());
@@ -505,6 +507,8 @@ public final class TreeShaker {
                         function.async(),
                         function.generator(),
                         function.nonLexical(),
+                        function.pure(),
+                        function.trapped(),
                         function.actorKind(),
                         function.genericParameters(),
                         function.parameters(),
@@ -865,7 +869,9 @@ public final class TreeShaker {
                         lambda.blockBody() == null
                                 ? null
                                 : rewriteStatements(lambda.blockBody(), module, lambdaLocals),
-                        lambda.nonLexical());
+                        lambda.nonLexical(),
+                        lambda.pure(),
+                        lambda.trapped());
             }
             throw new IllegalStateException("unhandled expression " + expression.getClass().getSimpleName());
         }
