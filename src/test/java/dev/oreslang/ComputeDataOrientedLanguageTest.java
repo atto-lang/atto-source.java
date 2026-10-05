@@ -402,6 +402,16 @@ end
                 """);
 
         assertComputeRejected("""
+                compute fnc localDynamicBound(Region<int> values, int n): void {
+                  val m = n;
+                  for int i = 0; i < m; i++ {
+                    val x = i;
+                  }
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
                 compute fnc wrongWay(Region<int> values, int n): void {
                   for int i = 0; i < n; i-- {
                     val x = i;
