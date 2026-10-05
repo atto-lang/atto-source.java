@@ -117,6 +117,37 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void actorTeardownCancelsOwnedNonBlockingChannelRegistration() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ChannelRuntime.Channel<String> channel =
+                    new ChannelRuntime.Channel<>(0);
+            AtomicReference<OresFuture<String>> pending = new AtomicReference<>();
+            CountDownLatch registered = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        OresFuture<String> read = context.runtime()
+                                .ownCurrentActorFuture(channel.readAsync());
+                        pending.set(read);
+                        registered.countDown();
+                        context.self().stop();
+                    });
+
+            actor.send("register");
+            assertTrue(registered.await(2, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+
+            OresFuture<String> read = pending.get();
+            assertTrue(
+                    read.isCancelled(),
+                    "actor teardown must cancel an abandoned nb channel waiter");
+            assertFalse(
+                    channel.tryWrite("orphan"),
+                    "dead actor's cancelled read must not remain registered");
+        }
+    }
+
+    @Test
     void continuationHeadroomDoesNotReduceConfiguredUserMailboxCapacity() throws Exception {
         IsolatePolicy base = IsolatePolicy.developer();
         IsolatePolicy tinyMailbox = new IsolatePolicy(
