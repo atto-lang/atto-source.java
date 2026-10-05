@@ -693,7 +693,7 @@ public final class TreeShaker {
                 List<Ast.Stmt> defaultBody = selected.defaultBody() == null
                         ? null
                         : rewriteStatements(selected.defaultBody(), module, new LinkedHashMap<>(locals));
-                return List.of(new Ast.SelectStmt(cases, defaultBody, selected.nonBlocking()));
+                return List.of(new Ast.SelectStmt(cases, defaultBody, selected.nonBlocking(), selected.policy()));
             }
             if (statement instanceof Ast.DynamicSelectStmt selected) {
                 LinkedHashMap<String, Object> bodyLocals = new LinkedHashMap<>(locals);
@@ -706,7 +706,8 @@ public final class TreeShaker {
                         selected.resultBinding(),
                         rewriteStatements(selected.body(), module, bodyLocals),
                         defaultBody,
-                        selected.nonBlocking()));
+                        selected.nonBlocking(),
+                        selected.policy()));
             }
             if (statement instanceof Ast.TryStmt tried) {
                 LinkedHashMap<String, Object> catchLocals = new LinkedHashMap<>(locals);
