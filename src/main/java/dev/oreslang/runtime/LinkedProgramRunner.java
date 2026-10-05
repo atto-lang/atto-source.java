@@ -10,6 +10,7 @@ import dev.oreslang.interop.MixedJavaCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.stdlib.CoreLibrarySources;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -285,6 +286,12 @@ public final class LinkedProgramRunner {
         Ast.Program program = Parser.parse(mixed.oresSource());
         for (Ast.ImportDecl imported : program.imports()) {
             if (ImportRules.isJavaPath(imported.path())) continue;
+            if (CoreLibrarySources.isCoreImport(imported.path())) {
+                String targetId = CoreLibrarySources.unitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectCoreImportClosure(imported.path(), units, importResolutions);
+                continue;
+            }
 
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
@@ -301,6 +308,43 @@ public final class LinkedProgramRunner {
             String targetId = unitId(target.get());
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(target.get(), units, projectConfig, importResolutions);
+        }
+    }
+
+    private static void collectCoreImportClosure(
+            String importPath,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions) throws IOException {
+        String id = CoreLibrarySources.unitId(importPath);
+        if (units.containsKey(id)) return;
+
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id,
+                CoreLibrarySources.fileName(importPath),
+                CoreLibrarySources.source(importPath));
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "packaged std/* modules must be implemented in Oreslang; Java source islands are forbidden: "
+                            + importPath);
+        }
+
+        units.put(id, mixed);
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException(
+                        "packaged std/* modules may not use java: imports: "
+                                + importPath + " -> " + imported.path());
+            }
+            if (!CoreLibrarySources.isCoreImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "packaged std/* modules may depend only on std/* modules: "
+                                + importPath + " -> " + imported.path());
+            }
+
+            String targetId = CoreLibrarySources.unitId(imported.path());
+            recordImportResolution(importResolutions, id, imported.path(), targetId);
+            collectCoreImportClosure(imported.path(), units, importResolutions);
         }
     }
 
