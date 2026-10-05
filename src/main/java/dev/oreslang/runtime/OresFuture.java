@@ -352,6 +352,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return true;
     }
 
+    int runtimeWaiterCountForTesting() {
+        return waiters.size();
+    }
+
     @Override
     public boolean isCancelled() {
         return nativeState.isCancelled();
