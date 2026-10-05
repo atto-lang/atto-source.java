@@ -56,6 +56,8 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    private boolean currentGenerator;
+    private boolean currentAsyncCallable;
     private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
@@ -73,6 +75,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
                 "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
@@ -220,7 +223,7 @@ public final class TypeChecker {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
 
                 // Only concretely reifiable fnc declarations become raw
                 // function-valued namespace members. Routines remain
@@ -272,7 +275,7 @@ public final class TypeChecker {
                 for (String generic : fn.genericParameters()) {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
-                functionType(fn.parameters(), fn.returnType(), false, all, null);
+                functionType(fn.parameters(), fn.returnType(), false, false, all, null);
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
@@ -286,6 +289,7 @@ public final class TypeChecker {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
+                    || fn.generator()
                     || fn.nonLexical()
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
@@ -295,13 +299,17 @@ public final class TypeChecker {
                     || !initReturn.arguments().isEmpty()
                     || initReturn.inferArguments()) {
                 throw new IllegalArgumentException(
-                        "init hook must be a private synchronous non-actor non-generic zero-arity "
+                        "init hook must be a private synchronous non-generator non-actor non-generic zero-arity "
                                 + "fnc/routine returning void");
             }
         }
-        if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
+        if (fn.name().equals("main") && (fn.actorKind() != Ast.ActorKind.NONE || fn.generator())) {
             throw new IllegalArgumentException(
-                    "program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
+                    "program entrypoint 'main' cannot be an actor or generator fnc; main must run synchronously and explicitly launch work");
+        }
+        if (fn.generator() && fn.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor callables cannot be generators because a generator activation would escape a mailbox turn");
         }
         if (fn.async() && fn.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
@@ -311,7 +319,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "generic async callables require an explicit task-safe/sendable generic bound, which is not available yet");
         }
-        Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+
+        Set<String> generics = uniqueGenerics(
+                fn.genericParameters(),
+                (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
@@ -333,7 +344,15 @@ public final class TypeChecker {
                     parameterType,
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
+
+        // For a generator declaration the source return annotation is the
+        // yielded element type. The call result is Generator<T> or
+        // AsyncGenerator<T>; bare return only terminates the sequence.
         Type returns = resolve(fn.returnType(), generics, null);
+        if (returns == Primitive.VOID && fn.generator()) {
+            throw new IllegalArgumentException(
+                    "generator '" + module + "." + fn.name() + "' must declare a non-void yielded element type");
+        }
         if (fn.actorKind() != Ast.ActorKind.NONE) {
             validateActorCallableBoundaryType(
                     returns,
@@ -345,20 +364,32 @@ public final class TypeChecker {
             validateAsyncBoundaryType(
                     returns,
                     true,
-                    "return type of async callable '" + module + "." + fn.name() + "'");
+                    (fn.generator() ? "yield type of async generator '" : "return type of async callable '")
+                            + module + "." + fn.name() + "'");
         }
+
         Ast.ActorKind previousActorKind = currentActorKind;
+        boolean previousGenerator = currentGenerator;
+        boolean previousAsync = currentAsyncCallable;
         currentActorKind = fn.actorKind();
+        currentGenerator = fn.generator();
+        currentAsyncCallable = fn.async();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
             currentActorKind = previousActorKind;
+            currentGenerator = previousGenerator;
+            currentAsyncCallable = previousAsync;
         }
-        if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
-            throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
+
+        if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
+            throw new IllegalArgumentException(
+                    "non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name()
+                            + "' must explicitly return on every path");
         }
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
-            throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+            throw new IllegalArgumentException(
+                    "public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
         }
     }
 
@@ -795,11 +826,17 @@ public final class TypeChecker {
 
     private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         int previousLoopDepth = loopDepth;
+        boolean previousGenerator = currentGenerator;
+        boolean previousAsync = currentAsyncCallable;
         loopDepth = 0;
+        currentGenerator = false;
+        currentAsyncCallable = false;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
         } finally {
             loopDepth = previousLoopDepth;
+            currentGenerator = previousGenerator;
+            currentAsyncCallable = previousAsync;
         }
     }
 
@@ -851,6 +888,13 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (currentGenerator) {
+                if (ret.value() != null) {
+                    throw new IllegalArgumentException(
+                            "generator return cannot carry a value; use 'yield value' and bare 'return;' to finish");
+                }
+                return;
+            }
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
@@ -858,6 +902,14 @@ public final class TypeChecker {
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
+            return;
+        }
+        if (stmt instanceof Ast.YieldStmt yielded) {
+            if (!currentGenerator) {
+                throw new IllegalArgumentException("'yield' may only appear inside a generator fnc or routine");
+            }
+            Type actual = typeOfAgainstExpected(yielded.value(), expectedReturn, env, generics, self);
+            requireAssignable(actual, expectedReturn, "yield value");
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
@@ -906,7 +958,15 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
-            Type element = iterableElementType(iterable);
+            Type element;
+            if (loop.asyncIteration()) {
+                if (!currentAsyncCallable) {
+                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                }
+                element = asyncIterableElementType(iterable);
+            } else {
+                element = iterableElementType(iterable);
+            }
             List<Type> elementTypes = sequenceDestructureTypes(element, loop.bindings().size());
             Env loopEnv = new Env(env);
             for (int i = 0; i < loop.bindings().size(); i++) {
@@ -917,7 +977,15 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
-            Type element = iterableElementType(iterable);
+            Type element;
+            if (loop.asyncIteration()) {
+                if (!currentAsyncCallable) {
+                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                }
+                element = asyncIterableElementType(iterable);
+            } else {
+                element = iterableElementType(iterable);
+            }
             Env loopEnv = new Env(env);
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
@@ -976,7 +1044,7 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+                return functionType(fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -1120,7 +1188,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return asyncResult(target.async(), result);
+                    return callableResult(target.async(), target.generator(), result);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
@@ -1147,7 +1215,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return asyncResult(target.async(), result);
+                    return callableResult(target.async(), target.generator(), result);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -1348,7 +1416,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return asyncResult(fn.async(), result);
+                    return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
                     if (named.name().equals("SharedMutex")
@@ -1499,7 +1567,7 @@ public final class TypeChecker {
                                 "generic callable '" + namespace.name() + "." + member.member()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), moduleFunction.async(), Set.of(), null);
+                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), moduleFunction.async(), moduleFunction.generator(), Set.of(), null);
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
@@ -1510,6 +1578,8 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = deref(receiver);
+            Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
+            if (iteratorMember != null) return iteratorMember;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
             if (sumReceiver instanceof Named sumNamed
@@ -1540,7 +1610,9 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+                    // Generator declarations are deliberately restricted to top-level/module
+                    // callables, so class static functions cannot produce generator activations.
+                    return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -1805,7 +1877,7 @@ public final class TypeChecker {
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
-            return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+            return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
         if (normalized instanceof Named named) {
@@ -1842,6 +1914,7 @@ public final class TypeChecker {
                     method.parameters(),
                     method.returnType(),
                     method.async(),
+                    false,
                     memberGenerics,
                     target.ownerType());
             return substituteGenerics(
@@ -2059,7 +2132,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
+        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -2140,13 +2214,14 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("Future") || named.name().equals("Iterator")
+                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("DynamicStruct")) {
             return named.arguments().size() == 1
                     && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
         }
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
-        if (named.name().equals("Option")) {
+        if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
         }
         if (named.name().equals("Result")) {
@@ -2549,6 +2624,29 @@ public final class TypeChecker {
         return null;
     }
 
+    private Type builtinIteratorMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
+        Type element = named.arguments().getFirst();
+        return switch (named.name()) {
+            case "Iterator" -> switch (member) {
+                case "next" -> new Function(List.of(), new Named("IteratorResult", List.of(element)));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> null;
+            };
+            case "AsyncIterator" -> switch (member) {
+                case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("IteratorResult", List.of(element)))));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> null;
+            };
+            case "IteratorResult" -> switch (member) {
+                case "done" -> Primitive.BOOL;
+                case "value" -> new Named("Option", List.of(element));
+                default -> null;
+            };
+            default -> null;
+        };
+    }
+
     private Type builtinMutexMember(Type receiver, String member) {
         if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
         Type element = named.arguments().getFirst();
@@ -2594,13 +2692,23 @@ public final class TypeChecker {
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
-            for (Type element : tuple.elements()) result = result == Unknown.INSTANCE ? element : commonType(result, element);
+            for (Type element : tuple.elements()) {
+                result = result == Unknown.INSTANCE ? element : commonType(result, element);
+            }
             return result;
         }
         if (iterable instanceof Named named) {
+            if (named.name().equals("Iterator") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            if (named.name().equals("AsyncIterator")) {
+                throw new IllegalArgumentException(
+                        "ordinary for-of cannot consume AsyncGenerator<T>; use 'for await ... of ...'");
+            }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                ResolvedMethod iteratorTarget = findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
+                ResolvedMethod iteratorTarget =
+                        findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iteratorTarget != null) {
                     Ast.MethodDecl iterator = iteratorTarget.method();
                     requireClassMemberVisible(
@@ -2611,14 +2719,60 @@ public final class TypeChecker {
                     Set<String> iteratorGenerics = new HashSet<>(iteratorTarget.owner().genericParameters());
                     iteratorGenerics.addAll(iterator.genericParameters());
                     Type result = resolve(iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
-                    result = substituteGenerics(result, classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
+                    result = substituteGenerics(
+                            result,
+                            classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
                     if (result instanceof ListType list) return list.element();
                     if (result instanceof Tuple tuple) return iterableElementType(tuple);
-                    throw new IllegalArgumentException("[Symbol.iterator]() must return Array<T>, List<T>, or a tuple in v0");
+                    if (result instanceof Named generated
+                            && generated.name().equals("Iterator")
+                            && generated.arguments().size() == 1) {
+                        return generated.arguments().getFirst();
+                    }
+                    throw new IllegalArgumentException(
+                            "[Symbol.iterator]() must return Array<T>, List<T>, a tuple, or Generator<T>");
                 }
             }
         }
-        throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
+        throw new IllegalArgumentException(
+                "for-of requires an array/list, tuple, Generator<T>, or a class with [Symbol.iterator]()");
+    }
+
+    private Type asyncIterableElementType(Type iterable) {
+        if (iterable instanceof Named named) {
+            if (named.name().equals("AsyncIterator") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                ResolvedMethod iteratorTarget =
+                        findMethodTarget(klass, named, "Symbol.asyncIterator", 0, new LinkedHashSet<>());
+                if (iteratorTarget != null) {
+                    Ast.MethodDecl iterator = iteratorTarget.method();
+                    requireClassMemberVisible(
+                            iterator.visibility(),
+                            iteratorTarget.owner(),
+                            "method",
+                            iterator.name());
+                    Set<String> iteratorGenerics = new HashSet<>(iteratorTarget.owner().genericParameters());
+                    iteratorGenerics.addAll(iterator.genericParameters());
+                    Type result = resolve(iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
+                    result = substituteGenerics(
+                            result,
+                            classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
+                    if (result instanceof Named generated
+                            && generated.name().equals("AsyncIterator")
+                            && generated.arguments().size() == 1) {
+                        return generated.arguments().getFirst();
+                    }
+                    throw new IllegalArgumentException(
+                            "[Symbol.asyncIterator]() must return AsyncGenerator<T>");
+                }
+            }
+        }
+        // Match the newer iterator prototype: for-await also admits synchronous
+        // iterables, but execution still crosses the runtime-owned Future boundary.
+        return iterableElementType(iterable);
     }
 
     private Type widenCollectionElement(Type type) {
@@ -2675,7 +2829,7 @@ public final class TypeChecker {
             if (method.isStatic()) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), generics, self),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -2706,7 +2860,7 @@ public final class TypeChecker {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), generics, self),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
                         "class " + klass.name());
             }
         }
@@ -2735,7 +2889,7 @@ public final class TypeChecker {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
-                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, generics, null),
+                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, null),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
@@ -3208,7 +3362,10 @@ public final class TypeChecker {
         members.put(name, type);
     }
 
-    private Type asyncResult(boolean async, Type result) {
+    private Type callableResult(boolean async, boolean generator, Type result) {
+        if (generator) {
+            return new Named(async ? "AsyncIterator" : "Iterator", List.of(result));
+        }
         return async ? new Named("Future", List.of(result)) : result;
     }
 
@@ -3216,11 +3373,12 @@ public final class TypeChecker {
             List<Ast.Param> params,
             Ast.TypeRef returns,
             boolean async,
+            boolean generator,
             Set<String> generics,
             Type self) {
         return new Function(
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
-                asyncResult(async, resolve(returns, generics, self)));
+                callableResult(async, generator, resolve(returns, generics, self)));
     }
 
     private Function callableContractType(
@@ -3228,11 +3386,12 @@ public final class TypeChecker {
             List<Ast.Param> params,
             Ast.TypeRef returns,
             boolean async,
+            boolean generator,
             Set<String> ownerGenerics,
             Type self) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
-        Function raw = functionType(params, returns, async, all, self);
+        Function raw = functionType(params, returns, async, generator, all, self);
         if (callableGenerics.isEmpty()) return raw;
 
         Map<String, Type> canonical = new HashMap<>();
@@ -3273,6 +3432,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.YieldStmt yielded) {
+                rejectStaticClassGenericReferences(yielded.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ExprStmt expression) {
                 rejectStaticClassGenericReferences(expression.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DeferStmt defer) {
@@ -3703,6 +3864,16 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
                 yield new Named("Future", List.of(element));
+            }
+            case "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) {
+                    throw new IllegalArgumentException(ref.name() + "<void> is invalid");
+                }
+                yield new Named(ref.name().equals("Generator") ? "Iterator" : ref.name().equals("AsyncGenerator") ? "AsyncIterator" : ref.name(), List.of(element));
             }
             case "SharedMutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");

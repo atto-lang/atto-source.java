@@ -17,6 +17,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.OresFutures;
+import dev.oreslang.runtime.GeneratorRuntime;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -133,6 +134,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
+        private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
 
         private enum InvocationKind {
@@ -447,6 +449,26 @@ public final class OresEvalRootNode extends RootNode {
                         "init is a lifecycle hook and cannot be invoked directly; startup runs it exactly once");
             }
             List<Object> normalized = normalizeFunctionArguments(fn, args);
+            if (fn.generator()) {
+                if (fn.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalStateException(
+                            "actor callables cannot expose generator activations across mailbox turns");
+                }
+
+                List<?> captured = fn.async()
+                        ? detachAsyncArguments(normalized)
+                        : List.copyOf(normalized);
+                GeneratorRuntime.Producer<Object> producer = emitter -> {
+                    GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
+                            ? value -> emitter.emit(detachAsyncValue(value, new IdentityHashMap<>()))
+                            : emitter;
+                    callGeneratorBodyRaw(fn, captured, boundaryEmitter);
+                };
+                return fn.async()
+                        ? GeneratorRuntime.asyncGenerator(context.asyncRuntime(), producer)
+                        : GeneratorRuntime.generator(context.asyncRuntime(), producer);
+            }
+
             if (fn.actorKind() == Ast.ActorKind.NONE) {
                 if (!fn.async()) return callFunctionBodyRaw(fn, normalized);
 
@@ -554,6 +576,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof ResultValue result) {
                     return new ResultValue(result.ok(), detachAsyncValue(result.value(), visiting));
                 }
+                if (value instanceof GeneratorRuntime.Step<?> step) {
+                    return step.done() ? GeneratorRuntime.Step.doneStep()
+                            : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) copy.add(detachAsyncValue(item, visiting));
@@ -610,6 +636,37 @@ public final class OresEvalRootNode extends RootNode {
                         "function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
+            }
+        }
+
+        private void callGeneratorBodyRaw(
+                Ast.FunctionDecl fn,
+                List<?> args,
+                GeneratorRuntime.Emitter<Object> emitter) {
+            Env env = new Env(null, fn.nonLexical());
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+
+            GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
+            activeGeneratorEmitter.set(emitter);
+            try {
+                executeBlock(fn.body(), env);
+            } catch (ReturnSignal signal) {
+                if (signal.value != null) {
+                    throw new IllegalStateException(
+                            "generator return cannot carry a value; use yield for sequence elements");
+                }
+            } catch (TailCallSignal signal) {
+                throw new IllegalStateException(
+                        "generator completion cannot be tail-call lowered; use a bare return to finish", signal);
+            } catch (BreakSignal | ContinueSignal signal) {
+                throw new IllegalStateException(
+                        "loop control cannot cross a generator function boundary", signal);
+            } finally {
+                if (previous == null) activeGeneratorEmitter.remove();
+                else activeGeneratorEmitter.set(previous);
             }
         }
 
@@ -714,6 +771,19 @@ public final class OresEvalRootNode extends RootNode {
                         ret.value(),
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+            }
+            if (stmt instanceof Ast.YieldStmt yielded) {
+                if (env.hasLiveMutexGuards()) {
+                    throw new IllegalStateException("cannot yield while holding a live MutexGuard");
+                }
+                GeneratorRuntime.Emitter<Object> emitter = activeGeneratorEmitter.get();
+                if (emitter == null) {
+                    throw new IllegalStateException("yield executed outside a generator activation");
+                }
+                Object value = eval(yielded.value(), env);
+                context.schedulerSafepoint();
+                emitter.emit(value);
+                return;
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
@@ -846,50 +916,64 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
-                for (Object item : iterableValues(iterable, env)) {
-                    context.schedulerSafepoint();
-                    List<?> items = asSequence(item);
-                    if (items.size() != loop.bindings().size()) {
-                        throw new IllegalArgumentException(
-                                "for-of destructure arity mismatch: value has " + items.size()
-                                        + " element(s), pattern has " + loop.bindings().size());
-                    }
-                    Env iteration = new Env(env);
-                    for (int i = 0; i < items.size(); i++) {
-                        Ast.DestructureBinding binding = loop.bindings().get(i);
-                        if (!binding.isDiscard()) {
-                            iteration.define(binding.name(), items.get(i), binding.kind());
+                Iterable<?> values = loop.asyncIteration()
+                        ? asyncIterableValues(iterable, env)
+                        : iterableValues(iterable, env);
+                try {
+                    for (Object item : values) {
+                        context.schedulerSafepoint();
+                        List<?> items = asSequence(item);
+                        if (items.size() != loop.bindings().size()) {
+                            throw new IllegalArgumentException(
+                                    "for-of destructure arity mismatch: value has " + items.size()
+                                            + " element(s), pattern has " + loop.bindings().size());
+                        }
+                        Env iteration = new Env(env);
+                        for (int i = 0; i < items.size(); i++) {
+                            Ast.DestructureBinding binding = loop.bindings().get(i);
+                            if (!binding.isDiscard()) {
+                                iteration.define(binding.name(), items.get(i), binding.kind());
+                            }
+                        }
+                        try {
+                            executeBlock(
+                                    loop.body(),
+                                    iteration,
+                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        } catch (ContinueSignal ignored) {
+                            continue;
+                        } catch (BreakSignal ignored) {
+                            break;
                         }
                     }
-                    try {
-                        executeBlock(
-                                loop.body(),
-                                iteration,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    } catch (ContinueSignal ignored) {
-                        continue;
-                    } catch (BreakSignal ignored) {
-                        break;
-                    }
+                } finally {
+                    closeIterable(values);
                 }
                 return;
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
-                for (Object item : iterableValues(iterable, env)) {
-                    context.schedulerSafepoint();
-                    Env iteration = new Env(env);
-                    iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    try {
-                        executeBlock(
-                                loop.body(),
-                                iteration,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    } catch (ContinueSignal ignored) {
-                        continue;
-                    } catch (BreakSignal ignored) {
-                        break;
+                Iterable<?> values = loop.asyncIteration()
+                        ? asyncIterableValues(iterable, env)
+                        : iterableValues(iterable, env);
+                try {
+                    for (Object item : values) {
+                        context.schedulerSafepoint();
+                        Env iteration = new Env(env);
+                        iteration.define(loop.bindingName(), item, loop.bindingKind());
+                        try {
+                            executeBlock(
+                                    loop.body(),
+                                    iteration,
+                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        } catch (ContinueSignal ignored) {
+                            continue;
+                        } catch (BreakSignal ignored) {
+                            break;
+                        }
                     }
+                } finally {
+                    closeIterable(values);
                 }
                 return;
             }
@@ -1449,6 +1533,27 @@ public final class OresEvalRootNode extends RootNode {
                         return OresFutures.race(asSequence(args.getFirst()));
                     };
                     default -> throw new IllegalArgumentException("unknown Future member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.Generator<?> generator) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "Iterator.next"); return generator.nextStep(); };
+                    case "close" -> (Invokable) args -> { requireZero(args, "Iterator.close"); generator.close(); return null; };
+                    default -> throw new IllegalArgumentException("unknown Iterator member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.AsyncGenerator<?> generator) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "AsyncIterator.next"); return generator.nextStep(); };
+                    case "close" -> (Invokable) args -> { requireZero(args, "AsyncIterator.close"); generator.close(); return null; };
+                    default -> throw new IllegalArgumentException("unknown AsyncIterator member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.Step<?> step) {
+                return switch (name) {
+                    case "done" -> step.done();
+                    case "value" -> new OptionValue(!step.done(), step.value());
+                    default -> throw new IllegalArgumentException("unknown IteratorResult member " + name);
                 };
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
@@ -2172,9 +2277,14 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(result.values());
         }
 
-        private List<?> iterableValues(Object value, Env env) {
+        private Iterable<?> iterableValues(Object value, Env env) {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
+            if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
+            if (value instanceof GeneratorRuntime.AsyncGenerator<?>) {
+                throw new IllegalArgumentException(
+                        "AsyncGenerator values require 'for await ... of ...'");
+            }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(
                         object.klass,
@@ -2190,7 +2300,82 @@ public final class OresEvalRootNode extends RootNode {
                 Object produced = callMethod(object, iterator, List.of());
                 return iterableValues(produced, env);
             }
-            throw new IllegalArgumentException("value is not iterable");
+            throw new IllegalArgumentException("value is not synchronously iterable");
+        }
+
+        private Iterable<?> asyncIterableValues(Object value, Env env) {
+            if (value instanceof OresObject object) {
+                Ast.MethodDecl iterator =
+                        findMethod(object.klass, CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
+                if (iterator == null) {
+                    return asyncSynchronousIterableValues(value, env);
+                }
+                object.owner.requireClassMemberVisible(
+                        iterator.visibility(),
+                        object.owner.declaringClass(iterator),
+                        env == null ? null : env.accessClass(),
+                        "method",
+                        iterator.name());
+                return asyncIterableValues(callMethod(object, iterator, List.of()), env);
+            }
+            if (!(value instanceof GeneratorRuntime.AsyncGenerator<?> generator)) {
+                return asyncSynchronousIterableValues(value, env);
+            }
+
+            final class AsyncPullIterable implements Iterable<Object>, AutoCloseable {
+                @Override
+                public java.util.Iterator<Object> iterator() {
+                    return new java.util.Iterator<>() {
+                        private GeneratorRuntime.Step<?> buffered;
+
+                        @Override
+                        public boolean hasNext() {
+                            if (buffered == null) {
+                                buffered = AsyncRuntime.await(generator.nextStep());
+                            }
+                            return !buffered.done();
+                        }
+
+                        @Override
+                        public Object next() {
+                            if (!hasNext()) throw new java.util.NoSuchElementException();
+                            Object result = buffered.value();
+                            buffered = null;
+                            return result;
+                        }
+                    };
+                }
+
+                @Override
+                public void close() {
+                    generator.close();
+                }
+            }
+            return new AsyncPullIterable();
+        }
+
+        private Iterable<?> asyncSynchronousIterableValues(Object value, Env env) {
+            Iterable<?> synchronous = iterableValues(value, env);
+            GeneratorRuntime.AsyncGenerator<Object> adapter = GeneratorRuntime.asyncGenerator(
+                    context.asyncRuntime(), emitter -> {
+                        try {
+                            for (Object item : synchronous) emitter.emit(item);
+                        } finally {
+                            closeIterable(synchronous);
+                        }
+                    });
+            return asyncIterableValues(adapter, env);
+        }
+
+        private void closeIterable(Iterable<?> iterable) {
+            if (!(iterable instanceof AutoCloseable closeable)) return;
+            try {
+                closeable.close();
+            } catch (RuntimeException | Error failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new IllegalStateException("failed to close generator activation", failure);
+            }
         }
 
         private ConditionResult evalCondition(Ast.Expr condition, Env env) {
@@ -2294,6 +2479,9 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("DynamicStruct")) return value instanceof DynamicStructValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
+            if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
+            if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
+            if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -2318,6 +2506,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
+            if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
+            if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
             if (value instanceof DynamicStructValue) return "DynamicStruct";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
@@ -2689,6 +2880,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue result) {
                 return containsLiveMutexGuard(result.value(), seen);
             }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                return !step.done() && containsLiveMutexGuard(step.value(), seen);
+            }
             if (value instanceof OresMutex.GuardFuture<?> future) {
                 return future.isDone()
                         && !future.isCancelled()
@@ -2751,6 +2945,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof ResultValue result) {
                 releaseMutexGuardsInValue(result.value(), failed, seen);
+                return;
+            }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                if (!step.done()) releaseMutexGuardsInValue(step.value(), failed, seen);
                 return;
             }
             if (value instanceof OresMutex.GuardFuture<?> future) {
@@ -2902,6 +3100,9 @@ public final class OresEvalRootNode extends RootNode {
 
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
+            }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                return step.done() || runtimeSharedSafe(step.value(), seen);
             }
             if (value instanceof ResultValue result) {
                 return runtimeSharedSafe(result.value(), seen);

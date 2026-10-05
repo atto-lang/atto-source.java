@@ -488,6 +488,58 @@ The initial interpreter backend uses host-owned virtual threads for ordinary asy
 
 This preserves the central async rule: **I/O/task latency should compose through futures and continuations; CPU-bound work that intentionally monopolizes a carrier must be explicit rather than hidden inside `async`.**
 
+## Generators and async iterators
+
+`generator` is a callable modifier for top-level/module `fnc` and `routine` declarations. It is deliberately not a class-method modifier.
+
+```ores
+generator fnc ids(): int {
+  yield 10;
+  yield 20;
+  return;
+}
+
+async generator routine events(): String {
+  yield await next_event();
+  yield await next_event();
+  return;
+}
+```
+
+The declared source return type is the **yielded element type**. Calling a synchronous generator produces `Iterator<T>`; calling an async generator produces `AsyncIterator<T>` directly, not `Future<Iterator<T>>`. Existing `Generator<T>` and `AsyncGenerator<T>` annotations remain aliases for those public protocol types.
+
+`Iterator.next()` returns `IteratorResult<T>`; `AsyncIterator.next()` returns `Future<IteratorResult<T>>`. Results have readonly `done: bool` and `value: Option<T>` members: yielded values are `Some(value)`, while terminal/closed pulls return `done = true` and `None`. Both protocols expose `close()` to cancel the suspended activation. Async pulls retain serialized activation semantics and cross the Ores-owned Future boundary. Result data may cross ordinary async boundaries when its element type is task-safe; the iterator activation itself cannot.
+
+```ores
+val Iterator<int> iterator = values();
+val IteratorResult<int> result = iterator.next();
+if !result.done; do stdio.stdout.write(result.value.unwrap()); fi
+iterator.close();
+```
+
+`done` remains reserved as a lexical identifier, but is readable in the member namespace (`result.done`). Parameterized runtime `is` checks remain forbidden until generic arguments are reified; the iterator protocol does not weaken that rule.
+
+`async` and `generator` are independent modifiers and may appear in either order. Inside a generator, `yield value` suspends the activation after producing one element. A bare `return;` completes the sequence. Returning a value from a generator is rejected.
+
+Async iteration uses `for await ... of ...`:
+
+```ores
+pub async fnc consume(): void {
+  for await event of events() do
+    handle(event);
+  done
+  return;
+}
+```
+
+A synchronous `for ... of ...` consumes `Generator<T>` or ordinary synchronous iterables. `for await ... of ...` consumes `AsyncGenerator<T>` or a class whose `[Symbol.asyncIterator]()` method returns an `AsyncGenerator<T>`. It also accepts synchronous generators, arrays, tuples, and `[Symbol.iterator]()` values through a runtime-owned asynchronous adapter: every pull crosses the OresFuture boundary, and closing the loop closes the suspended adapter and its source. An asynchronous iterable still cannot be consumed by a synchronous loop.
+
+Generator activations are affine runtime state. They are not actor messages, shared values, or async-task payloads. `yield` is a suspension boundary: a live `MutexGuard` or borrow may not cross it in the current ownership model. Async iterator pulls are suspension boundaries as well.
+
+Actor callables cannot be generators. An actor mailbox turn may suspend only through the actor scheduler's continuation protocol; a generator activation must not escape a turn. Class methods and static class `fnc` are also non-generator declarations for now. A class can still implement `[Symbol.asyncIterator]()` by returning an async generator created by a top-level/module callable.
+
+The interpreter represents a live generator with one serialized resumable activation. The native/AOT compiler may lower the same contract to an explicit program-counter/state-machine frame. This mirrors the existing rule for `await`: the representation is backend-specific, but suspension/resumption semantics are language-level.
+
 ## Actors
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
@@ -836,6 +888,36 @@ define class Bag as
   }
 end
 ```
+
+Generator call results participate in the same iterator loop syntax:
+
+```ores
+generator fnc values(): int {
+  yield 1;
+  yield 2;
+  return;
+}
+
+for value of values() do
+  work(value)
+done
+```
+
+Async iterators use the explicit `for await` form and require an async callable context:
+
+```ores
+async generator fnc values_async(): int {
+  yield 1;
+  yield 2;
+  return;
+}
+
+for await value of values_async() do
+  await work_async(value)
+done
+```
+
+Classes may expose `[Symbol.asyncIterator](): AsyncGenerator<T>` when they need a custom async-iteration facade.
 
 The compiler/runtime inserts a scheduler safepoint on **every `loop`, conventional `for`, and iterator-loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
 
