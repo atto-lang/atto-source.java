@@ -1166,8 +1166,9 @@ public final class Parser {
         List<Ast.IfBranch> branches = new ArrayList<>();
         Ast.Expr condition = parseCondition();
 
-        // Brace form still obeys the universal Oreslang invariant: every if closes with fi.
-        // Braces delimit branch bodies; they never replace the structural terminator.
+        // Brace-delimited form is self-terminating. The keyword-delimited
+        // then/do form below uses fi, but braces must not consume a surrounding
+        // fi when nested inside a keyword-delimited conditional.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseBlock()));
             while (match(ELSEIF)) {
@@ -1177,7 +1178,6 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
-            consume(FI, "expected 'fi' to close if");
             return new Ast.IfStmt(branches, elseBody);
         }
 
@@ -1226,7 +1226,8 @@ public final class Parser {
     }
 
     private Ast.MatchStmt parseMatch() {
-        boolean ordered = match(FIRST);
+        boolean ordered = check(IDENT) && peek().lexeme().equals("first");
+        if (ordered) advance();
         Ast.Expr subject = parseExpression();
         match(SEMICOLON);
 
