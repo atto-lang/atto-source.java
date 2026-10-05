@@ -100,8 +100,8 @@ public final class LinkedProgramRunner {
             currentThread.setContextClassLoader(javaCompilation.classLoader());
             try {
                 Context.Builder builder = policy.restrictedContextBuilder(executionProfile, effectiveHostClasses);
-                if (out != null) builder.out(out);
-                if (err != null) builder.err(err);
+                if (out != null) builder.out(forwardingStream(out));
+                if (err != null) builder.err(forwardingStream(err));
 
                 try (Context context = builder.build()) {
                     LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
@@ -148,6 +148,31 @@ public final class LinkedProgramRunner {
             }
         }
         return build;
+    }
+
+    /**
+     * Graal's UNTRUSTED sandbox rejects the JVM standard streams as direct
+     * guest sinks. Always interpose a non-closing forwarding stream so callers
+     * may still supply System.out/System.err without exposing those stream
+     * identities to the guest context.
+     */
+    private static OutputStream forwardingStream(OutputStream delegate) {
+        return new OutputStream() {
+            @Override
+            public void write(int value) throws IOException {
+                delegate.write(value);
+            }
+
+            @Override
+            public void write(byte[] bytes, int offset, int length) throws IOException {
+                delegate.write(bytes, offset, length);
+            }
+
+            @Override
+            public void flush() throws IOException {
+                delegate.flush();
+            }
+        };
     }
 
     private static Object toHostValue(Value value) {
