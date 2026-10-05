@@ -92,7 +92,7 @@ define module collections
     // reactive adapters can consume/produce these collections through
     // [Symbol.iterator]() without the core collection layer knowing about Rx.
     pub reduce(Fnc<T, T, T> reducer): Option<T> {
-      if self.items.size == 0; then
+      if self.items.size == 0; do
         return None;
       fi
 
@@ -137,7 +137,7 @@ define module collections
     pub filter(Fnc<T, bool> predicate): List<T> {
       let List<T> output = new List<T>();
       for item of self do
-        if predicate(item); then
+        if predicate(item); do
           output.add(item);
         fi
       done
@@ -159,7 +159,7 @@ define module collections
     pub filter(Fnc<T, bool> predicate): ArrayList<T> {
       let ArrayList<T> output = new ArrayList<T>();
       for item of self do
-        if predicate(item); then
+        if predicate(item); do
           output.add(item);
         fi
       done
@@ -182,7 +182,7 @@ define module collections
     pub filter(Fnc<T, bool> predicate): Vector<T> {
       let Vector<T> output = new Vector<T>();
       for item of self do
-        if predicate(item); then
+        if predicate(item); do
           output.add(item);
         fi
       done
