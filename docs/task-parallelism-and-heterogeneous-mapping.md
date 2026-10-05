@@ -231,6 +231,7 @@ before a variant can become active.
 `HeterogeneousTaskMapper` is currently a **pure planning contract**:
 
 - conservative non-interference checking for logical region requirements;
+- whole-slice and field-scoped read/write/reduce footprints;
 - compiler/runtime-certified disjoint partition representation;
 - CPU/GPU variant metadata;
 - transfer-aware AUTO placement;
