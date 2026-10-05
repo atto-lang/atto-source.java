@@ -631,6 +631,34 @@ final class ParserTest {
     }
 
     @Test
+    void actorFieldsCannotPersistBorrowsOrMutexGuardsAcrossTurns() {
+        IllegalArgumentException guard = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Bad as
+                          val MutexGuard<int> guard;
+                          pub run(): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                guard.getMessage().contains("cannot persist MutexGuard"),
+                guard.getMessage());
+
+        IllegalArgumentException borrowed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Bad as
+                          val &Bad alias = &self;
+                          pub run(): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                borrowed.getMessage().contains("cannot persist a borrow")
+                        || borrowed.getMessage().contains("non-escapable"),
+                borrowed.getMessage());
+    }
+
+    @Test
     void actorBoundaryRejectsOrdinaryClassInstancesByValue() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
