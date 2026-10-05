@@ -579,12 +579,22 @@ public final class Parser {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            boolean structural = matchContextualKeyword("structural");
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require 'Type name'").lexeme();
-            params.add(new Ast.Param(type, name, false, mutable));
+            if (structural && mutable) {
+                throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+            }
+            params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         return List.copyOf(params);
+    }
+
+    private boolean matchContextualKeyword(String keyword) {
+        if (!check(IDENT) || !peek().lexeme().equals(keyword)) return false;
+        advance();
+        return true;
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
@@ -607,16 +617,31 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
-            boolean structural = false;
+            boolean structural = matchContextualKeyword("structural");
 
-            // Name-first structural spelling: y structural Foo
+            // Canonical type-first structural spelling: structural Foo y
+            if (structural) {
+                Ast.TypeRef type = parseTypeRef();
+                boolean mutable = match(MUT);
+                String name = consume(IDENT, "expected parameter name").lexeme();
+                if (mutable) {
+                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                }
+                params.add(new Ast.Param(type, name, true, false));
+                continue;
+            }
+
+            // Compatibility name-first structural spelling: y structural Foo
             if (check(IDENT) && checkNextLexeme("structural")) {
                 String name = advance().lexeme();
                 Token marker = consume(IDENT, "expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, true, mutable));
+                if (mutable) {
+                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                }
+                params.add(new Ast.Param(type, name, true, false));
                 continue;
             }
 
@@ -625,11 +650,14 @@ public final class Parser {
                 String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, true, mutable));
+                if (mutable) {
+                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                }
+                params.add(new Ast.Param(type, name, true, false));
                 continue;
             }
 
-            // Existing type-first spelling: @Structural Foo y
+            // Existing type-first compatibility spelling: @Structural Foo y
             if (match(AT)) {
                 String annotation = consume(IDENT, "expected parameter annotation").lexeme();
                 if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
@@ -638,6 +666,9 @@ public final class Parser {
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name").lexeme();
+            if (structural && mutable) {
+                throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+            }
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         return params;
@@ -664,6 +695,9 @@ public final class Parser {
         List<Ast.Param> result = new ArrayList<>(params.size());
         for (Ast.Param param : params) {
             boolean structural = param.structural() || allowed.contains(param.name());
+            if (structural && param.mutable()) {
+                throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+            }
             if (allowed.contains(param.name())) found.add(param.name());
             result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
         }
