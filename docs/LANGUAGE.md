@@ -460,7 +460,7 @@ model**, not a second object system. Ordinary classes and actor classes are both
 represented as `ClassDecl`; actor classes additionally carry an `ActorKind`
 and compiler/runtime ownership, mailbox, scheduling, and capability rules.
 
-These forms are equivalent:
+A persistent actor has exactly **one public mailbox entrypoint**:
 
 ```ores
 define actor Worker as
@@ -470,134 +470,105 @@ define actor Worker as
     self.count = initial;
   }
 
-  pub add(value: int): void {
-    self.count = self.count + value;
-    return;
-  }
-
-  pub current(): int {
-    return self.count;
-  }
-
   private normalized(value: int): int {
     return value;
+  }
+
+  pub receive(message: int): void {
+    self.count = self.count + self.normalized(message);
+    return;
   }
 end
 ```
 
+The equivalent class-oriented form may make the actor contract explicit:
+
 ```ores
-define class Worker extends Actor as
+define class Worker extends Actor<int, void, String> as
   let int count = 0;
 
   constructor(initial: int) {
     self.count = initial;
   }
 
-  pub add(value: int): void {
-    self.count = self.count + value;
+  pub receive(message: int): void {
+    self.count = self.count + message;
     return;
-  }
-
-  pub current(): int {
-    return self.count;
   }
 end
 ```
 
 `Actor`, `IsoActor`, and `UntrustedActor` are compiler-intrinsic execution
-domain markers only. They take no protocol type arguments. Protocol shape comes
-from public actor methods and, when useful, implemented interfaces.
+domain bases. They accept either no protocol arguments or exactly
+`<Message, Reply, Error>`. When those arguments are present, the parameter
+type of `receive` must exactly match `Message`. `Reply` and `Error`
+describe the actor contract available to explicit response/reply capabilities;
+they do **not** turn public methods into implicit request/reply RPC endpoints.
 
 There are three actor execution domains:
 
-- `actor` / `shared actor` / `Actor`: SHARED domain;
-- `isoactor` / `IsoActor`: confined/private actor memory;
-- `untrusted actor` / `UntrustedActor`: adversarial sandbox with hard
-  lifetime, fuel, memory, I/O, and capability ceilings.
+- an unqualified `actor` / `Actor` is **SHARED-domain**;
+- `isoactor` / `IsoActor` owns confined/private actor memory;
+- `untrusted actor` / `UntrustedActor` is the adversarial sandbox domain
+  with hard lifetime, fuel, memory, I/O, and capability ceilings.
 
-The domains use separate dispatcher pools. Every actor has exactly one logical
-mailbox and at most one active execution lease. Carrier threads may change
-between turns.
+The three domains use separate dispatcher pools. Every actor owns exactly one
+logical mailbox and at most one actor turn may execute at a time; carrier
+threads may change between turns.
 
-### Typed actor protocol over one runtime mailbox
+### Runtime-owned receiver loop
 
-One or more public instance methods form the typed source protocol. They are not
-separate concurrently callable entrypoints. The compiler lowers the complete
-public method set to one hidden tagged mailbox dispatcher.
-
-Conceptually:
-
-```text
-Worker.add(int): void
-Worker.current(): int
-
-        lowers to one hidden mailbox ABI
-
-Add(int, Reply<void>)
-Current(Reply<int>)
-```
-
-Private methods are direct `self` calls inside the actor turn. A source method
-named `receive` is ordinary protocol syntax if declared; it has no privileged
-runtime meaning.
-
-Outside code receives a typed reference:
-
-```ores
-val worker = spawn Worker(0);
-
-await worker.add(2);
-val value = await worker.current();
-```
-
-The source projection is:
-
-```text
-Worker.add(int): void
-ActorRef<Worker>.add(int): Future<void>
-
-Worker.current(): int
-ActorRef<Worker>.current(): Future<int>
-```
-
-The runtime still owns the single receive/dispatch loop:
+`receive(message): void` handles **one dequeued message and one logical actor
+turn**. User code does not write an infinite mailbox loop. Conceptually OresVM
+owns:
 
 ```text
 mailbox becomes runnable
   -> acquire actor execution lease
-  -> dequeue one typed protocol request
-  -> dispatch to the declared public method
+  -> dequeue one admitted message
+  -> call receive(message)
   -> return or suspend at await
-  -> complete the runtime-owned reply Future exactly once
-  -> release/park the logical turn
+  -> release/park the turn through the scheduler
+  -> later schedule the next runnable turn
 ```
 
-Owning this loop preserves fairness, one-active-thread-per-actor,
-fuel/deadline checks, supervision, generation leases, and nonblocking
-continuation-based `await`.
+Owning this loop is what lets the runtime enforce fairness,
+one-active-thread-per-actor, fuel/deadline checks, supervision, generation
+leases for hot reload, and nonblocking `await`.
 
-Raw `ActorRef.send`, `receive`, and mailbox objects are runtime-private for
-persistent source actors. Protocol methods are also not first-class bound
-callback objects; use an explicit closure when callback capture is intended.
+All other actor instance methods are private helpers called directly through
+`self` while that actor owns its execution lease. Actor classes do not expose
+an arbitrary set of public RPC-style methods, and actor methods are not
+first-class bound callbacks that may escape a turn.
 
-Actor subclasses may inherit their complete protocol from an actor parent and
-may add endpoints, but cannot narrow an inherited public endpoint to private.
-Actors may implement interfaces, and `ActorRef<ConcreteActor>` may narrow to a
-compatible `ActorRef<ProtocolInterface>`.
+Outside code receives `ActorRef<Worker>` and enqueues messages explicitly:
 
-Public protocol methods are currently monomorphic at method level so the
-generated mailbox ABI remains closed and AOT-analyzable. Protocol parameters
-cannot be `mut`. Constructor inputs and every public protocol parameter/return
-are checked for actor-boundary sendability.
+```ores
+val worker = spawn Worker(0);
+worker.send(2);
+```
 
-Actor classes do not support static functions. Put reusable ordinary code in a
-top-level/module `fnc` with checked effects. Actor restrictions propagate
-transitively through ordinary helpers, and imported/effect-unknown calls fail
-closed in actor context.
+A direct `worker.receive(...)` call is invalid: `receive` is runtime-owned.
+Likewise, `worker.some_method(...)` is not synthesized into an RPC request.
+When a caller needs a result, the message carries an explicit bounded response
+capability/schema and the actor settles that response under runtime policy.
+
+The mailbox contract therefore remains visible and analyzable for AOT:
+
+```text
+ActorRef<Worker>.send(int): void
+Worker.receive(int): void       // runtime invocation only
+```
+
+Actor classes do not support static functions. Put ordinary reusable code in a
+top-level/module `fnc` with its own checked effects. Imported or otherwise
+effect-unknown helper calls fail closed from actor code unless a checked
+actor-safe effect contract is available.
 
 External mutable state is read-only from actor code. Source actors cannot
 create, receive, or acquire writable `SharedMutex<T>` state. A SHARED actor
-may receive an explicit `RwLock<T>` read capability when `T` is shared-safe;
+may receive an explicit `RwLock<T>` capability for synchronized external
+reads when `T` is shared-safe; actor code cannot acquire its write guard.
 PRIVATE/isoactor and UNTRUSTED actors cannot receive shared external-memory
 capabilities.
 
@@ -631,11 +602,10 @@ forbidden:
 ```
 
 Actor fields are private mailbox-owned state. `let` actor fields may mutate
-during the actor's exclusive turn without a lock. Constructor inputs and every
-public protocol method parameter/return are checked at actor boundaries; unsafe
-borrows, guards, futures, actor instances-by-value, and domain-incompatible
-shared-mutable capabilities are rejected. A method named `receive` has no
-special source-language status.
+during the actor's exclusive turn without a lock. Constructor inputs and the
+single `receive` message parameter are checked at actor boundaries; unsafe
+borrows, guards, futures, and domain-incompatible shared-mutable capabilities
+are rejected. `receive` itself returns `void`.
 
 A constructor is runtime-only initialization, not a mailbox endpoint. Actor
 constructors are non-public, non-static, non-generic, non-suspending, return
@@ -646,11 +616,9 @@ forbidden; actor identity/state must be created by the actor runtime.
 
 Code outside an actor never receives the mutable actor object. A concrete actor
 spawn returns an `ActorRef<ActorClass>`. That reference is a capability for
-identity/lifecycle operations permitted by policy and typed public protocol
-calls such as `worker.run(...)`. Each protocol call lowers to one bounded
-runtime-private mailbox request and returns `Future<T>` for a source result
-`T`. Raw `send`, `receive`, or mailbox access is not part of the source
-actor-class API.
+identity/lifecycle operations permitted by policy and bounded mailbox enqueue
+through `send(message)`; it does not expose actor-owned fields, `receive`, or
+private helper methods.
 
 Generated/runtime actor factories remain useful as launch adapters for actor
 groups, configured factory catalogs, hot loading, and dependency injection.
@@ -658,12 +626,12 @@ They execute under the target actor context and must be capture-safe. This
 runtime factory concept is distinct from source `actor fnc`/`actor routine`,
 which are one-shot spawned callables.
 
-The persistent-actor ABI is the actor kind, constructor contract, complete
-public protocol shape, capability manifest, and generation-pinned hidden
-mailbox dispatcher. ActorGroup/ActorMailman routing therefore invokes bounded
-typed actor protocol operations; actors may also emit bounded group output, one
-logical serialized mailman consumes the group's outbox, and supervisors remain
-responsible for lifecycle/restart policy.
+The persistent-actor ABI is the actor kind, constructor contract, message
+contract (and optional explicit Reply/Error schemas), capability manifest, and
+generation-pinned mailbox behavior. ActorGroup/ActorMailman routing therefore
+sends bounded mailbox messages through `ActorRef.send`; actors may also emit
+bounded group output, one logical serialized mailman consumes the group's
+outbox, and supervisors remain responsible for lifecycle/restart policy.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
