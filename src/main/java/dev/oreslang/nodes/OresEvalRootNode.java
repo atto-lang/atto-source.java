@@ -600,6 +600,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 for (int col = 0; col < batch.dimensions(); col++) {
+                    if ((col & 1023) == 0) context.schedulerSafepoint();
                     output.set(base + col, numericValue(batch.values(), base + col) / norm);
                 }
             }
@@ -764,6 +765,7 @@ public final class OresEvalRootNode extends RootNode {
                     double bestScore = 0.0d;
 
                     for (int candidate = 0; candidate < cols; candidate++) {
+                        if ((candidate & 1023) == 0) context.schedulerSafepoint();
                         boolean selected = false;
                         for (int selectedRank = 0; selectedRank < rank; selectedRank++) {
                             Object selectedValue = output.get(rowBase + selectedRank);
