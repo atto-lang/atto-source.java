@@ -105,6 +105,10 @@ public final class HungryActor<M> implements AutoCloseable {
         return worker.getName();
     }
 
+    public boolean isVirtualCarrier() {
+        return worker.isVirtual();
+    }
+
     public boolean isAlive() {
         return worker.isAlive() && !terminated.get();
     }
