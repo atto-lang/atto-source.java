@@ -14,6 +14,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
+import dev.oreslang.runtime.OresFuture;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -336,6 +337,9 @@ public final class OresEvalRootNode extends RootNode {
             if (main == null) main = findFunction("main");
             if (main == null) return null;
             Object result = callFunction(main, List.of(arguments));
+            if (result instanceof OresFuture<?> future) {
+                return AsyncRuntime.await(future);
+            }
             if (result instanceof CompletionStage<?> stage) {
                 return AsyncRuntime.await(stage);
             }
@@ -1309,6 +1313,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
+                if (value instanceof OresFuture<?> future) {
+                    return AsyncRuntime.await(future);
+                }
                 if (value instanceof CompletionStage<?> stage) {
                     return AsyncRuntime.await(stage);
                 }
@@ -1540,8 +1547,14 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object normalizeHostResult(Object value) {
             if (value == null) return new OptionValue(false, null);
-            if (value instanceof Number || value instanceof Boolean || value instanceof String
-                    || value instanceof Character || value instanceof CompletionStage<?>) {
+            if (value instanceof CompletionStage<?> stage) {
+                return OresFuture.from(stage);
+            }
+            if (value instanceof OresFuture<?>
+                    || value instanceof Number
+                    || value instanceof Boolean
+                    || value instanceof String
+                    || value instanceof Character) {
                 return value;
             }
             return new HostObjectFacade(value);
