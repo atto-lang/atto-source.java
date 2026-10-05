@@ -1111,6 +1111,18 @@ public final class OresEvalRootNode extends RootNode {
                         initialized,
                         ignored -> asyncFor(loop, loopEnv, noLoopTail));
             }
+            if (stmt instanceof Ast.WhileStmt loop) {
+                return asyncWhile(
+                        loop,
+                        env,
+                        callable.withTailTransfers(false));
+            }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                return asyncDoWhile(
+                        loop,
+                        env,
+                        callable.withTailTransfers(false));
+            }
             return asyncFailure(new IllegalArgumentException(
                     "unsupported async statement " + stmt));
         }
@@ -1139,10 +1151,8 @@ public final class OresEvalRootNode extends RootNode {
             return new AsyncThunk(() -> {
                 if (index >= values.size()) return asyncPure(ASYNC_NORMAL);
                 Env iteration = new Env(env);
-                iteration.define(
-                        loop.bindingName(),
-                        values.get(index),
-                        loop.bindingKind());
+                bindForOfIteration(loop, values.get(index), iteration);
+                context.schedulerSafepoint();
                 return asyncFlatMap(
                         asyncBlock(loop.body(), iteration, callable),
                         flow -> flow instanceof AsyncReturn
@@ -1166,6 +1176,7 @@ public final class OresEvalRootNode extends RootNode {
                         : asyncEval(loop.condition(), loopEnv);
                 return asyncFlatMap(condition, value -> {
                     if (!truth(value)) return asyncPure(ASYNC_NORMAL);
+                    context.schedulerSafepoint();
                     return asyncFlatMap(
                             asyncBlock(loop.body(), loopEnv, callable),
                             flow -> {
@@ -1178,6 +1189,45 @@ public final class OresEvalRootNode extends RootNode {
                                         ignored -> asyncFor(loop, loopEnv, callable));
                             });
                 });
+            });
+        }
+
+        private AsyncPlan asyncWhile(
+                Ast.WhileStmt loop,
+                Env env,
+                AsyncCallableContext callable) {
+            return new AsyncThunk(() -> {
+                AsyncPlan condition = loop.condition() == null
+                        ? asyncPure(Boolean.TRUE)
+                        : asyncEval(loop.condition(), env);
+                return asyncFlatMap(condition, value -> {
+                    if (!truth(value)) return asyncPure(ASYNC_NORMAL);
+                    context.schedulerSafepoint();
+                    return asyncFlatMap(
+                            asyncBlock(loop.body(), env, callable),
+                            flow -> flow instanceof AsyncReturn
+                                    ? asyncPure(flow)
+                                    : asyncWhile(loop, env, callable));
+                });
+            });
+        }
+
+        private AsyncPlan asyncDoWhile(
+                Ast.DoWhileStmt loop,
+                Env env,
+                AsyncCallableContext callable) {
+            return new AsyncThunk(() -> {
+                context.schedulerSafepoint();
+                return asyncFlatMap(
+                        asyncBlock(loop.body(), env, callable),
+                        flow -> {
+                            if (flow instanceof AsyncReturn) return asyncPure(flow);
+                            return asyncFlatMap(
+                                    asyncEval(loop.condition(), env),
+                                    condition -> truth(condition)
+                                            ? asyncDoWhile(loop, env, callable)
+                                            : asyncPure(ASYNC_NORMAL));
+                        });
             });
         }
 
@@ -2090,7 +2140,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : iterableValues(iterable)) {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
-                    iteration.define(loop.bindingName(), item, loop.bindingKind());
+                    bindForOfIteration(loop, item, iteration);
                     executeBlock(loop.body(), iteration);
                 }
                 return;
@@ -2103,6 +2153,21 @@ public final class OresEvalRootNode extends RootNode {
                     executeBlock(loop.body(), loopEnv);
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
+                return;
+            }
+            if (stmt instanceof Ast.WhileStmt loop) {
+                while (loop.condition() == null || truth(eval(loop.condition(), env))) {
+                    context.schedulerSafepoint();
+                    executeBlock(loop.body(), env);
+                }
+                return;
+            }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                do {
+                    context.schedulerSafepoint();
+                    executeBlock(loop.body(), env);
+                } while (truth(eval(loop.condition(), env)));
+                return;
             }
         }
 
@@ -3169,6 +3234,23 @@ public final class OresEvalRootNode extends RootNode {
         private IllegalArgumentException returnTypeMismatch(String callable, Ast.TypeRef declared, Object value) {
             return new IllegalArgumentException(callable + " returned " + (value == null ? "null" : value.getClass().getSimpleName())
                     + " but declared " + declared);
+        }
+
+        private void bindForOfIteration(Ast.ForOfStmt loop, Object value, Env env) {
+            if (!loop.destructuresSequence()) {
+                env.define(loop.bindingName(), value, loop.bindingKind());
+                return;
+            }
+            List<?> items = asSequence(value);
+            if (items.size() != loop.sequenceBindings().size()) {
+                throw new IllegalArgumentException(
+                        "for-of destructure arity mismatch: value has " + items.size()
+                                + " element(s), pattern has " + loop.sequenceBindings().size());
+            }
+            for (int i = 0; i < items.size(); i++) {
+                Ast.DestructureBinding binding = loop.sequenceBindings().get(i);
+                if (!binding.isDiscard()) env.define(binding.name(), items.get(i), binding.kind());
+            }
         }
 
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
