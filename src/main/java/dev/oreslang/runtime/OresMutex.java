@@ -7,8 +7,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -257,13 +255,6 @@ public final class OresMutex {
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
-        private static final ScheduledExecutorService ASYNC_TIMEOUTS =
-                Executors.newSingleThreadScheduledExecutor(
-                        Thread.ofPlatform()
-                                .daemon(true)
-                                .name("ores-shared-mutex-timeouts")
-                                .factory());
-
         private final T value;
         private final Semaphore permit = new Semaphore(1, true);
         private final AtomicBoolean poisoned = new AtomicBoolean();
@@ -752,17 +743,16 @@ public final class OresMutex {
                 return future;
             }
 
-            final java.util.concurrent.ScheduledFuture<?> timeoutTask;
+            final NativeTimerService.Ticket timeoutTask;
             try {
-                timeoutTask = ASYNC_TIMEOUTS.schedule(
+                timeoutTask = NativeTimerService.process().schedule(
                         () -> future.failFromRuntime(new LockTimeoutException(timeout)),
-                        timeoutNanos,
-                        TimeUnit.NANOSECONDS);
+                        timeoutNanos);
             } catch (RuntimeException schedulingFailure) {
                 future.failFromRuntime(schedulingFailure);
                 return future;
             }
-            future.whenCompleteRuntime((ignored, failure) -> timeoutTask.cancel(false));
+            future.whenCompleteRuntime((ignored, failure) -> timeoutTask.cancel());
             return future;
         }
 
