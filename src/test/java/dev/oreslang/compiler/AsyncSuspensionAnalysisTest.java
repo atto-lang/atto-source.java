@@ -199,6 +199,40 @@ final class AsyncSuspensionAnalysisTest {
         assertTrue(result.suspensionPoints().isEmpty());
     }
 
+
+    @Test
+    void compilerBuildsDenseStateMachinePcsFromAwaitSites() {
+        AsyncStateMachinePlan.ProgramPlan program =
+                OresCompiler.planAsyncStateMachines("""
+                        async fnc pause(): int {
+                          return 0;
+                        }
+
+                        async fnc target(): int {
+                          val retained = 7;
+                          await pause();
+                          val first = retained;
+                          await pause();
+                          return first;
+                        }
+                        """);
+
+        AsyncStateMachinePlan.CallablePlan target =
+                program.callables().stream()
+                        .filter(plan -> plan.id().callableName().equals("target"))
+                        .findFirst()
+                        .orElseThrow();
+
+        assertEquals(List.of(0, 1, 2),
+                target.states().stream()
+                        .map(AsyncStateMachinePlan.State::pc)
+                        .toList());
+        assertEquals(2, target.frameLayout().suspensionPoints().size());
+        assertEquals(Set.of("retained", "first"),
+                target.frameLayout().spilledLocalNames());
+        assertTrue(target.suspends());
+    }
+
     private static int slot(
             AsyncSuspensionAnalysis.Result result,
             String name) {
