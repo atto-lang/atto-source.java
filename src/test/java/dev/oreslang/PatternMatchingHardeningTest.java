@@ -24,7 +24,7 @@ final class PatternMatchingHardeningTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.WHEN));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.CASE));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.DEFAULT));
-        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FIRST));
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("first")));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(bool flag): void {
