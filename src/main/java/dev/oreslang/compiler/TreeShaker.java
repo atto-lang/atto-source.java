@@ -504,6 +504,8 @@ public final class TreeShaker {
                         function.visibility(),
                         function.async(),
                         function.nonLexical(),
+                        function.pure(),
+                        function.trapped(),
                         function.actorKind(),
                         function.genericParameters(),
                         function.parameters(),
