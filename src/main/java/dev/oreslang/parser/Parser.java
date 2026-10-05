@@ -156,10 +156,21 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
+
+        List<Ast.TypeRef> contracts = List.of();
+        if (match(WITH)) {
+            contracts = parseTypeRefList();
+            consume(AS, "expected 'as' after module contract list");
+        } else {
+            // Canonical module syntax includes 'as'. Keep the historical
+            // no-'as' spelling accepted while existing source migrates.
+            match(AS);
+        }
+
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
-        return new Ast.ModuleDecl(name, annotations, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
 
     private Ast.Decl parseModuleMember() {
