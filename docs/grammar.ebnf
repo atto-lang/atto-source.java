@@ -173,8 +173,9 @@ switch_stmt     = "switch" expression [ ";" ]
 switch_case     = "case" expression { "," expression } "->" block ;
 switch_default  = "default" "->" block ;
 
-select_stmt      = [ "try" ] "select"
+select_stmt      = [ "nb" ] "select" [ select_policy ]
                   ( static_select | dynamic_select ) ;
+select_policy    = "fair" | "ordered" ;
 static_select    = "{"
                   select_case { select_case }
                   [ select_default ]
@@ -226,7 +227,8 @@ member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "is" | "when"
                 | "case" | "default" | "first" | "switch"
-                | "select" | "channel" | "readch" | "writech" ;
+                | "select" | "nb" | "fair" | "ordered"
+                | "channel" | "readch" | "writech" ;
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
