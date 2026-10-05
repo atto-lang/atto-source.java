@@ -38,3 +38,6 @@ jobs:
           grep -F "120:9:13" /tmp/oreslang-callables.out
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/oreslang-native-testing.out
           grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/oreslang-native-testing.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/oreslang-native-testing-semantics.out
+          grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/oreslang-native-testing-semantics.out
+          grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/oreslang-native-testing-semantics.out

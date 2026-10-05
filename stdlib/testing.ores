@@ -137,34 +137,40 @@ fnc emit_status(String status, String full_name, String detail, bool machine): v
 }
 
 fnc emit_summary(&RunSummary summary, bool machine): void {
+  let int total = summary.total;
+  let int passed_count = summary.passed;
+  let int failed_count = summary.failed;
+  let int skipped_count = summary.skipped;
+  let int filtered_count = summary.filtered;
+
   if machine; do
     stdio.stdout.write("ORES_TEST|SUMMARY|total=");
-    stdio.stdout.write(summary.total);
+    stdio.stdout.write(total);
     stdio.stdout.write("|passed=");
-    stdio.stdout.write(summary.passed);
+    stdio.stdout.write(passed_count);
     stdio.stdout.write("|failed=");
-    stdio.stdout.write(summary.failed);
+    stdio.stdout.write(failed_count);
     stdio.stdout.write("|skipped=");
-    stdio.stdout.write(summary.skipped);
+    stdio.stdout.write(skipped_count);
     stdio.stdout.write("|filtered=");
-    stdio.stdout.println(summary.filtered);
+    stdio.stdout.println(filtered_count);
     return;
   fi
 
   stdio.stdout.write("test result: ");
-  if summary.failed == 0; do
+  if failed_count == 0; do
     stdio.stdout.write("ok");
   else
     stdio.stdout.write("FAILED");
   fi
   stdio.stdout.write(". ");
-  stdio.stdout.write(summary.passed);
+  stdio.stdout.write(passed_count);
   stdio.stdout.write(" passed; ");
-  stdio.stdout.write(summary.failed);
+  stdio.stdout.write(failed_count);
   stdio.stdout.write(" failed; ");
-  stdio.stdout.write(summary.skipped);
+  stdio.stdout.write(skipped_count);
   stdio.stdout.write(" skipped; ");
-  stdio.stdout.write(summary.filtered);
+  stdio.stdout.write(filtered_count);
   stdio.stdout.println(" filtered");
   return;
 }
@@ -175,11 +181,17 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
   let int failed_count = 0;
   let int skipped_count = 0;
   let int filtered_count = 0;
+  // Keep borrowed member types explicit at this module boundary.
+  let String suite_name = suite.name;
+  let List<TestCase> tests = suite.tests;
+  let String only = options.only;
+  let bool fail_fast = options.fail_fast;
+  let bool machine = options.machine;
 
-  for test_case of suite.tests do
-    let String full_name = suite.name + "/" + test_case.name;
+  for test_case of tests do
+    let String full_name = suite_name + "/" + test_case.name;
 
-    if !selected(full_name, options.only); do
+    if !selected(full_name, only); do
       filtered_count = filtered_count + 1;
       continue;
     fi
@@ -188,7 +200,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
 
     if test_case.skipped; do
       skipped_count = skipped_count + 1;
-      emit_status("SKIP", full_name, test_case.skip_reason, options.machine);
+      emit_status("SKIP", full_name, test_case.skip_reason, machine);
       continue;
     fi
 
@@ -196,12 +208,12 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
 
     if outcome.passed; do
       passed_count = passed_count + 1;
-      emit_status("PASS", full_name, "", options.machine);
+      emit_status("PASS", full_name, "", machine);
     else
       failed_count = failed_count + 1;
-      emit_status("FAIL", full_name, outcome.message, options.machine);
+      emit_status("FAIL", full_name, outcome.message, machine);
 
-      if options.fail_fast; do
+      if fail_fast; do
         let RunSummary early = new RunSummary(
           total,
           passed_count,
@@ -209,7 +221,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
           skipped_count,
           filtered_count
         );
-        emit_summary(&early, options.machine);
+        emit_summary(&early, machine);
         return early;
       fi
     fi
@@ -222,12 +234,13 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
     skipped_count,
     filtered_count
   );
-  emit_summary(&summary, options.machine);
+  emit_summary(&summary, machine);
   return summary;
 }
 
 pub fnc require_success(&RunSummary summary): void {
-  if summary.failed > 0; do
+  let int failed_count = summary.failed;
+  if failed_count > 0; do
     val Result<bool, String> failure = Err("one or more Oreslang tests failed");
     failure.expect("native Oreslang test suite failed");
   fi
