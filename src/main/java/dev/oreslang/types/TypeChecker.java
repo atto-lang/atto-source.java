@@ -375,6 +375,8 @@ public final class TypeChecker {
             }
         }
 
+        validateFieldLayout(klass);
+
         Set<String> effectiveFieldNames = new LinkedHashSet<>();
         for (ResolvedField field : effectiveFieldTargets(
                 klass, nominalClassType(klass), new LinkedHashSet<>())) {
@@ -2109,6 +2111,47 @@ public final class TypeChecker {
                     + "' requires an initializer");
         }
         return typeOf(field.initializer(), new Env(null), generics, self);
+    }
+
+    private void validateFieldLayout(Ast.ClassDecl klass) {
+        collectFieldLayout(
+                klass,
+                new LinkedHashMap<>(),
+                new LinkedHashSet<>());
+    }
+
+    private void collectFieldLayout(
+            Ast.ClassDecl klass,
+            Map<String, Ast.ClassDecl> owners,
+            Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) {
+            throw new IllegalArgumentException(
+                    "inheritance cycle involving class '" + klass.name() + "'");
+        }
+
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null) collectFieldLayout(parent, owners, stack);
+        }
+
+        Set<String> localNames = new LinkedHashSet<>();
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (!localNames.add(field.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate field '" + klass.name() + "." + field.name() + "'");
+            }
+
+            Ast.ClassDecl previous = owners.putIfAbsent(field.name(), klass);
+            if (previous != null && previous != klass) {
+                throw new IllegalArgumentException(
+                        "field '" + klass.name() + "." + field.name()
+                                + "' collides with inherited field declared by "
+                                + previous.name()
+                                + "; class storage field names must be unique across inheritance");
+            }
+        }
+
+        stack.remove(klass);
     }
 
     private List<ResolvedField> effectiveFieldTargets(Ast.ClassDecl klass, Named concreteType, Set<Ast.ClassDecl> stack) {
