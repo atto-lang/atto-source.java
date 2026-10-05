@@ -93,7 +93,6 @@ final class ChannelSelectLanguageTest {
                   val left = channel<int>(1);
                   val right = channel<int>(1);
                   writech(left, 41);
-                  writech(right, 99);
 
                   select {
                     case readch(left) as value -> {
@@ -104,6 +103,7 @@ final class ChannelSelectLanguageTest {
                     }
                   }
 
+                  writech(right, 99);
                   val survivor = readch(right);
                   stdio.println(survivor);
                   return;
