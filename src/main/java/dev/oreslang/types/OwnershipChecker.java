@@ -905,6 +905,15 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (receiver instanceof Ast.IndexExpr indexed) {
+            ensureMutableReceiver(indexed.receiver(), scope, what);
+            checkExpr(indexed.index(), scope, false);
+            return;
+        }
+        if (receiver instanceof Ast.MemberExpr member) {
+            ensureMutableReceiver(member.receiver(), scope, what);
+            return;
+        }
         if (receiver instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
             VarState owner = borrowOwner(unary.operand(), scope);
             validateBorrow(owner, true);
@@ -1103,7 +1112,28 @@ public final class OwnershipChecker {
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state != null) type = state.type;
-        } else if (receiver instanceof Ast.NewExpr created) type = created.type();
+        } else if (receiver instanceof Ast.NewExpr created) {
+            type = created.type();
+        } else if (receiver instanceof Ast.IndexExpr indexed) {
+            type = collectionElementType(receiverType(indexed.receiver(), scope));
+        } else if (receiver instanceof Ast.MemberExpr member) {
+            Ast.TypeRef ownerType = receiverType(member.receiver(), scope);
+            Ast.ClassDecl ownerClass = ownerType == null ? null : findClass(ownerType.name());
+            if (ownerClass != null) {
+                ResolvedField target = findFieldTarget(
+                        ownerClass,
+                        ownerType,
+                        member.member(),
+                        new LinkedHashSet<>());
+                if (target != null) {
+                    type = substituteType(
+                            ownershipFieldType(target.field()),
+                            genericBindings(
+                                    target.owner().genericParameters(),
+                                    target.ownerType().arguments()));
+                }
+            }
+        }
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
@@ -1478,8 +1508,12 @@ public final class OwnershipChecker {
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
-        if ((concrete.name().equals("Array") || concrete.name().equals("List")
-                || concrete.name().equals("DynamicStruct")) && concrete.arguments().size() == 1) {
+        if ((concrete.name().equals("Array")
+                || concrete.name().equals("List")
+                || concrete.name().equals("DynamicStruct")
+                || concrete.name().equals("Region")
+                || concrete.name().equals("RegionView"))
+                && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
         if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
