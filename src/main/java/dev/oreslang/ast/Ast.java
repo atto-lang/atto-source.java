@@ -251,7 +251,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, SelectStmt, DynamicSelectStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
@@ -340,6 +340,64 @@ public final class Ast {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
         }
+    }
+
+    public enum SelectOperation { READ, WRITE }
+
+    public record SelectCase(
+            SelectOperation operation,
+            Expr channel,
+            Expr value,
+            TypeRef bindingType,
+            String bindingName,
+            List<Stmt> body) {
+        public SelectCase {
+            body = List.copyOf(body);
+            if (operation == SelectOperation.READ && value != null) {
+                throw new IllegalArgumentException("read select case cannot carry a write value");
+            }
+            if (operation == SelectOperation.WRITE && value == null) {
+                throw new IllegalArgumentException("write select case requires a value");
+            }
+            if (operation == SelectOperation.WRITE && (bindingType != null || bindingName != null)) {
+                throw new IllegalArgumentException("write select case cannot bind a received value");
+            }
+        }
+    }
+
+    /**
+     * Static channel select. defaultBody != null means a source-level default
+     * arm exists; an empty list is therefore distinct from no default.
+     */
+    public record SelectStmt(
+            List<SelectCase> cases,
+            List<Stmt> defaultBody,
+            boolean nonBlocking) implements Stmt {
+        public SelectStmt {
+            cases = List.copyOf(cases);
+            defaultBody = defaultBody == null ? null : List.copyOf(defaultBody);
+            if (cases.isEmpty()) throw new IllegalArgumentException("select requires at least one case");
+        }
+
+        public boolean hasDefault() { return defaultBody != null; }
+    }
+
+    /**
+     * Dynamic selection over a runtime List/array/Map of Channel/SelectEntry
+     * values. Map keys and list indexes are surfaced through SelectResult.key.
+     */
+    public record DynamicSelectStmt(
+            Expr entries,
+            String resultBinding,
+            List<Stmt> body,
+            List<Stmt> defaultBody,
+            boolean nonBlocking) implements Stmt {
+        public DynamicSelectStmt {
+            body = List.copyOf(body);
+            defaultBody = defaultBody == null ? null : List.copyOf(defaultBody);
+        }
+
+        public boolean hasDefault() { return defaultBody != null; }
     }
 
     public record TryStmt(List<Stmt> body, String errorName, List<Stmt> catchBody, List<Stmt> finallyBody) implements Stmt {
