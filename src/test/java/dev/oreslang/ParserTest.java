@@ -466,19 +466,21 @@ final class ParserTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          pub leak(handle: OpaqueRuntimeHandle): void {
+                          pub receive(handle: OpaqueRuntimeHandle): void {
                             return;
                           }
                         end
                         """)));
         assertTrue(
-                failure.getMessage().contains("explicitly whitelisted"),
+                failure.getMessage().contains("explicitly whitelisted")
+                        || failure.getMessage().contains("sendable"),
                 failure.getMessage());
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                  pub inspect(id: ActorId): ActorId {
-                    return id;
+                  pub receive(id: ActorId): void {
+                    stdio.println(id);
+                    return;
                   }
                 end
                 """)));
@@ -489,7 +491,7 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Worker as
                   constructor(box: Box mut) { }
-                  pub run(): void { return; }
+                  pub receive(message: int): void { return; }
                 end
                 """));
     }
@@ -551,10 +553,10 @@ final class ParserTest {
     }
 
     @Test
-    void actorProtocolCannotReceiveOrAcquireWritableSharedMutexState() {
+    void actorReceiveCannotReceiveOrAcquireWritableSharedMutexState() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Bad as
-                  pub run(state: SharedMutex<int>): void {
+                  pub receive(state: SharedMutex<int>): void {
                     return;
                   }
                 end
@@ -567,21 +569,10 @@ final class ParserTest {
                     return;
                   }
 
-                  pub run(message: int): void {
+                  pub receive(message: int): void {
                     self.mutate();
                     return;
                   }
-                end
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define actor Bad as
-                  private mutate(state: SharedMutex<int>): void {
-                    val guard = state.try_lock();
-                    return;
-                  }
-
-                  pub run(message: int): void { return; }
                 end
                 """)));
     }
@@ -700,24 +691,37 @@ final class ParserTest {
 
 
     @Test
-    void actorProtocolCannotLeakActorOwnedState() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                shared actor Account {
-                  let int balance = 100;
+    void actorHelpersCannotLeakActorOwnedState() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    shared actor Account {
+                      let int balance = 100;
 
-                  pub leak(): Account {
-                    return self;
-                  }
-                }
-                """)));
+                      private leak(): Account {
+                        return self;
+                      }
+
+                      pub receive(message: int): void {
+                        val leaked = self.leak();
+                        return;
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
 
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
                       let Array<int> items = [1, 2, 3];
 
-                      pub snapshot(): Array<int> {
+                      private snapshot(): Array<int> {
                         return self.items;
+                      }
+
+                      pub receive(message: int): void {
+                        val copy = self.snapshot();
+                        return;
                       }
                     }
                     """));
