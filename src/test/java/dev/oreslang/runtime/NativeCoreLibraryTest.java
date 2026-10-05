@@ -62,7 +62,7 @@ final class NativeCoreLibraryTest {
 
     @Test
     void everyPackagedStdModuleIsPureOreslangAndHasOnlyStdDependencies() throws Exception {
-        Path root = Path.of("src/main/resources/dev/oreslang/std");
+        Path root = Path.of("stdlib");
         assertTrue(Files.isDirectory(root), "packaged stdlib source root must exist");
 
         try (var stream = Files.walk(root)) {
