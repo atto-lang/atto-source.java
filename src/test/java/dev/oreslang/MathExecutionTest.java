@@ -45,6 +45,46 @@ final class MathExecutionTest {
     }
 
     @Test
+    void electricalReferenceSemanticsExecuteFromOreslangStdlibSource() throws Exception {
+        Path electrical = tempDir.resolve("electrical.ores");
+        Path source = tempDir.resolve("main.ores");
+        Files.copy(Path.of("stdlib/math/electrical.ores"), electrical);
+
+        Files.writeString(source, """
+                import fnc {
+                  omega,
+                  z_r,
+                  z_c_unchecked,
+                  parallel
+                } from "./electrical.ores";
+
+                pub routine main() => void {
+                  stdio.stdout.write(omega(0.5));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(math.abs(z_r(100.0)));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(math.abs(parallel(z_r(100.0), z_r(100.0))));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(math.abs(z_c_unchecked(1.0, 0.5)));
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        IncrementalCompiler.BuildResult build = LinkedProgramRunner.run(
+                source,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                output,
+                new ByteArrayOutputStream());
+
+        assertEquals(2, build.units().size());
+        assertEquals(
+                "3.141592653589793|100.0|50.0|2.0",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void kotlinStyleFunctionAliasExecutesAcrossLinkedCodeUnits() throws Exception {
         Path library = tempDir.resolve("solver.ores");
         Path source = tempDir.resolve("main.ores");
