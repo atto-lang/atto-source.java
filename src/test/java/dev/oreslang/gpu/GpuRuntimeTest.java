@@ -41,6 +41,27 @@ final class GpuRuntimeTest {
     }
 
     @Test
+    void gpuBoundaryRejectsCyclicAndExcessivelyDeepValues() {
+        ArrayList<Object> cyclic = new ArrayList<>();
+        cyclic.add(cyclic);
+
+        GpuRuntime.GpuTransferException cycle = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> new GpuRuntime().dispatch(
+                        "test.cycle", GpuRuntime.CallableKind.FNC, List.of(cyclic)));
+        assertTrue(cycle.getMessage().contains("cyclic"));
+
+        Object nested = 1L;
+        for (int i = 0; i < 300; i++) nested = List.of(nested);
+        Object tooDeep = nested;
+        GpuRuntime.GpuTransferException depth = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> new GpuRuntime().dispatch(
+                        "test.depth", GpuRuntime.CallableKind.FNC, List.of(tooDeep)));
+        assertTrue(depth.getMessage().contains("nesting depth"));
+    }
+
+    @Test
     void freezesGuestCollectionsBeforeBackendInvocation() {
         ArrayList<Object> nested = new ArrayList<>();
         nested.add(7L);
