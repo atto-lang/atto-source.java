@@ -139,6 +139,13 @@ public final class OresEvalRootNode extends RootNode {
                 int dimensions,
                 List<Object> values) { }
 
+        private record TokenEmbeddingBatchView(
+                int rows,
+                int tokensPerRow,
+                int dimensions,
+                List<Object> values,
+                List<Object> attentionMask) { }
+
         private enum InvocationKind {
             FUNCTION,
             FUNCTION_BODY,
@@ -489,6 +496,7 @@ public final class OresEvalRootNode extends RootNode {
             if (name == null) return NO_INTRINSIC;
 
             return switch (name) {
+                case "EmbeddingMeanPool" -> intrinsicMeanPool(args);
                 case "EmbeddingNormalizeRows" -> intrinsicNormalizeEmbeddingRows(args);
                 case "EmbeddingDotSimilarity" -> intrinsicDotSimilarity(args);
                 case "EmbeddingCosineSimilarity" -> intrinsicCosineSimilarity(args);
@@ -542,6 +550,36 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @SuppressWarnings("unchecked")
+        private static TokenEmbeddingBatchView tokenEmbeddingBatchView(Object value) {
+            if (!(value instanceof OresObject object)) return null;
+            if (!object.klass.name().equals("TokenEmbeddingBatch")) return null;
+
+            Object rowsValue = object.fields.get("rows");
+            Object tokensValue = object.fields.get("tokens_per_row");
+            Object dimensionsValue = object.fields.get("dimensions");
+            Object valuesValue = object.fields.get("values");
+            Object maskValue = object.fields.get("attention_mask");
+            if (!(rowsValue instanceof Number rows)
+                    || !(tokensValue instanceof Number tokens)
+                    || !(dimensionsValue instanceof Number dimensions)
+                    || !(valuesValue instanceof List<?> values)
+                    || !(maskValue instanceof List<?> attentionMask)) {
+                return null;
+            }
+
+            try {
+                return new TokenEmbeddingBatchView(
+                        Math.toIntExact(rows.longValue()),
+                        Math.toIntExact(tokens.longValue()),
+                        Math.toIntExact(dimensions.longValue()),
+                        (List<Object>) values,
+                        (List<Object>) attentionMask);
+            } catch (ArithmeticException outOfRange) {
+                return null;
+            }
+        }
+
+        @SuppressWarnings("unchecked")
         private static List<Object> mutableList(Object value) {
             return value instanceof List<?> list ? (List<Object>) list : null;
         }
@@ -571,6 +609,100 @@ public final class OresEvalRootNode extends RootNode {
                 return "embedding storage length must equal rows * dimensions";
             }
             return null;
+        }
+
+        private static String tokenEmbeddingShapeError(TokenEmbeddingBatchView batch) {
+            if (batch.rows() < 0) return "token embedding row count must be non-negative";
+            if (batch.tokensPerRow() < 0) return "token count must be non-negative";
+            if (batch.dimensions() <= 0) return "token embedding dimensions must be positive";
+            long expectedValues = (long) batch.rows() * batch.tokensPerRow() * batch.dimensions();
+            if (expectedValues != batch.values().size()) {
+                return "token embedding storage length must equal rows * tokens * dimensions";
+            }
+            long expectedMask = (long) batch.rows() * batch.tokensPerRow();
+            if (expectedMask != batch.attentionMask().size()) {
+                return "attention mask length must equal rows * tokens";
+            }
+            return null;
+        }
+
+        private ResultValue intrinsicMeanPool(List<Object> args) {
+            if (args.size() != 3) return nullIntrinsicResult("mean-pool");
+            TokenEmbeddingBatchView batch = tokenEmbeddingBatchView(args.get(0));
+            List<Object> output = mutableList(args.get(1));
+            if (batch == null || output == null || !(args.get(2) instanceof Boolean normalizeOutput)) {
+                return nullIntrinsicResult("mean-pool");
+            }
+
+            if (tokenEmbeddingShapeError(batch) != null) {
+                return new ResultValue(false, "invalid token embedding batch");
+            }
+            if ((long) batch.rows() * batch.dimensions() != output.size()) {
+                return new ResultValue(false, "pooling output length must equal rows * dimensions");
+            }
+
+            for (int row = 0; row < batch.rows(); row++) {
+                int outputBase = row * batch.dimensions();
+                for (int col = 0; col < batch.dimensions(); col++) {
+                    if ((col & 1023) == 0) context.schedulerSafepoint();
+                    output.set(outputBase + col, 0.0d);
+                }
+
+                int activeTokens = 0;
+                for (int token = 0; token < batch.tokensPerRow(); token++) {
+                    if ((token & 255) == 0) context.schedulerSafepoint();
+                    int maskIndex = (row * batch.tokensPerRow()) + token;
+                    Object maskValue = batch.attentionMask().get(maskIndex);
+                    if (!(maskValue instanceof Boolean active)) {
+                        return nullIntrinsicResult("mean-pool");
+                    }
+                    if (!active) continue;
+
+                    activeTokens++;
+                    int tokenBase = ((row * batch.tokensPerRow()) + token) * batch.dimensions();
+                    for (int col = 0; col < batch.dimensions(); col++) {
+                        if ((col & 1023) == 0) context.schedulerSafepoint();
+                        output.set(
+                                outputBase + col,
+                                numericValue(output, outputBase + col)
+                                        + numericValue(batch.values(), tokenBase + col));
+                    }
+                }
+
+                if (activeTokens == 0) {
+                    return new ResultValue(false, "mean pooling requires at least one unmasked token per row");
+                }
+
+                if (normalizeOutput) {
+                    double squaredNorm = 0.0d;
+                    for (int col = 0; col < batch.dimensions(); col++) {
+                        if ((col & 1023) == 0) context.schedulerSafepoint();
+                        double value = numericValue(output, outputBase + col);
+                        squaredNorm += value * value;
+                    }
+
+                    double norm = Math.sqrt(squaredNorm);
+                    if (norm == 0.0d) {
+                        return new ResultValue(false, "cannot normalize a zero pooled embedding");
+                    }
+                    for (int col = 0; col < batch.dimensions(); col++) {
+                        if ((col & 1023) == 0) context.schedulerSafepoint();
+                        output.set(
+                                outputBase + col,
+                                numericValue(output, outputBase + col) / norm);
+                    }
+                } else {
+                    double divisor = activeTokens;
+                    for (int col = 0; col < batch.dimensions(); col++) {
+                        if ((col & 1023) == 0) context.schedulerSafepoint();
+                        output.set(
+                                outputBase + col,
+                                numericValue(output, outputBase + col) / divisor);
+                    }
+                }
+            }
+
+            return new ResultValue(true, output);
         }
 
         private ResultValue intrinsicNormalizeEmbeddingRows(List<Object> args) {
