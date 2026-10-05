@@ -367,8 +367,14 @@ public final class Ast {
             if (bindings.isEmpty()) {
                 throw new IllegalArgumentException("for-of destructure pattern cannot be empty");
             }
+            java.util.Set<String> names = new java.util.HashSet<>();
             for (DestructureBinding binding : bindings) {
-                if (!binding.isDiscard()) requireForOfBindingKind(binding.kind());
+                if (binding.isDiscard()) continue;
+                requireForOfBindingKind(binding.kind());
+                if (!names.add(binding.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate binding '" + binding.name() + "' in for-of destructure pattern");
+                }
             }
         }
     }

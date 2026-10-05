@@ -406,6 +406,16 @@ final class RoutineAndLoopTest {
                         new Ast.NameExpr("items"),
                         java.util.List.of()));
 
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> new Ast.ForOfDestructureStmt(
+                        java.util.List.of(
+                                new Ast.DestructureBinding(Ast.BindingKind.CONST, "item"),
+                                new Ast.DestructureBinding(Ast.BindingKind.LET, "item")),
+                        new Ast.NameExpr("items"),
+                        java.util.List.of()));
+        assertTrue(duplicate.getMessage().contains("duplicate binding 'item'"));
+
         assertDoesNotThrow(
                 () -> new Ast.ForOfDestructureStmt(
                         java.util.List.of(Ast.DestructureBinding.discard()),
