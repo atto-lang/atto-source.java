@@ -677,6 +677,37 @@ public final class TreeShaker {
                         cases,
                         rewriteStatements(switched.defaultBody(), module, new LinkedHashMap<>(locals))));
             }
+            if (statement instanceof Ast.SelectStmt selected) {
+                List<Ast.SelectCase> cases = new ArrayList<>();
+                for (Ast.SelectCase arm : selected.cases()) {
+                    LinkedHashMap<String, Object> armLocals = new LinkedHashMap<>(locals);
+                    if (arm.bindingName() != null) armLocals.put(arm.bindingName(), UNKNOWN);
+                    cases.add(new Ast.SelectCase(
+                            arm.operation(),
+                            rewriteExpression(arm.channel(), module, locals),
+                            rewriteExpression(arm.value(), module, locals),
+                            arm.bindingType(),
+                            arm.bindingName(),
+                            rewriteStatements(arm.body(), module, armLocals)));
+                }
+                List<Ast.Stmt> defaultBody = selected.defaultBody() == null
+                        ? null
+                        : rewriteStatements(selected.defaultBody(), module, new LinkedHashMap<>(locals));
+                return List.of(new Ast.SelectStmt(cases, defaultBody, selected.nonBlocking()));
+            }
+            if (statement instanceof Ast.DynamicSelectStmt selected) {
+                LinkedHashMap<String, Object> bodyLocals = new LinkedHashMap<>(locals);
+                if (selected.resultBinding() != null) bodyLocals.put(selected.resultBinding(), UNKNOWN);
+                List<Ast.Stmt> defaultBody = selected.defaultBody() == null
+                        ? null
+                        : rewriteStatements(selected.defaultBody(), module, new LinkedHashMap<>(locals));
+                return List.of(new Ast.DynamicSelectStmt(
+                        rewriteExpression(selected.entries(), module, locals),
+                        selected.resultBinding(),
+                        rewriteStatements(selected.body(), module, bodyLocals),
+                        defaultBody,
+                        selected.nonBlocking()));
+            }
             if (statement instanceof Ast.TryStmt tried) {
                 LinkedHashMap<String, Object> catchLocals = new LinkedHashMap<>(locals);
                 if (tried.errorName() != null) catchLocals.put(tried.errorName(), UNKNOWN);
@@ -1057,6 +1088,26 @@ public final class TreeShaker {
                         scanStatements(module, arm.body(), new LinkedHashSet<>(locals));
                     }
                     scanStatements(module, switched.defaultBody(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.SelectStmt selected) {
+                    for (Ast.SelectCase arm : selected.cases()) {
+                        scanExpression(module, arm.channel(), locals);
+                        scanExpression(module, arm.value(), locals);
+                        scanType(arm.bindingType());
+                        LinkedHashSet<String> armLocals = new LinkedHashSet<>(locals);
+                        if (arm.bindingName() != null) armLocals.add(arm.bindingName());
+                        scanStatements(module, arm.body(), armLocals);
+                    }
+                    if (selected.defaultBody() != null) {
+                        scanStatements(module, selected.defaultBody(), new LinkedHashSet<>(locals));
+                    }
+                } else if (statement instanceof Ast.DynamicSelectStmt selected) {
+                    scanExpression(module, selected.entries(), locals);
+                    LinkedHashSet<String> bodyLocals = new LinkedHashSet<>(locals);
+                    if (selected.resultBinding() != null) bodyLocals.add(selected.resultBinding());
+                    scanStatements(module, selected.body(), bodyLocals);
+                    if (selected.defaultBody() != null) {
+                        scanStatements(module, selected.defaultBody(), new LinkedHashSet<>(locals));
+                    }
                 } else if (statement instanceof Ast.TryStmt tried) {
                     scanStatements(module, tried.body(), new LinkedHashSet<>(locals));
                     LinkedHashSet<String> catchLocals = new LinkedHashSet<>(locals);
