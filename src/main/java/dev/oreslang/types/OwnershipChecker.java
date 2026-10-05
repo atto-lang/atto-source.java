@@ -735,26 +735,68 @@ public final class OwnershipChecker {
                             ValueKind.COPY,
                             null);
                 }
-                if (member.member().equals("receive") || member.member().equals("mailbox")) {
+                if (member.member().equals("send")
+                        || member.member().equals("receive")
+                        || member.member().equals("mailbox")) {
                     throw error(
-                            "actor receive/mailbox state is runtime-private; use ActorRef.send(message)");
+                            "raw ActorRef mailbox operations are runtime-private; "
+                                    + "invoke a declared typed actor protocol method instead");
                 }
-                if (!member.member().equals("send")) {
-                    throw error(
-                            "unknown ActorRef behavioral operation '" + member.member()
-                                    + "'; persistent actors expose send(message)");
+
+                Ast.TypeRef protocolType = concreteReceiver.arguments().getFirst();
+                Ast.ClassDecl actorClass = findClass(protocolType.name());
+                if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+                    ResolvedMethod target = findMethodTarget(
+                            actorClass,
+                            protocolType,
+                            member.member(),
+                            call.arguments().size(),
+                            new LinkedHashSet<>());
+                    if (target == null || target.method().visibility() != Ast.Visibility.PUBLIC) {
+                        throw error(
+                                "unknown actor protocol method '" + member.member()
+                                        + "' with arity " + call.arguments().size());
+                    }
+                    Ast.MethodDecl method = target.method();
+                    Map<String, Ast.TypeRef> ownerBindings = genericBindings(
+                            target.owner().genericParameters(),
+                            target.ownerType().arguments());
+                    List<String> allGenerics = new ArrayList<>(target.owner().genericParameters());
+                    allGenerics.addAll(method.genericParameters());
+                    CallSignature signature = specializeCall(
+                            allGenerics,
+                            method.genericParameters(),
+                            method.parameters(),
+                            method.returnType(),
+                            call,
+                            scope,
+                            ownerBindings);
+                    checkArguments(
+                            call.arguments(),
+                            signature.parameters(),
+                            scope,
+                            "actor protocol method " + target.owner().name() + "." + method.name());
+                    Ast.TypeRef future = new Ast.TypeRef(
+                            "Future",
+                            List.of(signature.result()),
+                            false);
+                    return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
                 }
-                if (call.arguments().size() != 1) {
-                    throw error("ActorRef.send expects exactly one message");
+
+                // Interface-backed ActorRef calls have already been shape/type
+                // checked by TypeChecker. Ownership still treats every argument
+                // as crossing a mailbox boundary and forbids guard transport.
+                for (Ast.Expr argumentExpr : call.arguments()) {
+                    ValueInfo argument = checkExpr(argumentExpr, scope, true);
+                    if (containsMutexGuardType(argument.type)) {
+                        throw error("actor protocol calls cannot transport a guard-bearing value");
+                    }
                 }
-                ValueInfo argument = checkExpr(call.arguments().getFirst(), scope, true);
-                if (containsMutexGuardType(argument.type)) {
-                    throw error("ActorRef.send cannot transport a guard-bearing value");
-                }
-                return new ValueInfo(
-                        Ast.TypeRef.simple("void"),
-                        ValueKind.COPY,
-                        null);
+                Ast.TypeRef future = new Ast.TypeRef(
+                        "Future",
+                        List.of(Ast.TypeRef.inferred()),
+                        false);
+                return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
