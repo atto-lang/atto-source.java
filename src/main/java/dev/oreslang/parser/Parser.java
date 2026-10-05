@@ -302,6 +302,7 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         Ast.ActorKind actorKind = intrinsicActorKind(parents);
+        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
 
         if (actorKind != Ast.ActorKind.NONE) {
             if (isAbstract) throw error(previous(), "actor classes cannot be abstract");
@@ -349,7 +350,8 @@ public final class Parser {
         }
         consume(END, "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
-                name, isAbstract, actorKind, generics, parents, interfaces, fields, methods);
+                name, isAbstract, actorKind, generics, actorProtocolTypes,
+                parents, interfaces, fields, methods);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -360,6 +362,7 @@ public final class Parser {
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         Ast.ActorKind inheritedMarker = intrinsicActorKind(parents);
+        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
 
         if (inheritedMarker != Ast.ActorKind.NONE && inheritedMarker != actorKind) {
             throw error(previous(), "actor base marker conflicts with the actor declaration's execution domain");
@@ -406,11 +409,13 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
-                name, false, actorKind, generics, parents, interfaces, fields, methods);
+                name, false, actorKind, generics, actorProtocolTypes,
+                parents, interfaces, fields, methods);
     }
 
     private Ast.ActorKind intrinsicActorKind(List<Ast.TypeRef> parents) {
         Ast.ActorKind result = Ast.ActorKind.NONE;
+        boolean foundMarker = false;
         for (Ast.TypeRef parent : parents) {
             Ast.ActorKind marker = switch (parent.name()) {
                 case "Actor" -> Ast.ActorKind.SHARED;
@@ -420,20 +425,37 @@ public final class Parser {
             };
             if (marker == Ast.ActorKind.NONE) continue;
             validateIntrinsicActorBaseArguments(parent);
-            if (result != Ast.ActorKind.NONE && result != marker) {
-                throw error(previous(), "a class cannot extend more than one actor execution-domain base");
+            if (foundMarker) {
+                throw error(previous(),
+                        "a class may extend exactly one compiler-intrinsic actor execution-domain base");
             }
+            foundMarker = true;
             result = marker;
         }
         return result;
     }
 
+    private List<Ast.TypeRef> intrinsicActorProtocolTypes(List<Ast.TypeRef> parents) {
+        for (Ast.TypeRef parent : parents) {
+            if (isIntrinsicActorBase(parent)) {
+                return parent.arguments();
+            }
+        }
+        return List.of();
+    }
+
     private void validateIntrinsicActorBaseArguments(Ast.TypeRef parent) {
-        if (parent.inferArguments() || !parent.arguments().isEmpty()) {
+        if (parent.inferArguments()) {
             throw error(previous(),
                     parent.name()
-                            + " is a compiler-intrinsic execution-domain base and does not take protocol type arguments; "
-                            + "declare the actor protocol with public methods and/or an interface");
+                            + " actor protocol arguments cannot use inferred <>");
+        }
+        int count = parent.arguments().size();
+        if (count != 0 && count != 3) {
+            throw error(previous(),
+                    parent.name()
+                            + " accepts either no actor ABI arguments or exactly "
+                            + "<Message, Reply, Error>");
         }
     }
 
@@ -471,22 +493,33 @@ public final class Parser {
             return;
         }
 
-        if (method.visibility() != Ast.Visibility.PUBLIC) return;
-
-        // Public actor methods are the typed source-level protocol. The
-        // compiler/runtime lowers all of them onto one hidden mailbox
-        // dispatcher; no user-visible method name is privileged.
-        if (!method.genericParameters().isEmpty()) {
-            throw error(previous(),
-                    "public actor protocol methods cannot declare method generic parameters");
-        }
         if (method.explicitReceiverType() != null) {
             throw error(previous(),
-                    "public actor protocol methods use the implicit self receiver");
+                    "actor instance methods use the implicit self receiver");
         }
-        if (method.parameters().stream().anyMatch(Ast.Param::mutable)) {
+
+        if (method.visibility() != Ast.Visibility.PUBLIC) return;
+
+        if (!method.name().equals("receive")) {
             throw error(previous(),
-                    "public actor protocol parameters cannot be 'mut'; mutable authority cannot cross the actor mailbox boundary");
+                    "a persistent actor exposes exactly one public receive(Message): void ingress; "
+                            + "all other actor instance methods must be private");
+        }
+        if (!method.genericParameters().isEmpty()) {
+            throw error(previous(),
+                    "actor receive(Message) cannot declare method generic parameters");
+        }
+        if (method.parameters().size() != 1) {
+            throw error(previous(),
+                    "actor receive(Message) must accept exactly one message parameter");
+        }
+        if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
+            throw error(previous(),
+                    "actor receive(Message) must return void; use an explicit response capability for replies");
+        }
+        if (method.parameters().getFirst().mutable()) {
+            throw error(previous(),
+                    "actor receive(Message) cannot accept a 'mut' message; mutable caller authority cannot cross the mailbox boundary");
         }
     }
 
