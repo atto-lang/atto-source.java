@@ -502,7 +502,7 @@ public final class HotReloadManager implements AutoCloseable {
     private static Ast.EntryExportDecl requireEntryExport(Ast.Program program) {
         return entryExport(program).orElseThrow(() ->
                 new IllegalArgumentException(
-                        "hot-load entry requested but code unit declares no 'export entry <kind> <name>;' marker"));
+                        "hot-load entry requested but code unit declares no 'export entry <name>;' marker"));
     }
 
     private void validateStageInput(String codeUnitId, String sourceText) {
