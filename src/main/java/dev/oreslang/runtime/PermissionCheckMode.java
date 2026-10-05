@@ -22,6 +22,15 @@ public enum PermissionCheckMode {
         };
     }
 
+    public static PermissionCheckMode fromApplicationArguments(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith("--ores-permission-check=")) {
+                return parse(arg.substring("--ores-permission-check=".length()));
+            }
+        }
+        return COMPILE;
+    }
+
     public boolean defersToRuntime(IsolatePolicy.Capability capability) {
         if (this != RUNTIME) return false;
         return switch (capability) {
