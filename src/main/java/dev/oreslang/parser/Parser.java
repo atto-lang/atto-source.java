@@ -237,7 +237,7 @@ public final class Parser {
                             + "'let fnc name = || -> { ... };'");
         }
 
-        consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
+        consume(LPAREN, "expected '(' after callable name");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
@@ -643,18 +643,6 @@ public final class Parser {
             throw error(previous(), "@Ret type and declared return type disagree");
         }
         return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
-    }
-
-    private List<Ast.Param> parseDeclaredPipeParameters() {
-        if (check(PIPE)) return List.of();
-        List<Ast.Param> params = new ArrayList<>();
-        do {
-            Ast.TypeRef type = parseTypeRef();
-            boolean mutable = match(MUT);
-            String name = consume(IDENT, "lambda-style callable declaration parameters require 'Type name'").lexeme();
-            params.add(new Ast.Param(type, name, false, mutable));
-        } while (match(COMMA));
-        return List.copyOf(params);
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
