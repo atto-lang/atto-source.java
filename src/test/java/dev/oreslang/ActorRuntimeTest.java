@@ -21,6 +21,97 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
     @Test
+    void synchronousTypedProtocolCallCompletesRuntimeOwnedFuture() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> {
+                        assertEquals("plus_one", method);
+                        return ((Number) arguments.getFirst()).intValue() + 1;
+                    });
+
+            var reply = runtime.invokeSourceProtocol(ref, "plus_one", List.of(41));
+
+            assertEquals(42, reply.get(2, TimeUnit.SECONDS));
+            assertTrue(ref.isAlive());
+        }
+    }
+
+    @Test
+    void rawHostMailboxSendCannotBypassTypedSourceProtocolDispatcher() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> 42);
+
+            ref.send(List.of("raw", "message"));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+
+            assertFalse(ref.isAlive(),
+                    "raw mailbox delivery into a typed protocol actor must fail closed");
+            assertInstanceOf(SecurityException.class, ref.failure().orElseThrow());
+        }
+    }
+
+    @Test
+    void typedProtocolRejectsCrossRuntimeActorRefArguments() {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var target = left.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> null);
+            var foreign = right.spawnShared(factoryContext ->
+                    (message, turnContext) -> { });
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> left.invokeSourceProtocol(
+                            target,
+                            "use_ref",
+                            List.of(foreign)));
+
+            assertTrue(failure.getMessage().contains("different ActorRuntime"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void doubleSuspendedProtocolReplySettlementFailsActorButDoesNotOverwriteFirstReply()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Integer> gate = new CompletableFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> {
+                        suspended.countDown();
+                        turnContext.suspendOn(gate, (value, failure, resumeContext) -> {
+                            resumeContext.completeProtocolReply(42);
+                            resumeContext.completeProtocolReply(43);
+                        });
+                        throw new AssertionError(
+                                "suspendOn must unwind the typed protocol turn");
+                    });
+
+            var reply = runtime.invokeSourceProtocol(ref, "compute", List.of());
+            assertTrue(suspended.await(2, TimeUnit.SECONDS));
+            gate.complete(1);
+
+            assertEquals(42, reply.get(2, TimeUnit.SECONDS),
+                    "first runtime settlement remains authoritative");
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertFalse(ref.isAlive(),
+                    "double reply settlement is a compiler/runtime invariant violation");
+            assertTrue(ref.failure().orElseThrow().getMessage().contains("already settled"));
+        }
+    }
+
+    @Test
     void suspendedTypedProtocolReplyCompletesAfterActorContinuationResumes() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CompletableFuture<Integer> gate = new CompletableFuture<>();
