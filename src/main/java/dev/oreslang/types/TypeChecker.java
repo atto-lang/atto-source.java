@@ -690,7 +690,19 @@ public final class TypeChecker {
                                 arm.bindingKind());
                     }
                 }
-                checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // nb select arms run later as detached actor continuations.
+                    // return; exits the arm itself and loop control cannot cross
+                    // back into an already-continued enclosing loop.
+                    checkCallableBlock(
+                            arm.body(),
+                            armEnv,
+                            generics,
+                            Primitive.VOID,
+                            self);
+                } else {
+                    checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                }
             }
             return;
         }
