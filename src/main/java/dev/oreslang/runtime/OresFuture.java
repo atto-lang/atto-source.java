@@ -441,13 +441,6 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     @SuppressWarnings("unchecked")
     private void notifyWaiter(Waiter<T> waiter, Object terminal) {
         if (!waiter.claimed.compareAndSet(false, true)) return;
-
-        // settle() normally polls the waiter before delivery, but a waiter
-        // registered after the Future is already terminal is notified directly
-        // from registration. Remove it here as well so claimed callbacks never
-        // remain strongly retained in the queue.
-        waiters.remove(waiter);
-
         try {
             if (terminal instanceof Success<?> success) {
                 waiter.callback.accept((T) success.value(), null);
