@@ -1274,8 +1274,9 @@ public final class OresEvalRootNode extends RootNode {
                         env);
                 if (target == null
                         || !tailResultCompatible(
-                                callable.returnType(),
-                                target.function().returnType())) {
+                                callable,
+                                target.function().returnType(),
+                                Set.copyOf(target.function().genericParameters()))) {
                     return null;
                 }
 
@@ -1346,8 +1347,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (method != null
                         && method.async()
                         && tailResultCompatible(
-                                callable.returnType(),
-                                method.returnType())) {
+                                callable,
+                                method.returnType(),
+                                asyncGenericParameters(object.klass, method))) {
                     return new AsyncTailTransfer(
                             object.owner.asyncMethodPlan(
                                     object,
@@ -1371,8 +1373,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (fn != null
                         && fn.async()
                         && tailResultCompatible(
-                                callable.returnType(),
-                                fn.returnType())) {
+                                callable,
+                                fn.returnType(),
+                                asyncGenericParameters(klass.klass(), fn))) {
                     return new AsyncTailTransfer(
                             klass.owner().asyncStaticFunctionPlan(
                                     klass.klass(),
@@ -1401,8 +1404,9 @@ public final class OresEvalRootNode extends RootNode {
                         && fn.async()
                         && fn.actorKind() == Ast.ActorKind.NONE
                         && tailResultCompatible(
-                                callable.returnType(),
-                                fn.returnType())) {
+                                callable,
+                                fn.returnType(),
+                                Set.copyOf(fn.genericParameters()))) {
                     return new AsyncTailTransfer(
                             module.owner().asyncFunctionPlan(fn, args),
                             module.owner().functionTraceFrame(fn),
@@ -1421,8 +1425,9 @@ public final class OresEvalRootNode extends RootNode {
                         && fn.actorKind() == Ast.ActorKind.NONE
                         && fn.parameters().size() == args.size()
                         && tailResultCompatible(
-                                callable.returnType(),
-                                fn.returnType())) {
+                                callable,
+                                fn.returnType(),
+                                Set.copyOf(fn.genericParameters()))) {
                     return new AsyncTailTransfer(
                             namespace.owner().asyncFunctionPlan(fn, args),
                             namespace.owner().functionTraceFrame(fn),
