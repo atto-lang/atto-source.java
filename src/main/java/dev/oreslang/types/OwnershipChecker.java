@@ -252,6 +252,81 @@ public final class OwnershipChecker {
             checkBlock(switched.defaultBody(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.SelectStmt selected) {
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+
+            for (Ast.SelectCase arm : selected.cases()) {
+                restoreState(base);
+                ValueInfo channel = checkExpr(arm.channel(), scope, false);
+                Ast.TypeRef elementType = channel.type != null
+                        && channel.type.name().equals("Channel")
+                        && channel.type.arguments().size() == 1
+                        ? channel.type.arguments().getFirst()
+                        : Ast.TypeRef.inferred();
+
+                Scope armScope = new Scope(scope);
+                if (arm.operation() == Ast.SelectOperation.READ && arm.bindingName() != null) {
+                    Ast.TypeRef bindingType = arm.bindingType() == null ? elementType : arm.bindingType();
+                    armScope.define(
+                            arm.bindingName(),
+                            new VarState(
+                                    bindingType,
+                                    false,
+                                    bindingType.name().equals("$infer$")
+                                            ? ValueKind.MOVE_ONLY
+                                            : kindOfType(bindingType),
+                                    Origin.LOCAL));
+                } else if (arm.operation() == Ast.SelectOperation.WRITE) {
+                    // A write case is only committed for the winning arm. Treat
+                    // the payload as observed while proving branch state here;
+                    // the runtime owns the atomic transfer at select commit.
+                    checkExpr(arm.value(), scope, false);
+                }
+                checkBlock(arm.body(), armScope, returnType);
+                armScope.close();
+                exits.add(stateSnapshot(scope));
+            }
+
+            restoreState(base);
+            if (selected.defaultBody() != null) {
+                checkBlock(selected.defaultBody(), scope, returnType);
+                exits.add(stateSnapshot(scope));
+            } else if (selected.nonBlocking()) {
+                exits.add(base);
+            }
+            mergeBranchState(base, exits);
+            return;
+        }
+        if (stmt instanceof Ast.DynamicSelectStmt selected) {
+            checkExpr(selected.entries(), scope, false);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+
+            Scope bodyScope = new Scope(scope);
+            if (selected.resultBinding() != null) {
+                bodyScope.define(
+                        selected.resultBinding(),
+                        new VarState(
+                                new Ast.TypeRef("SelectResult", List.of(Ast.TypeRef.inferred()), false),
+                                false,
+                                ValueKind.MOVE_ONLY,
+                                Origin.LOCAL));
+            }
+            checkBlock(selected.body(), bodyScope, returnType);
+            bodyScope.close();
+            exits.add(stateSnapshot(scope));
+
+            restoreState(base);
+            if (selected.defaultBody() != null) {
+                checkBlock(selected.defaultBody(), scope, returnType);
+                exits.add(stateSnapshot(scope));
+            } else if (selected.nonBlocking()) {
+                exits.add(base);
+            }
+            mergeBranchState(base, exits);
+            return;
+        }
         if (stmt instanceof Ast.TryStmt attempted) {
             checkBlock(attempted.body(), scope, returnType);
             Scope caught = new Scope(scope);
@@ -588,6 +663,71 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.NameExpr builtin
+                && builtin.name().equals("channel")) {
+            for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, false);
+            Ast.TypeRef element = call.typeArguments().size() == 1
+                    ? call.typeArguments().getFirst()
+                    : Ast.TypeRef.inferred();
+            return new ValueInfo(
+                    new Ast.TypeRef("Channel", List.of(element), false),
+                    ValueKind.COPY,
+                    null);
+        }
+
+        if (call.callee() instanceof Ast.NameExpr builtin
+                && builtin.name().equals("readch")
+                && call.arguments().size() == 1) {
+            ValueInfo channel = checkExpr(call.arguments().getFirst(), scope, false);
+            Ast.TypeRef element = channel.type != null
+                    && channel.type.name().equals("Channel")
+                    && channel.type.arguments().size() == 1
+                    ? channel.type.arguments().getFirst()
+                    : Ast.TypeRef.inferred();
+            return new ValueInfo(
+                    element,
+                    element.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(element),
+                    null);
+        }
+
+        if (call.callee() instanceof Ast.NameExpr builtin
+                && builtin.name().equals("writech")
+                && call.arguments().size() == 2) {
+            checkExpr(call.arguments().get(0), scope, false);
+            checkExpr(call.arguments().get(1), scope, true);
+            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr selectCall
+                && selectCall.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("select")) {
+            if (selectCall.member().equals("readch") && call.arguments().size() == 1) {
+                ValueInfo channel = checkExpr(call.arguments().getFirst(), scope, false);
+                Ast.TypeRef element = channel.type != null
+                        && channel.type.name().equals("Channel")
+                        && channel.type.arguments().size() == 1
+                        ? channel.type.arguments().getFirst()
+                        : Ast.TypeRef.inferred();
+                return new ValueInfo(
+                        new Ast.TypeRef("SelectEntry", List.of(element), false),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+            if (selectCall.member().equals("writech") && call.arguments().size() == 2) {
+                ValueInfo channel = checkExpr(call.arguments().get(0), scope, false);
+                checkExpr(call.arguments().get(1), scope, true);
+                Ast.TypeRef element = channel.type != null
+                        && channel.type.name().equals("Channel")
+                        && channel.type.arguments().size() == 1
+                        ? channel.type.arguments().getFirst()
+                        : Ast.TypeRef.inferred();
+                return new ValueInfo(
+                        new Ast.TypeRef("SelectEntry", List.of(element), false),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -1055,6 +1195,27 @@ public final class OwnershipChecker {
                     scanStatements(arm.body(), blockLocals, outer, recursiveBinding, captures);
                 }
                 scanStatements(s.defaultBody(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.SelectStmt s) {
+                for (Ast.SelectCase arm : s.cases()) {
+                    scanExpr(arm.channel(), blockLocals, outer, recursiveBinding, captures, false);
+                    if (arm.value() != null) {
+                        scanExpr(arm.value(), blockLocals, outer, recursiveBinding, captures, false);
+                    }
+                    Set<String> armLocals = new HashSet<>(blockLocals);
+                    if (arm.bindingName() != null) armLocals.add(arm.bindingName());
+                    scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
+                }
+                if (s.defaultBody() != null) {
+                    scanStatements(s.defaultBody(), blockLocals, outer, recursiveBinding, captures);
+                }
+            } else if (stmt instanceof Ast.DynamicSelectStmt s) {
+                scanExpr(s.entries(), blockLocals, outer, recursiveBinding, captures, false);
+                Set<String> selectedLocals = new HashSet<>(blockLocals);
+                if (s.resultBinding() != null) selectedLocals.add(s.resultBinding());
+                scanStatements(s.body(), selectedLocals, outer, recursiveBinding, captures);
+                if (s.defaultBody() != null) {
+                    scanStatements(s.defaultBody(), blockLocals, outer, recursiveBinding, captures);
+                }
             } else if (stmt instanceof Ast.TryStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
                 Set<String> caught = new HashSet<>(blockLocals);
