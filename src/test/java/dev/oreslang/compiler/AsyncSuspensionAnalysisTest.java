@@ -73,7 +73,7 @@ final class AsyncSuspensionAnalysisTest {
                 async fnc target(): int {
                   val first = 1;
                   await pause();
-                  stdio.stdout.write(first);
+                  val consumed = first;
 
                   val second = 2;
                   await pause();
