@@ -53,6 +53,8 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
+    private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
+    private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
@@ -95,6 +97,11 @@ public final class ActorRuntime implements AutoCloseable {
     public static ActorKind currentActorKind() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.kind();
+    }
+
+    public static Optional<ActorId> currentActorId() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
     public static Object currentExecutionDomain() {
@@ -175,6 +182,11 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
 
+    public record ActorGroupId(UUID value) {
+        public ActorGroupId { Objects.requireNonNull(value); }
+        public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
+    }
+
     public static final class ActorTerminatedException extends IllegalStateException {
         private final ActorId actorId;
         private final ActorKind actorKind;
@@ -224,6 +236,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
@@ -762,6 +775,10 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        default ActorGroup actorGroup(ActorGroupId id) {
+            return runtime().actorGroup(id);
+        }
     }
 
     /**
@@ -944,6 +961,361 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public String toString() {
             return "ActorRef[" + kind + ":" + id.value() + "]";
+        }
+    }
+
+    /**
+     * Unforgeable join authority for one ActorGroup. Capabilities may cross
+     * actor mailboxes but are runtime-affine and cannot be reconstructed from a
+     * group id.
+     */
+    public final class ActorGroupJoinCapability {
+        private final ActorGroupId groupId;
+        private final UUID secret;
+
+        private ActorGroupJoinCapability(ActorGroupId groupId, UUID secret) {
+            this.groupId = Objects.requireNonNull(groupId, "groupId");
+            this.secret = Objects.requireNonNull(secret, "secret");
+        }
+
+        public ActorGroupId groupId() { return groupId; }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
+        /**
+         * Resolve this capability in its owning runtime. Possessing the
+         * capability does not itself grant event access until the actor joins.
+         */
+        public ActorGroup group() {
+            requireCallerRuntimeAffinity("resolve an ActorGroup capability");
+            ActorGroup group = actorGroups.get(groupId);
+            if (group == null || group.closed()) {
+                throw new IllegalStateException("ActorGroup is closed: " + groupId);
+            }
+            group.requireCapability(this);
+            return group;
+        }
+
+        /**
+         * Join the current actor and return the group handle for immediate use.
+         */
+        public ActorGroup join() {
+            ActorGroup group = group();
+            group.joinCurrent(this);
+            return group;
+        }
+
+        @Override
+        public String toString() {
+            return "ActorGroupJoinCapability[" + groupId.value() + "]";
+        }
+    }
+
+    /**
+     * Cooperation domain orthogonal to the supervision tree.
+     *
+     * <p>An ActorGroup owns membership/capability state and one runtime event
+     * bus. It does not own a dispatcher and is not itself an actor, so group
+     * communication never serializes through a central mailbox.</p>
+     */
+    public final class ActorGroup implements AutoCloseable {
+        private final ActorGroupId id;
+        private final ActorId creator;
+        private final int memberLimit;
+        private final int eventTopicLimit;
+        private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        private final AtomicBoolean groupClosed = new AtomicBoolean();
+        private final Object authorityLock = new Object();
+        private final ActorEventBus eventBus;
+        private UUID joinSecret = UUID.randomUUID();
+
+        private ActorGroup(
+                ActorGroupId id,
+                ActorId creator,
+                IsolatePolicy creatorPolicy) {
+            this.id = Objects.requireNonNull(id, "id");
+            this.creator = creator;
+            Objects.requireNonNull(creatorPolicy, "creatorPolicy");
+            this.memberLimit = Math.max(
+                    1,
+                    Math.min(
+                            dispatcherConfig.maxActors(),
+                            creatorPolicy.maxMailboxMessages()));
+            this.eventTopicLimit = Math.max(
+                    1,
+                    Math.min(
+                            MAX_EVENT_TOPICS_PER_GROUP,
+                            creatorPolicy.maxMailboxMessages()));
+            this.eventBus = new ActorEventBus(ActorRuntime.this, this);
+            if (creator != null) members.add(creator);
+        }
+
+        public ActorGroupId id() { return id; }
+
+        public Optional<ActorId> creatorId() {
+            requireObserver("inspect ActorGroup creator");
+            return Optional.ofNullable(creator);
+        }
+
+        public boolean closed() { return groupClosed.get(); }
+
+        public int memberCount() {
+            requireObserver("inspect ActorGroup membership");
+            return members.size();
+        }
+
+        public Set<ActorId> memberIds() {
+            requireObserver("inspect ActorGroup membership");
+            return Set.copyOf(members);
+        }
+
+        int eventTopicLimit() { return eventTopicLimit; }
+
+        public ActorEventBus events() {
+            requireObserver("access ActorGroup events");
+            requireOpen();
+            return eventBus;
+        }
+
+        public ActorGroupJoinCapability joinCapability() {
+            requireManager("issue ActorGroup join capabilities");
+            synchronized (authorityLock) {
+                requireOpen();
+                return new ActorGroupJoinCapability(id, joinSecret);
+            }
+        }
+
+        /**
+         * Invalidates previously issued join capabilities without disturbing
+         * actors that are already members. Rotation and join admission are
+         * linearized on authorityLock so a stale capability cannot validate
+         * immediately before rotation and join immediately after it.
+         */
+        public ActorGroupJoinCapability rotateJoinCapability() {
+            requireManager("rotate ActorGroup join capabilities");
+            synchronized (authorityLock) {
+                requireOpen();
+                joinSecret = UUID.randomUUID();
+                return new ActorGroupJoinCapability(id, joinSecret);
+            }
+        }
+
+        public void joinCurrent(ActorGroupJoinCapability capability) {
+            ActorId actorId = currentActorId().orElseThrow(() ->
+                    new SecurityException("joinCurrent requires an actor execution context"));
+            joinId(actorId, capability);
+        }
+
+        public void join(ActorRef<?> ref, ActorGroupJoinCapability capability) {
+            Objects.requireNonNull(ref, "ref");
+            requireCallerRuntimeAffinity("join an ActorGroup");
+            if (!ref.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+            }
+            ActorId caller = currentActorId().orElse(null);
+            if (caller != null && !caller.equals(ref.id())) {
+                throw new SecurityException("actor code may only join itself to an ActorGroup");
+            }
+            joinId(ref.id(), capability);
+        }
+
+        private void joinId(ActorId actorId, ActorGroupJoinCapability capability) {
+            synchronized (authorityLock) {
+                requireOpen();
+                requireCapabilityLocked(capability);
+                ActorCell<?> cell = actors.get(actorId);
+                if (cell == null || cell.stopped.get()) {
+                    throw new IllegalStateException("actor is not alive: " + actorId);
+                }
+                if (!members.contains(actorId) && members.size() >= memberLimit) {
+                    throw new IllegalStateException(
+                            "ActorGroup member limit exceeded: maximum " + memberLimit);
+                }
+                members.add(actorId);
+                if (groupClosed.get() || cell.stopped.get()) {
+                    members.remove(actorId);
+                    throw new IllegalStateException("ActorGroup or actor closed during join");
+                }
+            }
+        }
+
+        public void leaveCurrent() {
+            ActorId actorId = requireCurrentMember("leave an ActorGroup");
+            leaveId(actorId);
+        }
+
+        public boolean contains(ActorRef<?> ref) {
+            Objects.requireNonNull(ref, "ref");
+            requireObserver("inspect ActorGroup membership");
+            if (!ref.ownedBy(ActorRuntime.this)) return false;
+            return members.contains(ref.id());
+        }
+
+        private void requireObserver(String operation) {
+            requireCallerRuntimeAffinity(operation);
+            ActorId caller = currentActorId().orElse(null);
+            if (caller != null && !isMember(caller)) {
+                throw new SecurityException(
+                        operation + " requires ActorGroup membership");
+            }
+        }
+
+        boolean isMember(ActorId actorId) {
+            return !groupClosed.get() && members.contains(actorId);
+        }
+
+        ActorId requireCurrentMember(String operation) {
+            requireCallerRuntimeAffinity(operation);
+            ActorId actorId = currentActorId().orElseThrow(() ->
+                    new SecurityException(operation + " requires an actor execution context"));
+            if (!isMember(actorId)) {
+                throw new SecurityException("actor " + actorId + " is not a member of ActorGroup " + id);
+            }
+            return actorId;
+        }
+
+        ActorId currentMemberOrSystem(String operation) {
+            requireCallerRuntimeAffinity(operation);
+            ActorId actorId = currentActorId().orElse(null);
+            if (actorId != null && !isMember(actorId)) {
+                throw new SecurityException("actor " + actorId + " is not a member of ActorGroup " + id);
+            }
+            return actorId;
+        }
+
+        void requireManager(String operation) {
+            requireCallerRuntimeAffinity(operation);
+            ActorId caller = currentActorId().orElse(null);
+            if (caller != null && !Objects.equals(caller, creator)) {
+                throw new SecurityException(
+                        operation + " requires the ActorGroup creator or host/supervisor");
+            }
+        }
+
+        void requireSupervisor(String operation) {
+            requireSupervisorContext(operation);
+        }
+
+        private void requireCapability(ActorGroupJoinCapability capability) {
+            synchronized (authorityLock) {
+                requireCapabilityLocked(capability);
+            }
+        }
+
+        private void requireCapabilityLocked(ActorGroupJoinCapability capability) {
+            Objects.requireNonNull(capability, "capability");
+            if (!capability.ownedBy(ActorRuntime.this)
+                    || !id.equals(capability.groupId)
+                    || !joinSecret.equals(capability.secret)) {
+                throw new SecurityException("invalid or revoked ActorGroup join capability");
+            }
+        }
+
+        private void leaveId(ActorId actorId) {
+            if (members.remove(actorId)) eventBus.removeActor(actorId);
+        }
+
+        private void actorTerminated(ActorId actorId) {
+            leaveId(actorId);
+            if (Objects.equals(creator, actorId)) closeFromRuntime();
+        }
+
+        private void requireOpen() {
+            if (groupClosed.get() || closed.get()) {
+                throw new IllegalStateException("ActorGroup is closed: " + id);
+            }
+        }
+
+        @Override
+        public void close() {
+            requireManager("close an ActorGroup");
+            closeFromRuntime();
+        }
+
+        private void closeFromRuntime() {
+            synchronized (authorityLock) {
+                if (!groupClosed.compareAndSet(false, true)) return;
+                // Revocation is part of close: even a capability held by code
+                // racing teardown can no longer pass validation.
+                joinSecret = UUID.randomUUID();
+            }
+            eventBus.closeFromGroup();
+            members.clear();
+            actorGroups.remove(id, this);
+        }
+
+        @Override
+        public String toString() {
+            return "ActorGroup[" + id.value() + ",closed=" + groupClosed.get() + "]";
+        }
+    }
+
+    /**
+     * Create a cooperation domain. An actor-created group is structurally owned
+     * by that actor and closes when its creator terminates. Host-created groups
+     * live until explicitly closed or the ActorRuntime closes.
+     */
+    public int actorGroupCount() {
+        return actorGroups.size();
+    }
+
+    /**
+     * Resolve a live group by id. Actor callers must already be members; the
+     * host/supervisor may inspect any group in its runtime.
+     */
+    public ActorGroup actorGroup(ActorGroupId id) {
+        Objects.requireNonNull(id, "id");
+        requireCallerRuntimeAffinity("access an ActorGroup");
+        ActorGroup group = actorGroups.get(id);
+        if (group == null || group.closed()) {
+            throw new IllegalArgumentException("unknown or closed ActorGroup: " + id);
+        }
+        group.currentMemberOrSystem("access ActorGroup " + id);
+        return group;
+    }
+
+    public ActorGroup createActorGroup() {
+        requireCallerRuntimeAffinity("create an ActorGroup");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+
+        ActorId creator = currentActorId().orElse(null);
+        IsolatePolicy creatorPolicy =
+                currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
+        if (creator != null && !actors.containsKey(creator)) {
+            throw new IllegalStateException("current actor is no longer registered");
+        }
+
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (actorGroups.size() >= dispatcherConfig.maxActors()) {
+                throw new IllegalStateException(
+                        "ActorGroup runtime limit exceeded: maximum "
+                                + dispatcherConfig.maxActors());
+            }
+            if (creator != null) {
+                long ownedGroups = actorGroups.values().stream()
+                        .filter(group -> creator.equals(group.creator))
+                        .filter(group -> !group.closed())
+                        .count();
+                int ownerLimit = Math.max(
+                        1,
+                        Math.min(
+                                MAX_ACTOR_GROUPS_PER_ACTOR,
+                                creatorPolicy.maxMailboxMessages()));
+                if (ownedGroups >= ownerLimit) {
+                    throw new IllegalStateException(
+                            "actor-owned ActorGroup limit exceeded for "
+                                    + creator + ": maximum " + ownerLimit);
+                }
+            }
+            while (true) {
+                ActorGroupId id = ActorGroupId.create();
+                ActorGroup group =
+                        new ActorGroup(id, creator, creatorPolicy);
+                if (actorGroups.putIfAbsent(id, group) == null) return group;
+            }
         }
     }
 
@@ -1487,6 +1859,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void unregisterActor(ActorCell<?> cell) {
         if (actors.remove(cell.ref.id(), cell)) {
+            for (ActorGroup group : List.copyOf(actorGroups.values())) {
+                group.actorTerminated(cell.ref.id());
+            }
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
@@ -1832,6 +2207,77 @@ public final class ActorRuntime implements AutoCloseable {
         // state above. Non-cooperative untrusted termination belongs to the
         // host-owned revocable isolate boundary used by FORCE_ISOLATED.
         Thread.yield();
+    }
+
+    static final class ActorGroupEventReservation implements AutoCloseable {
+        private final AtomicReference<ActorRuntime> owner;
+        private final long bytes;
+
+        private ActorGroupEventReservation(ActorRuntime owner, long bytes) {
+            this.owner = new AtomicReference<>(Objects.requireNonNull(owner, "owner"));
+            if (bytes < 0) throw new IllegalArgumentException("bytes cannot be negative");
+            this.bytes = bytes;
+        }
+
+        long bytes() { return bytes; }
+
+        @Override
+        public void close() {
+            ActorRuntime runtime = owner.getAndSet(null);
+            if (runtime != null) runtime.releaseSharedRuntimeBytes(bytes);
+        }
+    }
+
+    record FrozenActorGroupEventPayload(
+            Object value,
+            ActorGroupEventReservation reservation) {
+        FrozenActorGroupEventPayload {
+            Objects.requireNonNull(value, "value");
+            Objects.requireNonNull(reservation, "reservation");
+        }
+    }
+
+    /**
+     * Freeze a data-only ActorGroup event payload once and reserve its retained
+     * bus memory against the same OresVM aggregate budget used by actor
+     * mailboxes/shared runtime state. A bounded preflight runs before the deep
+     * copy so an oversized publication cannot allocate its full immutable copy
+     * before policy admission.
+     */
+    FrozenActorGroupEventPayload freezeActorGroupEventPayload(Object value) {
+        requireCallerRuntimeAffinity("publish ActorGroup event payloads");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        Objects.requireNonNull(value, "Oreslang events cannot carry null; use Option<T>");
+
+        validateMessageGraph(value);
+        rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
+
+        IsolatePolicy caller = currentActorPolicy();
+        long senderLimit =
+                caller == null ? policyCeiling.maxHeapBytes() : caller.maxHeapBytes();
+        long runtimeRemaining =
+                Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+        long preflightLimit = Math.min(senderLimit, runtimeRemaining);
+        long estimatedBytes = estimateFrozenBytes(value);
+        if (estimatedBytes > preflightLimit) {
+            throw new IllegalStateException(
+                    "ActorGroup event payload exceeds available memory policy: estimated="
+                            + estimatedBytes + " senderLimit=" + senderLimit
+                            + " runtimeRemaining=" + runtimeRemaining);
+        }
+
+        Object frozen = freeze(value);
+        long bytes = estimateFrozenBytes(frozen);
+        if (bytes > senderLimit) {
+            throw new IllegalStateException(
+                    "ActorGroup event payload exceeds sender memory policy: bytes="
+                            + bytes + " limit=" + senderLimit);
+        }
+
+        reserveSharedRuntimeBytes(bytes, "ActorGroup event payload");
+        return new FrozenActorGroupEventPayload(
+                frozen,
+                new ActorGroupEventReservation(this, bytes));
     }
 
     @SuppressWarnings("unchecked")
@@ -2842,6 +3288,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
