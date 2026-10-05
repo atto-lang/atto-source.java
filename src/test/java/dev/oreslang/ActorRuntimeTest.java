@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
@@ -1527,6 +1528,33 @@ final class ActorRuntimeTest {
             }
             assertEquals(0, runtime.actorCount(), "parent cancellation must cascade to all children");
             assertFalse(parent.isAlive());
+        }
+    }
+
+
+    @Test
+    void stoppingActorCancelsItsPendingChannelRegistrations() throws Exception {
+        var channel = ChannelRuntime.<String>channel(1);
+        CountDownLatch armed = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        var pending = channel.read();
+                        assertFalse(pending.isDone());
+                        armed.countDown();
+                        context.self().stop();
+                    });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+
+            assertTrue(channel.tryWrite("preserved"));
+            assertEquals(
+                    "preserved",
+                    channel.tryRead().orElseThrow(),
+                    "actor cancellation must detach its pending channel read");
         }
     }
 
