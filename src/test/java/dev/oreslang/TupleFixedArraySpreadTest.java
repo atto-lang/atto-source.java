@@ -182,6 +182,26 @@ final class TupleFixedArraySpreadTest {
     }
 
     @Test
+    void singletonFixedArraySpreadIsConsumedOnceByOwnershipAnalysis() {
+        assertDoesNotThrow(() -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    define module app as
+                      fnc consume(int value): void {
+                        return;
+                      }
+
+                      fnc use(): void {
+                        val FixedArray[int, 1] values = [7];
+                        consume(...values);
+                        return;
+                      }
+                    end
+                    """));
+            OwnershipChecker.check(typed);
+        });
+    }
+
+    @Test
     void heterogeneousFixedArraySpreadRetainsUniformUnionSlotTyping() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app as
