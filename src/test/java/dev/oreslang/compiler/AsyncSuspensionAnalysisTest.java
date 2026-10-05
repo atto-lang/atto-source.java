@@ -200,6 +200,51 @@ final class AsyncSuspensionAnalysisTest {
     }
 
 
+
+    @Test
+    void shadowedBindingsReceiveDistinctSpillIdentities() {
+        Ast.FunctionDecl target = function("""
+                async fnc pause(): int {
+                  return 0;
+                }
+
+                async fnc target(): int {
+                  val x = 10;
+
+                  if true {
+                    val x = 20;
+                    await pause();
+                    val inner = x;
+                  }
+
+                  await pause();
+                  return x;
+                }
+                """, "target");
+
+        AsyncSuspensionAnalysis.Result result =
+                AsyncSuspensionAnalysis.analyze(target);
+
+        List<AsyncSuspensionAnalysis.SpillSlot> xSlots =
+                result.spillSlots().stream()
+                        .filter(slot -> slot.name().equals("x"))
+                        .toList();
+
+        assertEquals(2, xSlots.size());
+        assertNotEquals(
+                xSlots.get(0).bindingId(),
+                xSlots.get(1).bindingId());
+
+        AsyncSuspensionAnalysis.SuspensionPoint first =
+                result.suspensionPoints().get(0);
+        AsyncSuspensionAnalysis.SuspensionPoint second =
+                result.suspensionPoints().get(1);
+
+        assertEquals(2, first.liveBindingIds().size());
+        assertEquals(1, second.liveBindingIds().size());
+        assertTrue(second.clearSpillSlots().contains(xSlots.get(1).index()));
+    }
+
     @Test
     void compilerBuildsDenseStateMachinePcsFromAwaitSites() {
         AsyncStateMachinePlan.ProgramPlan program =
