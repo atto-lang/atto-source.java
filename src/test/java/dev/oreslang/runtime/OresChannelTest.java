@@ -78,7 +78,7 @@ final class OresChannelTest {
     @Test
     void dynamicMapSelectionPreservesKeyAndSupportsMixedCases() {
         OresChannel<Integer> incoming = new OresChannel<>(1);
-        OresChannel<Integer> outgoing = new OresChannel<>(1);
+        OresChannel<Integer> outgoing = new OresChannel<>(0);
         incoming.write(41);
 
         Map<String, Object> entries = new LinkedHashMap<>();
