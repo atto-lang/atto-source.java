@@ -760,6 +760,14 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /**
+         * Resolve a group the current actor has already joined. ActorGroupId is
+         * an immutable scalar and is safe to retain in private actor state.
+         */
+        default ActorGroup actorGroup(ActorGroupId id) {
+            return runtime().actorGroup(id);
+        }
     }
 
     /**
@@ -1128,6 +1136,25 @@ public final class ActorRuntime implements AutoCloseable {
      * by that actor and closes when its creator terminates. Host-created groups
      * live until explicitly closed or the ActorRuntime closes.
      */
+    public int actorGroupCount() {
+        return actorGroups.size();
+    }
+
+    /**
+     * Resolve a live group by id. Actor callers must already be members; the
+     * host/supervisor may inspect any group in its runtime.
+     */
+    public ActorGroup actorGroup(ActorGroupId id) {
+        Objects.requireNonNull(id, "id");
+        requireCallerRuntimeAffinity("access an ActorGroup");
+        ActorGroup group = actorGroups.get(id);
+        if (group == null || group.closed()) {
+            throw new IllegalArgumentException("unknown or closed ActorGroup: " + id);
+        }
+        group.currentMemberOrSystem("access ActorGroup " + id);
+        return group;
+    }
+
     public ActorGroup createActorGroup() {
         requireCallerRuntimeAffinity("create an ActorGroup");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
@@ -2886,7 +2913,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
-        if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
     }
