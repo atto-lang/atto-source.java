@@ -346,6 +346,18 @@ public final class ComputeContractChecker {
             Map<String, String> claims,
             String path,
             String privilege) {
+        for (Map.Entry<String, String> existing : claims.entrySet()) {
+            if (existing.getKey().equals(path)) continue;
+            if (!effectPathsOverlap(existing.getKey(), path)) continue;
+            if (isSpecialEffect(existing.getValue()) || isSpecialEffect(privilege)) {
+                throw new IllegalArgumentException(
+                        "overlapping region effect footprints '"
+                                + existing.getKey() + "' (" + existing.getValue() + ") and '"
+                                + path + "' (" + privilege + ") are ambiguous; "
+                                + "discard/reduce/atomic footprints must not overlap other effects");
+            }
+        }
+
         String previous = claims.putIfAbsent(path, privilege);
         if (previous == null) return;
 
@@ -363,6 +375,23 @@ public final class ComputeContractChecker {
                 "region effect footprint '" + path
                         + "' has duplicate/conflicting declarations ("
                         + previous + " and " + privilege + ")");
+    }
+
+    private static boolean isSpecialEffect(String privilege) {
+        return privilege.equals("discards")
+                || privilege.equals("reduces")
+                || privilege.equals("atomic");
+    }
+
+    private static boolean effectPathsOverlap(String left, String right) {
+        if (left.equals(right)) return true;
+        return isEffectPathPrefix(left, right) || isEffectPathPrefix(right, left);
+    }
+
+    private static boolean isEffectPathPrefix(String prefix, String path) {
+        return path.length() > prefix.length()
+                && path.startsWith(prefix)
+                && path.charAt(prefix.length()) == '.';
     }
 
     private void validateRegionPath(
