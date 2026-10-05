@@ -3082,6 +3082,15 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(attempted.body(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.catchBody(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.finallyBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.SelectStmt selected) {
+                for (Ast.SelectArm arm : selected.arms()) {
+                    rejectStaticClassGenericReferences(
+                            arm.channel(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(
+                            arm.value(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(
+                            arm.body(), classGenerics, klass, method);
+                }
             } else if (statement instanceof Ast.ForOfDestructureStmt loop) {
                 rejectStaticClassGenericReferences(loop.iterable(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
@@ -3146,6 +3155,14 @@ public final class TypeChecker {
             }
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.ChannelOpExpr operation) {
+            rejectStaticClassGenericReferences(
+                    operation.channel(), classGenerics, klass, method);
+            rejectStaticClassGenericReferences(
+                    operation.value(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.DynamicSelectExpr selected) {
+            rejectStaticClassGenericReferences(
+                    selected.cases(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
                 rejectStaticClassGenericReferences(item, classGenerics, klass, method);
