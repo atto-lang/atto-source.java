@@ -137,14 +137,18 @@ public final class OresEvalRootNode extends RootNode {
         private record EmbeddingBatchView(
                 int rows,
                 int dimensions,
-                List<Object> values) { }
+                List<Object> values,
+                String modelId,
+                String modelRevision) { }
 
         private record TokenEmbeddingBatchView(
                 int rows,
                 int tokensPerRow,
                 int dimensions,
                 List<Object> values,
-                List<Object> attentionMask) { }
+                List<Object> attentionMask,
+                String modelId,
+                String modelRevision) { }
 
         private enum InvocationKind {
             FUNCTION,
@@ -493,7 +497,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object tryInvokeIntrinsic(Ast.FunctionDecl fn, List<Object> args) {
             String name = intrinsicName(fn);
-            if (name == null) return NO_INTRINSIC;
+            if (name == null || !intrinsicContractMatches(fn, name)) return NO_INTRINSIC;
 
             return switch (name) {
                 case "EmbeddingMeanPool" -> intrinsicMeanPool(args);
@@ -520,33 +524,124 @@ public final class OresEvalRootNode extends RootNode {
             return found;
         }
 
+        private static boolean intrinsicContractMatches(Ast.FunctionDecl fn, String intrinsicName) {
+            Ast.TypeRef boolType = Ast.TypeRef.simple("bool");
+            Ast.TypeRef intType = Ast.TypeRef.simple("int");
+            Ast.TypeRef floatType = Ast.TypeRef.simple("float");
+            Ast.TypeRef stringType = Ast.TypeRef.simple("String");
+            Ast.TypeRef embeddingBatch = Ast.TypeRef.simple("EmbeddingBatch");
+            Ast.TypeRef tokenEmbeddingBatch = Ast.TypeRef.simple("TokenEmbeddingBatch");
+            Ast.TypeRef floatList = intrinsicType("List", floatType);
+            Ast.TypeRef intList = intrinsicType("List", intType);
+            Ast.TypeRef floatListResult = intrinsicType("Result", floatList, stringType);
+            Ast.TypeRef intListResult = intrinsicType("Result", intList, stringType);
+            Ast.TypeRef boolResult = intrinsicType("Result", boolType, stringType);
+
+            return switch (intrinsicName) {
+                case "EmbeddingMeanPool" -> matchesIntrinsicFunction(
+                        fn,
+                        "mean_pool_token_embeddings_into",
+                        List.of(tokenEmbeddingBatch, floatList, boolType),
+                        List.of(false, true, false),
+                        floatListResult);
+                case "EmbeddingNormalizeRows" -> matchesIntrinsicFunction(
+                        fn,
+                        "normalize_embedding_rows_into",
+                        List.of(embeddingBatch, floatList),
+                        List.of(false, true),
+                        floatListResult);
+                case "EmbeddingDotSimilarity" -> matchesIntrinsicFunction(
+                        fn,
+                        "dot_similarity_into",
+                        List.of(embeddingBatch, embeddingBatch, floatList),
+                        List.of(false, false, true),
+                        floatListResult);
+                case "EmbeddingCosineSimilarity" -> matchesIntrinsicFunction(
+                        fn,
+                        "cosine_similarity_into",
+                        List.of(embeddingBatch, embeddingBatch, floatList),
+                        List.of(false, false, true),
+                        floatListResult);
+                case "EmbeddingSquaredL2" -> matchesIntrinsicFunction(
+                        fn,
+                        "squared_l2_distance_into",
+                        List.of(embeddingBatch, embeddingBatch, floatList),
+                        List.of(false, false, true),
+                        floatListResult);
+                case "EmbeddingTopK" -> matchesIntrinsicFunction(
+                        fn,
+                        "top_k_indices_into",
+                        List.of(floatList, intType, intType, intType, intList),
+                        List.of(false, false, false, false, true),
+                        intListResult);
+                case "EmbeddingTopKDot" -> matchesIntrinsicFunction(
+                        fn,
+                        "top_k_dot_into",
+                        List.of(embeddingBatch, embeddingBatch, intType, intList, floatList),
+                        List.of(false, false, false, true, true),
+                        boolResult);
+                default -> false;
+            };
+        }
+
+        private static Ast.TypeRef intrinsicType(String name, Ast.TypeRef... arguments) {
+            return new Ast.TypeRef(name, List.of(arguments), false);
+        }
+
+        private static boolean matchesIntrinsicFunction(
+                Ast.FunctionDecl fn,
+                String expectedName,
+                List<Ast.TypeRef> parameterTypes,
+                List<Boolean> mutableParameters,
+                Ast.TypeRef returnType) {
+            if (!fn.name().equals(expectedName)
+                    || fn.kind() != Ast.CallableKind.FNC
+                    || fn.async()
+                    || fn.nonLexical()
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || !fn.genericParameters().isEmpty()
+                    || !fn.returnType().equals(returnType)
+                    || fn.parameters().size() != parameterTypes.size()
+                    || mutableParameters.size() != parameterTypes.size()) {
+                return false;
+            }
+
+            for (int i = 0; i < parameterTypes.size(); i++) {
+                Ast.Param parameter = fn.parameters().get(i);
+                if (!parameter.type().equals(parameterTypes.get(i))
+                        || parameter.mutable() != mutableParameters.get(i)
+                        || parameter.structural()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         @SuppressWarnings("unchecked")
         private static EmbeddingBatchView embeddingBatchView(Object value) {
             if (!(value instanceof OresObject object)) return null;
             if (!object.klass.name().equals("EmbeddingBatch")) return null;
 
-            Object rowsValue = object.fields.get("rows");
-            Object dimensionsValue = object.fields.get("dimensions");
+            Integer rowCount = exactInt(object.fields.get("rows"));
+            Integer dimensionCount = exactInt(object.fields.get("dimensions"));
             Object valuesValue = object.fields.get("values");
-            if (!(rowsValue instanceof Number rows)
-                    || !(dimensionsValue instanceof Number dimensions)
-                    || !(valuesValue instanceof List<?> values)) {
-                return null;
-            }
-
-            int rowCount;
-            int dimensionCount;
-            try {
-                rowCount = Math.toIntExact(rows.longValue());
-                dimensionCount = Math.toIntExact(dimensions.longValue());
-            } catch (ArithmeticException outOfRange) {
+            Object modelIdValue = object.fields.get("model_id");
+            Object modelRevisionValue = object.fields.get("model_revision");
+            if (rowCount == null
+                    || dimensionCount == null
+                    || !(valuesValue instanceof List<?> values)
+                    || !allNumeric(values)
+                    || !(modelIdValue instanceof String modelId)
+                    || !(modelRevisionValue instanceof String modelRevision)) {
                 return null;
             }
 
             return new EmbeddingBatchView(
                     rowCount,
                     dimensionCount,
-                    (List<Object>) values);
+                    (List<Object>) values,
+                    modelId,
+                    modelRevision);
         }
 
         @SuppressWarnings("unchecked")
@@ -554,29 +649,33 @@ public final class OresEvalRootNode extends RootNode {
             if (!(value instanceof OresObject object)) return null;
             if (!object.klass.name().equals("TokenEmbeddingBatch")) return null;
 
-            Object rowsValue = object.fields.get("rows");
-            Object tokensValue = object.fields.get("tokens_per_row");
-            Object dimensionsValue = object.fields.get("dimensions");
+            Integer rowCount = exactInt(object.fields.get("rows"));
+            Integer tokenCount = exactInt(object.fields.get("tokens_per_row"));
+            Integer dimensionCount = exactInt(object.fields.get("dimensions"));
             Object valuesValue = object.fields.get("values");
             Object maskValue = object.fields.get("attention_mask");
-            if (!(rowsValue instanceof Number rows)
-                    || !(tokensValue instanceof Number tokens)
-                    || !(dimensionsValue instanceof Number dimensions)
+            Object modelIdValue = object.fields.get("model_id");
+            Object modelRevisionValue = object.fields.get("model_revision");
+            if (rowCount == null
+                    || tokenCount == null
+                    || dimensionCount == null
                     || !(valuesValue instanceof List<?> values)
-                    || !(maskValue instanceof List<?> attentionMask)) {
+                    || !allNumeric(values)
+                    || !(maskValue instanceof List<?> attentionMask)
+                    || !allBoolean(attentionMask)
+                    || !(modelIdValue instanceof String modelId)
+                    || !(modelRevisionValue instanceof String modelRevision)) {
                 return null;
             }
 
-            try {
-                return new TokenEmbeddingBatchView(
-                        Math.toIntExact(rows.longValue()),
-                        Math.toIntExact(tokens.longValue()),
-                        Math.toIntExact(dimensions.longValue()),
-                        (List<Object>) values,
-                        (List<Object>) attentionMask);
-            } catch (ArithmeticException outOfRange) {
-                return null;
-            }
+            return new TokenEmbeddingBatchView(
+                    rowCount,
+                    tokenCount,
+                    dimensionCount,
+                    (List<Object>) values,
+                    (List<Object>) attentionMask,
+                    modelId,
+                    modelRevision);
         }
 
         @SuppressWarnings("unchecked")
@@ -584,10 +683,34 @@ public final class OresEvalRootNode extends RootNode {
             return value instanceof List<?> list ? (List<Object>) list : null;
         }
 
+        private static boolean allNumeric(List<?> values) {
+            for (Object value : values) {
+                if (!(value instanceof Number)) return false;
+            }
+            return true;
+        }
+
+        private static boolean allBoolean(List<?> values) {
+            for (Object value : values) {
+                if (!(value instanceof Boolean)) return false;
+            }
+            return true;
+        }
+
+        private static boolean allIntegral(List<?> values) {
+            for (Object value : values) {
+                if (exactInt(value) == null) return false;
+            }
+            return true;
+        }
+
         private static Integer exactInt(Object value) {
             if (!(value instanceof Number number)) return null;
+            long integral = number.longValue();
+            double floating = number.doubleValue();
+            if (!Double.isFinite(floating) || floating != (double) integral) return null;
             try {
-                return Math.toIntExact(number.longValue());
+                return Math.toIntExact(integral);
             } catch (ArithmeticException outOfRange) {
                 return null;
             }
@@ -595,15 +718,15 @@ public final class OresEvalRootNode extends RootNode {
 
         private static double numericValue(List<?> values, int index) {
             Object value = values.get(index);
-            if (!(value instanceof Number number)) {
-                throw new IllegalArgumentException("numeric intrinsic received a non-numeric list element");
-            }
+            if (!(value instanceof Number number)) throw new IntrinsicShapeMismatch();
             return number.doubleValue();
         }
 
         private static String embeddingShapeError(EmbeddingBatchView batch) {
             if (batch.rows() < 0) return "embedding row count must be non-negative";
             if (batch.dimensions() <= 0) return "embedding dimensions must be positive";
+            if (batch.modelId().isEmpty()) return "embedding model id must be non-empty";
+            if (batch.modelRevision().isEmpty()) return "embedding model revision must be non-empty";
             long expected = (long) batch.rows() * batch.dimensions();
             if (expected != batch.values().size()) {
                 return "embedding storage length must equal rows * dimensions";
@@ -615,6 +738,8 @@ public final class OresEvalRootNode extends RootNode {
             if (batch.rows() < 0) return "token embedding row count must be non-negative";
             if (batch.tokensPerRow() < 0) return "token count must be non-negative";
             if (batch.dimensions() <= 0) return "token embedding dimensions must be positive";
+            if (batch.modelId().isEmpty()) return "token embedding model id must be non-empty";
+            if (batch.modelRevision().isEmpty()) return "token embedding model revision must be non-empty";
             long expectedValues = (long) batch.rows() * batch.tokensPerRow() * batch.dimensions();
             if (expectedValues != batch.values().size()) {
                 return "token embedding storage length must equal rows * tokens * dimensions";
@@ -626,11 +751,19 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        private static boolean sameEmbeddingSpace(EmbeddingBatchView left, EmbeddingBatchView right) {
+            return left.modelId().equals(right.modelId())
+                    && left.modelRevision().equals(right.modelRevision());
+        }
+
         private ResultValue intrinsicMeanPool(List<Object> args) {
             if (args.size() != 3) return nullIntrinsicResult("mean-pool");
             TokenEmbeddingBatchView batch = tokenEmbeddingBatchView(args.get(0));
             List<Object> output = mutableList(args.get(1));
-            if (batch == null || output == null || !(args.get(2) instanceof Boolean normalizeOutput)) {
+            if (batch == null
+                    || output == null
+                    || !allNumeric(output)
+                    || !(args.get(2) instanceof Boolean normalizeOutput)) {
                 return nullIntrinsicResult("mean-pool");
             }
 
@@ -709,7 +842,9 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != 2) return nullIntrinsicResult("normalize");
             EmbeddingBatchView batch = embeddingBatchView(args.get(0));
             List<Object> output = mutableList(args.get(1));
-            if (batch == null || output == null) return nullIntrinsicResult("normalize");
+            if (batch == null || output == null || !allNumeric(output)) {
+                return nullIntrinsicResult("normalize");
+            }
 
             String shapeError = embeddingShapeError(batch);
             if (shapeError != null) return new ResultValue(false, "invalid embedding batch");
@@ -745,13 +880,27 @@ public final class OresEvalRootNode extends RootNode {
             EmbeddingBatchView queries = embeddingBatchView(args.get(0));
             EmbeddingBatchView corpus = embeddingBatchView(args.get(1));
             List<Object> output = mutableList(args.get(2));
-            if (queries == null || corpus == null || output == null) return nullIntrinsicResult("dot");
+            if (queries == null || corpus == null || output == null || !allNumeric(output)) {
+                return nullIntrinsicResult("dot");
+            }
 
             if (embeddingShapeError(queries) != null) {
                 return new ResultValue(false, "invalid query embedding batch");
             }
             if (embeddingShapeError(corpus) != null) {
                 return new ResultValue(false, "invalid corpus embedding batch");
+            }
+            if (!sameEmbeddingSpace(queries, corpus)) {
+                return new ResultValue(false, "embedding batches must use the same model id and revision");
+            }
+            if (!sameEmbeddingSpace(queries, corpus)) {
+                return new ResultValue(false, "embedding batches must use the same model id and revision");
+            }
+            if (!sameEmbeddingSpace(queries, corpus)) {
+                return new ResultValue(false, "embedding batches must use the same model id and revision");
+            }
+            if (!sameEmbeddingSpace(queries, corpus)) {
+                return new ResultValue(false, "embedding batches must use the same model id and revision");
             }
             if (queries.dimensions() != corpus.dimensions()) {
                 return new ResultValue(false, "embedding batches must have equal dimensions");
@@ -782,7 +931,9 @@ public final class OresEvalRootNode extends RootNode {
             EmbeddingBatchView queries = embeddingBatchView(args.get(0));
             EmbeddingBatchView corpus = embeddingBatchView(args.get(1));
             List<Object> output = mutableList(args.get(2));
-            if (queries == null || corpus == null || output == null) return nullIntrinsicResult("cosine");
+            if (queries == null || corpus == null || output == null || !allNumeric(output)) {
+                return nullIntrinsicResult("cosine");
+            }
 
             if (embeddingShapeError(queries) != null) {
                 return new ResultValue(false, "invalid query embedding batch");
@@ -833,7 +984,9 @@ public final class OresEvalRootNode extends RootNode {
             EmbeddingBatchView queries = embeddingBatchView(args.get(0));
             EmbeddingBatchView corpus = embeddingBatchView(args.get(1));
             List<Object> output = mutableList(args.get(2));
-            if (queries == null || corpus == null || output == null) return nullIntrinsicResult("squared-l2");
+            if (queries == null || corpus == null || output == null || !allNumeric(output)) {
+                return nullIntrinsicResult("squared-l2");
+            }
 
             if (embeddingShapeError(queries) != null) {
                 return new ResultValue(false, "invalid query embedding batch");
@@ -873,7 +1026,13 @@ public final class OresEvalRootNode extends RootNode {
             Integer cols = exactInt(args.get(2));
             Integer k = exactInt(args.get(3));
             List<Object> output = mutableList(args.get(4));
-            if (scores == null || rows == null || cols == null || k == null || output == null) {
+            if (scores == null
+                    || !allNumeric(scores)
+                    || rows == null
+                    || cols == null
+                    || k == null
+                    || output == null
+                    || !allIntegral(output)) {
                 return nullIntrinsicResult("top-k");
             }
 
@@ -935,7 +1094,8 @@ public final class OresEvalRootNode extends RootNode {
             List<Object> topIndices = mutableList(args.get(3));
             List<Object> topScores = mutableList(args.get(4));
             if (queries == null || corpus == null || k == null
-                    || topIndices == null || topScores == null) {
+                    || topIndices == null || !allIntegral(topIndices)
+                    || topScores == null || !allNumeric(topScores)) {
                 return nullIntrinsicResult("top-k-dot");
             }
 
@@ -958,6 +1118,7 @@ public final class OresEvalRootNode extends RootNode {
             if ((long) queries.rows() * k != topScores.size()) {
                 return new ResultValue(false, "top-k score output length must equal query rows * k");
             }
+            if (k == 0) return new ResultValue(true, true);
 
             for (int queryRow = 0; queryRow < queries.rows(); queryRow++) {
                 int queryBase = queryRow * queries.dimensions();
