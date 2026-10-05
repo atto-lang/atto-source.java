@@ -131,6 +131,18 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId actorId() { return actorId; }
     }
 
+    /**
+     * Internal control-plane unwind used at actor scheduler safepoints.
+     * It is an Error intentionally: Oreslang source catch handles ordinary
+     * runtime failures, but cancellation must not be absorbable by guest code.
+     * Evaluator finally/defer unwinding still runs before the actor turn exits.
+     */
+    public static final class ActorCancellationSignal extends Error {
+        private ActorCancellationSignal(String message) {
+            super(message, null, false, false);
+        }
+    }
+
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
 
     private static final String CARRIER_BACKEND_PROPERTY = "ores.runtime.carriers";
@@ -1622,9 +1634,10 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCancelledException cancellation = new ActorCancelledException(
                 ref.id(),
                 "actor " + ref.id() + " was cancelled");
-        cell.cancel(cancellation);
 
         if (mode == CancellationMode.FORCE_ISOLATED) {
+            // The outer isolation boundary must be revoked first. If this
+            // cannot be proven, force cancellation has no logical side effect.
             boolean revoked = forceCancellationHook.test(
                     ref.id(), cell.executionDomain);
             if (!revoked) {
@@ -1633,6 +1646,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 + "ordinary shared/private actor carriers can only be cancelled structurally");
             }
         }
+
+        cell.cancel(cancellation);
         return true;
     }
 
@@ -1747,13 +1762,13 @@ public final class ActorRuntime implements AutoCloseable {
      * Carrier threads remain an implementation detail.
      */
     public void schedulerSafepoint() {
-        if (closed.get()) throw new CancellationException("actor runtime is closing");
+        if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
         if (cell != null && cell.stopped.get()) {
-            throw new CancellationException("actor execution stopped");
+            throw new ActorCancellationSignal("actor execution stopped");
         }
         if (Thread.currentThread().isInterrupted()) {
-            throw new CancellationException("actor execution interrupted");
+            throw new ActorCancellationSignal("actor execution interrupted");
         }
         Thread.yield();
     }
@@ -3133,9 +3148,14 @@ public final class ActorRuntime implements AutoCloseable {
                     processed++;
                 }
             } catch (Throwable failure) {
-                // Fail-stop supervision for ordinary actor failures. Fatal VM
-                // errors are cleaned up and then rethrown rather than swallowed.
-                fail(failure);
+                // Actor cancellation is a control-plane unwind, not a guest
+                // failure. The actor was already marked stopped by the
+                // supervisor/cancel path; finally/endTurn completes teardown.
+                if (!(failure instanceof ActorCancellationSignal)) {
+                    // Fail-stop supervision for ordinary actor failures. Fatal
+                    // VM errors are cleaned up and then rethrown.
+                    fail(failure);
+                }
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
