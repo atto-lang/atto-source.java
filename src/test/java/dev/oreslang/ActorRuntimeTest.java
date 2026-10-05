@@ -1503,4 +1503,32 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void cancellingParentCascadesToChildActorsWithoutContextPlumbing() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnPrivate(
+                    factoryContext -> (message, context) ->
+                            context.runtime().<String>spawnPrivate(
+                                    childFactoryContext -> (childMessage, childContext) -> { }));
+
+            parent.send("spawn-child");
+
+            long spawnDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (runtime.actorCount() != 2 && System.nanoTime() < spawnDeadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(2, runtime.actorCount(), "child should be attached to the parent lifetime");
+
+            parent.cancel();
+
+            long cancelDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (runtime.actorCount() != 0 && System.nanoTime() < cancelDeadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(0, runtime.actorCount(), "parent cancellation must cascade to all children");
+            assertFalse(parent.isAlive());
+        }
+    }
+
+
 }
