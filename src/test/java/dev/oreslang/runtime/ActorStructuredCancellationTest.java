@@ -8,7 +8,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -111,6 +113,62 @@ final class ActorStructuredCancellationTest {
             assertInstanceOf(
                     ActorRuntime.ActorCancelledException.class,
                     actor.failure().orElseThrow());
+        }
+    }
+
+    @Test
+    void continuationHeadroomDoesNotReduceConfiguredUserMailboxCapacity() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy tinyMailbox = new IsolatePolicy(
+                base.capabilities(),
+                base.maxHeapBytes(),
+                2,
+                Duration.ofSeconds(5),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(base)) {
+            CountDownLatch userMessagesAdmitted = new CountDownLatch(1);
+            CountDownLatch userMessagesDelivered = new CountDownLatch(2);
+            AtomicInteger delivered = new AtomicInteger();
+
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(tinyMailbox, () -> (message, context) -> {
+                        if (message.equals("seed")) {
+                            ActorRuntime.ContinuationTarget target =
+                                    context.runtime().captureCurrentContinuationTarget();
+
+                            // These complete immediately but their continuations
+                            // must queue behind the current actor turn.
+                            for (int i = 0; i < 3; i++) {
+                                context.runtime().enqueueOnCompletion(
+                                        OresFuture.completed(i),
+                                        target,
+                                        (value, failure) -> { });
+                            }
+
+                            // User capacity remains exactly maxMailboxMessages=2
+                            // despite the already-queued runtime continuations.
+                            context.self().send("u1");
+                            context.self().send("u2");
+                            userMessagesAdmitted.countDown();
+                            return;
+                        }
+
+                        if (message.equals("u1") || message.equals("u2")) {
+                            delivered.incrementAndGet();
+                            userMessagesDelivered.countDown();
+                            if (delivered.get() == 2) context.self().stop();
+                        }
+                    });
+
+            actor.send("seed");
+
+            assertTrue(
+                    userMessagesAdmitted.await(2, TimeUnit.SECONDS),
+                    "runtime continuations must not steal user mailbox quota");
+            assertTrue(userMessagesDelivered.await(2, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
         }
     }
 
