@@ -269,7 +269,7 @@ public final class OwnershipChecker {
             for (int i = 0; i < loop.bindings().size(); i++) {
                 Ast.DestructureBinding binding = loop.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i);
+                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i, binding.rest());
                 loopScope.define(binding.name(), new VarState(
                         bindingType,
                         binding.kind() == Ast.BindingKind.LET,
@@ -1624,40 +1624,97 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
-    private Ast.TypeRef sequenceDestructureBindingType(Ast.TypeRef source, int index) {
+    private Ast.TypeRef sequenceDestructureBindingType(Ast.TypeRef source, int index, boolean rest) {
         if (source == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
-        if (concrete.isTupleType() && index < concrete.arguments().size()) {
-            return concrete.arguments().get(index);
+
+        if (concrete.isUnion()) {
+            List<Ast.TypeRef> alternatives = concrete.arguments().stream()
+                    .map(option -> sequenceDestructureBindingType(option, index, rest))
+                    .toList();
+            if (alternatives.stream().anyMatch(type -> type.name().equals("$infer$"))) {
+                return Ast.TypeRef.inferred();
+            }
+            return Ast.TypeRef.union(alternatives);
         }
+
+        if (concrete.isTupleType()) {
+            if (rest) {
+                if (index > concrete.arguments().size()) return Ast.TypeRef.inferred();
+                return Ast.TypeRef.tupleType(concrete.arguments().subList(index, concrete.arguments().size()));
+            }
+            if (index < concrete.arguments().size()) return concrete.arguments().get(index);
+            return Ast.TypeRef.inferred();
+        }
+
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
                 && concrete.arguments().size() == 1) {
-            return concrete.arguments().getFirst();
+            return rest ? concrete : concrete.arguments().getFirst();
         }
         return Ast.TypeRef.inferred();
     }
 
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
         if (source == null) return Ast.TypeRef.inferred();
+        Ast.DestructureBinding binding = destructure.bindings().get(index);
         if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
-            return sequenceDestructureBindingType(source, index);
+            return sequenceDestructureBindingType(source, index, binding.rest());
         } else {
             Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
-            if (concrete.isRecordType()) {
-                Ast.TypeRef member = concrete.recordMembers().get(name);
-                if (member != null) return member;
-            }
-            if (concrete.name().equals("DynamicStruct") && concrete.arguments().size() == 1) {
-                return concrete.arguments().getFirst();
-            }
-            Ast.ClassDecl klass = findClass(concrete.name());
-            if (klass != null) {
-                ResolvedField target = findFieldTarget(klass, concrete, name, new LinkedHashSet<>());
-                if (target != null && target.field().visibility() == Ast.Visibility.PUBLIC) {
-                    return substituteType(
-                            target.field().type(),
-                            genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
+
+            if (binding.rest()) {
+                if (concrete.isUnion()) {
+                    List<Ast.TypeRef> alternatives = concrete.arguments().stream()
+                            .map(option -> objectRestBindingType(option, destructure.bindings()))
+                            .toList();
+                    if (alternatives.stream().anyMatch(type -> type.name().equals("$infer$"))) {
+                        return Ast.TypeRef.inferred();
+                    }
+                    return Ast.TypeRef.union(alternatives);
                 }
+                return objectRestBindingType(concrete, destructure.bindings());
+            }
+
+            if (concrete.isUnion()) {
+                List<Ast.TypeRef> alternatives = concrete.arguments().stream()
+                        .map(option -> objectMemberBindingType(option, name))
+                        .toList();
+                if (alternatives.stream().anyMatch(type -> type.name().equals("$infer$"))) {
+                    return Ast.TypeRef.inferred();
+                }
+                return Ast.TypeRef.union(alternatives);
+            }
+            return objectMemberBindingType(concrete, name);
+        }
+    }
+
+    private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
+        Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
+        if (!concrete.isRecordType()) return Ast.TypeRef.inferred();
+
+        Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.recordMembers());
+        for (Ast.DestructureBinding binding : bindings) {
+            if (!binding.rest() && !binding.isDiscard()) remainder.remove(binding.name());
+        }
+        return Ast.TypeRef.recordType(remainder);
+    }
+
+    private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
+        if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
+        if (concrete.isRecordType()) {
+            Ast.TypeRef member = concrete.recordMembers().get(name);
+            if (member != null) return member;
+        }
+        if (concrete.name().equals("DynamicStruct") && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass != null) {
+            ResolvedField target = findFieldTarget(klass, concrete, name, new LinkedHashSet<>());
+            if (target != null && target.field().visibility() == Ast.Visibility.PUBLIC) {
+                return substituteType(
+                        target.field().type(),
+                        genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
             }
         }
         return Ast.TypeRef.inferred();
