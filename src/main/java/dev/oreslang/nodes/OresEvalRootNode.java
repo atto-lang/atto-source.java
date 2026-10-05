@@ -904,31 +904,35 @@ public final class OresEvalRootNode extends RootNode {
                 Iterable<?> values = loop.asyncIteration()
                         ? asyncIterableValues(iterable, env)
                         : iterableValues(iterable, env);
-                for (Object item : values) {
-                    context.schedulerSafepoint();
-                    List<?> items = asSequence(item);
-                    if (items.size() != loop.bindings().size()) {
-                        throw new IllegalArgumentException(
-                                "for-of destructure arity mismatch: value has " + items.size()
-                                        + " element(s), pattern has " + loop.bindings().size());
-                    }
-                    Env iteration = new Env(env);
-                    for (int i = 0; i < items.size(); i++) {
-                        Ast.DestructureBinding binding = loop.bindings().get(i);
-                        if (!binding.isDiscard()) {
-                            iteration.define(binding.name(), items.get(i), binding.kind());
+                try {
+                    for (Object item : values) {
+                        context.schedulerSafepoint();
+                        List<?> items = asSequence(item);
+                        if (items.size() != loop.bindings().size()) {
+                            throw new IllegalArgumentException(
+                                    "for-of destructure arity mismatch: value has " + items.size()
+                                            + " element(s), pattern has " + loop.bindings().size());
+                        }
+                        Env iteration = new Env(env);
+                        for (int i = 0; i < items.size(); i++) {
+                            Ast.DestructureBinding binding = loop.bindings().get(i);
+                            if (!binding.isDiscard()) {
+                                iteration.define(binding.name(), items.get(i), binding.kind());
+                            }
+                        }
+                        try {
+                            executeBlock(
+                                    loop.body(),
+                                    iteration,
+                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        } catch (ContinueSignal ignored) {
+                            continue;
+                        } catch (BreakSignal ignored) {
+                            break;
                         }
                     }
-                    try {
-                        executeBlock(
-                                loop.body(),
-                                iteration,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    } catch (ContinueSignal ignored) {
-                        continue;
-                    } catch (BreakSignal ignored) {
-                        break;
-                    }
+                } finally {
+                    closeIterable(values);
                 }
                 return;
             }
@@ -937,20 +941,24 @@ public final class OresEvalRootNode extends RootNode {
                 Iterable<?> values = loop.asyncIteration()
                         ? asyncIterableValues(iterable, env)
                         : iterableValues(iterable, env);
-                for (Object item : values) {
-                    context.schedulerSafepoint();
-                    Env iteration = new Env(env);
-                    iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    try {
-                        executeBlock(
-                                loop.body(),
-                                iteration,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    } catch (ContinueSignal ignored) {
-                        continue;
-                    } catch (BreakSignal ignored) {
-                        break;
+                try {
+                    for (Object item : values) {
+                        context.schedulerSafepoint();
+                        Env iteration = new Env(env);
+                        iteration.define(loop.bindingName(), item, loop.bindingKind());
+                        try {
+                            executeBlock(
+                                    loop.body(),
+                                    iteration,
+                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        } catch (ContinueSignal ignored) {
+                            continue;
+                        } catch (BreakSignal ignored) {
+                            break;
+                        }
                     }
+                } finally {
+                    closeIterable(values);
                 }
                 return;
             }
@@ -2211,25 +2219,47 @@ public final class OresEvalRootNode extends RootNode {
                         "value is not asynchronously iterable; expected AsyncGenerator or [Symbol.asyncIterator]()");
             }
 
-            return () -> new java.util.Iterator<>() {
-                private GeneratorRuntime.Step<?> buffered;
-
+            final class AsyncPullIterable implements Iterable<Object>, AutoCloseable {
                 @Override
-                public boolean hasNext() {
-                    if (buffered == null) {
-                        buffered = AsyncRuntime.await(generator.nextStep());
-                    }
-                    return !buffered.done();
+                public java.util.Iterator<Object> iterator() {
+                    return new java.util.Iterator<>() {
+                        private GeneratorRuntime.Step<?> buffered;
+
+                        @Override
+                        public boolean hasNext() {
+                            if (buffered == null) {
+                                buffered = AsyncRuntime.await(generator.nextStep());
+                            }
+                            return !buffered.done();
+                        }
+
+                        @Override
+                        public Object next() {
+                            if (!hasNext()) throw new java.util.NoSuchElementException();
+                            Object result = buffered.value();
+                            buffered = null;
+                            return result;
+                        }
+                    };
                 }
 
                 @Override
-                public Object next() {
-                    if (!hasNext()) throw new java.util.NoSuchElementException();
-                    Object result = buffered.value();
-                    buffered = null;
-                    return result;
+                public void close() {
+                    generator.close();
                 }
-            };
+            }
+            return new AsyncPullIterable();
+        }
+
+        private void closeIterable(Iterable<?> iterable) {
+            if (!(iterable instanceof AutoCloseable closeable)) return;
+            try {
+                closeable.close();
+            } catch (RuntimeException | Error failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new IllegalStateException("failed to close generator activation", failure);
+            }
         }
 
         private ConditionResult evalCondition(Ast.Expr condition, Env env) {
