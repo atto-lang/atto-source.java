@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -7,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class AsyncAwaitLanguageTest {
@@ -80,4 +82,33 @@ final class AsyncAwaitLanguageTest {
         assertTrue(text.contains("1"));
         assertTrue(text.contains("99"));
     }
+    @Test
+    void awaitRejectsNonFutureExpressions() {
+        String program = """
+                define module app
+                  pub fnc main(): void {
+                    val value = await 42;
+                    return;
+                  }
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+    }
+
+    @Test
+    void asyncActorCallableIsRejectedUntilMailboxContinuationLoweringExists() {
+        String program = """
+                define module app
+                  pub async actor fnc burn(int n): int {
+                    return n;
+                  }
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+    }
+
 }
