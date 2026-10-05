@@ -203,16 +203,16 @@ final class MutexRuntimeTest {
     }
 
     @Test
-    void asyncMutexAcquisitionUsesTaggedGuardFutures() {
+    void asyncMutexAcquisitionUsesOresFutures() {
         var local = OresMutex.local(new int[]{1});
         var localFuture = local.lockAsync();
-        assertInstanceOf(OresMutex.GuardFuture.class, localFuture);
+        assertInstanceOf(dev.oreslang.runtime.OresFuture.class, localFuture);
         var localGuard = localFuture.join();
         localGuard.release();
 
         var shared = OresMutex.shared(new int[]{2});
         var sharedFuture = shared.lockAsync();
-        assertInstanceOf(OresMutex.GuardFuture.class, sharedFuture);
+        assertInstanceOf(dev.oreslang.runtime.OresFuture.class, sharedFuture);
         var sharedGuard = sharedFuture.join();
         sharedGuard.release();
     }
@@ -461,7 +461,7 @@ final class MutexRuntimeTest {
         requester.join();
 
         var waiting = waitingRef.get();
-        assertInstanceOf(OresMutex.GuardFuture.class, waiting);
+        assertInstanceOf(dev.oreslang.runtime.OresFuture.class, waiting);
         assertFalse(waiting.isDone());
 
         assertThrows(UnsupportedOperationException.class, () -> waiting.complete(null));
