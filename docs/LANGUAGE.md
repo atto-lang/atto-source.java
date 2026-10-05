@@ -748,17 +748,17 @@ while do
 done
 ```
 
-Post-test loops are also supported:
+Post-test loops use the brace form:
 
 ```ores
 do {
   work();
 } while (again());
-
-do
-  work();
-done while again();
 ```
+
+The keyword-delimited `do ... done` spelling is intentionally not used for
+post-test loops. This keeps the bare `do <foreign-language> { ... }` prefix
+available for foreign-code execution constructs such as `do java { ... }`.
 
 `range` is intentionally not a reserved keyword. A `range(...)` facility
 should be an ordinary iterable/intrinsic so it composes with `for ... of`
