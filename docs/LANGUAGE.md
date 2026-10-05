@@ -488,6 +488,78 @@ The initial interpreter backend uses host-owned virtual threads for ordinary asy
 
 This preserves the central async rule: **I/O/task latency should compose through futures and continuations; CPU-bound work that intentionally monopolizes a carrier must be explicit rather than hidden inside `async`.**
 
+## Channels and select
+
+Oreslang channels are bounded, typed synchronization primitives created with
+`channel<T>(capacity?)`. The default capacity is 64. Capacity `0` is a true
+rendezvous channel: a read and write commit only when both sides are present.
+
+`readch(ch)` receives exactly one value and `writech(ch, value)` sends exactly
+one value. These operations may use blocking-looking source syntax for ordinary
+tasks, but the runtime never parks an actor dispatcher carrier. If an actor-side
+channel operation cannot complete immediately, it fails closed until the
+compiler can continuation-lower that suspension.
+
+Static selection uses channel operations directly:
+
+```ores
+select {
+  case readch(inbox) as Message message -> {
+    handle(message);
+  }
+  case writech(outbox, next_value) -> {
+    mark_sent();
+  }
+}
+```
+
+A select without a `default` arm waits until one case can commit. A `default`
+arm makes the operation non-blocking: it runs only when no channel case is ready.
+`try select { ... }` is the explicit non-blocking spelling and may omit a
+default arm, in which case no body runs when nothing is ready.
+
+Selection is transactional. Exactly one case commits. Losing read cases do not
+consume values, losing write cases do not reserve capacity, and readiness is
+rechecked under the same atomic commit protocol. Case preference rotates by
+logical execution domain so a permanently-ready early case cannot starve later
+cases.
+
+Dynamic selection uses first-class case descriptors. `select.readch(ch)` and
+`select.writech(ch, value)` create inert entries; they do not perform I/O.
+A runtime list/array may mix these entries, and a bare channel in such a
+collection means a read entry. A runtime map uses its map keys as stable
+selection keys:
+
+```ores
+val entries = [
+  select.readch(primary),
+  select.writech(replies, pending)
+];
+
+select from entries as chosen {
+  stdio.println(chosen.index);
+  stdio.println(chosen.kind);   // "read" or "write"
+  stdio.println(chosen.value);
+}
+
+val keyed = obj{
+  control: select.readch(control_ch),
+  data: select.readch(data_ch)
+};
+
+try select from keyed as chosen {
+  stdio.println(chosen.key);
+} default -> {
+  do_other_work();
+}
+```
+
+The dynamic result exposes `index`, `key`, `kind`, `value`, and
+`channel`. Static and dynamic selection share the same runtime transaction
+mechanism, including capacity-0 rendezvous. Actor mailbox scheduling remains a
+separate concern: the scheduler queues runnable actors and never implements a
+global select across every actor mailbox.
+
 ## Actors
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
