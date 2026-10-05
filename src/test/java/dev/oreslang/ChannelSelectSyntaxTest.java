@@ -192,6 +192,31 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
+    void channelAndDynamicCaseFactoriesTypeCheckEndToEnd() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc make(): Channel<int> {
+                  return Channel.new<int>(16);
+                }
+
+                fnc arm(): Future<SelectResult> {
+                  val Channel<int> input = Channel.new<int>(4);
+                  val Channel<int> output = Channel.new<int>(4);
+                  val Array<SelectCase> cases = [
+                    SelectCase.read(input),
+                    SelectCase.write(output, 42)
+                  ];
+                  return nb select from cases;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): Channel<void> {
+                  return Channel.new<void>(1);
+                }
+                """)));
+    }
+
+    @Test
     void rejectsMalformedChannelAndSelectForms() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Channel<int> ch): void {
