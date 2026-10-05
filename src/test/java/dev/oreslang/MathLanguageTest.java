@@ -11,11 +11,22 @@ import dev.oreslang.runtime.math.OresVector;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class MathLanguageTest {
+    @Test
+    void oreslangNativeMathStdlibTypeChecksWithoutExternalNumericsLibrary() throws Exception {
+        String electrical = Files.readString(Path.of("stdlib/math/electrical.ores"));
+        String linear = Files.readString(Path.of("stdlib/math/linear.ores"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(electrical)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(linear)));
+    }
+
     @Test
     void matrixVectorAndElectricalSyntaxTypeChecks() {
         Ast.Program program = Parser.parse("""
