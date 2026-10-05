@@ -1163,12 +1163,20 @@ public final class ActorRuntime implements AutoCloseable {
             if (cause instanceof Error error) throw error;
             throw new RuntimeException(cause);
         } finally {
-            if (ref.isAlive()) {
-                try {
-                    stop(ref);
-                } catch (IllegalStateException alreadyStopping) {
-                    if (ref.isAlive()) throw alreadyStopping;
-                }
+            // A one-shot actor may self-stop before its carrier has fully
+            // unwound the current turn. In that window isAlive() is already
+            // false even though guest execution is still active. Always make
+            // invoke() a supervisor-side lifecycle synchronization point.
+            //
+            // completion.get() may have been interrupted. Temporarily clear the
+            // flag so stop(ref) can wait for actor finalization, then restore
+            // the caller's interrupt status before propagating the original
+            // cancellation/error.
+            boolean interrupted = Thread.interrupted();
+            try {
+                stop(ref);
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
             }
         }
     }
