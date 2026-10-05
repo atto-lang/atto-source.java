@@ -3211,6 +3211,18 @@ public final class ActorRuntime implements AutoCloseable {
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
                     try (envelope) {
+                        /*
+                         * Linearize queued-work start against stop/cancel.
+                         * If cancellation acquired lifecycleLock first, this
+                         * envelope is discarded and no new guest work begins.
+                         * If this gate wins first, the envelope is already-active
+                         * actor work; a later cancellation is observed at the
+                         * normal scheduler safepoints.
+                         */
+                        synchronized (lifecycleLock) {
+                            if (stopped.get() || finalized) break;
+                        }
+
                         if (envelope.isContinuation()) {
                             envelope.continuation().run();
                         } else {
