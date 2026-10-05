@@ -6,12 +6,20 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 
+import java.util.Map;
+
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
     private OresCompiler() { }
 
     public static Ast.Program parseAndTypeCheck(String source) {
         return TypeChecker.check(Parser.parse(source));
+    }
+
+    static Ast.Program parseAndTypeCheck(
+            String source,
+            Map<String, Ast.Decl> importedTypes) {
+        return TypeChecker.check(Parser.parse(source), importedTypes);
     }
 
     /**
