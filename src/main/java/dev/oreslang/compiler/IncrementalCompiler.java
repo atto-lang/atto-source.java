@@ -151,6 +151,13 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.ClassDecl klass) {
             abi.append(klass.actorKind()).append(" class ").append(klass.name());
             appendGenerics(abi, klass.genericParameters());
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                abi.append(" actor-abi<");
+                for (Ast.TypeRef type : klass.actorProtocolTypes()) {
+                    abi.append(typeRef(type)).append(',');
+                }
+                abi.append('>');
+            }
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
             abi.append(" implements ");
