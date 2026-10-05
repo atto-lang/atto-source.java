@@ -683,23 +683,110 @@ fnc find(bool found): Option<int> {
 }
 ```
 
-## Loops, iterators, and scheduler safepoints
+## Standalone lexical blocks and conditional bodies
 
-Oreslang supports conventional imperative loops:
+A standalone lexical scope is explicit:
 
 ```ores
-for (let i = 0; i < 10; i = i + 1) {
-  work(i);
+block {
+  val hidden = "local";
 }
 ```
 
-and iterator-style loops:
+`block { ... }` creates a new lexical scope. Oreslang has no declaration hoisting; bindings declared in the block are not visible after it. The block has no scheduler or concurrency semantics of its own.
+
+Conditionals support two equivalent body styles. Brace form:
 
 ```ores
+if condition {
+  work();
+} elseif other_condition {
+  recover();
+} else {
+  fallback();
+}
+```
+
+Keyword-delimited form:
+
+```ores
+if condition then
+  work();
+elseif other_condition then
+  recover();
+else
+  fallback();
+fi
+```
+
+The older `do ... fi` spelling remains accepted for source compatibility, but `then ... fi` is canonical for keyword-delimited conditionals.
+
+## Loops, iterators, and scheduler safepoints
+
+Oreslang supports an explicit infinite loop with either braces or `do ... done`:
+
+```ores
+loop {
+  if should_skip() {
+    continue;
+  }
+  if should_stop() {
+    break;
+  }
+  work();
+}
+
+loop do
+  if should_skip() {
+    continue;
+  }
+  if should_stop() {
+    break;
+  }
+  work()
+done
+```
+
+`break` exits the nearest enclosing `loop` or `for`. `continue` starts the next iteration of the nearest enclosing loop. `return` exits the enclosing callable, even when nested inside one or more loops. Loop control never crosses a function or lambda boundary.
+
+Oreslang also supports conventional imperative loops. Parentheses are optional when the semicolon-delimited C-style header is unambiguous:
+
+```ores
+for (let i = 0; i < 10; i++) {
+  work(i);
+}
+
+for int i = 0; i < 30; i++ do
+  work(i)
+done
+```
+
+In the typed shorthand, `int i = 0` creates an implicit mutable `let i: int` scoped to the loop. `i++` and `i--` are accepted in the for-update clause and lower to increment/decrement assignment of that simple local binding; Oreslang does not currently expose them as general field/index postfix expressions.
+
+and iterator-style loops. The compact `of` form does not require parentheses, and both body styles are valid:
+
+```ores
+for item of values do
+  work(item)
+done
+
+for [key, value] of entries do
+  consume(key, value)
+done
+
+for let [key, value] of mutable_entries {
+  value = normalize(value);
+  consume(key, value);
+}
+
 for (val item of values) {
   work(item);
 }
 ```
+
+A sequence pattern defaults to `val` bindings. `for let [k, v] ...` or `for const [k, v] ...` applies that binding kind to the pattern, while an explicit kind inside the pattern propagates to subsequent names. `_` discards one tuple/list position without creating a binding.
+
+A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 
 Classes can expose a JavaScript-like iterator symbol:
 
@@ -711,7 +798,7 @@ define class Bag as
 end
 ```
 
-The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
+The compiler/runtime inserts a scheduler safepoint on **every `loop`, conventional `for`, and iterator-loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
 
 This means Oreslang does not require recursion as the only way to loop, while still giving actor/isolate schedulers a compulsory cooperation point inside generated loop execution.
 
