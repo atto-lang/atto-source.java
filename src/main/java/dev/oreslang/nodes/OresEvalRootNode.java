@@ -1228,7 +1228,56 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "code unit '" + codeUnitId + "' has no 'export entry'");
             }
-            return exportAny(entry.name());
+
+            String name = entry.name();
+            Object resolved = null;
+            int eligibleMatches = 0;
+            boolean plainBindingMatch = false;
+
+            Ast.ModuleDecl module = modules.get(name);
+            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
+                resolved = new ModuleFacade(this, module);
+                eligibleMatches++;
+            }
+
+            Ast.ClassDecl klass = findClass(name);
+            if (klass != null) {
+                resolved = new ClassFacade(this, klass);
+                eligibleMatches++;
+            }
+
+            Ast.FunctionDecl fn = findFunction(name);
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
+                resolved = (Invokable) args -> callFunction(fn, args);
+                eligibleMatches++;
+            }
+
+            for (Ast.ModuleDecl candidate : program.modules()) {
+                for (Ast.Decl decl : candidate.declarations()) {
+                    if (decl instanceof Ast.FieldDecl field
+                            && field.visibility() == Ast.Visibility.PUBLIC
+                            && field.name().equals(name)) {
+                        plainBindingMatch = true;
+                    }
+                }
+            }
+
+            if (plainBindingMatch) {
+                throw new IllegalArgumentException(
+                        "entry export '" + name
+                                + "' cannot target a plain binding; use a callable, actor/class, or module");
+            }
+            if (eligibleMatches == 0) {
+                throw new IllegalArgumentException(
+                        "entry export '" + name
+                                + "' does not resolve to an exported callable, actor/class, or module");
+            }
+            if (eligibleMatches > 1) {
+                throw new IllegalArgumentException(
+                        "entry export '" + name
+                                + "' is ambiguous across exported declaration categories");
+            }
+            return resolved;
         }
 
         private Object exportAny(String name) {
