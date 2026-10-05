@@ -139,10 +139,13 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            Ast.TypeRef sourceType = destructure.declaredType() == null
+                    ? source.type
+                    : destructure.declaredType();
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = destructureBindingType(destructure, source.type, i, binding.name());
+                Ast.TypeRef bindingType = destructureBindingType(destructure, sourceType, i, binding.name());
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
                         : kindOfType(bindingType);
@@ -555,6 +558,9 @@ public final class OwnershipChecker {
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.SpreadExpr spread) {
+            return checkExpr(spread.expression(), scope, consuming);
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
@@ -583,12 +589,17 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.TupleExpr tuple) {
             boolean copy = true;
+            List<Ast.TypeRef> elementTypes = new ArrayList<>(tuple.elements().size());
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
+                elementTypes.add(info.type);
                 copy &= info.kind == ValueKind.COPY;
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(
+                    Ast.TypeRef.tupleType(elementTypes),
+                    copy ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             boolean dynamic = false;
@@ -614,6 +625,14 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        for (Ast.Expr argument : call.arguments()) {
+            if (!(argument instanceof Ast.SpreadExpr spread)) continue;
+            ValueInfo source = checkExpr(spread.expression(), scope, true);
+            if (containsMutexGuardType(source.type)) {
+                throw error("spread cannot consume a guard-bearing aggregate");
+            }
+        }
+
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -1149,6 +1168,7 @@ public final class OwnershipChecker {
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.SpreadExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) {
@@ -1662,6 +1682,9 @@ public final class OwnershipChecker {
         if (concrete.isTupleType() && index < concrete.arguments().size()) {
             return concrete.arguments().get(index);
         }
+        if (concrete.isFixedArrayType()) {
+            return concrete.fixedArrayElement();
+        }
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
@@ -1715,6 +1738,9 @@ public final class OwnershipChecker {
                 && iterableType.arguments().size() == 1) {
             return iterableType.arguments().getFirst();
         }
+        if (iterableType.isFixedArrayType()) {
+            return iterableType.fixedArrayElement();
+        }
         if ((iterableType.name().equals("Array") || iterableType.name().equals("List")
                         || iterableType.name().equals("Generator") || iterableType.name().equals("Iterator"))
                 && iterableType.arguments().size() == 1) {
@@ -1741,6 +1767,9 @@ public final class OwnershipChecker {
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        // FixedArray is mutable storage and therefore never an implicit Copy value.
+        if (type.isFixedArrayType()) return false;
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
