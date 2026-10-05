@@ -135,6 +135,24 @@ final class BooleanIntrinsicsTest {
     }
 
     @Test
+    void realBooleanOpsModuleShadowsBuiltinNamespace() throws Exception {
+        String program = """
+                define module BooleanOps as
+                  pub fnc And(int left, int right): int {
+                    return left + right;
+                  }
+                end
+
+                pub fnc main(): void {
+                  stdio.println(BooleanOps.And(2, 3));
+                  return;
+                }
+                """;
+
+        assertEquals("5\n", run(program, "boolean-ops-shadow.ores"));
+    }
+
+    @Test
     void runtimeUsesLogicalIdentitiesParityAndScalarShortCircuiting() throws Exception {
         String program = """
                 pub fnc main(): void {
