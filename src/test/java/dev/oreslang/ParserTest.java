@@ -108,7 +108,7 @@ final class ParserTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
     @Test
-    void sharedActorUsesOneReceiveAndAllowsOwnedStateMutation() {
+    void sharedActorAllowsTypedMethodsAndOwnedStateMutation() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 shared actor Account {
                   let int balance = 100;
@@ -122,19 +122,23 @@ final class ParserTest {
                     self.balance = current + delta;
                     return;
                   }
+
+                  pub balance(): int {
+                    return self.balance;
+                  }
                 }
                 """));
 
         Ast.ClassDecl actor =
                 (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
-        assertEquals(List.of("current", "receive"),
+        assertEquals(List.of("current", "receive", "balance"),
                 actor.methods().stream().map(Ast.MethodDecl::name).toList());
         assertDoesNotThrow(() -> OwnershipChecker.check(program));
     }
 
     @Test
-    void actorPublicSurfaceIsExactlyReceive() {
+    void actorPublicSurfaceSupportsMultipleTypedMethods() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   let int count = 0;
@@ -151,42 +155,49 @@ final class ParserTest {
                     self.count = self.count + value;
                     return;
                   }
+
+                  pub reset(): void {
+                    self.count = 0;
+                    return;
+                  }
+
+                  pub current(): int {
+                    return self.count;
+                  }
                 end
                 """));
 
         Ast.ClassDecl actor =
                 (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
-        assertEquals(List.of("constructor", "helper", "receive"),
+        assertEquals(List.of("constructor", "helper", "receive", "reset", "current"),
                 actor.methods().stream().map(Ast.MethodDecl::name).toList());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Bad as
-                  pub receive(value: int): void { return; }
-                  pub reset(): void { return; }
+                  pub run<T>(value: T): void { return; }
                 end
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Bad as
-                  pub receive<T>(value: T): void { return; }
-                end
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor Bad as
-                  pub receive(value: int): int { return value; }
+                  pub run(mut value: int): void { return; }
                 end
                 """));
     }
 
     @Test
-    void classExtendingIntrinsicActorCarriesMessageReplyErrorContract() {
+    void classExtendingIntrinsicActorNormalizesToTypedActorClass() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                define class Worker extends Actor<int, void, String> as
+                define class Worker extends Actor as
                   let int count = 0;
 
-                  pub receive(value: int): void {
+                  pub run(value: int): int {
                     self.count = self.count + value;
+                    return self.count;
+                  }
+
+                  pub reset(): void {
+                    self.count = 0;
                     return;
                   }
                 end
@@ -197,18 +208,18 @@ final class ParserTest {
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
         assertTrue(actor.parents().isEmpty(),
                 "compiler-intrinsic Actor base normalizes into actorKind");
-        assertEquals(3, actor.actorProtocolTypes().size());
-        assertEquals("int", actor.actorProtocolTypes().getFirst().name());
+        assertEquals(List.of("run", "reset"),
+                actor.methods().stream().map(Ast.MethodDecl::name).toList());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Bad extends Actor<String, void, String> as
-                  pub receive(value: int): void { return; }
+                define class Bad extends Actor<int> as
+                  pub run(value: int): void { return; }
                 end
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Bad extends Actor<int, void> as
-                  pub receive(value: int): void { return; }
+                define class Bad extends IsoActor<int, void, String> as
+                  pub run(value: int): void { return; }
                 end
                 """));
     }
@@ -383,6 +394,50 @@ final class ParserTest {
         assertTrue(
                 failure.getMessage().contains("at least one public protocol method"),
                 failure.getMessage());
+    }
+
+    @Test
+    void actorProtocolRejectsReservedActorRefControlNames() {
+        for (String reserved : List.of("id", "is_alive", "send", "mailbox")) {
+            IllegalArgumentException actorFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Worker as
+                              pub %s(): void { return; }
+                            end
+                            """.formatted(reserved))));
+            assertTrue(
+                    actorFailure.getMessage().contains("reserved ActorRef"),
+                    actorFailure.getMessage());
+
+            IllegalArgumentException interfaceFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define interface WorkerAPI
+                              fnc %s(): void;
+                            end
+
+                            define actor Holder as
+                              pub accept(target: ActorRef<WorkerAPI>): void { return; }
+                            end
+                            """.formatted(reserved))));
+            assertTrue(
+                    interfaceFailure.getMessage().contains("reserved ActorRef"),
+                    interfaceFailure.getMessage());
+        }
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  pub receive(value: int): int { return value + 1; }
+                end
+
+                async fnc exercise() -> void {
+                  val worker = spawn Worker();
+                  val result = await worker.receive(41);
+                  stdio.println(result);
+                  return;
+                }
+                """)));
     }
 
     @Test
