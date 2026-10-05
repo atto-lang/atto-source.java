@@ -54,7 +54,7 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /** Result of one resumable task turn. */
-    public sealed interface Step<T> permits Done, Await { }
+    public sealed interface Step<T> permits Done, Await, TailAwait { }
 
     /** The async task has produced its final value. */
     public record Done<T>(T value) implements Step<T> { }
@@ -68,6 +68,12 @@ public final class OresScheduler implements AutoCloseable {
             Objects.requireNonNull(future, "future");
         }
     }
+
+    /**
+     * Proper async tail transfer. The current logical frame has already been
+     * replaced, but this remains a hard scheduler boundary.
+     */
+    public record TailAwait<T>() implements Step<T> { }
 
     /**
      * Input delivered to a compiler-generated state machine when it starts or
@@ -206,6 +212,58 @@ public final class OresScheduler implements AutoCloseable {
                 turnExecutor);
     }
 
+    /**
+     * Drive one host/embedder task on the current thread without attempting a
+     * second concurrent entry into an already-entered Polyglot context.
+     *
+     * <p>Turns are still queue-dispatched: every await/tail-await fully returns
+     * to this pump before the next turn receives a fresh dispatch id. External
+     * completion threads may only enqueue a runnable.</p>
+     */
+    static <T> T driveOnCurrentThread(
+            Task<T> task,
+            TurnExecutor turnExecutor) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(turnExecutor, "turnExecutor");
+
+        LinkedBlockingQueue<Runnable> ready =
+                new LinkedBlockingQueue<>(DEFAULT_QUEUE_CAPACITY);
+        Executor pump = command -> {
+            if (!ready.offer(Objects.requireNonNull(command, "command"))) {
+                throw new RejectedExecutionException(
+                        "host-pumped OresScheduler ready queue is full");
+            }
+        };
+
+        OresScheduler scheduler = new OresScheduler(
+                "ores-host-pump-" + NEXT_ID.incrementAndGet(),
+                1,
+                pump,
+                null,
+                turnExecutor);
+
+        boolean interrupted = false;
+        try {
+            OresFuture<T> completion = scheduler.start(task);
+            while (!completion.isDone()) {
+                Runnable next;
+                for (;;) {
+                    try {
+                        next = ready.take();
+                        break;
+                    } catch (InterruptedException interruption) {
+                        interrupted = true;
+                    }
+                }
+                next.run();
+            }
+            return completion.join();
+        } finally {
+            scheduler.close();
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
     /** True only on private carriers owned by user-created OresSchedulers. */
     public static boolean isSchedulerCarrierThread() {
         return Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
@@ -265,6 +323,10 @@ public final class OresScheduler implements AutoCloseable {
 
     public static <T> Step<T> await(OresFuture<?> future) {
         return new Await<>(Objects.requireNonNull(future, "future"));
+    }
+
+    public static <T> Step<T> tailAwait() {
+        return new TailAwait<>();
     }
 
     /**
@@ -465,6 +527,11 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                if (step instanceof TailAwait<?>) {
+                    armTailAwait();
+                    return;
+                }
+
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
@@ -527,6 +594,20 @@ public final class OresScheduler implements AutoCloseable {
                 }
             } catch (RuntimeException | Error registrationFailure) {
                 failTerminal(registrationFailure);
+            }
+        }
+
+        /**
+         * Publish only a synthetic resume token. executing remains true until
+         * afterCarrierTurn(), so the replacement frame cannot run inline.
+         */
+        private void armTailAwait() {
+            if (!phase.compareAndSet(RUNNING, WAITING)) {
+                return;
+            }
+            if (!pendingResume.compareAndSet(null, Resume.completed(null, null))) {
+                failTerminal(new IllegalStateException(
+                        "tail-await attempted to publish more than one resume"));
             }
         }
 
