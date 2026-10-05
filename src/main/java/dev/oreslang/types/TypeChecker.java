@@ -1591,7 +1591,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
-            Type sumReceiver = deref(receiver);
+            Type sumReceiver = receiverDispatchType(deref(receiver));
             Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
             if (iteratorMember != null) return iteratorMember;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
@@ -1603,7 +1603,7 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
-            receiver = unwrapMutexGuard(receiver);
+            receiver = receiverDispatchType(unwrapMutexGuard(receiver));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
@@ -1869,7 +1869,8 @@ public final class TypeChecker {
             Set<String> generics,
             Type self) {
         Type receiver = typeOf(member.receiver(), env, generics, self);
-        Type normalized = deref(unwrapMutexGuard(receiver));
+        Type receiverValueType = deref(unwrapMutexGuard(receiver));
+        Type normalized = receiverDispatchType(receiverValueType);
         int arity = expected.parameters().size();
 
         if (normalized instanceof ClassNamespace classNamespace) {
@@ -1924,13 +1925,16 @@ public final class TypeChecker {
 
             Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
             memberGenerics.addAll(method.genericParameters());
+            Type callableReceiver = receiverValueType instanceof SelfType
+                    ? receiverValueType
+                    : named;
             Type signature = functionType(
                     method.parameters(),
                     method.returnType(),
                     method.async(),
                     false,
                     memberGenerics,
-                    target.ownerType());
+                    callableReceiver);
             return substituteGenerics(
                     signature,
                     classGenericBindings(target.owner(), target.ownerType()));
