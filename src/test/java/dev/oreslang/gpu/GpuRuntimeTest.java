@@ -7,6 +7,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -182,6 +185,47 @@ final class GpuRuntimeTest {
 
         runtime.release(collected);
         assertEquals(1, backend.releaseCount());
+    }
+
+    @Test
+    void releaseWaitsForInFlightNativeOperationPin() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch continueDownload = new CountDownLatch(1);
+
+        TransferBackend backend = new TransferBackend("pinned-download") {
+            @Override
+            public synchronized List<?> downloadArray(
+                    String elementAbiType,
+                    long nativeHandle,
+                    long length) {
+                entered.countDown();
+                try {
+                    if (!continueDownload.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("timed out waiting to continue pinned download");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return super.downloadArray(elementAbiType, nativeHandle, length);
+            }
+        };
+        GpuRuntime.installBackend(backend);
+        GpuRuntime runtime = new GpuRuntime();
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i64", List.of(1L, 2L, 3L));
+
+        CompletableFuture<List<?>> download =
+                CompletableFuture.supplyAsync(() -> runtime.downloadArray(array));
+
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        runtime.release(array);
+        assertEquals(0, backend.releaseCount(),
+                "native handle must remain live while a backend operation is pinned");
+
+        continueDownload.countDown();
+        assertEquals(List.of(1L, 2L, 3L), download.get(5, TimeUnit.SECONDS));
+        assertEquals(1, backend.releaseCount(),
+                "the final operation pin should release the native handle exactly once");
     }
 
     @Test
