@@ -460,6 +460,22 @@ final class ParserTest {
                         end
                         """)));
         assertTrue(future.getMessage().contains("Future"), future.getMessage());
+
+        IllegalArgumentException sharedAuthority = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          fnc run(state: RwLock<int>): void;
+                        end
+
+                        define actor Holder as
+                          pub accept(target: ActorRef<BadAPI>): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                sharedAuthority.getMessage().contains("only with shared actors")
+                        || sharedAuthority.getMessage().contains("shared external memory"),
+                sharedAuthority.getMessage());
     }
 
     @Test
@@ -512,32 +528,23 @@ final class ParserTest {
     }
 
     @Test
-    void actorBoundaryInputCannotBeUpgradedToMutableHelperAuthority() {
+    void actorBoundaryRejectsOrdinaryClassInstancesByValue() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> {
-                    Ast.Program typed = TypeChecker.check(Parser.parse("""
-                            define class Box as
-                              let int value = 0;
-                            end
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          let int value = 0;
+                        end
 
-                            fnc mutate(Box mut box) -> void {
-                              box.value = 1;
-                              return;
-                            }
+                        define actor Worker as
+                          pub receive(box: Box): void {
+                            return;
+                          }
+                        end
+                        """)));
 
-                            define actor Worker as
-                              pub receive(box: Box): void {
-                                mutate(box);
-                                return;
-                              }
-                            end
-                            """));
-                    OwnershipChecker.check(typed);
-                });
-
-        assertTrue(failure.getMessage().contains("actor-boundary input")
-                        || failure.getMessage().contains("mutable"),
+        assertTrue(
+                failure.getMessage().contains("cannot transport class instance"),
                 failure.getMessage());
     }
 
