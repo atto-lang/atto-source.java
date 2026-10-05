@@ -1070,6 +1070,12 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
+                    if (!fn.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "generic static fnc '" + klass.klass().name() + "." + name
+                                        + "' must be specialized by a direct call; "
+                                        + "polymorphic function values are not supported yet");
+                    }
                     return klass.owner().tailCallable(
                             args -> klass.owner().callStaticFunctionRaw(fn, objectArguments(args)));
                 }
@@ -1362,6 +1368,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException("import fnc requires a reifiable non-actor fnc; '" + name
                             + "' is direct-call-only or actor-scheduled");
+                }
+                if (!fn.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "import fnc requires a reifiable non-generic fnc; '" + name
+                                    + "' requires direct-call specialization");
                 }
                 return functionInvocation(fn, args);
             }
