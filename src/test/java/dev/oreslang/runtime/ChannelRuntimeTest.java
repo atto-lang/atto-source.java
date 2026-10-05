@@ -11,15 +11,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ChannelRuntimeTest {
     @Test
-    void prioritySelectIsDeterministicAndUsesCaseOrder() throws Exception {
+    void orderedSelectIsDeterministicAndUsesCaseOrder() throws Exception {
         var first = ChannelRuntime.<String>channel(4);
         var second = ChannelRuntime.<String>channel(4);
         assertTrue(first.tryWrite("first"));
         assertTrue(second.tryWrite("second"));
 
-        var selected = ChannelRuntime.select(List.of(
-                new ChannelRuntime.ReadCase<>(first, "first"),
-                new ChannelRuntime.ReadCase<>(second, "second")))
+        var selected = ChannelRuntime.select(
+                List.of(
+                        new ChannelRuntime.ReadCase<>(first, "first"),
+                        new ChannelRuntime.ReadCase<>(second, "second")),
+                ChannelRuntime.SelectPolicy.ORDERED)
                 .get(1, TimeUnit.SECONDS);
 
         assertEquals(0, selected.index());
@@ -30,23 +32,23 @@ final class ChannelRuntimeTest {
     }
 
     @Test
-    void roundRobinPlanRotatesPriorityWithoutRandomness() throws Exception {
+    void fairSelectSetRotatesFirstProbeWithoutRandomness() throws Exception {
         var first = ChannelRuntime.<Integer>channel(4);
         var second = ChannelRuntime.<Integer>channel(4);
         first.tryWrite(1);
         second.tryWrite(2);
 
-        var plan = ChannelRuntime.plan(
-                List.of(
-                        new ChannelRuntime.ReadCase<>(first, "a"),
-                        new ChannelRuntime.ReadCase<>(second, "b")),
-                ChannelRuntime.SelectPolicy.ROUND_ROBIN);
+        var set = ChannelRuntime.selectSet(List.of(
+                new ChannelRuntime.ReadCase<>(first, "a"),
+                new ChannelRuntime.ReadCase<>(second, "b")));
 
-        var one = plan.next().get(1, TimeUnit.SECONDS);
+        assertEquals(ChannelRuntime.SelectPolicy.FAIR, set.policy());
+
+        var one = set.next().get(1, TimeUnit.SECONDS);
         assertEquals("a", one.key());
 
         first.tryWrite(3);
-        var two = plan.next().get(1, TimeUnit.SECONDS);
+        var two = set.next().get(1, TimeUnit.SECONDS);
         assertEquals("b", two.key());
     }
 
@@ -71,7 +73,7 @@ final class ChannelRuntimeTest {
     @Test
     void pendingSelectIsNonblockingUntilAChannelBecomesReady() throws Exception {
         var incoming = ChannelRuntime.<String>channel(1);
-        var selected = ChannelRuntime.select(List.of(
+        var selected = ChannelRuntime.nbSelect(List.of(
                 new ChannelRuntime.ReadCase<>(incoming, "incoming")));
 
         assertFalse(selected.isDone(), "arming select must not park or complete without readiness");
@@ -97,10 +99,10 @@ final class ChannelRuntimeTest {
     void rendezvousReadAndWriteSuspendAsFuturesWithoutParkingCarrier() throws Exception {
         var channel = ChannelRuntime.<String>rendezvous();
 
-        var read = channel.read();
+        var read = ChannelRuntime.nbRead(channel);
         assertFalse(read.isDone());
 
-        var write = channel.write("payload");
+        var write = ChannelRuntime.nbWrite(channel, "payload");
         assertTrue(write.isDone());
         assertEquals("payload", read.get(1, TimeUnit.SECONDS));
         assertNull(write.get(1, TimeUnit.SECONDS));
@@ -121,7 +123,7 @@ final class ChannelRuntimeTest {
     @Test
     void cancellingPendingReadDetachesItBeforeLaterWrites() {
         var channel = ChannelRuntime.<String>channel(1);
-        var read = channel.read();
+        var read = ChannelRuntime.nbRead(channel);
 
         assertTrue(read.cancel(false));
         assertTrue(channel.tryWrite("preserved"));
@@ -131,7 +133,7 @@ final class ChannelRuntimeTest {
     @Test
     void cancellingPendingWritePreventsLaterReadFromObservingIt() {
         var channel = ChannelRuntime.<String>rendezvous();
-        var write = channel.write("cancelled");
+        var write = ChannelRuntime.nbWrite(channel, "cancelled");
 
         assertTrue(write.cancel(false));
         assertTrue(channel.tryRead().isEmpty());
@@ -148,5 +150,63 @@ final class ChannelRuntimeTest {
         assertEquals("committed", read.get(1, TimeUnit.SECONDS));
         assertNull(write.get(1, TimeUnit.SECONDS));
     }
+
+    @Test
+    void nbReadRegistersWithoutSuspendingAndCompletesLater() throws Exception {
+        var channel = ChannelRuntime.<String>channel(1);
+
+        var read = ChannelRuntime.nbRead(channel);
+        assertFalse(read.isDone(), "nb readch must return immediately with a pending Future");
+
+        assertTrue(channel.tryWrite("later"));
+        assertEquals("later", read.get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void nbWriteRegistersWithoutSuspendingAndCompletesWhenReceiverArrives() throws Exception {
+        var channel = ChannelRuntime.<String>rendezvous();
+
+        var write = ChannelRuntime.nbWrite(channel, "payload");
+        assertFalse(write.isDone(), "nb writech must return immediately with a pending Future");
+
+        assertEquals("payload", channel.tryRead().orElseThrow());
+        assertNull(write.get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void tryOperationsProbeOnlyAndNeverRegisterWaiters() {
+        var channel = ChannelRuntime.<String>rendezvous();
+
+        assertTrue(channel.tryRead().isEmpty());
+        assertFalse(channel.tryWrite("not-registered"));
+
+        assertTrue(channel.tryRead().isEmpty(),
+                "failed try writech must not leave a pending writer behind");
+    }
+
+    @Test
+    void defaultSelectSetIsFairWhileOrderedIsExplicitPriority() throws Exception {
+        var first = ChannelRuntime.<Integer>channel(4);
+        var second = ChannelRuntime.<Integer>channel(4);
+        first.tryWrite(1);
+        second.tryWrite(2);
+
+        var fair = ChannelRuntime.selectSet(List.of(
+                new ChannelRuntime.ReadCase<>(first, "first"),
+                new ChannelRuntime.ReadCase<>(second, "second")));
+
+        assertEquals("first", fair.next().get(1, TimeUnit.SECONDS).key());
+        first.tryWrite(3);
+        assertEquals("second", fair.next().get(1, TimeUnit.SECONDS).key());
+
+        var ordered = ChannelRuntime.selectSet(
+                List.of(
+                        new ChannelRuntime.ReadCase<>(first, "first"),
+                        new ChannelRuntime.ReadCase<>(second, "second")),
+                ChannelRuntime.SelectPolicy.ORDERED);
+        second.tryWrite(4);
+        assertEquals("first", ordered.next().get(1, TimeUnit.SECONDS).key());
+    }
+
 
 }
