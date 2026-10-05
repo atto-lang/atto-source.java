@@ -78,6 +78,68 @@ final class ActorEventBusTest {
     }
 
     @Test
+    void rotatedJoinCapabilityRevokesOldAuthority() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability stale = group.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability current = group.rotateJoinCapability();
+
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> staleFailure = new AtomicReference<>();
+            AtomicReference<Boolean> joined = new AtomicReference<>(false);
+
+            ActorRuntime.ActorRef<List<ActorRuntime.ActorGroupJoinCapability>> actor =
+                    runtime.spawnShared(() -> (caps, context) -> {
+                        try {
+                            caps.get(0).join();
+                        } catch (Throwable failure) {
+                            staleFailure.set(failure);
+                        }
+                        caps.get(1).join();
+                        joined.set(true);
+                        done.countDown();
+                    });
+
+            actor.send(List.of(stale, current));
+
+            assertTrue(done.await(2, TimeUnit.SECONDS));
+            assertTrue(staleFailure.get() instanceof SecurityException);
+            assertTrue(joined.get());
+            assertEquals(1, group.memberCount());
+        }
+    }
+
+    @Test
+    void closedSubscriptionCanBeReplacedBySameActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+            group.events().defineTopic("bounds", ActorEventBus.DeliveryPolicy.LATEST, 1);
+
+            CountDownLatch cycled = new CountDownLatch(1);
+            AtomicReference<Boolean> replacementOpen = new AtomicReference<>(false);
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (message, context) -> {
+                capability.join();
+                ActorEventBus.Subscription<Integer> first =
+                        group.events().subscribe("bounds");
+                first.close();
+
+                ActorEventBus.Subscription<Integer> second =
+                        group.events().subscribe("bounds");
+                replacementOpen.set(!second.closed());
+                cycled.countDown();
+            });
+
+            actor.send("cycle");
+
+            assertTrue(cycled.await(2, TimeUnit.SECONDS));
+            assertTrue(replacementOpen.get());
+            assertEquals(1, group.events().topics().getFirst().subscribers());
+        }
+    }
+
+    @Test
     void latestTopicCoalescesUnreadEvents() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
