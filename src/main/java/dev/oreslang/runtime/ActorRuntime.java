@@ -3011,7 +3011,8 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || value instanceof ActorGroupId;
     }
 
     @Override
