@@ -114,7 +114,7 @@ fnc has_filter(&List<String> filters): bool {
 }
 
 fnc selected(String full_name, &List<String> filters): bool {
-  if !has_filter(&filters); do
+  if !has_filter(filters); do
     return true;
   fi
 
