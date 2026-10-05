@@ -518,8 +518,10 @@ ActorRef<Worker>.current(): Future<int>
 
 The actor reference does not expose the mutable actor object. Raw
 `ActorRef.send`, `ActorRef.receive`, or mailbox access is runtime-private for
-actor classes. A public method named `receive` is legal, but it is just another
-typed protocol method and has no special source-language privilege.
+actor classes. The ActorRef control/runtime names `id`, `is_alive`, `send`,
+and `mailbox` are reserved as public protocol method names, including in
+ActorRef protocol interfaces. A public method named `receive` is legal: it is
+just another typed protocol method and has no special source-language privilege.
 
 Protocol methods are currently monomorphic at method level so the generated
 message ABI remains closed and AOT-safe. Generic actor classes remain allowed.
