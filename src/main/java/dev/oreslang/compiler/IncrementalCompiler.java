@@ -62,6 +62,8 @@ public final class IncrementalCompiler {
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
+        Map<String, Map<String, Ast.Decl>> importedTypeBindings =
+                ImportGraph.importedTypeBindings(parsed, normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
@@ -104,7 +106,9 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Ast.Program checked = OresCompiler.parseAndTypeCheck(
+                    normalized.get(id),
+                    importedTypeBindings.getOrDefault(id, Map.of()));
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
