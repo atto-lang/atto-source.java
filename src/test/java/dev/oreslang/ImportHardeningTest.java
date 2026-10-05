@@ -24,7 +24,7 @@ final class ImportHardeningTest {
     Path tempDir;
 
     @Test
-    void actorImportsSupportNamedAliasesAndWildcardNamespaces() {
+    void actorImportsSupportAliasesAndExplicitNamespaces() {
         Ast.Program program = Parser.parse("""
                 import actor Foo from "./actors";
                 import actor (Bar as B) from "./actors";
@@ -55,7 +55,8 @@ final class ImportHardeningTest {
                         pub fnc main() => void { return; }
                         """));
 
-        assertTrue(failure.getMessage().contains("imports are named by kind"));
+        assertTrue(failure.getMessage().contains(
+                "expected module, class, actor, fnc, entry, or *"));
     }
 
     @Test
@@ -74,16 +75,12 @@ final class ImportHardeningTest {
     @Test
     void linkedImportsDistinguishActorsFromOrdinaryClasses() {
         String exports = """
-                define actor Foo {
-                  pub receive(int message): void {
-                    return;
-                  }
-                }
+                define actor Foo as
+                  pub run(message: int): void { return; }
+                end
 
                 define class Plain as
-                  run(): void {
-                    return;
-                  }
+                  run(): void { return; }
                 end
                 """;
 
@@ -107,7 +104,8 @@ final class ImportHardeningTest {
         IllegalArgumentException wrongClass = assertThrows(
                 IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(actorAsClass));
-        assertTrue(wrongClass.getMessage().contains("does not match an exported declaration"));
+        assertTrue(wrongClass.getMessage().contains(
+                "does not match an exported declaration"));
 
         Map<String, String> classAsActor = new LinkedHashMap<>();
         classAsActor.put("/project/actors.ores", exports);
@@ -118,21 +116,110 @@ final class ImportHardeningTest {
         IllegalArgumentException wrongActor = assertThrows(
                 IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(classAsActor));
-        assertTrue(wrongActor.getMessage().contains("does not match an exported declaration"));
+        assertTrue(wrongActor.getMessage().contains(
+                "does not match an exported declaration"));
     }
 
     @Test
-    void aliasExecutesAgainstTheOriginalExportName() throws Exception {
-        Path library = tempDir.resolve("solver.ores");
+    void entryExportAndImportAreExplicitUntypedAndUnique() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                export entry Worker;
+
+                define actor Worker as
+                  pub run(message: int): void { return; }
+                end
+                """));
+
+        Ast.EntryExportDecl entry = (Ast.EntryExportDecl) program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.EntryExportDecl.class::isInstance)
+                .findFirst()
+                .orElseThrow();
+        assertEquals("Worker", entry.name());
+
+        Ast.Program imported = TypeChecker.check(Parser.parse("""
+                import entry Plugin from "./worker";
+                pub fnc main() => void { return; }
+                """));
+        assertEquals(Ast.ImportKind.ENTRY, imported.imports().getFirst().kind());
+        assertEquals("Plugin", imported.imports().getFirst().localName("$entry$"));
+
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        export entry Worker;
+                        export entry main;
+
+                        define actor Worker as
+                          pub run(message: int): void { return; }
+                        end
+
+                        pub fnc main() => void { return; }
+                        """)));
+        assertTrue(duplicate.getMessage().contains("at most one"));
+
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        export entry Missing;
+                        pub fnc main() => void { return; }
+                        """)));
+        assertTrue(missing.getMessage().contains("must name one top-level"));
+
+        IllegalArgumentException actorCallable = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        export entry worker;
+                        pub actor fnc worker(value: int) => int { return value; }
+                        """)));
+        assertTrue(actorCallable.getMessage().contains(
+                "cannot be a code-unit entry"));
+    }
+
+    @Test
+    void untypedEntryRejectsAmbiguousDeclarationKinds() {
+        IllegalArgumentException ambiguous = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        export entry Plugin;
+
+                        define class Plugin as
+                          run(): void { return; }
+                        end
+
+                        pub fnc Plugin() => void { return; }
+                        """)));
+
+        assertTrue(ambiguous.getMessage().contains(
+                "ambiguous across declaration kinds"));
+    }
+
+    @Test
+    void entryExportCannotBeHiddenInsideAModule() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define module plugin
+                          export entry run;
+                          pub fnc run() => void { return; }
+                        end
+                        """));
+    }
+
+    @Test
+    void entryImportResolvesAndExecutesExplicitTarget() throws Exception {
+        Path plugin = tempDir.resolve("plugin.ores");
         Path main = tempDir.resolve("main.ores");
 
-        Files.writeString(library, """
-                pub fnc solve(int value) => int {
+        Files.writeString(plugin, """
+                export entry run;
+
+                pub fnc run(value: int) => int {
                   return value + 1;
                 }
                 """);
         Files.writeString(main, """
-                import fnc {solve: op} from "./solver.ores";
+                import entry op from "./plugin.ores";
 
                 pub routine main() => void {
                   stdio.stdout.write(op(41));
@@ -150,62 +237,4 @@ final class ImportHardeningTest {
 
         assertEquals("42", output.toString(StandardCharsets.UTF_8));
     }
-
-    @Test
-    void hotLoadEntryExportIsExplicitTypedAndUnique() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
-                export entry actor Worker;
-
-                define actor Worker {
-                  pub receive(int message): void { return; }
-                }
-                """));
-
-        Ast.EntryExportDecl entry = (Ast.EntryExportDecl) program.modules().stream()
-                .flatMap(module -> module.declarations().stream())
-                .filter(Ast.EntryExportDecl.class::isInstance)
-                .findFirst()
-                .orElseThrow();
-
-        assertEquals(Ast.ExportKind.ACTOR, entry.kind());
-        assertEquals("Worker", entry.name());
-
-        IllegalArgumentException duplicate = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        export entry actor Worker;
-                        export entry fnc main;
-
-                        define actor Worker {
-                          pub receive(int message): void { return; }
-                        }
-
-                        pub fnc main() => void { return; }
-                        """)));
-        assertTrue(duplicate.getMessage().contains("exactly one export entry"));
-
-        IllegalArgumentException wrongKind = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        export entry class Worker;
-
-                        define actor Worker {
-                          pub receive(int message): void { return; }
-                        }
-                        """)));
-        assertTrue(wrongKind.getMessage().contains("entry export class"));
-    }
-
-    @Test
-    void entryExportCannotBeHiddenInsideAModule() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        define module plugin
-                          export entry fnc run;
-                          pub fnc run() => void { return; }
-                        end
-                        """));
-    }
-
 }
