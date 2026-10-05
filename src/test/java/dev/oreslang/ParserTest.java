@@ -375,12 +375,41 @@ final class ParserTest {
     void actorWithoutReceiveIsRejected() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> Parser.parse("""
+                () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
                           private helper(): int { return 1; }
                         end
-                        """));
+                        """)));
         assertTrue(failure.getMessage().contains("receive"), failure.getMessage());
+    }
+
+    @Test
+    void actorRejectsExtraPublicMethodRpcSurface() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define actor Worker as
+                          pub receive(value: int): void { return; }
+                          pub status(): int { return 1; }
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("exactly one public receive"),
+                failure.getMessage());
+    }
+
+    @Test
+    void intrinsicActorAbiRequiresZeroOrThreeArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Worker extends Actor<int, String, String> as
+                  pub receive(value: int): void { return; }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Bad extends Actor<int, String> as
+                  pub receive(value: int): void { return; }
+                end
+                """));
     }
 
     @Test
