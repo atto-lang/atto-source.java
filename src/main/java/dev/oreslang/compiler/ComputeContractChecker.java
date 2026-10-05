@@ -33,8 +33,11 @@ public final class ComputeContractChecker {
     private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
     private final Map<String, Ast.FunctionDecl> simpleFunctions = new HashMap<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
-    private final List<Ast.FlowDecl> flows = new ArrayList<>();
-    private final List<Ast.AspectDecl> aspects = new ArrayList<>();
+    private record OwnedFlow(String module, Ast.FlowDecl declaration) { }
+    private record OwnedAspect(String module, Ast.AspectDecl declaration) { }
+
+    private final List<OwnedFlow> flows = new ArrayList<>();
+    private final List<OwnedAspect> aspects = new ArrayList<>();
 
     private ComputeContractChecker(Ast.Program program) {
         index(program);
@@ -120,9 +123,9 @@ public final class ComputeContractChecker {
                         ambiguousFunctions.add(fn.name());
                     }
                 } else if (declaration instanceof Ast.FlowDecl flow) {
-                    flows.add(flow);
+                    flows.add(new OwnedFlow(module.name(), flow));
                 } else if (declaration instanceof Ast.AspectDecl aspect) {
-                    aspects.add(aspect);
+                    aspects.add(new OwnedAspect(module.name(), aspect));
                 }
             }
         }
@@ -144,8 +147,8 @@ public final class ComputeContractChecker {
             }
         }
 
-        for (Ast.FlowDecl flow : flows) validateFlow(flow);
-        for (Ast.AspectDecl aspect : aspects) validateAspect(aspect);
+        for (OwnedFlow flow : flows) validateFlow(flow.module(), flow.declaration());
+        for (OwnedAspect aspect : aspects) validateAspect(aspect.module(), aspect.declaration());
     }
 
     private void validateFunction(String module, Ast.FunctionDecl fn) {
@@ -445,11 +448,11 @@ public final class ComputeContractChecker {
         throw unsafe(owner, "dynamic/member call; compute fnc calls must resolve statically to another compute fnc or pure intrinsic");
     }
 
-    private void validateFlow(Ast.FlowDecl flow) {
+    private void validateFlow(String module, Ast.FlowDecl flow) {
         LinkedHashMap<String, LinkedHashSet<String>> outgoing = new LinkedHashMap<>();
         for (Ast.FlowEdge edge : flow.edges()) {
-            Ast.FunctionDecl from = resolveAnyFunction(edge.from());
-            Ast.FunctionDecl to = resolveAnyFunction(edge.to());
+            Ast.FunctionDecl from = resolveFunction(module, edge.from());
+            Ast.FunctionDecl to = resolveFunction(module, edge.to());
             if (from == null || !isCompute(from)) {
                 throw new IllegalArgumentException(
                         "flow '" + flow.name() + "' source '" + edge.from() + "' is not a compute fnc");
@@ -478,18 +481,21 @@ public final class ComputeContractChecker {
             Set<String> visited) {
         if (visited.contains(node)) return false;
         if (!visiting.add(node)) return true;
-        for (String next : outgoing.getOrDefault(node, Set.of())) {
-            if (hasCycle(next, outgoing, visiting, visited)) return true;
+        Set<String> nextNodes = outgoing.get(node);
+        if (nextNodes != null) {
+            for (String next : nextNodes) {
+                if (hasCycle(next, outgoing, visiting, visited)) return true;
+            }
         }
         visiting.remove(node);
         visited.add(node);
         return false;
     }
 
-    private void validateAspect(Ast.AspectDecl aspect) {
+    private void validateAspect(String module, Ast.AspectDecl aspect) {
         Set<String> rules = new LinkedHashSet<>();
         for (Ast.AspectRule rule : aspect.rules()) {
-            Ast.FunctionDecl handler = resolveAnyFunction(rule.handler());
+            Ast.FunctionDecl handler = resolveFunction(module, rule.handler());
             if (handler == null) {
                 throw new IllegalArgumentException(
                         "aspect '" + aspect.name() + "' references unknown handler '" + rule.handler() + "'");
