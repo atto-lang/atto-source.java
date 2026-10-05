@@ -1798,10 +1798,14 @@ public final class TypeChecker {
                         where + " ActorRef protocol must name an actor class or interface");
             }
             if (actorInterface != null) {
+                // ActorRef<Interface> does not encode the target actor's
+                // execution domain. Validate the protocol against the strict
+                // common-denominator boundary so a domain-agnostic capability
+                // cannot smuggle shared-memory authority.
                 validateActorProtocolInterface(
                         actorInterface,
                         protocolNamed,
-                        actorKind,
+                        Ast.ActorKind.UNTRUSTED,
                         where);
             }
             return;
@@ -1834,10 +1838,15 @@ public final class TypeChecker {
                     where + " cannot transport an actor instance by value; pass an actor capability/reference");
         }
 
-        if (!isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
-            throw new IllegalArgumentException(
-                    where + " contains state that is not safe to transport across an actor boundary");
-        }
+        // Ordinary class instances carry object identity and potentially
+        // mutable fields/methods. The current runtime transport intentionally
+        // rejects such host/interpreter objects rather than sharing an alias or
+        // erasing nominal identity into a Map. Use records/tuples/lists/maps
+        // for mailbox data until a dedicated compiler-owned struct wire value
+        // is available.
+        throw new IllegalArgumentException(
+                where + " cannot transport class instance '" + named.name()
+                        + "' by value; use a data record/struct wire value or an explicit capability");
     }
 
     private void validateActorProtocolInterface(
