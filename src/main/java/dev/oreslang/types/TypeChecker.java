@@ -1439,7 +1439,10 @@ public final class TypeChecker {
                         List.of(new Named("Matrix", List.of(Unknown.INSTANCE))),
                         named);
                 case "determinant", "trace" -> new Function(List.of(), element);
-                case "norm", "condition" -> new Function(List.of(), Primitive.FLOAT);
+                case "norm", "condition_frobenius" -> new Function(List.of(), Primitive.FLOAT);
+                case "condition" -> throw new IllegalArgumentException(
+                        "Matrix.condition() is reserved for a true spectral/2-norm condition number; "
+                                + "use condition_frobenius() for the current portable estimate");
                 case "diagonal" -> new Function(List.of(), new ListType(element));
                 case "get" -> new Function(List.of(Primitive.INT, Primitive.INT), element);
                 default -> null;
