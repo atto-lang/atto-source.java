@@ -145,8 +145,8 @@ public final class Parser {
     }
 
     private String consumeImportName(Ast.ImportKind kind) {
-        if (kind == Ast.ImportKind.FUNCTION) {
-            return consumeCallableName("expected imported function name");
+        if (kind == Ast.ImportKind.FUNCTION || kind == Ast.ImportKind.ACTOR) {
+            return consumeCallableName("expected imported callable/actor name");
         }
         return consume(IDENT, "expected imported name").lexeme();
     }
