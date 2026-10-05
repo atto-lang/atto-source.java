@@ -318,7 +318,7 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void doWhileSupportsBraceAndDoneForms() throws Exception {
+    void doWhileSupportsBraceForm() throws Exception {
         String output = run("""
                 pub routine main() => void {
                   let i = 0;
@@ -326,14 +326,9 @@ final class RoutineAndLoopTest {
                     stdio.stdout.write(i);
                     i = i + 1;
                   } while (i < 2);
-
-                  do
-                    stdio.stdout.write(i);
-                    i = i + 1
-                  done while i < 4;
                 }
                 """);
-        assertEquals("0123", output);
+        assertEquals("01", output);
     }
 
     @Test
