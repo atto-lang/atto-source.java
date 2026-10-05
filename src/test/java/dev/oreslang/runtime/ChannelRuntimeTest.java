@@ -30,6 +30,7 @@ final class ChannelRuntimeTest {
         OresFuture<String> pending = channel.readAsync();
 
         assertTrue(pending.cancel(false));
+        assertTrue(pending.isCancelled());
         assertThrows(CancellationException.class, pending::join);
 
         assertTrue(channel.tryWrite("kept"));
@@ -132,6 +133,64 @@ final class ChannelRuntimeTest {
 
         assertEquals("hand-off", selected.join().value());
         write.join();
+    }
+
+    @Test
+    void twoPendingSelectsCanRendezvousOnUnbufferedChannel() {
+        ChannelRuntime.Channel<Integer> channel =
+                new ChannelRuntime.Channel<>(0);
+
+        OresFuture<ChannelRuntime.SelectResult> writer =
+                ChannelRuntime.SelectSet.of(
+                                ChannelRuntime.write(channel, 123))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(writer.isDone());
+
+        OresFuture<ChannelRuntime.SelectResult> reader =
+                ChannelRuntime.SelectSet.of(
+                                ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        assertEquals(123, reader.join().value());
+        assertEquals(
+                ChannelRuntime.SelectOperation.WRITE,
+                writer.join().operation());
+        assertTrue(channel.tryRead().isEmpty());
+    }
+
+    @Test
+    void selectToSelectRendezvousCommitsExactlyOneArmPerSelection() {
+        ChannelRuntime.Channel<Integer> rendezvous =
+                new ChannelRuntime.Channel<>(0);
+        ChannelRuntime.Channel<Integer> alternate =
+                new ChannelRuntime.Channel<>(1);
+        alternate.tryWrite(77);
+
+        ChannelRuntime.SelectSet readerSet =
+                ChannelRuntime.SelectSet.of(
+                        ChannelRuntime.read(rendezvous),
+                        ChannelRuntime.read(alternate));
+        OresFuture<ChannelRuntime.SelectResult> reader =
+                readerSet.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        OresFuture<ChannelRuntime.SelectResult> writer =
+                ChannelRuntime.SelectSet.of(
+                                ChannelRuntime.write(rendezvous, 99))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        ChannelRuntime.SelectResult result = reader.join();
+        if (result.index() == 0) {
+            assertEquals(99, result.value());
+            assertEquals(77, alternate.tryRead().orElseThrow());
+            assertEquals(
+                    ChannelRuntime.SelectOperation.WRITE,
+                    writer.join().operation());
+        } else {
+            assertEquals(77, result.value());
+            assertFalse(writer.isDone());
+            assertTrue(writer.cancel(false));
+            assertTrue(rendezvous.tryRead().isEmpty());
+        }
     }
 
     @Test
