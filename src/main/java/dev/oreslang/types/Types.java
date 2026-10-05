@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, FixedArray, Tuple, Union, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -32,6 +32,18 @@ public final class Types {
     }
 
     public record ListType(Type element) implements Type { }
+
+    /**
+     * Fixed-size indexed storage. Every slot has the same element type; that
+     * element type may itself be a union. Unlike Tuple, this does not preserve
+     * a distinct static type for each position.
+     */
+    public record FixedArray(Type element, int length) implements Type {
+        public FixedArray {
+            Objects.requireNonNull(element, "FixedArray element type");
+            if (length < 0) throw new IllegalArgumentException("FixedArray length cannot be negative");
+        }
+    }
 
     public record Tuple(List<Type> elements) implements Type {
         public Tuple { elements = List.copyOf(elements); }
@@ -89,6 +101,12 @@ public final class Types {
 
         if (from instanceof ListType source && to instanceof ListType target) {
             return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
+        }
+
+        if (from instanceof FixedArray source && to instanceof FixedArray target) {
+            return source.length() == target.length()
+                    && isAssignable(source.element(), target.element())
+                    && isAssignable(target.element(), source.element());
         }
 
         if (from instanceof Tuple source && to instanceof Tuple target) {
