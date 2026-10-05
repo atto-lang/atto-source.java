@@ -143,16 +143,21 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
-    void interfacesCanRequireReceiverPolymorphicSelfReturns() {
+    void interfacesAndStructuralCallsPreserveSelfAcrossParametersAndReturns() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub interface Fluent {
-                  fnc same() => self;
+                  fnc choose(self other) => self;
+                }
+
+                fnc use_structurally(value structural Fluent): void {
+                  value.choose(value).choose(value);
+                  return;
                 }
 
                 define module m
                   define class Foo implements Fluent as
-                    pub same(): self {
-                      return self;
+                    pub choose(self other): self {
+                      return other;
                     }
                   end
                 end
