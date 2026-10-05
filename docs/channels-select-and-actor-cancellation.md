@@ -400,7 +400,9 @@ Implemented:
 - structured parent/child cancellation;
 - uncatchable actor cancellation safepoints;
 - force-cancel isolation-revocation contract;
-- bounded internal continuation headroom.
+- bounded internal continuation headroom that is accounted separately from
+  the configured user-message quota, so runtime control traffic cannot silently
+  shrink `maxMailboxMessages`.
 
 Remaining compiler/runtime integration:
 
