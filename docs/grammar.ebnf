@@ -35,18 +35,17 @@ module_member   = actor_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "nlex" ;
+callable_modifier = "async" | "nlex" | "pure" | "trap" ;
 method_modifier   = "abstract" | "async" ;
+function_expr_modifier = "nlex" | "pure" | "trap" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
-                  ( "(" [ param_list ] ")" return_spec block
-                  | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+                  "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
                 = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" callable_name [ generic_params ]
-                  ( "(" [ param_list ] ")" return_spec block
-                  | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+                  "(" [ param_list ] ")" return_spec block ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -58,7 +57,7 @@ actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
-                = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
+                = { annotation } visibility { method_modifier } [ "fnc" ] method_name [ generic_params ]
                   method_head return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
@@ -112,6 +111,8 @@ param           = type_ref [ "mut" ] IDENT
                 | IDENT "structural" type_ref [ "mut" ] ;
 
 binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
+local_callable_binding
+                = binding_kind "fnc" IDENT "=" function_expr stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
@@ -124,7 +125,8 @@ object_destructure_item
                 = [ binding_kind ] IDENT ;
 
 block           = "{" { statement } "}" ;
-statement       = binding_decl
+statement       = local_callable_binding
+                | binding_decl
                 | destructure_stmt
                 | return_stmt
                 | block_stmt
@@ -219,14 +221,14 @@ primary         = literal
                 | callable_name
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
-                | lambda
+                | function_expr
                 | tuple_literal
                 | array_literal
                 | legacy_array_literal
                 | object_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+function_expr  = { function_expr_modifier } ( pipe_lambda | typed_legacy_lambda ) ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
@@ -327,11 +329,12 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Modules are flat: module names are single identifiers and modules may not
      contain modules.
    - fnc and routine declarations may recurse. Eligible tail-position calls
-     in fnc, routine, instance/static methods, and lambdas are proper tail
-     calls and must not grow the Oreslang/host call stack in JIT, AOT, or
-     hybrid execution. defer/catch/finally cleanup, live mutex guards, and
-     currently-untyped cross-code-unit import boundaries are tail-call barriers
-     because the caller still owns semantic work or a runtime return contract.
+     in fnc, routine, instance/static methods, and function expressions are
+     proper tail calls and must not grow the Oreslang/host call stack in JIT,
+     AOT, or hybrid execution. defer/catch/finally cleanup, live mutex guards,
+     active trap boundaries, and currently-untyped cross-code-unit import
+     boundaries are tail-call barriers because the caller still owns semantic
+     work or a runtime return contract.
    - fnc declarations are reifiable first-class callable values; routine
      declarations are direct-call-only and cannot be stored, returned, or
      passed as callbacks without an explicit wrapping lambda. Reified module
@@ -342,8 +345,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      interface field name may not collide with an instance-method name across
      inheritance; module callables/classes/bindings likewise share one runtime
      value-member base-name namespace.
-   - nlex on a fnc/routine is a capture barrier inherited by lambdas created
-     inside it; an explicit nlex lambda establishes the same barrier.
+   - nlex on a fnc/routine is a capture barrier inherited by function
+     expressions created inside it; an explicit nlex function expression
+     establishes the same barrier.
    - nlex blocks activation-local captures only. Module members, imports,
      top-level callables/classes, and built-ins remain statically resolvable.
    - nlex may qualify an actor fnc as an additional capture-free guarantee;
@@ -355,8 +359,25 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      when a callback must call a method.
    - class-level functions use "static fnc"; they have no self receiver, are
      dispatched through the class namespace, and are reifiable when unambiguous.
-   - "->" is executable syntax for lambdas and lambda-style callable
-     declarations. Ordinary named executable declarations use ": ReturnType".
+   - Named fnc/routine declarations are declaration-scope constructs and are
+     rejected inside fnc/routine/method/function-expression bodies. Nested
+     callable values use `let|val|const fnc name = function_expr`.
+   - Function expressions are executable-scope constructs. They are rejected
+     in package/file/module/class/actor declaration-time initializers, including
+     when nested inside another initializer expression.
+   - pub/private/static/abstract/async are declaration/member modifiers and are
+     not valid on nested callable values. nlex/pure/trap may instead prefix the
+     function expression itself.
+   - nlex is an inherited lexical capture barrier; pure is a transitive
+     no-external-write effect ceiling; trap is a dynamic invocation boundary
+     and is not inherited by a returned/escaped function expression.
+   - pure/trap are currently synchronous non-actor contracts. async or actor
+     combinations are rejected until their suspension/supervision ABI is
+     explicitly implemented.
+   - "->" is executable syntax for function expressions and is also accepted
+     as the return separator on ordinary named callable declarations. A named
+     callable declaration is always declaration syntax; it is never written as
+     `fnc name = || -> { ... }`.
    - "=>" is type-level syntax for function types and interface callable
      signatures; it is not an executable return separator.
    - match/switch arm implementations use "->". "=>" is rejected in executable
