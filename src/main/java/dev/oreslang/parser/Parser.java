@@ -517,11 +517,21 @@ public final class Parser {
                 annotated = annotation.arguments().getFirst();
             }
         }
-        Ast.TypeRef arrow = match(FAT_ARROW) ? parseTypeRef() : null;
-        if (annotated != null && arrow != null && !sameType(annotated, arrow)) {
-            throw error(previous(), "@Ret type and => return type disagree");
+
+        if (check(FAT_ARROW)) {
+            throw error(peek(),
+                    "fat arrow '=>' is reserved for function types/interface callable signatures; "
+                            + "named executable callables use ': ReturnType' or '-> ReturnType'");
         }
-        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.simple("void");
+
+        Ast.TypeRef declared = null;
+        if (match(COLON) || match(ARROW)) {
+            declared = parseTypeRef();
+        }
+        if (annotated != null && declared != null && !sameType(annotated, declared)) {
+            throw error(previous(), "@Ret type and declared return type disagree");
+        }
+        return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
