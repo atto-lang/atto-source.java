@@ -424,6 +424,27 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void nestedLifecycleAuthorityCannotCrossMailbox() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> receiver =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            ActorRuntime.ActorRef<String> controlled =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            ActorRuntime.ActorControlHandle control =
+                    runtime.controlHandle(controlled);
+
+            assertThrows(
+                    SecurityException.class,
+                    () -> receiver.send(java.util.List.of(
+                            java.util.Map.of("control", control))));
+
+            receiver.stop();
+            controlled.stop();
+        }
+    }
+
+
+    @Test
     void hostControlHandleIsUnavailableToActorCode() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> actor =
@@ -752,10 +773,12 @@ final class ActorStructuredCancellationTest {
     void actorExitHookRunsAfterLifecycleMonitorIsReleased() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch exitHookRan = new CountDownLatch(1);
+            AtomicBoolean spawnedOnce = new AtomicBoolean();
             AtomicReference<ActorRuntime.ActorRef<String>> replacement =
                     new AtomicReference<>();
 
             runtime.setActorExitHook(executionDomain -> {
+                if (!spawnedOnce.compareAndSet(false, true)) return;
                 // A runtime mutation from the hook would deadlock if the dead
                 // actor's lifecycle monitor were still held through parent/
                 // runtime bookkeeping.
