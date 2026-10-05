@@ -439,6 +439,24 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void hostControlHandleCanCancelActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> { });
+
+            ActorRuntime.ActorControlHandle control =
+                    runtime.controlHandle(actor);
+
+            assertTrue(control.cancel());
+            assertTrue(control.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    ActorRuntime.ActorCancelledException.class,
+                    control.failure().orElseThrow());
+        }
+    }
+
+
+    @Test
     void parentHandleCanForceKillDirectChildThroughHostRevoker()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
