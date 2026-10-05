@@ -178,7 +178,7 @@ final class StructuralTypingHardeningTest {
     void actorIdentityCannotBeErasedByStructuralTyping() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
-                  define actor Worker {
+                  actor Worker {
                     pub run(): int { return 1; }
                   }
 
