@@ -248,6 +248,7 @@ public final class TypeChecker {
 
     private void checkInterface(Ast.InterfaceDecl iface) {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
+        Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
 
         Set<String> interfaceFieldNames = new LinkedHashSet<>();
         collectInterfaceFieldNames(iface, interfaceFieldNames, new LinkedHashSet<>());
@@ -276,7 +277,7 @@ public final class TypeChecker {
                 for (String generic : fn.genericParameters()) {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
-                functionType(fn.parameters(), fn.returnType(), false, false, all, null);
+                functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
@@ -2148,8 +2149,8 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof Borrow
-                || type instanceof Function || type instanceof ClassNamespace) {
+        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+                || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
@@ -2239,7 +2240,8 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) return false;
+        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
         if (type instanceof Generic generic) {
