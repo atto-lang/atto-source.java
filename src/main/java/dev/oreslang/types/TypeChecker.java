@@ -1637,7 +1637,8 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("RwReadGuard") || named.name().equals("RwWriteGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
-                || named.name().equals("Awaitable") || named.name().equals("Callback")) {
+                || named.name().equals("Awaitable") || named.name().equals("Callback")
+                || named.name().equals("Iterator") || named.name().equals("Stream")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1724,6 +1725,7 @@ public final class TypeChecker {
                 || named.name().equals("RwReadGuard") || named.name().equals("RwWriteGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
                 || named.name().equals("Awaitable") || named.name().equals("Callback")
+                || named.name().equals("Iterator") || named.name().equals("Stream")
                 || named.name().equals("OresScheduler")
                 || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -1820,6 +1822,18 @@ public final class TypeChecker {
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
                 case "expect" -> new Function(List.of(Primitive.STRING), element);
                 case "unwrap_or" -> new Function(List.of(element), element);
+                case "map" -> new Function(
+                        List.of(new Function(List.of(element), Unknown.INSTANCE)),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "flat_map", "and_then" -> new Function(
+                        List.of(new Function(
+                                List.of(element),
+                                new Named("Option", List.of(Unknown.INSTANCE)))),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "or_else" -> new Function(
+                        List.of(new Function(List.of(), named)),
+                        named);
+                case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
                 default -> null;
             };
         }
@@ -3218,6 +3232,17 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 yield new Named("Future", List.of(element));
+            }
+            case "Iterator", "Stream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " requires exactly one explicit type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) {
+                    throw new IllegalArgumentException(ref.name() + "<void> is invalid");
+                }
+                yield new Named(ref.name(), List.of(element));
             }
             case "Awaitable" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
