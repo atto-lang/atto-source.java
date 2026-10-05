@@ -387,6 +387,22 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     /**
+     * Runtime-only cancellation propagation for dependent Futures.
+     *
+     * <p>This bypasses consumer cancellation admission because the producer
+     * operation has already established cancellation as its terminal state.
+     * It deliberately does not run this Future's consumer cancel hook: a
+     * dependency cancelling upstream is observation, not a second request to
+     * cancel that same upstream operation.</p>
+     */
+    boolean cancelFromRuntime(CancellationException failure) {
+        boolean completed = settle(
+                new Cancelled(Objects.requireNonNull(failure, "failure")));
+        if (completed) cancelHook.set(null);
+        return completed;
+    }
+
+    /**
      * Runtime-only completion subscription.
      *
      * <p>Callbacks registered here must be scheduler plumbing only: transition a
