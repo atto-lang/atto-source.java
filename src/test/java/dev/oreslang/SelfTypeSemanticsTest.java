@@ -87,6 +87,24 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
+    void explicitlyWideningSelfToTheClassLosesThePolymorphicProof() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Foo as
+                            pub wrong(): self {
+                              val Foo widened = self;
+                              return widened;
+                            }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("return value"), error::getMessage);
+        assertTrue(error.getMessage().contains("SelfType"), error::getMessage);
+    }
+
+    @Test
     void inheritedSelfReturnRebindsToTheActualChildReceiverForFluentChaining() throws Exception {
         String output = run("""
                 define module m
@@ -197,6 +215,28 @@ final class SelfTypeSemanticsTest {
                 """);
 
         assertEquals("9", output);
+    }
+
+    @Test
+    void concreteChildReturnCannotReplaceAnInheritedSelfContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Base as
+                            pub same(): self {
+                              return self;
+                            }
+                          end
+
+                          define class Child extends Base as
+                            pub same(): Child {
+                              return self;
+                            }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("conflicting member"), error::getMessage);
     }
 
     @Test
