@@ -320,6 +320,33 @@ final class ParserTest {
     }
 
     @Test
+    void actorConstructorsAreNotInherited() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Parent as
+                          let int value = 0;
+                          constructor(initial: int) {
+                            self.value = initial;
+                          }
+                          pub current(): int { return self.value; }
+                        end
+
+                        define actor Child extends Parent as
+                          pub ping(): void { return; }
+                        end
+
+                        fnc bad() -> void {
+                          val child = spawn Child(41);
+                          return;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("no constructor with arity 1"),
+                failure.getMessage());
+    }
+
+    @Test
     void actorMayImplementProtocolInterfaceWithTypedRpcMethods() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define interface WorkerAPI
