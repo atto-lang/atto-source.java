@@ -1004,8 +1004,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId creator;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
-        private volatile UUID joinSecret = UUID.randomUUID();
+        private UUID joinSecret = UUID.randomUUID();
 
         private ActorGroup(ActorGroupId id, ActorId creator) {
             this.id = Objects.requireNonNull(id, "id");
@@ -1026,19 +1027,25 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorGroupJoinCapability joinCapability() {
             requireManager("issue ActorGroup join capabilities");
-            requireOpen();
-            return new ActorGroupJoinCapability(id, joinSecret);
+            synchronized (authorityLock) {
+                requireOpen();
+                return new ActorGroupJoinCapability(id, joinSecret);
+            }
         }
 
         /**
          * Invalidates previously issued join capabilities without disturbing
-         * actors that are already members.
+         * actors that are already members. Rotation and join admission are
+         * linearized on authorityLock so a stale capability cannot validate
+         * immediately before rotation and join immediately after it.
          */
         public ActorGroupJoinCapability rotateJoinCapability() {
             requireManager("rotate ActorGroup join capabilities");
-            requireOpen();
-            joinSecret = UUID.randomUUID();
-            return new ActorGroupJoinCapability(id, joinSecret);
+            synchronized (authorityLock) {
+                requireOpen();
+                joinSecret = UUID.randomUUID();
+                return new ActorGroupJoinCapability(id, joinSecret);
+            }
         }
 
         public void joinCurrent(ActorGroupJoinCapability capability) {
@@ -1061,14 +1068,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void joinId(ActorId actorId, ActorGroupJoinCapability capability) {
-            requireOpen();
-            requireCapability(capability);
-            ActorCell<?> cell = actors.get(actorId);
-            if (cell == null || cell.stopped.get()) throw new IllegalStateException("actor is not alive: " + actorId);
-            members.add(actorId);
-            if (groupClosed.get() || cell.stopped.get()) {
-                members.remove(actorId);
-                throw new IllegalStateException("ActorGroup or actor closed during join");
+            synchronized (authorityLock) {
+                requireOpen();
+                requireCapabilityLocked(capability);
+                ActorCell<?> cell = actors.get(actorId);
+                if (cell == null || cell.stopped.get()) {
+                    throw new IllegalStateException("actor is not alive: " + actorId);
+                }
+                members.add(actorId);
+                if (groupClosed.get() || cell.stopped.get()) {
+                    members.remove(actorId);
+                    throw new IllegalStateException("ActorGroup or actor closed during join");
+                }
             }
         }
 
@@ -1121,6 +1132,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void requireCapability(ActorGroupJoinCapability capability) {
+            synchronized (authorityLock) {
+                requireCapabilityLocked(capability);
+            }
+        }
+
+        private void requireCapabilityLocked(ActorGroupJoinCapability capability) {
             Objects.requireNonNull(capability, "capability");
             if (!capability.ownedBy(ActorRuntime.this)
                     || !id.equals(capability.groupId)
@@ -1151,7 +1168,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
-            if (!groupClosed.compareAndSet(false, true)) return;
+            synchronized (authorityLock) {
+                if (!groupClosed.compareAndSet(false, true)) return;
+                // Revocation is part of close: even a capability held by code
+                // racing teardown can no longer pass validation.
+                joinSecret = UUID.randomUUID();
+            }
             eventBus.closeFromGroup();
             members.clear();
             actorGroups.remove(id, this);
