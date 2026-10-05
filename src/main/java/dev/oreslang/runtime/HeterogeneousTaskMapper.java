@@ -23,49 +23,73 @@ public final class HeterogeneousTaskMapper {
     public enum Privilege { READ, WRITE, REDUCE }
 
     /**
-     * Opaque proof that sibling slices belong to one compiler/runtime-certified
-     * disjoint partition. The constructor is deliberately private: callers can
-     * hold and propagate a proof, but arbitrary host/guest code cannot manufacture
-     * one from a numeric identifier.
+     * Opaque logical-region identity. Only trusted compiler/runtime code in this
+     * package may allocate one; callers may carry the handle but cannot manufacture
+     * a colliding or falsely distinct numeric identity.
      */
-    public static final class DisjointFamily {
-        private DisjointFamily() { }
+    public static final class RegionIdentity {
+        private RegionIdentity() { }
     }
 
     /**
-     * Internal authority boundary used by the compiler/runtime when it has
-     * actually proved a partition disjoint. This is package-private on purpose;
-     * it is not guest or general host API.
+     * Opaque proof that sibling slices belong to one compiler/runtime-certified
+     * disjoint partition.
      */
+    static final class DisjointFamily {
+        private DisjointFamily() { }
+    }
+
+    /** Internal authority boundary for allocating a real logical region. */
+    static RegionIdentity allocateRegionIdentity() {
+        return new RegionIdentity();
+    }
+
+    /** Internal authority boundary for a partition that has actually been proved disjoint. */
     static DisjointFamily certifyDisjointFamily() {
         return new DisjointFamily();
     }
 
     /**
-     * Logical region/slice identity. Distinct sibling slices are considered
-     * disjoint only when they carry the exact same opaque certified-family
-     * capability. A null family is conservative and may alias.
+     * Logical region/slice identity. Construction is private so neither root
+     * identity nor certified-family evidence can be reattached to fabricated
+     * slices by general host/guest code.
      */
-    public record RegionSlice(long rootRegionId, long sliceId, DisjointFamily disjointFamily) {
-        public RegionSlice {
-            if (rootRegionId <= 0) throw new IllegalArgumentException("rootRegionId must be positive");
+    public static final class RegionSlice {
+        private final RegionIdentity root;
+        private final long sliceId;
+        private final DisjointFamily disjointFamily;
+
+        private RegionSlice(
+                RegionIdentity root,
+                long sliceId,
+                DisjointFamily disjointFamily) {
+            this.root = Objects.requireNonNull(root, "root");
             if (sliceId <= 0) throw new IllegalArgumentException("sliceId must be positive");
+            this.sliceId = sliceId;
+            this.disjointFamily = disjointFamily;
         }
 
-        public static RegionSlice root(long regionId) {
-            return new RegionSlice(regionId, regionId, null);
+        static RegionSlice root(RegionIdentity root) {
+            return new RegionSlice(root, 1L, null);
         }
 
-        static RegionSlice certified(long rootRegionId, long sliceId, DisjointFamily family) {
+        static RegionSlice certified(
+                RegionIdentity root,
+                long sliceId,
+                DisjointFamily family) {
             return new RegionSlice(
-                    rootRegionId,
+                    root,
                     sliceId,
                     Objects.requireNonNull(family, "family"));
         }
 
+        private RegionIdentity rootIdentity() {
+            return root;
+        }
+
         public boolean mayAlias(RegionSlice other) {
             Objects.requireNonNull(other, "other");
-            if (rootRegionId != other.rootRegionId) return false;
+            if (root != other.root) return false;
             if (sliceId == other.sliceId) return true;
             return disjointFamily == null
                     || other.disjointFamily == null
@@ -217,7 +241,7 @@ public final class HeterogeneousTaskMapper {
             PlacementHint hint,
             long workItems,
             Machine machine,
-            Set<Long> gpuResidentRootRegions) {
+            Set<RegionIdentity> gpuResidentRootRegions) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(hint, "hint");
         Objects.requireNonNull(machine, "machine");
@@ -238,8 +262,8 @@ public final class HeterogeneousTaskMapper {
         }
 
         if (machine.gpuAvailable() && gpu != null) {
-            Set<Long> roots = new LinkedHashSet<>();
-            for (Access access : task.accesses()) roots.add(access.slice().rootRegionId());
+            Set<RegionIdentity> roots = new LinkedHashSet<>();
+            for (Access access : task.accesses()) roots.add(access.slice().rootIdentity());
             long nonResident = roots.stream().filter(root -> !gpuResidentRootRegions.contains(root)).count();
             long transferMultiplier = Math.max(1L, nonResident + 1L);
             long crossover;
