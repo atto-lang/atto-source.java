@@ -499,7 +499,7 @@ public final class Parser {
 
     private boolean isReservedActorRefMember(String name) {
         return switch (name) {
-            case "id", "is_alive", "send", "receive", "mailbox" -> true;
+            case "id", "is_alive", "send", "mailbox" -> true;
             default -> false;
         };
     }
