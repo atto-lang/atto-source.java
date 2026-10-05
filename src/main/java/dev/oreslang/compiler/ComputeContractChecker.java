@@ -621,19 +621,22 @@ public final class ComputeContractChecker {
             Ast.CallExpr call,
             ComputeScope scope,
             Set<String> locals) {
-        for (Ast.Expr argument : call.arguments()) {
-            validateComputeExpr(argument, scope, locals);
-        }
-
         if (call.callee() instanceof Ast.NameExpr direct) {
-            if (!locals.contains(direct.name()) && PURE_INTRINSICS.contains(direct.name())) return;
             if (locals.contains(direct.name())) {
                 throw unsafe(
                         scope.function().name(),
                         "dynamic/local callable '" + direct.name() + "'");
             }
+            if (PURE_INTRINSICS.contains(direct.name())) {
+                for (Ast.Expr argument : call.arguments()) {
+                    validateComputeExpr(argument, scope, locals);
+                }
+                return;
+            }
+
             ResolvedFunction target = resolveFunctionRef(scope.module(), direct.name());
             if (target != null && isCompute(target.declaration())) {
+                validateComputeCallArguments(call, target, scope, locals);
                 computeCalls.computeIfAbsent(scope.functionId(), ignored -> new LinkedHashSet<>())
                         .add(target.id());
                 return;
@@ -649,6 +652,7 @@ public final class ComputeContractChecker {
                     scope.module(),
                     namespace.name() + "." + member.member());
             if (target != null && isCompute(target.declaration())) {
+                validateComputeCallArguments(call, target, scope, locals);
                 computeCalls.computeIfAbsent(scope.functionId(), ignored -> new LinkedHashSet<>())
                         .add(target.id());
                 return;
@@ -659,6 +663,114 @@ public final class ComputeContractChecker {
                 scope.function().name(),
                 "dynamic/member call; compute fnc calls must resolve statically "
                         + "to another compute fnc or pure intrinsic");
+    }
+
+    private void validateComputeCallArguments(
+            Ast.CallExpr call,
+            ResolvedFunction target,
+            ComputeScope caller,
+            Set<String> locals) {
+        Ast.FunctionDecl callee = target.declaration();
+        List<Ast.Param> parameters = callee.parameters();
+
+        for (int index = 0; index < call.arguments().size(); index++) {
+            Ast.Expr argument = call.arguments().get(index);
+            Ast.Param parameter = parameters.get(index);
+            Ast.TypeRef parameterType = parameter.type();
+            boolean regionParameter = parameterType != null
+                    && (parameterType.name().equals("Region")
+                        || parameterType.name().equals("RegionView"));
+
+            if (!regionParameter) {
+                validateComputeExpr(argument, caller, locals);
+                continue;
+            }
+
+            RegionAccessPath argumentPath = regionAccessPath(argument, caller.regionParameters());
+            if (argumentPath == null) {
+                throw unsafe(
+                        caller.function().name(),
+                        "region argument for compute fnc '" + target.id()
+                                + "' must derive from a declared caller Region/RegionView parameter");
+            }
+            validateRegionIndexes(argument, caller, locals);
+        }
+
+        ComputeContract calleeContract = contractOf(callee);
+        for (RegionEffect effect : calleeContract.effects()) {
+            int parameterIndex = parameterIndex(callee.parameters(), effect.rootParameter());
+            if (parameterIndex < 0 || parameterIndex >= call.arguments().size()) {
+                throw new IllegalStateException(
+                        "checked compute effect references missing callee parameter: "
+                                + effect.rootParameter());
+            }
+
+            Ast.Expr argument = call.arguments().get(parameterIndex);
+            RegionAccessPath base = regionAccessPath(argument, caller.regionParameters());
+            if (base == null) {
+                throw unsafe(
+                        caller.function().name(),
+                        "cannot map callee effect '" + effect.rootParameter()
+                                + "' onto a caller region");
+            }
+
+            String mappedField;
+            if (base.field().isEmpty()) {
+                mappedField = effect.fieldPath();
+            } else if (effect.fieldPath() == null || effect.fieldPath().isEmpty()) {
+                mappedField = base.field();
+            } else {
+                mappedField = base.field() + "." + effect.fieldPath();
+            }
+
+            requireMappedCalleeEffect(
+                    new RegionAccessPath(base.root(), mappedField),
+                    effect,
+                    caller);
+        }
+    }
+
+    private static int parameterIndex(List<Ast.Param> parameters, String name) {
+        for (int i = 0; i < parameters.size(); i++) {
+            if (parameters.get(i).name().equals(name)) return i;
+        }
+        return -1;
+    }
+
+    private static void requireMappedCalleeEffect(
+            RegionAccessPath path,
+            RegionEffect required,
+            ComputeScope caller) {
+        for (RegionEffect available : caller.effects()) {
+            if (!available.rootParameter().equals(path.root())) continue;
+            if (!effectCovers(available.fieldPath(), path.field())) continue;
+
+            boolean allowed = switch (required.privilege()) {
+                case "reads" -> available.privilege().equals("reads")
+                        || available.privilege().equals("writes");
+                case "writes" -> available.privilege().equals("writes");
+                case "discards" -> available.privilege().equals("writes")
+                        || available.privilege().equals("discards");
+                case "reduces" -> available.privilege().equals("writes")
+                        || (available.privilege().equals("reduces")
+                            && Objects.equals(
+                                    available.reductionOperator(),
+                                    required.reductionOperator()));
+                case "atomic" -> available.privilege().equals("writes")
+                        || available.privilege().equals("atomic");
+                default -> false;
+            };
+            if (allowed) return;
+        }
+
+        throw unsafe(
+                caller.function().name(),
+                "call to compute fnc requires undeclared "
+                        + required.privilege()
+                        + " effect on '"
+                        + path.root()
+                        + (path.field().isEmpty() ? "" : "." + path.field())
+                        + "'");
     }
 
     private void validateComputeCallGraph() {
