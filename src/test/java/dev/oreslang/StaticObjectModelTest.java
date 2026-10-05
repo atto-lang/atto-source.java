@@ -42,13 +42,13 @@ final class StaticObjectModelTest {
     @Test
     void structuralRecordContractsRequireAStaticallyDeclaredConcreteShape() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Result as
+                define class RecordValue as
                   pub val int foo;
                   pub val string bar;
                 end
 
                 fnc result(): {foo: int, bar: string} {
-                  return new Result(5, "x");
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {

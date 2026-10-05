@@ -761,12 +761,12 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                
+
                     requireAssignable(index, Primitive.INT, "array/list index");
                     if (receiver instanceof ListType list) targetType = list.element();
                     else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
                     else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
-                
+
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -1288,7 +1288,7 @@ public final class TypeChecker {
                 }
                 throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             }
-            
+
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
@@ -1324,7 +1324,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
-            
+
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
                 if (index instanceof StringLiteral key) {
@@ -1343,7 +1343,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("indexing requires a structural record, array/list, or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
-            
+
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
             if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -1577,7 +1577,7 @@ public final class TypeChecker {
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
         }
-        
+
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -1650,7 +1650,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
-        
+
         if (named.name().equals("SharedMutex")) {
             if (actorKind == Ast.ActorKind.PRIVATE) {
                 throw new IllegalArgumentException(
@@ -1718,7 +1718,7 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
-        
+
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);

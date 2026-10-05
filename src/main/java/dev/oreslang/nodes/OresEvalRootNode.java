@@ -523,13 +523,6 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new OresObject(object.owner, object.klass, fields);
                 }
-                if (value instanceof DynamicStructValue dynamic) {
-                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                        fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
-                    }
-                    return new DynamicStructValue(fields);
-                }
                 if (value instanceof OptionValue option) {
                     return option.present()
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
@@ -1162,13 +1155,13 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    
+
                     throw new IllegalArgumentException("member assignment requires a class instance or mutex guard");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    
+
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
@@ -1242,7 +1235,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                
+
                 if (receiver instanceof Map<?, ?> map) {
                     if (!(index instanceof String key)) {
                         throw new IllegalArgumentException("object/map key must be a string");
@@ -1259,7 +1252,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
-                
+
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
                     context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
@@ -1432,7 +1425,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
-            
+
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown map member " + name);
                 return map.get(name);
@@ -2141,7 +2134,6 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
-            if (name.equals("DynamicStruct")) return value instanceof DynamicStructValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
 
             if (value instanceof OresObject object) {
@@ -2167,7 +2159,6 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
-            if (value instanceof DynamicStructValue) return "DynamicStruct";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
             if (value instanceof Boolean) return "bool";
@@ -2361,7 +2352,7 @@ public final class OresEvalRootNode extends RootNode {
                 return shaped;
             }
 
-            
+
 
             if (declared.name().equals("bool") || declared.name().equals("Bool")) {
                 if (!(value instanceof Boolean)) throw returnTypeMismatch(callable, declared, value);
@@ -2424,7 +2415,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object destructureMember(Object value, String name) {
-            
+
             if (value instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
                 return map.get(name);
@@ -2541,13 +2532,6 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : set) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
             }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    if (containsLiveMutexGuard(entry.getKey(), seen)
-                            || containsLiveMutexGuard(entry.getValue(), seen)) return true;
-                }
-                return false;
-            }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (containsLiveMutexGuard(entry.getKey(), seen)
@@ -2609,7 +2593,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
                 return;
             }
-            
+
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     releaseMutexGuardsInValue(entry.getKey(), failed, seen);
@@ -2732,7 +2716,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
-            
+
             if (value instanceof List<?> list) {
                 for (Object item : list) if (!runtimeSharedSafe(item, seen)) return false;
                 return true;

@@ -103,13 +103,13 @@ final class ReturnedDestructuringTest {
     @Test
     void recordReturnSupportsBothObjectDestructureSpellings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Result as
+                define class RecordValue as
                   pub val int foo;
                   pub val string bar;
                 end
 
                 fnc result(): {foo: int, bar: string} {
-                  return new Result(5, "x");
+                  return new RecordValue(5, "x");
                 }
 
                 fnc prefixed(): void {
@@ -162,13 +162,13 @@ final class ReturnedDestructuringTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define class Result as
+                define class RecordValue as
                   pub val int foo;
                   pub val string bar;
                 end
 
                 fnc result(): {foo: int, bar: string} {
-                  return new Result(5, "x");
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -181,7 +181,7 @@ final class ReturnedDestructuringTest {
     @Test
     void equivalentUnionAndRecordOrderingsHaveCanonicalSignatures() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Result as
+                define class RecordValue as
                   pub val int foo;
                   pub val string bar;
                 end
@@ -193,7 +193,7 @@ final class ReturnedDestructuringTest {
 
                 @Ret<{bar: string, foo: int}>
                 fnc object(): {foo: int, bar: string} {
-                  return new Result(5, "x");
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void { return; }
@@ -203,7 +203,7 @@ final class ReturnedDestructuringTest {
     @Test
     void prefixedPatternSyntaxDoesNotStealFiniteTupleOrRecordTypedBindings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Result as
+                define class RecordValue as
                   pub val int foo;
                   pub val string bar;
                 end
@@ -213,7 +213,7 @@ final class ReturnedDestructuringTest {
                 }
 
                 fnc result(): {foo: int, bar: string} {
-                  return new Result(5, "x");
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -321,13 +321,13 @@ final class ReturnedDestructuringTest {
     @Test
     void bareDiscardIsRejectedInObjectPatterns() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Result as
+                define class RecordValue as
                   pub val int foo;
                   pub val string bar;
                 end
 
                 fnc result(): {foo: int, bar: string} {
-                  return new Result(5, "x");
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -391,7 +391,7 @@ final class ReturnedDestructuringTest {
                 type FixedResult = [int, bool, string];
                 type NamedResult = {foo: int, bar: string};
 
-                define class Result as
+                define class RecordValue as
                   pub val int foo;
                   pub val string bar;
                 end
@@ -401,7 +401,7 @@ final class ReturnedDestructuringTest {
                 }
 
                 fnc result(): NamedResult {
-                  return new Result(5, "x");
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
