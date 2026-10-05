@@ -459,7 +459,7 @@ public final class HeterogeneousTaskMapper {
                 workItems,
                 -1L,
                 machine,
-                gpuResidentRootRegions);
+                gpuResidency);
     }
 
     /**
