@@ -43,6 +43,19 @@ public final class Parser {
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
+                if (modifiers.compute) {
+                    throw error(previous(), "'compute' modifies fnc declarations; use 'compute fnc <name>(...)'");
+                }
+                if (matchContextual("flow")) {
+                    if (!annotations.isEmpty()) throw error(previous(), "flow declarations do not accept annotations");
+                    rootDeclarations.add(parseFlow());
+                    continue;
+                }
+                if (matchContextual("aspect")) {
+                    if (!annotations.isEmpty()) throw error(previous(), "aspect declarations do not accept annotations");
+                    rootDeclarations.add(parseAspect());
+                    continue;
+                }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
                     if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
@@ -61,7 +74,7 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                throw error(previous(), "expected module, class, interface, flow, or aspect after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -147,6 +160,17 @@ public final class Parser {
             if (modifiers.shared) {
                 throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
             }
+            if (modifiers.compute) {
+                throw error(previous(), "'compute' modifies fnc declarations; use 'compute fnc <name>(...)'");
+            }
+            if (matchContextual("flow")) {
+                if (!annotations.isEmpty()) throw error(previous(), "flow declarations do not accept annotations");
+                return parseFlow();
+            }
+            if (matchContextual("aspect")) {
+                if (!annotations.isEmpty()) throw error(previous(), "aspect declarations do not accept annotations");
+                return parseAspect();
+            }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
@@ -156,7 +180,7 @@ public final class Parser {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class or interface after 'define'");
+            throw error(previous(), "expected class, interface, flow, or aspect after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -170,6 +194,9 @@ public final class Parser {
         }
         if (match(ACTOR, ISOACTOR)) {
             Token actorToken = previous();
+            if (modifiers.compute) {
+                throw error(actorToken, "compute actor callables are not supported; compute tasks are finite data transformations, not actor turns");
+            }
             boolean isolated = actorToken.type() == ISOACTOR;
             if (isolated && modifiers.shared) {
                 throw error(actorToken, "'shared isoactor' is contradictory; use either actor/shared actor or isoactor");
@@ -187,8 +214,12 @@ public final class Parser {
         }
         if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
-        if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        if (match(ROUTINE)) {
+            if (modifiers.compute) throw error(previous(), "compute callables must use 'compute fnc', not routine");
+            return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        }
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
+        if (modifiers.compute) throw error(peek(), "'compute' must modify a fnc declaration");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
@@ -206,9 +237,19 @@ public final class Parser {
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
+        if (modifiers.compute) {
+            if (kind != Ast.CallableKind.FNC) throw error(previous(), "compute callables must be fnc declarations");
+            if (actorKind != Ast.ActorKind.NONE) throw error(previous(), "compute fnc cannot be an actor entry point");
+            if (modifiers.async) throw error(previous(), "compute fnc cannot be async; device/task submission returns an awaitable at the scheduling boundary");
+            annotations = new ArrayList<>(annotations);
+            annotations.add(new Ast.Annotation("Compute", List.of()));
+        }
         String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
 
+        if (modifiers.compute && check(EQUAL)) {
+            throw error(peek(), "compute fnc uses the named '(...) : ReturnType' declaration form so effect clauses remain explicit");
+        }
         if (match(EQUAL)) {
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
             List<Ast.Param> params = parseDeclaredPipeParameters();
@@ -227,6 +268,7 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
+        if (modifiers.compute) parseComputeClauses(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics, params,
                 returnType, annotations, body);
@@ -453,6 +495,127 @@ public final class Parser {
         return consumeCallableName("expected method name (methods omit 'fnc')");
     }
 
+    private Ast.FlowDecl parseFlow() {
+        String name = consume(IDENT, "expected flow name").lexeme();
+        consume(AS, "expected 'as' after flow name");
+        List<Ast.FlowEdge> edges = new ArrayList<>();
+
+        while (!check(END) && !check(EOF)) {
+            String from = parseQualifiedName();
+            if (!match(ARROW)) {
+                throw error(peek(), "flow statement requires at least one '->' edge");
+            }
+            do {
+                String to = parseQualifiedName();
+                edges.add(new Ast.FlowEdge(from, to));
+                from = to;
+            } while (match(ARROW));
+            consumeStatementTerminator("flow chain should end with ';'");
+        }
+
+        consume(END, "expected 'end' to close flow " + name);
+        return new Ast.FlowDecl(name, edges);
+    }
+
+    private Ast.AspectDecl parseAspect() {
+        String name = consume(IDENT, "expected aspect name").lexeme();
+        consume(AS, "expected 'as' after aspect name");
+        List<Ast.AspectRule> rules = new ArrayList<>();
+
+        while (!check(END) && !check(EOF)) {
+            consumeContextual("on", "aspect rules use 'on <join_point> <before|after|around> <handler>'");
+            Ast.AspectJoinPoint joinPoint = parseAspectJoinPoint();
+            String adviceWord = consume(IDENT, "expected aspect advice kind: before, after, or around").lexeme();
+            Ast.AspectAdviceKind adviceKind = switch (adviceWord) {
+                case "before" -> Ast.AspectAdviceKind.BEFORE;
+                case "after" -> Ast.AspectAdviceKind.AFTER;
+                case "around" -> Ast.AspectAdviceKind.AROUND;
+                default -> throw error(previous(), "unknown aspect advice kind '" + adviceWord + "'");
+            };
+            String handler = parseQualifiedName();
+            consumeStatementTerminator("aspect rule should end with ';'");
+            rules.add(new Ast.AspectRule(joinPoint, adviceKind, handler));
+        }
+
+        consume(END, "expected 'end' to close aspect " + name);
+        return new Ast.AspectDecl(name, rules);
+    }
+
+    private Ast.AspectJoinPoint parseAspectJoinPoint() {
+        if (match(FNC)) return Ast.AspectJoinPoint.FNC;
+        if (match(AWAIT)) {
+            if (matchContextual("resume")) return Ast.AspectJoinPoint.AWAIT_RESUME;
+            matchContextual("suspend");
+            return Ast.AspectJoinPoint.AWAIT_SUSPEND;
+        }
+
+        String word = consume(IDENT, "expected aspect join point").lexeme();
+        return switch (word) {
+            case "task" -> Ast.AspectJoinPoint.TASK;
+            case "actor_message" -> Ast.AspectJoinPoint.ACTOR_MESSAGE;
+            case "actor_spawn" -> Ast.AspectJoinPoint.ACTOR_SPAWN;
+            case "await_suspend" -> Ast.AspectJoinPoint.AWAIT_SUSPEND;
+            case "await_resume" -> Ast.AspectJoinPoint.AWAIT_RESUME;
+            case "io" -> Ast.AspectJoinPoint.IO;
+            case "region_transfer" -> Ast.AspectJoinPoint.REGION_TRANSFER;
+            case "gpu_launch" -> Ast.AspectJoinPoint.GPU_LAUNCH;
+            case "error" -> Ast.AspectJoinPoint.ERROR;
+            case "rpc" -> Ast.AspectJoinPoint.RPC;
+            case "database" -> Ast.AspectJoinPoint.DATABASE;
+            default -> throw error(previous(), "unknown aspect join point '" + word + "'");
+        };
+    }
+
+    private void parseComputeClauses(List<Ast.Annotation> annotations) {
+        while (check(IDENT)) {
+            String clause = peek().lexeme();
+            String annotationName;
+            switch (clause) {
+                case "reads" -> annotationName = "Reads";
+                case "writes" -> annotationName = "Writes";
+                case "discards" -> annotationName = "Discards";
+                case "atomic" -> annotationName = "Atomic";
+                case "reduces" -> {
+                    advance();
+                    Ast.TypeRef target = Ast.TypeRef.simple(parseQualifiedName());
+                    consumeContextual("by", "reduction clause uses 'reduces region.field by operator'");
+                    String operator = parseQualifiedName();
+                    consumeStatementTerminator("reduces clause should end with ';'");
+                    annotations.add(new Ast.Annotation(
+                            "Reduces",
+                            List.of(target, Ast.TypeRef.simple(operator))));
+                    continue;
+                }
+                case "layout" -> {
+                    advance();
+                    String target = parseQualifiedName();
+                    String layout = consume(IDENT, "expected layout: auto, aos, soa, aosoa, or tiled").lexeme();
+                    consumeStatementTerminator("layout clause should end with ';'");
+                    annotations.add(new Ast.Annotation(
+                            "Layout",
+                            List.of(Ast.TypeRef.simple(target), Ast.TypeRef.simple(layout))));
+                    continue;
+                }
+                case "place" -> {
+                    advance();
+                    String placement = consume(IDENT, "expected placement: auto, cpu, or gpu").lexeme();
+                    consumeStatementTerminator("place clause should end with ';'");
+                    annotations.add(new Ast.Annotation("Place", List.of(Ast.TypeRef.simple(placement))));
+                    continue;
+                }
+                default -> {
+                    return;
+                }
+            }
+
+            advance();
+            List<Ast.TypeRef> paths = new ArrayList<>();
+            do paths.add(Ast.TypeRef.simple(parseQualifiedName())); while (match(COMMA));
+            consumeStatementTerminator(clause + " clause should end with ';'");
+            annotations.add(new Ast.Annotation(annotationName, paths));
+        }
+    }
+
     private Ast.TypeAliasDecl parseTypeAlias() {
         String name = consume(IDENT, "expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
@@ -486,12 +649,14 @@ public final class Parser {
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean shared = false;
+        boolean compute = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
         boolean nonLexicalSeen = false;
         boolean staticSeen = false;
         boolean abstractSeen = false;
         boolean sharedSeen = false;
+        boolean computeSeen = false;
 
         while (true) {
             if (match(PUB)) {
@@ -522,11 +687,15 @@ public final class Parser {
                 if (sharedSeen) throw error(previous(), "duplicate 'shared' modifier");
                 sharedSeen = true;
                 shared = true;
+            } else if (matchContextualComputeModifier()) {
+                if (computeSeen) throw error(previous(), "duplicate 'compute' modifier");
+                computeSeen = true;
+                compute = true;
             } else {
                 break;
             }
         }
-        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared);
+        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared, compute);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -814,14 +983,25 @@ public final class Parser {
             advance();
             return new Ast.LoopStmt(parseLoopBody());
         }
-        if (match(FOR)) return parseFor();
+        if (isParallelForPrefix()) {
+            boolean parallel = matchContextual("parallel");
+            boolean simd = parallel && matchContextual("simd");
+            consume(FOR, "parallel/simd execution modifiers must be followed by 'for'");
+            return parseFor(simd ? Ast.LoopExecution.PARALLEL_SIMD : Ast.LoopExecution.PARALLEL);
+        }
+        if (isSimdForPrefix()) {
+            matchContextual("simd");
+            consume(FOR, "'simd' execution modifier must be followed by 'for'");
+            return parseFor(Ast.LoopExecution.SIMD);
+        }
+        if (match(FOR)) return parseFor(Ast.LoopExecution.SEQUENTIAL);
 
         Ast.Expr expression = parseExpression();
         consumeStatementTerminator("expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
     }
 
-    private Ast.Stmt parseFor() {
+    private Ast.Stmt parseFor(Ast.LoopExecution execution) {
         if (!match(LPAREN)) {
             if (looksLikeUnparenthesizedForOf()) {
                 Ast.BindingKind kind = isBindingKind(peek().type())
@@ -831,12 +1011,12 @@ public final class Parser {
                     List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
                     consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
                     Ast.Expr iterable = parseExpression();
-                    return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+                    return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody(), execution);
                 }
                 String name = consume(IDENT, "iterator for-loop requires a binding name").lexeme();
                 consume(OF, "iterator for-loop shorthand uses 'for x of iterable'");
                 Ast.Expr iterable = parseExpression();
-                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
+                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody(), execution);
             }
 
             Ast.Stmt initializer = parseUnparenthesizedForInitializer();
@@ -844,7 +1024,7 @@ public final class Parser {
             Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
             consume(SEMICOLON, "expected ';' after for condition");
             Ast.Expr update = check(LBRACE) || check(DO) ? null : parseForUpdate();
-            return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+            return new Ast.ForStmt(initializer, condition, update, parseLoopBody(), execution);
         }
 
         if (isBindingKind(peek().type())) {
@@ -854,14 +1034,14 @@ public final class Parser {
                 consume(OF, "expected 'of' after for-of destructure pattern");
                 Ast.Expr iterable = parseExpression();
                 consume(RPAREN, "expected ')' after for-of header");
-                return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+                return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody(), execution);
             }
             if (check(IDENT) && checkNext(OF)) {
                 String name = advance().lexeme();
                 consume(OF, "expected 'of' in for-of loop");
                 Ast.Expr iterable = parseExpression();
                 consume(RPAREN, "expected ')' after for-of header");
-                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
+                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody(), execution);
             }
 
             Ast.TypeRef type = null;
@@ -879,7 +1059,7 @@ public final class Parser {
             consume(SEMICOLON, "expected ';' after for condition");
             Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
             consume(RPAREN, "expected ')' after for header");
-            return new Ast.ForStmt(init, condition, update, parseLoopBody());
+            return new Ast.ForStmt(init, condition, update, parseLoopBody(), execution);
         }
 
         if (looksLikeTypedForInitializer()) {
@@ -896,7 +1076,7 @@ public final class Parser {
             consume(SEMICOLON, "expected ';' after for condition");
             Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
             consume(RPAREN, "expected ')' after for header");
-            return new Ast.ForStmt(init, condition, update, parseLoopBody());
+            return new Ast.ForStmt(init, condition, update, parseLoopBody(), execution);
         }
 
         if (looksLikeForOfDestructurePattern()) {
@@ -904,7 +1084,7 @@ public final class Parser {
             consume(OF, "expected 'of' after for-of destructure pattern");
             Ast.Expr iterable = parseExpression();
             consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+            return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody(), execution);
         }
 
         if (check(IDENT) && checkNext(OF)) {
@@ -912,7 +1092,7 @@ public final class Parser {
             consume(OF, "expected 'of' in for-of loop");
             Ast.Expr iterable = parseExpression();
             consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseLoopBody());
+            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseLoopBody(), execution);
         }
 
         Ast.Stmt initializer = null;
@@ -922,7 +1102,7 @@ public final class Parser {
         consume(SEMICOLON, "expected ';' after for condition");
         Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
         consume(RPAREN, "expected ')' after for header");
-        return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+        return new Ast.ForStmt(initializer, condition, update, parseLoopBody(), execution);
     }
 
     private boolean looksLikeUnparenthesizedForOf() {
@@ -1646,12 +1826,42 @@ public final class Parser {
     private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
 
     private boolean matchContextualShared() {
-        if (match(SHARED)) return true;
-        if (check(IDENT) && peek().lexeme().equals("shared")) {
-            advance();
-            return true;
-        }
-        return false;
+        return match(SHARED) || matchContextual("shared");
+    }
+
+    private boolean matchContextualComputeModifier() {
+        if (!checkContextual("compute")) return false;
+        if (!checkNext(FNC)) return false;
+        advance();
+        return true;
+    }
+
+    private boolean isParallelForPrefix() {
+        if (!checkContextual("parallel")) return false;
+        if (checkNext(FOR)) return true;
+        return current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("simd")
+                && tokens.get(current + 2).type() == FOR;
+    }
+
+    private boolean isSimdForPrefix() {
+        return checkContextual("simd") && checkNext(FOR);
+    }
+
+    private boolean checkContextual(String word) {
+        return check(IDENT) && peek().lexeme().equals(word);
+    }
+
+    private boolean matchContextual(String word) {
+        if (!checkContextual(word)) return false;
+        advance();
+        return true;
+    }
+
+    private Token consumeContextual(String word, String message) {
+        if (checkContextual(word)) return advance();
+        throw error(peek(), message);
     }
 
     private boolean match(Token.Type... types) {
@@ -1721,5 +1931,12 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
+    private record Modifiers(
+            Ast.Visibility visibility,
+            boolean async,
+            boolean nonLexical,
+            boolean isStatic,
+            boolean isAbstract,
+            boolean shared,
+            boolean compute) { }
 }
