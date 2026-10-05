@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -286,6 +287,25 @@ final class ReturnedDestructuringTest {
                     () -> Parser.parse(program));
             assertTrue(error.getMessage().contains("both const and mut"));
         }
+    }
+
+    @Test
+    void borrowedAggregateCannotBeDestructuredIntoOwnedBindings() {
+        var program = Parser.parse("""
+                fnc bad() => void {
+                  val xs = arr[arr[1, 2]];
+                  [val first] = &xs;
+                  stdio.stdout.write(first[0]);
+                  return;
+                }
+                """);
+
+        TypeChecker.check(program);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
+        assertTrue(error.getMessage().contains("borrowed aggregate"));
+        assertTrue(error.getMessage().contains("provenance"));
     }
 
     @Test
