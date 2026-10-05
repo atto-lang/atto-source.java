@@ -363,6 +363,32 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void forOfDistinguishesReservedCallableNamesFromLoopDelimiters() throws Exception {
+        String output = run("""
+                fnc do(): Array<int> {
+                  return arr[1, 2];
+                }
+
+                fnc done(): Array<int> {
+                  return arr[3, 4];
+                }
+
+                pub routine main(): void {
+                  for const item of do() do
+                    stdio.stdout.write(item);
+                  done
+
+                  for (const item of done()) do
+                    stdio.stdout.write(item);
+                  done
+                  return;
+                }
+                """);
+
+        assertEquals("1234", output);
+    }
+
+    @Test
     void forOfSequencePatternsDestructureTupleElements() throws Exception {
         String output = run("""
                 pub routine main(): void {
