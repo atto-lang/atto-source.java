@@ -88,6 +88,21 @@ public final class OwnershipChecker {
     }
 
     private void checkClass(Ast.ClassDecl klass) {
+        if (klass.constructor() != null) {
+            Ast.ConstructorDecl constructor = klass.constructor();
+            Scope scope = new Scope(null);
+            scope.define("self", new VarState(
+                    Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
+                    false,
+                    ValueKind.MUT_BORROW,
+                    Origin.PARAM));
+            for (Ast.Param param : constructor.parameters()) {
+                scope.define(param.name(), stateForParam(param));
+            }
+            checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
+            scope.close();
+        }
+
         for (Ast.MethodDecl method : klass.methods()) {
             Scope scope = new Scope(null);
             if (!method.isStatic()) {

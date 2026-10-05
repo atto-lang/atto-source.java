@@ -162,13 +162,30 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
-            abi.append(klass.actorKind()).append(" class ").append(klass.name());
+            if (klass.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append(klass.actorKind()).append(" pub class ").append(klass.name());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
             abi.append(" implements ");
             for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
             abi.append('\n');
+            if (klass.constructor() != null
+                    && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
+                abi.append(" constructor");
+                appendParams(abi, klass.constructor().parameters());
+                abi.append('\n');
+            } else if (klass.constructor() == null) {
+                // Legacy synthesized constructors are externally visible when
+                // their class is public; all positional field slots affect ABI.
+                abi.append(" synthesized-constructor(");
+                for (Ast.FieldDecl field : klass.fields()) {
+                    abi.append(field.type() == null
+                            ? "<inferred:" + field.initializer() + ">"
+                            : typeRef(field.type())).append(',');
+                }
+                abi.append(")\n");
+            }
             for (Ast.FieldDecl field : klass.fields()) {
                 String fromJsonKey = AnnotationExpander.fromJsonKey(field);
                 if (fromJsonKey != null) {

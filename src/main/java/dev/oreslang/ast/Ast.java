@@ -170,12 +170,14 @@ public final class Ast {
 
     public record ClassDecl(
             String name,
+            Visibility visibility,
             boolean isAbstract,
             ActorKind actorKind,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
+            ConstructorDecl constructor,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
@@ -184,15 +186,42 @@ public final class Ast {
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
         }
+
+        /** Compatibility constructor for pre-constructor AST producers. */
+        public ClassDecl(String name, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         List<MethodDecl> methods) {
+            this(name, Visibility.PRIVATE, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, null, methods);
+        }
+
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, parents, interfaces, fields, methods);
+            this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, genericParameters,
+                    parents, interfaces, fields, null, methods);
         }
+
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, List.of(), List.of(), fields, methods);
+            this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, genericParameters,
+                    List.of(), List.of(), fields, null, methods);
         }
+    }
+
+    public record ConstructorDecl(
+            Visibility visibility,
+            List<Param> parameters,
+            List<Annotation> annotations,
+            List<Stmt> body) {
+        public ConstructorDecl {
+            parameters = List.copyOf(parameters);
+            annotations = List.copyOf(annotations);
+            body = List.copyOf(body);
+        }
+
+        public int arity() { return parameters.size(); }
     }
 
     public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
