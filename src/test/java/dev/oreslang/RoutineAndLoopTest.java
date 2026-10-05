@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -386,6 +387,30 @@ final class RoutineAndLoopTest {
                 """);
 
         assertEquals("1234", output);
+    }
+
+    @Test
+    void forOfAstRejectsValEvenWhenParserIsBypassed() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new Ast.ForOfStmt(
+                        Ast.BindingKind.VAL,
+                        "item",
+                        new Ast.NameExpr("items"),
+                        java.util.List.of()));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new Ast.ForOfDestructureStmt(
+                        java.util.List.of(new Ast.DestructureBinding(Ast.BindingKind.VAL, "item")),
+                        new Ast.NameExpr("items"),
+                        java.util.List.of()));
+
+        assertDoesNotThrow(
+                () -> new Ast.ForOfDestructureStmt(
+                        java.util.List.of(Ast.DestructureBinding.discard()),
+                        new Ast.NameExpr("items"),
+                        java.util.List.of()));
     }
 
     @Test

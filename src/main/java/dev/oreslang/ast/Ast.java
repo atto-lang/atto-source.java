@@ -351,7 +351,10 @@ public final class Ast {
     }
 
     public record ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) implements Stmt {
-        public ForOfStmt { body = List.copyOf(body); }
+        public ForOfStmt {
+            body = List.copyOf(body);
+            requireForOfBindingKind(bindingKind);
+        }
     }
 
     public record ForOfDestructureStmt(
@@ -364,6 +367,15 @@ public final class Ast {
             if (bindings.isEmpty()) {
                 throw new IllegalArgumentException("for-of destructure pattern cannot be empty");
             }
+            for (DestructureBinding binding : bindings) {
+                if (!binding.isDiscard()) requireForOfBindingKind(binding.kind());
+            }
+        }
+    }
+
+    private static void requireForOfBindingKind(BindingKind kind) {
+        if (kind != BindingKind.CONST && kind != BindingKind.LET) {
+            throw new IllegalArgumentException("for-of bindings require const or let");
         }
     }
 
