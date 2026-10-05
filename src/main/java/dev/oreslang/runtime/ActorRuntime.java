@@ -962,6 +962,29 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private void requireActorLifecycleAuthority(
+            ActorRef<?> target,
+            String operation) {
+        ActorCell<?> caller = currentActor.get();
+        if (caller == null) return; // host/supervisor authority
+
+        ActorCell<?> targetCell = actors.get(target.id());
+        if (targetCell == null) return; // already terminated; operation is a no-op
+        if (caller == targetCell) return;
+
+        for (ActorCell<?> ancestor = targetCell.parent;
+             ancestor != null;
+             ancestor = ancestor.parent) {
+            if (ancestor == caller) return;
+        }
+
+        throw new SecurityException(
+                "actor " + caller.ref.id()
+                        + " cannot " + operation + " unrelated actor "
+                        + target.id()
+                        + "; actor lifecycle authority is limited to self and structured descendants");
+    }
+
     private IsolatePolicy defaultSpawnPolicy() {
         IsolatePolicy caller = currentActorPolicy();
         return caller == null ? policyCeiling : caller;
@@ -1619,15 +1642,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
+        requireActorLifecycleAuthority(ref, "stop");
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return;
 
         cell.stop();
 
-        // A host/supervisor stop is a synchronization point: once it returns,
-        // the actor and its structured children have finalized. A self-stop
-        // cannot wait for itself; endTurn() completes the unwind later.
-        if (currentActor.get() == cell) return;
+        // Only a host/supervisor stop is a synchronization point. Actor turns
+        // may stop self/descendants but must never park a bounded carrier while
+        // waiting for another actor to finalize.
+        if (currentActor.get() != null) return;
 
         try {
             cell.awaitFinalized(CLOSE_WAIT_NANOS);
@@ -1658,6 +1682,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
+        requireActorLifecycleAuthority(ref, "cancel");
 
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null || cell.finalized()) return false;
