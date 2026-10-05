@@ -37,7 +37,7 @@ final class OresFutureTest {
         assertFalse(future.cancel(true));
         assertEquals(1, hooks.get());
         assertTrue(future.isCancelled());
-        assertThrows(CancellationException.class, future::getNow);
+        assertThrows(CancellationException.class, () -> future.getNow(0));
     }
 
     @Test
