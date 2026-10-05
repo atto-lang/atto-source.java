@@ -214,7 +214,7 @@ final class ParserTest {
     }
 
     @Test
-    void actorClassSpawnUsesMailboxSend() {
+    void actorClassSpawnTypesProtocolCallsAsFutures() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   let int count = 0;
@@ -223,15 +223,21 @@ final class ParserTest {
                     self.count = initial;
                   }
 
-                  pub receive(value: int): void {
+                  pub add(value: int): void {
                     self.count = self.count + value;
                     return;
                   }
+
+                  pub current(): int {
+                    return self.count;
+                  }
                 end
 
-                fnc exercise() -> void {
+                async fnc exercise() -> void {
                   val worker = spawn Worker(1);
-                  worker.send(2);
+                  await worker.add(2);
+                  val value = await worker.current();
+                  stdio.println(value);
                   return;
                 }
                 """)));
@@ -242,59 +248,70 @@ final class ParserTest {
                     await 1;
                   }
 
-                  pub receive(value: int): void { return; }
+                  pub run(value: int): void { return; }
                 end
                 """)));
 
-        IllegalArgumentException direct = assertThrows(
+        IllegalArgumentException rawMailbox = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          pub receive(value: int): void { return; }
+                          pub run(value: int): void { return; }
                         end
 
                         fnc bad() -> void {
                           val worker = spawn Worker();
-                          worker.receive(2);
+                          worker.send(2);
                           return;
                         }
                         """)));
-        assertTrue(direct.getMessage().contains("runtime-owned"),
-                direct.getMessage());
+        assertTrue(rawMailbox.getMessage().contains("runtime-private"),
+                rawMailbox.getMessage());
     }
 
     @Test
-    void actorInheritancePreservesIsolationAndReceiveContract() {
+    void actorInheritancePreservesIsolationAndTypedProtocol() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Parent as
-                  let int total = 0;
-                  pub receive(value: int): void {
-                    self.total = self.total + value;
-                    return;
-                  }
+                  pub run(value: int): int { return value; }
                 end
 
                 define actor Child extends Parent as
-                  pub receive(value: int): void {
-                    self.total = self.total + value;
-                    return;
-                  }
+                  private helper(): int { return 1; }
                 end
 
-                fnc exercise() -> void {
+                async fnc exercise() -> void {
                   val child = spawn Child();
-                  child.send(7);
+                  val value = await child.run(7);
+                  stdio.println(value);
                   return;
                 }
                 """)));
 
+        IllegalArgumentException narrowed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Parent as
+                          pub run(value: int): int { return value; }
+                        end
+
+                        define actor Child extends Parent as
+                          private run(value: int): int { return value + 1; }
+                          pub ping(): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                narrowed.getMessage().contains(
+                        "cannot narrow inherited public protocol method"),
+                narrowed.getMessage());
+
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 isoactor Parent {
-                  pub receive(value: int): void { return; }
+                  pub run(value: int): void { return; }
                 }
 
                 shared actor Child extends Parent {
-                  pub receive(value: int): void { return; }
+                  pub ping(): void { return; }
                 }
                 """)));
     }
