@@ -558,36 +558,57 @@ final class ParserTest {
     }
 
     @Test
-    void actorProtocolCannotReceiveOrAcquireWritableSharedMutexState() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define actor Bad as
-                  pub run(SharedMutex<int> state): void {
-                    return;
-                  }
-                end
-                """)));
+    void actorCannotReceiveCreateOrAcquireWritableExternalSharedState() {
+        IllegalArgumentException boundary = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Bad as
+                          pub receive(state: SharedMutex<int>): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(boundary.getMessage().contains("SharedMutex"), boundary.getMessage());
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define actor Bad as
-                  private mutate(): void {
-                    val state = SharedMutex.new(1);
-                    return;
-                  }
+        IllegalArgumentException create = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Bad as
+                          private mutate(): void {
+                            val state = SharedMutex.new(1);
+                            return;
+                          }
 
-                  pub run(int message): void { return; }
-                end
-                """)));
+                          pub receive(message: int): void {
+                            self.mutate();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                create.getMessage().contains("SharedMutex")
+                        || create.getMessage().contains("external shared mutable state"),
+                create.getMessage());
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define actor Bad as
-                  private mutate(SharedMutex<int> state): void {
-                    val guard = state.try_lock();
-                    return;
-                  }
+        IllegalArgumentException writeGuard = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Bad as
+                          private mutate(state: RwLock<int>): void {
+                            val guard = state.try_write_lock();
+                            return;
+                          }
 
-                  pub run(int message): void { return; }
-                end
-                """)));
+                          pub receive(state: RwLock<int>): void {
+                            self.mutate(state);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                writeGuard.getMessage().contains("write guard")
+                        || writeGuard.getMessage().contains("write_lock"),
+                writeGuard.getMessage());
     }
 
     @Test
@@ -691,29 +712,50 @@ final class ParserTest {
 
 
     @Test
-    void actorProtocolCannotLeakActorOwnedState() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                shared actor Account {
-                  let int balance = 100;
+    void actorOwnedStateCannotEscapeThroughPrivateHelpers() {
+        IllegalArgumentException selfEscape = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Account {
+                          let int balance = 100;
 
-                  pub leak(): Account {
-                    return self;
-                  }
-                }
-                """)));
+                          private leak_self(): Account {
+                            return self;
+                          }
 
-        assertThrows(IllegalArgumentException.class, () -> {
-            Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    shared actor Account {
-                      let Array<int> items = [1, 2, 3];
+                          pub receive(message: int): void {
+                            val leaked = self.leak_self();
+                            return;
+                          }
+                        }
+                        """)));
+        assertTrue(
+                selfEscape.getMessage().contains("actor self")
+                        || selfEscape.getMessage().contains("escape")
+                        || selfEscape.getMessage().contains("borrow"),
+                selfEscape.getMessage());
 
-                      pub snapshot(): Array<int> {
-                        return self.items;
-                      }
-                    }
-                    """));
-            OwnershipChecker.check(typed);
-        });
+        IllegalArgumentException fieldEscape = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc consume(Array<int> values) -> void {
+                          return;
+                        }
+
+                        shared actor Account {
+                          let Array<int> items = [1, 2, 3];
+
+                          pub receive(message: int): void {
+                            consume(self.items);
+                            return;
+                          }
+                        }
+                        """)));
+        assertTrue(
+                fieldEscape.getMessage().contains("actor")
+                        || fieldEscape.getMessage().contains("owned")
+                        || fieldEscape.getMessage().contains("move"),
+                fieldEscape.getMessage());
     }
 
     @Test
