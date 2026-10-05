@@ -1706,11 +1706,9 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType, boolean asyncIteration) {
         if (iterableType == null) return Ast.TypeRef.inferred();
-        if (asyncIteration) {
-            if (iterableType.name().equals("AsyncGenerator") && iterableType.arguments().size() == 1) {
-                return iterableType.arguments().getFirst();
-            }
-            return Ast.TypeRef.inferred();
+        if (asyncIteration && iterableType.name().equals("AsyncGenerator")
+                && iterableType.arguments().size() == 1) {
+            return iterableType.arguments().getFirst();
         }
         if ((iterableType.name().equals("Array") || iterableType.name().equals("List")
                         || iterableType.name().equals("Generator"))

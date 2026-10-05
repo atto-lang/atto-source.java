@@ -2417,8 +2417,9 @@ public final class TypeChecker {
                 }
             }
         }
-        throw new IllegalArgumentException(
-                "for-await requires AsyncGenerator<T> or a class with [Symbol.asyncIterator]()");
+        // Match the newer iterator prototype: for-await also admits synchronous
+        // iterables, but execution still crosses the runtime-owned Future boundary.
+        return iterableElementType(iterable);
     }
 
     private Type widenCollectionElement(Type type) {

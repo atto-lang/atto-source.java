@@ -2204,7 +2204,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl iterator =
                         findMethod(object.klass, "Symbol.asyncIterator", 0, new LinkedHashSet<>());
                 if (iterator == null) {
-                    throw new IllegalArgumentException("value has no [Symbol.asyncIterator]()");
+                    return asyncSynchronousIterableValues(value, env);
                 }
                 object.owner.requireClassMemberVisible(
                         iterator.visibility(),
@@ -2215,8 +2215,7 @@ public final class OresEvalRootNode extends RootNode {
                 return asyncIterableValues(callMethod(object, iterator, List.of()), env);
             }
             if (!(value instanceof GeneratorRuntime.AsyncGenerator<?> generator)) {
-                throw new IllegalArgumentException(
-                        "value is not asynchronously iterable; expected AsyncGenerator or [Symbol.asyncIterator]()");
+                return asyncSynchronousIterableValues(value, env);
             }
 
             final class AsyncPullIterable implements Iterable<Object>, AutoCloseable {
@@ -2249,6 +2248,19 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return new AsyncPullIterable();
+        }
+
+        private Iterable<?> asyncSynchronousIterableValues(Object value, Env env) {
+            Iterable<?> synchronous = iterableValues(value, env);
+            GeneratorRuntime.AsyncGenerator<Object> adapter = GeneratorRuntime.asyncGenerator(
+                    context.asyncRuntime(), emitter -> {
+                        try {
+                            for (Object item : synchronous) emitter.emit(item);
+                        } finally {
+                            closeIterable(synchronous);
+                        }
+                    });
+            return asyncIterableValues(adapter, env);
         }
 
         private void closeIterable(Iterable<?> iterable) {

@@ -86,6 +86,26 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void forAwaitAdmitsSynchronousArraysGeneratorsAndIteratorProtocols() throws Exception {
+        assertEquals("123456", run("""
+                generator fnc values(): int {
+                  yield 3;
+                  yield 4;
+                  return;
+                }
+                define class Bag as
+                  pub [Symbol.iterator](): Array<int> { return [5, 6]; }
+                end
+                pub async routine main(): void {
+                  for await value of [1, 2] { stdio.stdout.write(value); }
+                  for await value of values() { stdio.stdout.write(value); }
+                  for await value of new Bag() { stdio.stdout.write(value); }
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void classCanExposeAsyncIteratorProtocolWithoutGeneratorMethods() throws Exception {
         String output = run("""
                 async generator fnc stream(): int {
@@ -193,6 +213,23 @@ final class GeneratorLanguageTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void synchronousForAwaitAdapterStillRejectsLiveBorrows() {
+        var error = assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub val int value = 1;
+                end
+                async fnc bad(): void {
+                  val Box box = new Box();
+                  val &Box borrowed = &box;
+                  for await value of [1, 2] { stdio.stdout.write(value); }
+                  stdio.stdout.write(borrowed.value);
+                  return;
+                }
+                """));
+        assertTrue(error.getMessage().contains("cannot suspend for async iteration"), error::getMessage);
     }
 
     private static String run(String program) throws Exception {

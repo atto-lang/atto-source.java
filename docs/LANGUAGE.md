@@ -521,7 +521,7 @@ pub async fnc consume(): void {
 }
 ```
 
-A synchronous `for ... of ...` consumes `Generator<T>` or ordinary synchronous iterables. `for await ... of ...` consumes `AsyncGenerator<T>` or a class whose `[Symbol.asyncIterator]()` method returns an `AsyncGenerator<T>`. Sync and async iteration are not implicitly mixed.
+A synchronous `for ... of ...` consumes `Generator<T>` or ordinary synchronous iterables. `for await ... of ...` consumes `AsyncGenerator<T>` or a class whose `[Symbol.asyncIterator]()` method returns an `AsyncGenerator<T>`. It also accepts synchronous generators, arrays, tuples, and `[Symbol.iterator]()` values through a runtime-owned asynchronous adapter: every pull crosses the OresFuture boundary, and closing the loop closes the suspended adapter and its source. An asynchronous iterable still cannot be consumed by a synchronous loop.
 
 Generator activations are affine runtime state. They are not actor messages, shared values, or async-task payloads. `yield` is a suspension boundary: a live `MutexGuard` or borrow may not cross it in the current ownership model. Async iterator pulls are suspension boundaries as well.
 
