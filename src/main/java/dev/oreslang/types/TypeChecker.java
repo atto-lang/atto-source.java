@@ -1561,7 +1561,8 @@ public final class TypeChecker {
             } finally {
                 currentClassOwner = previousClassOwner;
             }
-            return new Function(parameters, Unknown.INSTANCE);
+            Type lambdaResult = lambda.trapped() ? trapResult(Unknown.INSTANCE) : Unknown.INSTANCE;
+            return new Function(parameters, lambdaResult);
         }
         return Unknown.INSTANCE;
     }
@@ -1695,13 +1696,18 @@ public final class TypeChecker {
         }
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
+        Type bodyExpected = lambda.trapped() ? Unknown.INSTANCE : expected.result();
         try {
-            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, bodyExpected, self);
         } finally {
             currentClassOwner = previousClassOwner;
         }
-        if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
+        if (!lambda.trapped() && expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
+        }
+        if (lambda.trapped()) {
+            Function actual = new Function(expected.parameters(), trapResult(Unknown.INSTANCE));
+            requireAssignable(actual, expected, "trapped function expression");
         }
     }
 
