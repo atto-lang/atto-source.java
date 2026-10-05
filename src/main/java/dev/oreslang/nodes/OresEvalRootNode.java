@@ -299,11 +299,44 @@ public final class OresEvalRootNode extends RootNode {
 
         private record AsyncCallableContext(
                 Ast.TypeRef returnType,
+                Set<String> genericParameters,
                 boolean tailTransfersAllowed) {
+            private AsyncCallableContext {
+                genericParameters = Set.copyOf(genericParameters);
+            }
+
             private AsyncCallableContext withTailTransfers(boolean allowed) {
                 if (tailTransfersAllowed == allowed) return this;
-                return new AsyncCallableContext(returnType, allowed);
+                return new AsyncCallableContext(
+                        returnType,
+                        genericParameters,
+                        allowed);
             }
+        }
+
+        private static Set<String> asyncGenericParameters(
+                Ast.ClassDecl klass,
+                Ast.MethodDecl method) {
+            LinkedHashSet<String> names = new LinkedHashSet<>(klass.genericParameters());
+            names.addAll(method.genericParameters());
+            return Set.copyOf(names);
+        }
+
+        private static boolean tailTypeIsConcrete(
+                Ast.TypeRef type,
+                Set<String> genericParameters) {
+            if (type == null
+                    || type.inferArguments()
+                    || type.name().equals("$infer$")
+                    || genericParameters.contains(type.name())) {
+                return false;
+            }
+            for (Ast.TypeRef argument : type.arguments()) {
+                if (!tailTypeIsConcrete(argument, genericParameters)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private OresFuture<Object> startAsyncFunction(Ast.FunctionDecl fn, List<?> args) {
@@ -325,6 +358,7 @@ public final class OresEvalRootNode extends RootNode {
 
             AsyncCallableContext callable = new AsyncCallableContext(
                     fn.returnType(),
+                    Set.copyOf(fn.genericParameters()),
                     fn.actorKind() == Ast.ActorKind.NONE);
             AsyncPlan body = asyncBlock(fn.body(), base, callable);
             return asyncFlatMap(body, flow -> {
@@ -366,6 +400,7 @@ public final class OresEvalRootNode extends RootNode {
 
             AsyncCallableContext callable = new AsyncCallableContext(
                     method.returnType(),
+                    asyncGenericParameters(receiver.klass, method),
                     receiver.klass.actorKind() == Ast.ActorKind.NONE);
             AsyncPlan body = asyncBlock(method.body(), base, callable);
             return asyncFlatMap(body, flow -> {
@@ -403,6 +438,7 @@ public final class OresEvalRootNode extends RootNode {
 
             AsyncCallableContext callable = new AsyncCallableContext(
                     fn.returnType(),
+                    asyncGenericParameters(klass, fn),
                     klass.actorKind() == Ast.ActorKind.NONE);
             AsyncPlan body = asyncBlock(fn.body(), base, callable);
             return asyncFlatMap(body, flow -> {
@@ -440,6 +476,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             AsyncCallableContext callable = new AsyncCallableContext(
                     Ast.TypeRef.inferred(),
+                    Set.of(),
                     false);
             AsyncPlan body = asyncBlock(lambda.blockBody(), base, callable);
             AsyncPlan completed = asyncFlatMap(body, flow ->
@@ -1208,9 +1245,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static boolean tailResultCompatible(
-                Ast.TypeRef caller,
-                Ast.TypeRef callee) {
-            return Objects.equals(caller, callee);
+                AsyncCallableContext caller,
+                Ast.TypeRef callee,
+                Set<String> calleeGenericParameters) {
+            return tailTypeIsConcrete(
+                            caller.returnType(),
+                            caller.genericParameters())
+                    && tailTypeIsConcrete(callee, calleeGenericParameters)
+                    && Objects.equals(caller.returnType(), callee);
         }
 
         /**
