@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -573,7 +574,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private record MessageEnvelope(Object value, Runnable release) implements AutoCloseable {
+    private record MessageEnvelope(
+            Object value,
+            Runnable release,
+            Runnable continuation) implements AutoCloseable {
+        private static MessageEnvelope message(Object value, Runnable release) {
+            return new MessageEnvelope(value, release, null);
+        }
+
+        private static MessageEnvelope continuation(Runnable continuation) {
+            return new MessageEnvelope(
+                    null,
+                    null,
+                    Objects.requireNonNull(continuation, "continuation"));
+        }
+
+        private boolean isContinuation() {
+            return continuation != null;
+        }
+
         @Override
         public void close() {
             if (release != null) release.run();
@@ -730,6 +749,77 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+    }
+
+    /**
+     * Opaque runtime handle used by Future/channel completion plumbing to
+     * re-enter one actor through its serialized mailbox lane.
+     *
+     * <p>The handle carries no guest-callable callback surface. Completion
+     * threads may only enqueue a runtime continuation; they never execute guest
+     * code directly.</p>
+     */
+    public final class ContinuationTarget {
+        private final ActorId actorId;
+
+        private ContinuationTarget(ActorId actorId) {
+            this.actorId = Objects.requireNonNull(actorId, "actorId");
+        }
+
+        public ActorId actorId() {
+            return actorId;
+        }
+
+        private boolean enqueue(Runnable continuation) {
+            return enqueueContinuation(actorId, continuation);
+        }
+    }
+
+    public ContinuationTarget captureCurrentContinuationTarget() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "deferred actor continuation requires an executing actor turn");
+        }
+        return new ContinuationTarget(cell.ref.id());
+    }
+
+    /**
+     * Register scheduler plumbing only. Future completion enqueues the supplied
+     * continuation back to the captured actor; the callback body itself is not
+     * run on the producer/completion thread.
+     */
+    public <T> void enqueueOnCompletion(
+            OresFuture<T> future,
+            ContinuationTarget target,
+            BiConsumer<? super T, ? super Throwable> continuation) {
+        Objects.requireNonNull(future, "future");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(continuation, "continuation");
+
+        future.whenCompleteRuntime((value, failure) ->
+                target.enqueue(() -> continuation.accept(value, failure)));
+    }
+
+    private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(continuation, "continuation");
+        ActorCell<?> cell = actors.get(actorId);
+        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        if (!cell.reserveMailboxSlot()) return false;
+
+        boolean admitted = false;
+        try {
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
+                admitted = cell.mailbox.tryWrite(
+                        MessageEnvelope.continuation(continuation));
+            }
+            if (admitted) cell.schedule();
+            return admitted;
+        } finally {
+            if (!admitted) cell.releaseMailboxSlot();
+        }
     }
 
     public final class ActorRef<M> {
@@ -1604,7 +1694,7 @@ public final class ActorRuntime implements AutoCloseable {
             release = () -> cell.releaseSharedMailbox(bytes);
         }
 
-        MessageEnvelope envelope = new MessageEnvelope(prepared, release);
+        MessageEnvelope envelope = MessageEnvelope.message(prepared, release);
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
         try {
@@ -3010,7 +3100,11 @@ public final class ActorRuntime implements AutoCloseable {
                     if (envelope == null) break;
                     releaseMailboxSlot();
                     try (envelope) {
-                        behavior.onMessage((M) envelope.value(), context);
+                        if (envelope.isContinuation()) {
+                            envelope.continuation().run();
+                        } else {
+                            behavior.onMessage((M) envelope.value(), context);
+                        }
                         if (kind == ActorKind.PRIVATE && !trustedFactory) {
                             // Private state that survives a mailbox turn must
                             // remain in actor-owned storage/capabilities. This
