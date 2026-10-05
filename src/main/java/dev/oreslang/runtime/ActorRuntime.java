@@ -850,7 +850,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (admitted) cell.schedule();
             return admitted;
         } finally {
-            if (!admitted) cell.releaseMailboxSlot();
+            if (!admitted) cell.releaseMailboxSlot(true);
         }
     }
 
@@ -1758,7 +1758,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         cell.schedule();
         } finally {
-            if (!mailboxSlotTransferred) cell.releaseMailboxSlot();
+            if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
     }
 
@@ -2891,8 +2891,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
-        private final AtomicInteger queuedMessages = new AtomicInteger();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
+        private final Object mailboxAccountingLock = new Object();
+        private int queuedMessages;
+        private int queuedUserMessages;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -2923,32 +2925,52 @@ public final class ActorRuntime implements AutoCloseable {
                     : null;
         }
 
+        private int mailboxCapacityWithControlHeadroom() {
+            return policy.maxMailboxMessages() >
+                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
+                    ? Integer.MAX_VALUE
+                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
+        }
+
+        /**
+         * User-message capacity and runtime-control capacity are distinct.
+         * Continuations may consume only the reserved control headroom; they
+         * must never reduce the actor's configured user mailbox allowance.
+         */
         private boolean reserveMailboxSlot() {
-            while (true) {
-                int current = queuedMessages.get();
-                if (current >= policy.maxMailboxMessages()) return false;
-                if (queuedMessages.compareAndSet(current, current + 1)) return true;
+            synchronized (mailboxAccountingLock) {
+                if (queuedUserMessages >= policy.maxMailboxMessages()) return false;
+                if (queuedMessages >= mailboxCapacityWithControlHeadroom()) return false;
+                queuedUserMessages++;
+                queuedMessages++;
+                return true;
             }
         }
 
         private boolean reserveContinuationSlot() {
-            int limit = policy.maxMailboxMessages() >
-                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
-                    ? Integer.MAX_VALUE
-                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
-            while (true) {
-                int current = queuedMessages.get();
-                if (current >= limit) return false;
-                if (queuedMessages.compareAndSet(current, current + 1)) return true;
+            synchronized (mailboxAccountingLock) {
+                if (queuedMessages >= mailboxCapacityWithControlHeadroom()) return false;
+                queuedMessages++;
+                return true;
             }
         }
 
-        private void releaseMailboxSlot() {
-            int remaining = queuedMessages.decrementAndGet();
-            if (remaining < 0) {
-                queuedMessages.incrementAndGet();
-                throw new IllegalStateException(
-                        "actor mailbox accounting underflow for " + ref.id());
+        private void releaseMailboxSlot(boolean continuation) {
+            synchronized (mailboxAccountingLock) {
+                if (queuedMessages <= 0) {
+                    throw new IllegalStateException(
+                            "actor mailbox accounting underflow for " + ref.id());
+                }
+                queuedMessages--;
+
+                if (!continuation) {
+                    if (queuedUserMessages <= 0) {
+                        queuedMessages++;
+                        throw new IllegalStateException(
+                                "actor user-mailbox accounting underflow for " + ref.id());
+                    }
+                    queuedUserMessages--;
+                }
             }
         }
 
@@ -3157,7 +3179,7 @@ public final class ActorRuntime implements AutoCloseable {
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
                     MessageEnvelope envelope = mailbox.tryRead().orElse(null);
                     if (envelope == null) break;
-                    releaseMailboxSlot();
+                    releaseMailboxSlot(envelope.isContinuation());
                     try (envelope) {
                         if (envelope.isContinuation()) {
                             envelope.continuation().run();
@@ -3199,7 +3221,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void drainMailboxReservations() {
             MessageEnvelope envelope;
             while ((envelope = mailbox.tryRead().orElse(null)) != null) {
-                releaseMailboxSlot();
+                releaseMailboxSlot(envelope.isContinuation());
                 envelope.close();
             }
         }
