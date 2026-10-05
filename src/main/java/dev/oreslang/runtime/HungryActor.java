@@ -8,6 +8,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -52,6 +53,7 @@ public final class HungryActor<M> implements AutoCloseable {
     private final Object lifecycleLock = new Object();
     private final NativeCarrierExecutor carrier;
     private final AtomicReference<Thread> worker = new AtomicReference<>();
+    private final AtomicLong nativeCarrierThreadId = new AtomicLong();
     private final String carrierThreadPrefix;
     private final Context<M> context = new Context<>() {
         @Override
@@ -120,9 +122,7 @@ public final class HungryActor<M> implements AutoCloseable {
     }
 
     public long nativeCarrierThreadId() {
-        Thread current = worker.get();
-        if (current == null || terminated.get()) return 0L;
-        return NativeCarrierExecutor.currentNativeThreadIdFor(current);
+        return nativeCarrierThreadId.get();
     }
 
     public boolean isAlive() {
@@ -207,6 +207,17 @@ public final class HungryActor<M> implements AutoCloseable {
             failure.compareAndSet(
                     null,
                     new IllegalStateException("HungryActor must execute on a native pthread carrier"));
+            stopRequested.set(true);
+            terminated.set(true);
+            termination.countDown();
+            carrier.shutdown();
+            return;
+        }
+        nativeCarrierThreadId.set(NativeCarrierExecutor.currentNativeThreadId());
+        if (nativeCarrierThreadId.get() == 0L) {
+            failure.compareAndSet(
+                    null,
+                    new IllegalStateException("HungryActor native pthread identity is unavailable"));
             stopRequested.set(true);
             terminated.set(true);
             termination.countDown();
