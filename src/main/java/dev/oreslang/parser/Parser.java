@@ -823,19 +823,28 @@ public final class Parser {
 
     private Ast.Stmt parseFor() {
         if (!match(LPAREN)) {
-            Ast.BindingKind kind = isBindingKind(peek().type())
-                    ? parseBindingKind()
-                    : Ast.BindingKind.VAL;
-            if (check(LBRACKET)) {
-                List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
-                consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
+            if (looksLikeUnparenthesizedForOf()) {
+                Ast.BindingKind kind = isBindingKind(peek().type())
+                        ? parseBindingKind()
+                        : Ast.BindingKind.VAL;
+                if (check(LBRACKET)) {
+                    List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
+                    consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
+                    Ast.Expr iterable = parseExpression();
+                    return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+                }
+                String name = consume(IDENT, "iterator for-loop requires a binding name").lexeme();
+                consume(OF, "iterator for-loop shorthand uses 'for x of iterable'");
                 Ast.Expr iterable = parseExpression();
-                return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
             }
-            String name = consume(IDENT, "iterator for-loop requires a binding name").lexeme();
-            consume(OF, "iterator for-loop shorthand uses 'for x of iterable'");
-            Ast.Expr iterable = parseExpression();
-            return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
+
+            Ast.Stmt initializer = parseUnparenthesizedForInitializer();
+            consume(SEMICOLON, "expected ';' after for initializer");
+            Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
+            consume(SEMICOLON, "expected ';' after for condition");
+            Ast.Expr update = check(LBRACE) || check(DO) ? null : parseForUpdate();
+            return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
         }
 
         if (isBindingKind(peek().type())) {
@@ -868,7 +877,7 @@ public final class Parser {
             consume(SEMICOLON, "expected ';' after for initializer");
             Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
             consume(SEMICOLON, "expected ';' after for condition");
-            Ast.Expr update = check(RPAREN) ? null : parseExpression();
+            Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
             consume(RPAREN, "expected ')' after for header");
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
@@ -894,9 +903,80 @@ public final class Parser {
         consume(SEMICOLON, "expected ';' after for initializer");
         Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
         consume(SEMICOLON, "expected ';' after for condition");
-        Ast.Expr update = check(RPAREN) ? null : parseExpression();
+        Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
         consume(RPAREN, "expected ')' after for header");
         return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+    }
+
+    private boolean looksLikeUnparenthesizedForOf() {
+        int mark = current;
+        try {
+            if (isBindingKind(peek().type())) parseBindingKind();
+            if (check(LBRACKET)) return true;
+            return check(IDENT) && checkNext(OF);
+        } finally {
+            current = mark;
+        }
+    }
+
+    private Ast.Stmt parseUnparenthesizedForInitializer() {
+        if (check(SEMICOLON)) return null;
+
+        if (isBindingKind(peek().type())) {
+            Ast.BindingKind kind = parseBindingKind();
+            Ast.TypeRef type = null;
+            String name;
+            if (check(IDENT) && checkNext(EQUAL)) {
+                name = advance().lexeme();
+            } else {
+                type = parseTypeRef();
+                name = consume(IDENT, "expected loop initializer binding name").lexeme();
+            }
+            consume(EQUAL, "for initializer binding requires '='");
+            return new Ast.BindingStmt(kind, type, name, parseExpression());
+        }
+
+        if (looksLikeTypedForInitializer()) {
+            Ast.TypeRef type = parseTypeRef();
+            String name = consume(IDENT, "expected typed loop binding name").lexeme();
+            consume(EQUAL, "typed for initializer requires '='");
+            return new Ast.BindingStmt(Ast.BindingKind.LET, type, name, parseExpression());
+        }
+
+        return new Ast.ExprStmt(parseExpression());
+    }
+
+    private boolean looksLikeTypedForInitializer() {
+        int mark = current;
+        try {
+            parseTypeRef();
+            return check(IDENT) && checkNext(EQUAL);
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private Ast.Expr parseForUpdate() {
+        int mark = current;
+        if (check(IDENT)) {
+            String name = advance().lexeme();
+            if (matchAdjacentPair(PLUS)) {
+                Ast.NameExpr target = new Ast.NameExpr(name);
+                return new Ast.AssignExpr(
+                        target,
+                        new Ast.BinaryExpr("+", new Ast.NameExpr(name), new Ast.LiteralExpr(1L)));
+            }
+            if (matchAdjacentPair(MINUS)) {
+                Ast.NameExpr target = new Ast.NameExpr(name);
+                return new Ast.AssignExpr(
+                        target,
+                        new Ast.BinaryExpr("-", new Ast.NameExpr(name), new Ast.LiteralExpr(1L)));
+            }
+            current = mark;
+        }
+        return parseExpression();
     }
 
     private List<Ast.DestructureBinding> parseForSequenceBindings(Ast.BindingKind inheritedKind) {
