@@ -850,8 +850,7 @@ Java_dev_oreslang_runtime_OresThread_nativeCurrentThreadId(
 /* ------------------------------------------------------------------------- */
 
 typedef struct {
-    pthread_mutex_t mutex;
-    int state;
+    _Atomic int state;
 } ores_future_state;
 
 static ores_future_state *future_state_from_handle(JNIEnv *env, jlong handle) {
@@ -871,12 +870,7 @@ Java_dev_oreslang_runtime_NativeFutureState_nativeCreate(
         throw_illegal_state(env, "failed to allocate native Future state");
         return 0;
     }
-    if (pthread_mutex_init(&state->mutex, NULL) != 0) {
-        free(state);
-        throw_illegal_state(env, "failed to initialize native Future mutex");
-        return 0;
-    }
-    state->state = 0;
+    atomic_init(&state->state, 0);
     return (jlong)(intptr_t)state;
 }
 
@@ -887,7 +881,6 @@ Java_dev_oreslang_runtime_NativeFutureState_nativeDestroy(
     (void)cls;
     ores_future_state *state = (ores_future_state *)(intptr_t)handle;
     if (state == NULL) return;
-    pthread_mutex_destroy(&state->mutex);
     free(state);
 }
 
@@ -898,11 +891,15 @@ Java_dev_oreslang_runtime_NativeFutureState_nativeTryBeginSettlement(
     ores_future_state *state = future_state_from_handle(env, handle);
     if (state == NULL) return JNI_FALSE;
 
-    pthread_mutex_lock(&state->mutex);
-    int won = state->state == 0;
-    if (won) state->state = 1;
-    pthread_mutex_unlock(&state->mutex);
-    return won ? JNI_TRUE : JNI_FALSE;
+    int expected = 0;
+    return atomic_compare_exchange_strong_explicit(
+                   &state->state,
+                   &expected,
+                   1,
+                   memory_order_acq_rel,
+                   memory_order_acquire)
+            ? JNI_TRUE
+            : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -916,14 +913,15 @@ Java_dev_oreslang_runtime_NativeFutureState_nativePublish(
         return;
     }
 
-    pthread_mutex_lock(&state->mutex);
-    if (state->state != 1) {
-        pthread_mutex_unlock(&state->mutex);
+    int expected = 1;
+    if (!atomic_compare_exchange_strong_explicit(
+                &state->state,
+                &expected,
+                (int)terminal_state,
+                memory_order_release,
+                memory_order_acquire)) {
         throw_illegal_state(env, "native Future publish without settlement ownership");
-        return;
     }
-    state->state = (int)terminal_state;
-    pthread_mutex_unlock(&state->mutex);
 }
 
 JNIEXPORT jint JNICALL
@@ -932,8 +930,5 @@ Java_dev_oreslang_runtime_NativeFutureState_nativeState(
     (void)cls;
     ores_future_state *state = future_state_from_handle(env, handle);
     if (state == NULL) return 0;
-    pthread_mutex_lock(&state->mutex);
-    int observed = state->state;
-    pthread_mutex_unlock(&state->mutex);
-    return (jint)observed;
+    return (jint)atomic_load_explicit(&state->state, memory_order_acquire);
 }
