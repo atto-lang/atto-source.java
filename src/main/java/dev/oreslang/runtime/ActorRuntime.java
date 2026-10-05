@@ -5967,11 +5967,11 @@ public final class ActorRuntime implements AutoCloseable {
      * age wins. This preserves bounded fairness even with a one-carrier domain
      * and a continuously hot actor.</p>
      */
-    static final class AffinityBlockingQueue extends LinkedBlockingQueue<Runnable> {
+    static final class AffinityBlockingQueue extends ArrayBlockingQueue<Runnable> {
         private final CarrierRegistry registry;
 
         AffinityBlockingQueue(int capacity, CarrierRegistry registry) {
-            super(capacity);
+            super(capacity, true);
             this.registry = Objects.requireNonNull(registry, "registry");
         }
 
