@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
@@ -834,18 +835,31 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
 
-                boolean immediate = selected.nonBlocking() || selected.hasDefault();
-                Optional<OresChannel.SelectionResult> result = immediate
-                        ? OresChannel.trySelect(entries)
-                        : Optional.of(OresChannel.select(entries));
+                OresChannel.SelectionPolicy policy = selectPolicy(selected.policy());
+                if (selected.nonBlocking()) {
+                    Env captured = env.snapshot();
+                    CompletableFuture<OresChannel.SelectionResult> pending =
+                            OresChannel.selectAsync(entries, policy);
+                    scheduleDetachedSelection(pending, committed -> {
+                        Ast.SelectCase arm = selected.cases().get(committed.index());
+                        Env armEnv = new Env(captured);
+                        if (arm.operation() == Ast.SelectOperation.READ && arm.bindingName() != null) {
+                            armEnv.define(arm.bindingName(), committed.value(), Ast.BindingKind.VAL);
+                        }
+                        executeDetachedBlock(arm.body(), armEnv);
+                    });
+                    return;
+                }
+
+                Optional<OresChannel.SelectionResult> result = selected.hasDefault()
+                        ? OresChannel.trySelect(entries, policy)
+                        : Optional.of(OresChannel.select(entries, policy));
 
                 if (result.isEmpty()) {
-                    if (selected.defaultBody() != null) {
-                        executeBlock(
-                                selected.defaultBody(),
-                                env,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    }
+                    executeBlock(
+                            selected.defaultBody(),
+                            env,
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                     return;
                 }
 
@@ -863,18 +877,31 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.DynamicSelectStmt selected) {
                 Object entries = eval(selected.entries(), env);
-                boolean immediate = selected.nonBlocking() || selected.hasDefault();
-                Optional<OresChannel.SelectionResult> result = immediate
-                        ? OresChannel.trySelectDynamic(entries)
-                        : Optional.of(OresChannel.selectDynamic(entries));
+                OresChannel.SelectionPolicy policy = selectPolicy(selected.policy());
+
+                if (selected.nonBlocking()) {
+                    Env captured = env.snapshot();
+                    CompletableFuture<OresChannel.SelectionResult> pending =
+                            OresChannel.selectDynamicAsync(entries, policy);
+                    scheduleDetachedSelection(pending, committed -> {
+                        Env bodyEnv = new Env(captured);
+                        if (selected.resultBinding() != null) {
+                            bodyEnv.define(selected.resultBinding(), committed, Ast.BindingKind.VAL);
+                        }
+                        executeDetachedBlock(selected.body(), bodyEnv);
+                    });
+                    return;
+                }
+
+                Optional<OresChannel.SelectionResult> result = selected.hasDefault()
+                        ? OresChannel.trySelectDynamic(entries, policy)
+                        : Optional.of(OresChannel.selectDynamic(entries, policy));
 
                 if (result.isEmpty()) {
-                    if (selected.defaultBody() != null) {
-                        executeBlock(
-                                selected.defaultBody(),
-                                env,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    }
+                    executeBlock(
+                            selected.defaultBody(),
+                            env,
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                     return;
                 }
 
@@ -1694,6 +1721,52 @@ public final class OresEvalRootNode extends RootNode {
 
         private RuntimeException hostInteropError(String operation, Exception failure) {
             return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
+        }
+
+        private static OresChannel.SelectionPolicy selectPolicy(Ast.SelectPolicy policy) {
+            return switch (policy) {
+                case FAIR -> OresChannel.SelectionPolicy.FAIR;
+                case ORDERED -> OresChannel.SelectionPolicy.ORDERED;
+            };
+        }
+
+        private void scheduleDetachedSelection(
+                CompletableFuture<OresChannel.SelectionResult> pending,
+                java.util.function.Consumer<OresChannel.SelectionResult> winner) {
+            ActorRuntime.ContinuationTarget actorTarget =
+                    ActorRuntime.captureCurrentContinuationTarget();
+
+            if (actorTarget != null) {
+                actorTarget.track(pending);
+                pending.whenComplete((selected, failure) -> {
+                    if (failure != null || selected == null) return;
+                    actorTarget.schedule(() -> winner.accept(selected));
+                });
+                return;
+            }
+
+            context.asyncRuntime().track(pending);
+            pending.whenComplete((selected, failure) -> {
+                if (failure != null || selected == null || context.asyncRuntime().isClosed()) return;
+                context.asyncRuntime().submit(() -> {
+                    winner.accept(selected);
+                    return null;
+                });
+            });
+        }
+
+        private void executeDetachedBlock(List<Ast.Stmt> body, Env env) {
+            try {
+                executeBlock(body, env, true);
+            } catch (ReturnSignal ignored) {
+                // nb-select arms are implicit detached continuations; return
+                // exits the winning continuation, not the already-returned
+                // enclosing callable.
+            } catch (BreakSignal | ContinueSignal invalid) {
+                throw new IllegalStateException(
+                        "break/continue cannot escape an nb-select continuation",
+                        invalid);
+            }
         }
 
         @SuppressWarnings({"rawtypes", "unchecked"})
