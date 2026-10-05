@@ -675,7 +675,10 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     for (Ast.DestructureBinding binding : destructure.bindings()) {
                         if (!binding.isDiscard()) {
-                            env.define(binding.name(), destructureMember(value, binding.name()), binding.kind());
+                            env.define(
+                                    binding.name(),
+                                    destructureMember(value, binding.name(), env),
+                                    binding.kind());
                         }
                     }
                 }
@@ -2152,6 +2155,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+
+        private Object destructureMember(Object value, String name, Env env) {
+            if (value instanceof OresObject object) {
+                OwnedField ownedField = object.owner.findField(
+                        object.klass, name, new LinkedHashSet<>());
+                if (ownedField != null) {
+                    object.owner.requireClassMemberVisible(
+                            ownedField.field().visibility(),
+                            ownedField.owner(),
+                            env == null ? null : env.accessClass(),
+                            "field",
+                            ownedField.field().name());
+                }
+            }
+            return destructureMember(value, name);
+        }
+
         private Object destructureMember(Object value, String name) {
             if (value instanceof DynamicStructValue dynamic) {
                 if (!dynamic.fields.containsKey(name)) {
