@@ -52,6 +52,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<String> importedTypeBindingNames = new HashSet<>();
+    private final Set<String> typeOnlyImportedClassNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -67,8 +68,8 @@ public final class TypeChecker {
         if (importedTypes == null) throw new IllegalArgumentException("imported types cannot be null");
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
-        checker.validateImports(program);
         checker.collectImportedTypes(importedTypes);
+        checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
         OwnershipChecker.check(program);
@@ -85,6 +86,9 @@ public final class TypeChecker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 if (classes.putIfAbsent(localName, klass) != null) {
                     throw new IllegalArgumentException("duplicate imported class binding '" + localName + "'");
+                }
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    typeOnlyImportedClassNames.add(localName);
                 }
             } else if (declaration instanceof Ast.InterfaceDecl iface) {
                 if (interfaces.putIfAbsent(localName, iface) != null) {
@@ -128,7 +132,8 @@ public final class TypeChecker {
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
-                if (ImportRules.isRuntimeValueImport(imported)) {
+                if (ImportRules.isRuntimeValueImport(imported)
+                        && !typeOnlyImportedClassNames.contains(name)) {
                     importedValues.add(name);
                 }
             }
@@ -754,7 +759,9 @@ public final class TypeChecker {
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleShape(moduleNamespace);
             Ast.ClassDecl classNamespace = findClass(name.name());
-            if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
+            if (classNamespace != null && !typeOnlyImportedClassNames.contains(name.name())) {
+                return new ClassNamespace(qualifiedClassName(classNamespace));
+            }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {

@@ -97,10 +97,10 @@ public final class Parser {
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
             else if (match(INTERFACE)) kind = Ast.ImportKind.INTERFACE;
-            else if (match(TRAIT)) kind = Ast.ImportKind.TRAIT;
-            else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
+            else if (matchContextualImportWord("trait")) kind = Ast.ImportKind.TRAIT;
+            else if (matchContextualImportWord("struct")) kind = Ast.ImportKind.STRUCT;
             else if (match(TYPE)) kind = Ast.ImportKind.TYPE;
-            else if (match(TYPES)) kind = Ast.ImportKind.TYPES;
+            else if (matchContextualImportWord("types")) kind = Ast.ImportKind.TYPES;
             else throw error(peek(), "expected module, actor, class, fnc, interface, trait, struct, type, types, or * after import");
 
             if (match(STAR)) {
@@ -149,6 +149,12 @@ public final class Parser {
             return consumeCallableName("expected imported callable/actor name");
         }
         return consume(IDENT, "expected imported name").lexeme();
+    }
+
+    private boolean matchContextualImportWord(String word) {
+        if (!check(IDENT) || !peek().lexeme().equals(word)) return false;
+        advance();
+        return true;
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
