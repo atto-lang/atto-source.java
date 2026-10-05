@@ -673,7 +673,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object value = eval(destructure.initializer(), env);
                 if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                     bindSequenceDestructure(
-                            asSequence(value),
+                            iterableValues(value, env),
                             destructure.bindings(),
                             env,
                             "destructure");
@@ -833,7 +833,7 @@ public final class OresEvalRootNode extends RootNode {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
                     bindSequenceDestructure(
-                            asSequence(item),
+                            iterableValues(item, env),
                             loop.bindings(),
                             iteration,
                             "for-of destructure");
