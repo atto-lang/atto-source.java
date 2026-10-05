@@ -827,7 +827,7 @@ public final class Parser {
                 Ast.BindingKind kind = isBindingKind(peek().type())
                         ? parseBindingKind()
                         : Ast.BindingKind.VAL;
-                if (check(LBRACKET)) {
+                if (looksLikeForOfDestructurePattern()) {
                     List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
                     consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
                     Ast.Expr iterable = parseExpression();
@@ -899,7 +899,7 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
-        if (check(LBRACKET)) {
+        if (looksLikeForOfDestructurePattern()) {
             List<Ast.DestructureBinding> bindings = parseForSequenceBindings(Ast.BindingKind.VAL);
             consume(OF, "expected 'of' after for-of destructure pattern");
             Ast.Expr iterable = parseExpression();
@@ -929,11 +929,27 @@ public final class Parser {
         int mark = current;
         try {
             if (isBindingKind(peek().type())) parseBindingKind();
-            if (check(LBRACKET)) return true;
+            if (looksLikeForOfDestructurePattern()) return true;
             return check(IDENT) && checkNext(OF);
         } finally {
             current = mark;
         }
+    }
+
+    private boolean looksLikeForOfDestructurePattern() {
+        if (!check(LBRACKET)) return false;
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LBRACKET) depth++;
+            else if (type == RBRACKET) {
+                depth--;
+                if (depth == 0) {
+                    return i + 1 < tokens.size() && tokens.get(i + 1).type() == OF;
+                }
+            }
+        }
+        return false;
     }
 
     private Ast.Stmt parseUnparenthesizedForInitializer() {
