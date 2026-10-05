@@ -5,6 +5,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -155,14 +156,18 @@ public final class GpuRuntime {
             this.nativeHandle = requireNativeHandle(nativeHandle, "native resource");
         }
 
-        private ResourceLease retain() {
-            while (true) {
-                int current = references.get();
-                if (current <= 0 || backendReleased.get()) {
-                    throw new GpuTransferException("native GPU resource has already been released");
-                }
-                if (references.compareAndSet(current, Math.addExact(current, 1))) return this;
+        private synchronized ResourceLease retain() {
+            int current = references.get();
+            if (current <= 0 || backendReleased.get()) {
+                throw new GpuTransferException("native GPU resource has already been released");
             }
+            references.set(Math.addExact(current, 1));
+            return this;
+        }
+
+        private ResourcePin pin(String kind) {
+            retain();
+            return new ResourcePin(this, kind);
         }
 
         private synchronized void release(String kind) {
@@ -187,6 +192,22 @@ public final class GpuRuntime {
             if (references.get() <= 0 || backendReleased.get()) {
                 throw new GpuTransferException(kind + " native resource has already been released");
             }
+        }
+    }
+
+    private static final class ResourcePin implements AutoCloseable {
+        private final ResourceLease lease;
+        private final String kind;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private ResourcePin(ResourceLease lease, String kind) {
+            this.lease = lease;
+            this.kind = kind;
+        }
+
+        @Override
+        public void close() {
+            if (closed.compareAndSet(false, true)) lease.release(kind);
         }
     }
 
@@ -341,20 +362,26 @@ public final class GpuRuntime {
         Invocation invocation = new Invocation(callable, callableKind, arguments);
         Backend backend = requireBackend("gpu callable '" + callable + "'");
         validateDeviceOwnership(invocation.arguments(), backend);
-        BackendInvocation backendInvocation = new BackendInvocation(
-                callable, callableKind, lowerBackendArguments(invocation.arguments(), backend));
+        List<ResourcePin> pins = pinDeviceResources(invocation.arguments(), backend);
+        try {
+            BackendInvocation backendInvocation = new BackendInvocation(
+                    callable, callableKind, lowerBackendArguments(invocation.arguments(), backend));
 
-        boolean supported = backendCall(backend, "supports(" + callable + ")",
-                () -> backend.supports(backendInvocation));
-        if (!supported) {
-            throw new GpuCapabilityUnavailableException(
-                    "GPU backend '" + backend.name() + "' cannot execute gpu callable '" + callable + "'");
+            boolean supported = backendCall(backend, "supports(" + callable + ")",
+                    () -> backend.supports(backendInvocation));
+            if (!supported) {
+                throw new GpuCapabilityUnavailableException(
+                        "GPU backend '" + backend.name() + "' cannot execute gpu callable '" + callable + "'");
+            }
+
+            Object result = backendCall(
+                    backend, "invoke(" + callable + ")", () -> backend.invoke(backendInvocation));
+            Object frozen = freezeValue(result, true);
+            validateDeviceOwnership(frozen, backend);
+            return frozen;
+        } finally {
+            closePins(pins);
         }
-
-        Object result = backendCall(backend, "invoke(" + callable + ")", () -> backend.invoke(backendInvocation));
-        Object frozen = freezeValue(result, true);
-        validateDeviceOwnership(frozen, backend);
-        return frozen;
     }
 
     public ArrayHandle uploadArray(List<?> values) {
@@ -384,22 +411,24 @@ public final class GpuRuntime {
             throw new GpuTransferException(
                     "GpuArray length " + array.length + " cannot be materialized as a host Array/List");
         }
-        List<?> downloaded = backendCall(array.backend, "downloadArray",
-                () -> array.backend.downloadArray(
-                        array.elementAbiType, array.nativeHandle, array.length));
-        Object frozen = freezeValue(downloaded, false);
-        if (!(frozen instanceof List<?> list)) {
-            throw new GpuTransferException(
-                    "GPU backend '" + array.backend.name() + "' downloadArray must return a List");
+        try (ResourcePin ignored = array.lease.pin("GpuArray operation")) {
+            List<?> downloaded = backendCall(array.backend, "downloadArray",
+                    () -> array.backend.downloadArray(
+                            array.elementAbiType, array.nativeHandle, array.length));
+            Object frozen = freezeValue(downloaded, false);
+            if (!(frozen instanceof List<?> list)) {
+                throw new GpuTransferException(
+                        "GPU backend '" + array.backend.name() + "' downloadArray must return a List");
+            }
+            if (list.size() != (int) array.length) {
+                throw new GpuTransferException(
+                        "GPU backend '" + array.backend.name() + "' returned " + list.size()
+                                + " element(s) for GpuArray length " + array.length);
+            }
+            // Device -> host is a copy boundary. Return a fresh mutable host Array/List so
+            // ordinary Oreslang indexed mutation semantics continue to work after download.
+            return new ArrayList<>(list);
         }
-        if (list.size() != (int) array.length) {
-            throw new GpuTransferException(
-                    "GPU backend '" + array.backend.name() + "' returned " + list.size()
-                            + " element(s) for GpuArray length " + array.length);
-        }
-        // Device -> host is a copy boundary. Return a fresh mutable host Array/List so
-        // ordinary Oreslang indexed mutation semantics continue to work after download.
-        return new ArrayList<>(list);
     }
 
     public MatrixHandle uploadMatrix(List<?> rows) {
@@ -490,32 +519,36 @@ public final class GpuRuntime {
     public StreamHandle stream(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
         array.ensureLive();
-        long nativeHandle = backendCall(array.backend, "openStream",
-                () -> array.backend.openStream(
-                        array.elementAbiType, array.nativeHandle, array.length));
-        requireNativeHandle(nativeHandle, "GpuStream from backend '" + array.backend.name() + "'");
-        return nativeHandle == array.nativeHandle
-                ? new StreamHandle(array.lease, array.elementAbiType, array.length, true)
-                : new StreamHandle(array.backend, nativeHandle, array.elementAbiType, array.length);
+        try (ResourcePin ignored = array.lease.pin("GpuArray operation")) {
+            long nativeHandle = backendCall(array.backend, "openStream",
+                    () -> array.backend.openStream(
+                            array.elementAbiType, array.nativeHandle, array.length));
+            requireNativeHandle(nativeHandle, "GpuStream from backend '" + array.backend.name() + "'");
+            return nativeHandle == array.nativeHandle
+                    ? new StreamHandle(array.lease, array.elementAbiType, array.length, true)
+                    : new StreamHandle(array.backend, nativeHandle, array.elementAbiType, array.length);
+        }
     }
 
     public ArrayHandle collect(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
         stream.ensureLive();
-        CollectedArray collected = backendCall(stream.backend, "collectStream",
-                () -> stream.backend.collectStream(
-                        stream.elementAbiType, stream.nativeHandle, stream.lengthHint));
-        if (collected == null) {
-            throw new GpuExecutionException(
-                    "GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
+        try (ResourcePin ignored = stream.lease.pin("GpuStream operation")) {
+            CollectedArray collected = backendCall(stream.backend, "collectStream",
+                    () -> stream.backend.collectStream(
+                            stream.elementAbiType, stream.nativeHandle, stream.lengthHint));
+            if (collected == null) {
+                throw new GpuExecutionException(
+                        "GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
+            }
+            return collected.nativeHandle() == stream.nativeHandle
+                    ? new ArrayHandle(stream.lease, stream.elementAbiType, collected.length(), true)
+                    : new ArrayHandle(
+                            stream.backend,
+                            collected.nativeHandle(),
+                            stream.elementAbiType,
+                            collected.length());
         }
-        return collected.nativeHandle() == stream.nativeHandle
-                ? new ArrayHandle(stream.lease, stream.elementAbiType, collected.length(), true)
-                : new ArrayHandle(
-                        stream.backend,
-                        collected.nativeHandle(),
-                        stream.elementAbiType,
-                        collected.length());
     }
 
     public List<?> downloadStream(StreamHandle stream) {
@@ -563,6 +596,72 @@ public final class GpuRuntime {
             throw new GpuTransferException(where + " returned/contains invalid native resource handle 0");
         }
         return nativeHandle;
+    }
+
+    private static List<ResourcePin> pinDeviceResources(Object value, Backend expected) {
+        Set<ResourceLease> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayList<ResourcePin> pins = new ArrayList<>();
+        try {
+            pinDeviceResources(value, expected, seen, pins);
+            return List.copyOf(pins);
+        } catch (RuntimeException failure) {
+            closePins(pins);
+            throw failure;
+        }
+    }
+
+    private static void pinDeviceResources(
+            Object value,
+            Backend expected,
+            Set<ResourceLease> seen,
+            List<ResourcePin> pins) {
+        if (value == null) return;
+        if (value instanceof ArrayHandle array) {
+            validateDeviceOwnership(array, expected);
+            if (seen.add(array.lease)) pins.add(array.lease.pin("GpuArray operation"));
+            return;
+        }
+        if (value instanceof MatrixHandle matrix) {
+            validateDeviceOwnership(matrix, expected);
+            if (seen.add(matrix.array.lease)) pins.add(matrix.array.lease.pin("GpuMatrix operation"));
+            return;
+        }
+        if (value instanceof StreamHandle stream) {
+            validateDeviceOwnership(stream, expected);
+            if (seen.add(stream.lease)) pins.add(stream.lease.pin("GpuStream operation"));
+            return;
+        }
+        if (value instanceof OptionValue option) {
+            if (option.present()) pinDeviceResources(option.value(), expected, seen, pins);
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) pinDeviceResources(item, expected, seen, pins);
+            return;
+        }
+        if (value instanceof Set<?> set) {
+            for (Object item : set) pinDeviceResources(item, expected, seen, pins);
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                pinDeviceResources(entry.getKey(), expected, seen, pins);
+                pinDeviceResources(entry.getValue(), expected, seen, pins);
+            }
+        }
+    }
+
+    private static void closePins(List<ResourcePin> pins) {
+        RuntimeException first = null;
+        for (int i = pins.size() - 1; i >= 0; i--) {
+            try {
+                pins.get(i).close();
+            } catch (RuntimeException failure) {
+                if (first == null) first = failure;
+                else first.addSuppressed(failure);
+            }
+        }
+        if (first != null) throw first;
     }
 
     private static List<?> lowerBackendArguments(List<?> arguments, Backend expected) {
