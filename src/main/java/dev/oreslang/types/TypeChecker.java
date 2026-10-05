@@ -1618,6 +1618,11 @@ public final class TypeChecker {
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
             Type expectedParam = expected.parameters().get(i);
+            boolean expectedMutable = expected.mutableParameters().get(i);
+            if (param.mutable() != expectedMutable) {
+                throw new IllegalArgumentException(
+                        "lambda parameter '" + param.name() + "' mutability does not match expected callable contract");
+            }
             Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
