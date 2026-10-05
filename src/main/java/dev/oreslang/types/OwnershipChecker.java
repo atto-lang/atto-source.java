@@ -111,8 +111,14 @@ public final class OwnershipChecker {
     }
 
     private VarState stateForParam(Ast.Param param) {
-        ValueKind kind = param.structural() && !param.type().isBorrow() ? ValueKind.IMM_BORROW : kindOfType(param.type());
-        boolean mutableOwner = param.mutable();
+        if (param.structural() && param.mutable()) {
+            throw error("structural parameter '" + param.name()
+                    + "' is a read-only borrowed view and cannot be declared mut");
+        }
+        ValueKind kind = param.structural() && !param.type().isBorrow()
+                ? ValueKind.IMM_BORROW
+                : kindOfType(param.type());
+        boolean mutableOwner = param.structural() ? false : param.mutable();
         if (param.type().isBorrow() && param.type().mutableBorrow()) mutableOwner = false;
         return new VarState(param.type(), mutableOwner, kind, Origin.PARAM);
     }
