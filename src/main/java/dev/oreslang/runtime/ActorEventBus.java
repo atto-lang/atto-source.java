@@ -61,8 +61,7 @@ public final class ActorEventBus implements AutoCloseable {
         private final ActorRuntime.ActorId publisher;
         private final long publishedNanos;
         private final T value;
-        private final ActorRuntime runtime;
-        private final long reservedBytes;
+        private final ActorRuntime.ActorGroupEventReservation reservation;
         private final AtomicInteger retentionRefs = new AtomicInteger(1);
 
         private Event(
@@ -71,16 +70,14 @@ public final class ActorEventBus implements AutoCloseable {
                 ActorRuntime.ActorId publisher,
                 long publishedNanos,
                 T value,
-                ActorRuntime runtime,
-                long reservedBytes) {
+                ActorRuntime.ActorGroupEventReservation reservation) {
             this.topic = Objects.requireNonNull(topic, "topic");
             this.sequence = sequence;
             this.publisher = publisher;
             this.publishedNanos = publishedNanos;
             this.value = Objects.requireNonNull(
                     value, "Oreslang events cannot carry null; use Option<T>");
-            this.runtime = Objects.requireNonNull(runtime, "runtime");
-            this.reservedBytes = reservedBytes;
+            this.reservation = Objects.requireNonNull(reservation, "reservation");
         }
 
         public String topic() { return topic; }
@@ -112,7 +109,7 @@ public final class ActorEventBus implements AutoCloseable {
                 retentionRefs.incrementAndGet();
                 throw new IllegalStateException("ActorGroup event retention underflow");
             }
-            if (remaining == 0) runtime.releaseActorGroupEventPayload(reservedBytes);
+            if (remaining == 0) reservation.close();
         }
     }
 
@@ -237,7 +234,8 @@ public final class ActorEventBus implements AutoCloseable {
 
     public <T> Subscription<T> subscribe(String name) {
         requireOpen();
-        ActorRuntime.ActorId subscriber = group.requireCurrentMember("subscribe to ActorGroup events");
+        ActorRuntime.ActorId subscriber =
+                group.requireCurrentMember("subscribe to ActorGroup events");
         if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.SHARED) {
             throw new SecurityException(
                     "private/isolated actors cannot subscribe to the zero-copy ActorGroup event bus yet; "
@@ -245,40 +243,50 @@ public final class ActorEventBus implements AutoCloseable {
         }
         TopicState topic = requireTopic(name);
 
-        int actorLimit = Math.max(1, ActorRuntime.currentActorPolicy().maxMailboxMessages());
+        int actorLimit =
+                Math.max(1, ActorRuntime.currentActorPolicy().maxMailboxMessages());
         int capacity = Math.min(topic.capacity, actorLimit);
 
-        for (;;) {
-            @SuppressWarnings("unchecked")
-            Subscription<T> existing =
-                    (Subscription<T>) topic.subscriptions.get(subscriber);
-            if (existing != null) {
-                if (!existing.closed()) return existing;
-                topic.subscriptions.remove(subscriber, existing);
-                continue;
+        synchronized (topic.deliveryLock) {
+            requireOpen();
+            if (topics.get(topic.name) != topic) {
+                throw new IllegalStateException(
+                        "ActorGroup event topic is no longer registered: " + topic.name);
             }
 
-            Subscription<T> created = new Subscription<>(topic, subscriber, capacity);
-            Subscription<?> raced =
-                    topic.subscriptions.putIfAbsent(subscriber, created);
-            if (raced != null) {
-                created.closeChannelOnly();
-                if (raced.closed()) {
-                    topic.subscriptions.remove(subscriber, raced);
+            for (;;) {
+                @SuppressWarnings("unchecked")
+                Subscription<T> existing =
+                        (Subscription<T>) topic.subscriptions.get(subscriber);
+                if (existing != null) {
+                    if (!existing.closed()) return existing;
+                    topic.subscriptions.remove(subscriber, existing);
                     continue;
                 }
-                @SuppressWarnings("unchecked")
-                Subscription<T> typed = (Subscription<T>) raced;
-                return typed;
-            }
 
-            if (!group.isMember(subscriber) || closed.get()) {
-                topic.subscriptions.remove(subscriber, created);
-                created.closeChannelOnly();
-                throw new IllegalStateException(
-                        "ActorGroup membership ended during subscription");
+                Subscription<T> created =
+                        new Subscription<>(topic, subscriber, capacity);
+                Subscription<?> raced =
+                        topic.subscriptions.putIfAbsent(subscriber, created);
+                if (raced != null) {
+                    created.closeChannelOnly();
+                    if (raced.closed()) {
+                        topic.subscriptions.remove(subscriber, raced);
+                        continue;
+                    }
+                    @SuppressWarnings("unchecked")
+                    Subscription<T> typed = (Subscription<T>) raced;
+                    return typed;
+                }
+
+                if (!group.isMember(subscriber) || closed.get()) {
+                    topic.subscriptions.remove(subscriber, created);
+                    created.closeChannelOnly();
+                    throw new IllegalStateException(
+                            "ActorGroup membership ended during subscription");
+                }
+                return created;
             }
-            return created;
         }
     }
 
@@ -355,8 +363,11 @@ public final class ActorEventBus implements AutoCloseable {
 
     void removeActor(ActorRuntime.ActorId actorId) {
         for (TopicState topic : topics.values()) {
-            Subscription<?> subscription = topic.subscriptions.remove(actorId);
-            if (subscription != null) subscription.closeChannelOnly();
+            synchronized (topic.deliveryLock) {
+                Subscription<?> subscription =
+                        topic.subscriptions.remove(actorId);
+                if (subscription != null) subscription.closeChannelOnly();
+            }
         }
     }
 
@@ -370,10 +381,13 @@ public final class ActorEventBus implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         synchronized (definitionLock) {
             for (TopicState topic : topics.values()) {
-                for (Subscription<?> subscription : List.copyOf(topic.subscriptions.values())) {
-                    subscription.closeChannelOnly();
+                synchronized (topic.deliveryLock) {
+                    for (Subscription<?> subscription
+                            : List.copyOf(topic.subscriptions.values())) {
+                        subscription.closeChannelOnly();
+                    }
+                    topic.subscriptions.clear();
                 }
-                topic.subscriptions.clear();
             }
             topics.clear();
             doubleReductions.clear();
@@ -384,125 +398,156 @@ public final class ActorEventBus implements AutoCloseable {
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
             ActorRuntime.ActorId publisher) {
-        long sequence = topic.sequence.incrementAndGet();
-        topic.published.incrementAndGet();
-        @SuppressWarnings("unchecked")
-        Event<Object> event = new Event<>(
-                topic.name,
-                sequence,
-                publisher,
-                System.nanoTime(),
-                frozenPayload.value(),
-                runtime,
-                frozenPayload.reservedBytes());
-
+        Event<Object> event = null;
         try {
-            List<Subscription<?>> snapshot = List.copyOf(topic.subscriptions.values());
-            if (snapshot.isEmpty()) {
-                return new PublishReceipt(0, 0, 0, 0, OresFuture.completed(List.of()));
-            }
-
-            List<Subscription<?>> active = new ArrayList<>(snapshot.size());
-            for (Subscription<?> subscription : snapshot) {
-                if (subscription.closed() || !group.isMember(subscription.subscriber)) {
-                    topic.subscriptions.remove(subscription.subscriber, subscription);
-                    subscription.closeChannelOnly();
-                } else {
-                    active.add(subscription);
-                }
-            }
-            if (active.isEmpty()) {
-                return new PublishReceipt(0, 0, 0, 0, OresFuture.completed(List.of()));
-            }
-
-            /*
-             * Reliable publication pre-admits one bounded outstanding event at every
-             * subscriber before touching any channel. This prevents a caller from
-             * ignoring backpressure Futures and growing ChannelRuntime's pending
-             * writer queue without bound, and it avoids partial fanout when the
-             * backlog is already exhausted at one subscriber.
-             */
-            if (topic.policy == DeliveryPolicy.RELIABLE) {
-                List<Subscription<?>> reserved = new ArrayList<>(active.size());
-                for (Subscription<?> subscription : active) {
-                    if (!subscription.reserveReliableEvent()) {
-                        if (subscription.closed() || !group.isMember(subscription.subscriber)) {
-                            topic.subscriptions.remove(subscription.subscriber, subscription);
-                            subscription.closeChannelOnly();
-                            continue;
-                        }
-                        for (Subscription<?> admitted : reserved) {
-                            admitted.releaseReliableEvent();
-                        }
-                        throw new EventBackpressureException(
-                                topic.name,
-                                subscription.subscriber,
-                                subscription.reliableOutstandingLimit);
-                    }
-                    reserved.add(subscription);
+            synchronized (topic.deliveryLock) {
+                requireOpen();
+                if (topics.get(topic.name) != topic) {
+                    throw new IllegalStateException(
+                            "ActorGroup event topic is no longer registered: " + topic.name);
                 }
 
-                List<OresFuture<Void>> writes = new ArrayList<>(reserved.size());
-                int started = 0;
-                try {
-                    for (; started < reserved.size(); started++) {
-                        @SuppressWarnings("unchecked")
-                        Subscription<Object> subscription =
-                                (Subscription<Object>) reserved.get(started);
-                        writes.add(subscription.writeReliableReserved(event));
-                    }
-                } catch (Throwable failure) {
-                    for (int i = started + 1; i < reserved.size(); i++) {
-                        reserved.get(i).releaseReliableEvent();
-                    }
-                    throw failure;
-                }
-
-                return new PublishReceipt(
-                        reserved.size(),
-                        reserved.size(),
-                        0,
-                        0,
-                        OresFutures.<Void>all(writes));
-            }
-
-            int accepted = 0;
-            int dropped = 0;
-            int coalesced = 0;
-            for (Subscription<?> raw : active) {
+                long sequence = topic.sequence.incrementAndGet();
                 @SuppressWarnings("unchecked")
-                Subscription<Object> subscription = (Subscription<Object>) raw;
-                switch (topic.policy) {
-                    case LATEST -> {
-                        int replaced = subscription.writeLatest(event);
-                        if (replaced >= 0) {
-                            accepted++;
-                            coalesced += replaced;
-                        } else {
-                            dropped++;
-                        }
-                    }
-                    case LOSSY -> {
-                        if (subscription.writeLossy(event)) accepted++;
-                        else dropped++;
-                    }
-                    case RELIABLE -> throw new AssertionError("reliable publication handled above");
-                }
-            }
+                Event<Object> created = new Event<>(
+                        topic.name,
+                        sequence,
+                        publisher,
+                        System.nanoTime(),
+                        frozenPayload.value(),
+                        frozenPayload.reservation());
+                event = created;
 
-            topic.dropped.addAndGet(dropped);
-            topic.coalesced.addAndGet(coalesced);
-            return new PublishReceipt(
-                    active.size(),
-                    accepted,
-                    dropped,
-                    coalesced,
-                    OresFuture.completed(List.of()));
+                List<Subscription<?>> snapshot =
+                        List.copyOf(topic.subscriptions.values());
+                if (snapshot.isEmpty()) {
+                    topic.published.incrementAndGet();
+                    return new PublishReceipt(
+                            0, 0, 0, 0, OresFuture.completed(List.of()));
+                }
+
+                List<Subscription<?>> active =
+                        new ArrayList<>(snapshot.size());
+                for (Subscription<?> subscription : snapshot) {
+                    if (subscription.closed()
+                            || !group.isMember(subscription.subscriber)) {
+                        topic.subscriptions.remove(
+                                subscription.subscriber, subscription);
+                        subscription.closeChannelOnly();
+                    } else {
+                        active.add(subscription);
+                    }
+                }
+                if (active.isEmpty()) {
+                    topic.published.incrementAndGet();
+                    return new PublishReceipt(
+                            0, 0, 0, 0, OresFuture.completed(List.of()));
+                }
+
+                if (topic.policy == DeliveryPolicy.RELIABLE) {
+                    List<Subscription<?>> reserved =
+                            new ArrayList<>(active.size());
+                    for (Subscription<?> subscription : active) {
+                        if (!subscription.reserveReliableEvent()) {
+                            for (Subscription<?> admitted : reserved) {
+                                admitted.releaseReliableEvent();
+                            }
+                            throw new EventBackpressureException(
+                                    topic.name,
+                                    subscription.subscriber,
+                                    subscription.reliableOutstandingLimit);
+                        }
+                        reserved.add(subscription);
+                    }
+
+                    List<OresFuture<Void>> writes =
+                            new ArrayList<>(reserved.size());
+                    int started = 0;
+                    try {
+                        for (; started < reserved.size(); started++) {
+                            @SuppressWarnings("unchecked")
+                            Subscription<Object> subscription =
+                                    (Subscription<Object>) reserved.get(started);
+                            writes.add(
+                                    subscription.writeReliableReserved(event));
+                        }
+                    } catch (Throwable failure) {
+                        for (OresFuture<Void> write : writes) {
+                            if (!write.isDone()) write.cancel(false);
+                        }
+                        for (int i = started + 1; i < reserved.size(); i++) {
+                            reserved.get(i).releaseReliableEvent();
+                        }
+                        throw failure;
+                    }
+
+                    topic.published.incrementAndGet();
+                    return new PublishReceipt(
+                            reserved.size(),
+                            reserved.size(),
+                            0,
+                            0,
+                            combineReliableWrites(writes));
+                }
+
+                int accepted = 0;
+                int dropped = 0;
+                int coalesced = 0;
+                for (Subscription<?> raw : active) {
+                    @SuppressWarnings("unchecked")
+                    Subscription<Object> subscription =
+                            (Subscription<Object>) raw;
+                    switch (topic.policy) {
+                        case LATEST -> {
+                            int replaced = subscription.writeLatest(event);
+                            if (replaced >= 0) {
+                                accepted++;
+                                coalesced += replaced;
+                            } else {
+                                dropped++;
+                            }
+                        }
+                        case LOSSY -> {
+                            if (subscription.writeLossy(event)) accepted++;
+                            else dropped++;
+                        }
+                        case RELIABLE ->
+                                throw new AssertionError(
+                                        "reliable publication handled above");
+                    }
+                }
+
+                topic.published.incrementAndGet();
+                topic.dropped.addAndGet(dropped);
+                topic.coalesced.addAndGet(coalesced);
+                return new PublishReceipt(
+                        active.size(),
+                        accepted,
+                        dropped,
+                        coalesced,
+                        OresFuture.completed(List.of()));
+            }
         } finally {
-            // Drop the publisher's temporary hold. Queued subscribers retain
-            // their own references until read/coalesce/close.
-            event.releaseDelivery();
+            if (event == null) {
+                frozenPayload.reservation().close();
+            } else {
+                // Drop the publisher's temporary hold. Queued subscribers
+                // retain their own references until read/coalesce/close.
+                event.releaseDelivery();
+            }
         }
+    }
+
+    private OresFuture<List<Void>> combineReliableWrites(
+            List<OresFuture<Void>> writes) {
+        OresFuture<List<Void>> combined = OresFutures.<Void>all(writes);
+        combined.whenCompleteRuntime((ignored, failure) -> {
+            if (failure == null) return;
+            for (OresFuture<Void> write : writes) {
+                if (!write.isDone()) write.cancel(false);
+            }
+        });
+        return combined;
     }
 
     private TopicState requireTopic(String name) {
@@ -546,7 +591,9 @@ public final class ActorEventBus implements AutoCloseable {
         private final String name;
         private final DeliveryPolicy policy;
         private final int capacity;
-        private final Map<ActorRuntime.ActorId, Subscription<?>> subscriptions = new ConcurrentHashMap<>();
+        private final Map<ActorRuntime.ActorId, Subscription<?>> subscriptions =
+                new ConcurrentHashMap<>();
+        private final Object deliveryLock = new Object();
         private final AtomicLong sequence = new AtomicLong();
         private final AtomicLong published = new AtomicLong();
         private final AtomicLong dropped = new AtomicLong();
@@ -786,11 +833,18 @@ public final class ActorEventBus implements AutoCloseable {
 
         @Override
         public void close() {
-            ActorRuntime.ActorId current = group.requireCurrentMember("close ActorGroup event subscriptions");
+            ActorRuntime.ActorId current =
+                    group.requireCurrentMember(
+                            "close ActorGroup event subscriptions");
             if (!current.equals(subscriber)) {
-                throw new SecurityException("an actor may only close its own ActorGroup event subscription");
+                throw new SecurityException(
+                        "an actor may only close its own ActorGroup event subscription");
             }
-            if (topic.subscriptions.remove(subscriber, this)) closeChannelOnly();
+            synchronized (topic.deliveryLock) {
+                if (topic.subscriptions.remove(subscriber, this)) {
+                    closeChannelOnly();
+                }
+            }
         }
 
         private void closeChannelOnly() {
