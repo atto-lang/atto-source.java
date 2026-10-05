@@ -43,6 +43,21 @@ final class ActorCarrierAffinityTest {
     }
 
     @Test
+    void pathologicalCarrierCountsAreRejectedBeforeDenseMetadataAllocation() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ActorRuntime.DispatcherConfig(
+                        ActorRuntime.DispatcherConfig.HARD_MAX_POOL_THREADS,
+                        1,
+                        1,
+                        64,
+                        TimeUnit.MILLISECONDS.toNanos(2),
+                        TimeUnit.MILLISECONDS.toNanos(250),
+                        1,
+                        64));
+    }
+
+    @Test
     void carrierTokensAreGenerationSafeAcrossSlotReuse() throws Exception {
         CarrierRegistry registry = new CarrierRegistry(1);
         AtomicLong first = new AtomicLong();
