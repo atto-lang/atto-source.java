@@ -279,13 +279,13 @@ final class MutexLanguageTest {
         var program = Parser.parse("""
                 define module model
                   define class UnsafeBox as
-                    pub val Fnc<void> callback = || -> { return; };
+                    pub val Mutex<int> inner;
                   end
                 end
 
                 define module app
                   fnc bad(): void {
-                    val shared = SharedMutex.new(new UnsafeBox());
+                    val shared = SharedMutex.new(new UnsafeBox(Mutex.new(1)));
                     stdio.println(shared.is_poisoned());
                     return;
                   }
