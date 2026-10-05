@@ -361,16 +361,19 @@ public final class OresEvalRootNode extends RootNode {
                     Set.copyOf(fn.genericParameters()),
                     fn.actorKind() == Ast.ActorKind.NONE);
             AsyncPlan body = asyncBlock(fn.body(), base, callable);
-            return asyncFlatMap(body, flow -> {
-                Object raw =
-                        flow instanceof AsyncReturn returned
-                                ? returned.value()
-                                : null;
-                return asyncPure(shapeReturnedValue(
-                        fn.returnType(),
-                        raw,
-                        "function " + fn.name()));
-            });
+            return asyncFold(
+                    body,
+                    flow -> {
+                        Object raw =
+                                flow instanceof AsyncReturn returned
+                                        ? returned.value()
+                                        : null;
+                        return asyncPure(shapeReturnedValue(
+                                fn.returnType(),
+                                raw,
+                                "function " + fn.name()));
+                    },
+                    OresEvalRootNode.Evaluator::asyncFailure);
         }
 
         private OresFuture<Object> startAsyncMethod(
@@ -403,13 +406,18 @@ public final class OresEvalRootNode extends RootNode {
                     asyncGenericParameters(receiver.klass, method),
                     receiver.klass.actorKind() == Ast.ActorKind.NONE);
             AsyncPlan body = asyncBlock(method.body(), base, callable);
-            return asyncFlatMap(body, flow -> {
-                Object raw = flow instanceof AsyncReturn returned ? returned.value() : null;
-                return asyncPure(shapeReturnedValue(
-                        method.returnType(),
-                        raw,
-                        "method " + method.name()));
-            });
+            return asyncFold(
+                    body,
+                    flow -> {
+                        Object raw = flow instanceof AsyncReturn returned
+                                ? returned.value()
+                                : null;
+                        return asyncPure(shapeReturnedValue(
+                                method.returnType(),
+                                raw,
+                                "method " + method.name()));
+                    },
+                    OresEvalRootNode.Evaluator::asyncFailure);
         }
 
         private OresFuture<Object> startAsyncStaticFunction(
@@ -441,13 +449,18 @@ public final class OresEvalRootNode extends RootNode {
                     asyncGenericParameters(klass, fn),
                     klass.actorKind() == Ast.ActorKind.NONE);
             AsyncPlan body = asyncBlock(fn.body(), base, callable);
-            return asyncFlatMap(body, flow -> {
-                Object raw = flow instanceof AsyncReturn returned ? returned.value() : null;
-                return asyncPure(shapeReturnedValue(
-                        fn.returnType(),
-                        raw,
-                        "static function " + klass.name() + "." + fn.name()));
-            });
+            return asyncFold(
+                    body,
+                    flow -> {
+                        Object raw = flow instanceof AsyncReturn returned
+                                ? returned.value()
+                                : null;
+                        return asyncPure(shapeReturnedValue(
+                                fn.returnType(),
+                                raw,
+                                "static function " + klass.name() + "." + fn.name()));
+                    },
+                    OresEvalRootNode.Evaluator::asyncFailure);
         }
 
         private OresFuture<Object> startAsyncLambda(
@@ -479,8 +492,13 @@ public final class OresEvalRootNode extends RootNode {
                     Set.of(),
                     false);
             AsyncPlan body = asyncBlock(lambda.blockBody(), base, callable);
-            AsyncPlan completed = asyncFlatMap(body, flow ->
-                    asyncPure(flow instanceof AsyncReturn returned ? returned.value() : null));
+            AsyncPlan completed = asyncFold(
+                    body,
+                    flow -> asyncPure(
+                            flow instanceof AsyncReturn returned
+                                    ? returned.value()
+                                    : null),
+                    OresEvalRootNode.Evaluator::asyncFailure);
             return scheduler.start(
                     new AsyncPlanTask(
                             completed,
