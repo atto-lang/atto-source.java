@@ -185,6 +185,40 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void doDoneBodiesAndIteratorShorthandRemainUnambiguous() throws Exception {
+        String output = run("""
+                fnc done(): void {
+                  stdio.stdout.write("d");
+                  return;
+                }
+
+                pub routine main(): void {
+                  for item of arr[1, 2] do
+                    done();
+                    stdio.stdout.write(item);
+                  done
+
+                  for (let i = 0; i < 2; i = i + 1) do
+                    stdio.stdout.write(i);
+                  done
+
+                  let n = 0;
+                  loop do
+                    n = n + 1;
+                    if n == 2 {
+                      break;
+                    }
+                  done
+
+                  stdio.stdout.write(n);
+                  return;
+                }
+                """);
+
+        assertEquals("d1d2012", output);
+    }
+
+    @Test
     void customJavascriptStyleIteratorDrivesForOf() throws Exception {
         String output = run("""
                 define module collections

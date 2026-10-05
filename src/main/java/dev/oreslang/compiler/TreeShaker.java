@@ -171,7 +171,6 @@ public final class TreeShaker {
             Ast.FunctionDecl function = target.function();
             if (call.typeArgumentsPresent()
                     || !function.genericParameters().isEmpty()
-                    || function.kind() != Ast.CallableKind.FNC
                     || function.actorKind() != Ast.ActorKind.NONE
                     || function.async()
                     || function.parameters().size() != arguments.size()
@@ -586,6 +585,17 @@ public final class TreeShaker {
                 return List.of(new Ast.DeferStmt(
                         rewriteExpression(deferred.expression(), module, locals)));
             }
+            if (statement instanceof Ast.BlockStmt block) {
+                return List.of(new Ast.BlockStmt(
+                        rewriteStatements(block.body(), module, new LinkedHashMap<>(locals))));
+            }
+            if (statement instanceof Ast.BreakStmt || statement instanceof Ast.ContinueStmt) {
+                return List.of(statement);
+            }
+            if (statement instanceof Ast.LoopStmt loop) {
+                return List.of(new Ast.LoopStmt(
+                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(locals))));
+            }
             if (statement instanceof Ast.IfStmt conditional) {
                 List<Ast.IfBranch> branches = new ArrayList<>();
                 List<Ast.Stmt> elseBody = rewriteStatements(
@@ -597,13 +607,24 @@ public final class TreeShaker {
                             branch.body(), module, new LinkedHashMap<>(locals));
                     if (known instanceof Boolean value) {
                         if (!value) continue;
-                        if (branches.isEmpty()) return body;
+                        if (branches.isEmpty()) {
+                            // A selected if/elseif body is still a lexical scope.
+                            // Never flatten it into the parent statement list:
+                            // doing so would leak bindings and change defer/lifetime timing.
+                            return List.of(new Ast.BlockStmt(body));
+                        }
                         elseBody = body;
                         break;
                     }
                     branches.add(new Ast.IfBranch(condition, body));
                 }
-                if (branches.isEmpty()) return elseBody;
+                if (branches.isEmpty()) {
+                    // The else arm has the same lexical-scope semantics as any
+                    // other conditional body, even when the condition folds.
+                    return elseBody.isEmpty()
+                            ? List.of()
+                            : List.of(new Ast.BlockStmt(elseBody));
+                }
                 return List.of(new Ast.IfStmt(branches, elseBody));
             }
             if (statement instanceof Ast.TryStmt tried) {
@@ -932,6 +953,10 @@ public final class TreeShaker {
                     scanExpression(module, expression.expression(), locals);
                 } else if (statement instanceof Ast.DeferStmt deferred) {
                     scanExpression(module, deferred.expression(), locals);
+                } else if (statement instanceof Ast.BlockStmt block) {
+                    scanStatements(module, block.body(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.LoopStmt loop) {
+                    scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.IfStmt conditional) {
                     for (Ast.IfBranch branch : conditional.branches()) {
                         scanExpression(module, branch.condition(), locals);

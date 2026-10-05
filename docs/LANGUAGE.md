@@ -34,7 +34,7 @@ import fnc * as funcs from "../xyz";
 import * as package from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. A single named module/class/function import may use `as` to choose its local binding; the original source name still controls export resolution. This avoids namespace pollution while supporting Kotlin-style disambiguation. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+Wildcard imports always require a namespace alias. A single named module/class/function import may use `as` to choose its local binding; the original source name still controls export resolution. `import fnc` specifically imports a **reifiable non-generic, non-actor `fnc` value**. Generic `fnc<T>` declarations require direct-call specialization and therefore are not valid `import fnc` targets until Oreslang gains polymorphic function values. This avoids namespace pollution while supporting Kotlin-style disambiguation. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
 
 Java host classes use an explicit `java:` URI and the same alias syntax:
 
@@ -548,7 +548,13 @@ Qualified names such as `x.y` retain their module namespace.
 
 ## `fnc` versus `routine`
 
-`fnc` and `routine` may both recurse. Recursion and tail-call optimization are not what distinguishes them: tail-position calls in `fnc`, `routine`, and lambda bodies are subject to the same lowering/optimization rules. v0.3 does **not** yet promise that every eligible tail call executes in constant stack space; that guarantee must be implemented identically for AOT and JIT rather than depending on host-JIT luck.
+`fnc` and `routine` may both recurse. Recursion and tail-call optimization are not what distinguishes them. Eligible calls in tail position in `fnc`, `routine`, instance methods, `static fnc`, and lambda bodies are lowered as **proper tail calls**: they do not grow the Oreslang/host call stack. This is a runtime guarantee shared by JIT, Native Image AOT, and hybrid execution; it does not depend on the host JIT discovering recursive-call optimization.
+
+A tail call is eligible only when the current activation has no semantic work that must remain live after the call. Active `defer`/catch/finally cleanup and live mutex guards are tail-call barriers; in those cases the call executes normally so cleanup and return validation remain correct. Conditional return arms inherit tail position, so `return cond ? f() : g();` may tail-transfer through the selected arm.
+
+The runtime resolves the target and arguments before releasing the caller, then transfers through an iterative trampoline. Every 64 tail transfers it executes a scheduler safepoint so a long recursive chain cannot bypass OresVM scheduling/fairness. Reified Oreslang `fnc`/lambda values are tail-transferable while they remain in the evaluator/code unit that established their static contract; arbitrary host/interop callables complete before the caller is released.
+
+A linked call that crosses into another source code unit through an import whose signature is currently represented as `Unknown` is also a tail-call barrier. The caller remains live until that imported call returns so its declared runtime return-shape check cannot be skipped. Once execution is inside the imported unit, its own same-unit tail-call chain still uses the trampoline. Cross-unit proper-tail transfer can be re-enabled when the linker carries typed imported ABI contracts rather than `Unknown`.
 
 The distinction is **reifiability**:
 
@@ -585,7 +591,7 @@ fnc useCallbacks(Worker worker): void {
 }
 ```
 
-This rule keeps ordinary routine/method calls as direct code-symbol dispatch. The runtime does not manufacture an implicit `(receiver, method)` bound-method object; a closure exists only when source code explicitly asks for one.
+This rule keeps ordinary routine/method calls as direct code-symbol dispatch. The runtime does not manufacture an implicit `(receiver, method)` bound-method object; a closure exists only when source code explicitly asks for one. Because a `routine` cannot escape as a callback value, the compiler is also free to inline, specialize, and devirtualize routine calls more aggressively; that optimization freedom is a consequence of direct-only semantics, not a separate recursion or TCO rule.
 
 Lambdas may recurse when their binding supplies an explicit function type so the closure's own signature is available while its body is checked:
 
@@ -664,9 +670,73 @@ fnc find(bool found): Option<int> {
 }
 ```
 
+## Standalone lexical blocks and conditional bodies
+
+A standalone lexical scope is explicit:
+
+```ores
+block {
+  val hidden = "local";
+}
+```
+
+`block { ... }` creates a new lexical scope. Oreslang has no declaration hoisting; bindings declared in the block are not visible after it. The block has no scheduler or concurrency semantics of its own.
+
+Conditionals support two equivalent body styles. Brace form:
+
+```ores
+if condition {
+  work();
+} elseif other_condition {
+  recover();
+} else {
+  fallback();
+}
+```
+
+Keyword-delimited form:
+
+```ores
+if condition then
+  work();
+elseif other_condition then
+  recover();
+else
+  fallback();
+fi
+```
+
+The older `do ... fi` spelling remains accepted for source compatibility, but `then ... fi` is canonical for keyword-delimited conditionals.
+
 ## Loops, iterators, and scheduler safepoints
 
-Oreslang supports conventional imperative loops:
+Oreslang supports an explicit infinite loop with either braces or `do ... done`:
+
+```ores
+loop {
+  if should_skip() {
+    continue;
+  }
+  if should_stop() {
+    break;
+  }
+  work();
+}
+
+loop do
+  if should_skip() {
+    continue;
+  }
+  if should_stop() {
+    break;
+  }
+  work()
+done
+```
+
+`break` exits the nearest enclosing `loop` or `for`. `continue` starts the next iteration of the nearest enclosing loop. `return` exits the enclosing callable, even when nested inside one or more loops. Loop control never crosses a function or lambda boundary.
+
+Oreslang also supports conventional imperative loops:
 
 ```ores
 for (let i = 0; i < 10; i = i + 1) {
@@ -674,13 +744,19 @@ for (let i = 0; i < 10; i = i + 1) {
 }
 ```
 
-and iterator-style loops:
+and iterator-style loops. The compact `of` form does not require parentheses, and both body styles are valid:
 
 ```ores
+for item of values do
+  work(item)
+done
+
 for (val item of values) {
   work(item);
 }
 ```
+
+A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 
 Classes can expose a JavaScript-like iterator symbol:
 
@@ -692,7 +768,7 @@ define class Bag as
 end
 ```
 
-The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
+The compiler/runtime inserts a scheduler safepoint on **every `loop`, conventional `for`, and iterator-loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
 
 This means Oreslang does not require recursion as the only way to loop, while still giving actor/isolate schedulers a compulsory cooperation point inside generated loop execution.
 
