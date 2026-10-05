@@ -1,0 +1,160 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+final class SelfTypeSemanticsTest {
+    @Test
+    void selfReturnAcceptsTheExactReceiver() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class Foo as
+                    pub same(): self {
+                      return self;
+                    }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void selfReturnRejectsAFreshInstanceOfTheSameNominalClass() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Foo as
+                            pub wrong(): self {
+                              return new Foo();
+                            }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("return value"), error::getMessage);
+        assertTrue(error.getMessage().contains("SelfType"), error::getMessage);
+    }
+
+    @Test
+    void inferredAliasesOfSelfPreserveTheExactReceiverProof() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class Foo as
+                    pub same(): self {
+                      val alias = self;
+                      return alias;
+                    }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void inheritedSelfReturnRebindsToTheActualChildReceiverForFluentChaining() throws Exception {
+        String output = run("""
+                define module m
+                  define class Base as
+                    pub same(): self {
+                      return self;
+                    }
+                  end
+
+                  define class Child extends Base as
+                    pub child_only(): int {
+                      return 7;
+                    }
+                  end
+                end
+
+                pub routine main(): void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.same().child_only());
+                }
+                """);
+
+        assertEquals("7", output);
+    }
+
+    @Test
+    void childOverrideCanKeepTheSameReceiverPolymorphicContract() throws Exception {
+        String output = run("""
+                define module m
+                  define class Base as
+                    pub same(): self {
+                      return self;
+                    }
+                  end
+
+                  define class Child extends Base as
+                    pub same(): self {
+                      return self;
+                    }
+
+                    pub child_only(): int {
+                      return 9;
+                    }
+                  end
+                end
+
+                pub routine main(): void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.same().child_only());
+                }
+                """);
+
+        assertEquals("9", output);
+    }
+
+    @Test
+    void interfacesCanRequireReceiverPolymorphicSelfReturns() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub interface Fluent {
+                  fnc same() => self;
+                }
+
+                define module m
+                  define class Foo implements Fluent as
+                    pub same(): self {
+                      return self;
+                    }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void selfTypeIsRejectedOutsideAnInstanceReceiverContext() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad(): self {
+                          return 1;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("only available in an instance receiver context"), error::getMessage);
+    }
+
+    private static String run(String program) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "self-type.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+}
