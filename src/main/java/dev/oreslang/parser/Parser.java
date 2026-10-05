@@ -91,21 +91,21 @@ public final class Parser {
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "function imports use 'import fnc', not 'import fn'");
             }
-            if (match(MODULE)) kind = Ast.ImportKind.MODULE;
-            else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
-            else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
-            else throw error(peek(), "expected module, class, fnc, or * after import");
+            kind = parseImportKind();
 
             if (match(STAR)) {
                 wildcard = true;
                 consume(AS, "wildcard import requires 'as <namespace>'");
                 namespace = consume(IDENT, "expected import namespace").lexeme();
             } else if (match(LBRACE)) {
-                if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consumeImportName(kind)); while (match(COMMA));
+                parseImportSelection(names, kind, RBRACE);
                 consume(RBRACE, "expected '}' after imported names");
+            } else if (match(LPAREN)) {
+                parseImportSelection(names, kind, RPAREN);
+                consume(RPAREN, "expected ')' after imported names");
             } else {
                 names.add(consumeImportName(kind));
+                while (match(COMMA)) names.add(consumeImportName(kind));
             }
 
             if (!wildcard && match(AS)) {
@@ -123,9 +123,34 @@ public final class Parser {
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
     }
 
+    private Ast.ImportKind parseImportKind() {
+        if (match(MODULE)) return Ast.ImportKind.MODULE;
+        if (match(CLASS)) return Ast.ImportKind.CLASS;
+        if (match(ACTOR, ISOACTOR)) return Ast.ImportKind.ACTOR;
+        if (match(FNC)) return Ast.ImportKind.FUNCTION;
+        if (match(INTERFACE)) return Ast.ImportKind.INTERFACE;
+        if (match(TYPE)) return Ast.ImportKind.TYPE;
+        if (matchContextualImportWord("trait")) return Ast.ImportKind.TRAIT;
+        if (matchContextualImportWord("struct")) return Ast.ImportKind.STRUCT;
+        if (matchContextualImportWord("types")) return Ast.ImportKind.TYPES;
+        throw error(peek(),
+                "expected module, class, actor, fnc, interface, type, trait, struct, types, or * after import");
+    }
+
+    private boolean matchContextualImportWord(String word) {
+        if (!check(IDENT) || !peek().lexeme().equals(word)) return false;
+        advance();
+        return true;
+    }
+
+    private void parseImportSelection(List<String> names, Ast.ImportKind kind, Token.Type terminator) {
+        if (check(terminator)) throw error(peek(), "import selection cannot be empty");
+        do names.add(consumeImportName(kind)); while (match(COMMA));
+    }
+
     private String consumeImportName(Ast.ImportKind kind) {
-        if (kind == Ast.ImportKind.FUNCTION) {
-            return consumeCallableName("expected imported function name");
+        if (kind == Ast.ImportKind.FUNCTION || kind == Ast.ImportKind.ACTOR) {
+            return consumeCallableName("expected imported callable/actor name");
         }
         return consume(IDENT, "expected imported name").lexeme();
     }
