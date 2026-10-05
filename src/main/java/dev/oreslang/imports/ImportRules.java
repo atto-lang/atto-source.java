@@ -56,6 +56,18 @@ public final class ImportRules {
         };
     }
 
+    public static boolean isTypeOnly(Ast.ImportKind kind) {
+        return switch (kind) {
+            case INTERFACE, TYPE, TRAIT, STRUCT, TYPES -> true;
+            default -> false;
+        };
+    }
+
+    public static boolean isRuntimeValueImport(Ast.ImportDecl imported) {
+        if (isTypeOnly(imported.kind())) return false;
+        return imported.kind() != Ast.ImportKind.CLASS || isJavaPath(imported.path());
+    }
+
     public static void validate(Ast.ImportDecl imported) {
         if (imported == null) throw new IllegalArgumentException("import declaration cannot be null");
         if (imported.path() == null || imported.path().isBlank()) {
@@ -71,6 +83,9 @@ public final class ImportRules {
             }
             if (!imported.names().isEmpty()) {
                 throw new IllegalArgumentException("wildcard imports cannot also contain named selections");
+            }
+            if (isTypeOnly(imported.kind())) {
+                throw new IllegalArgumentException("type-only imports require explicit names; wildcard type namespaces are not supported");
             }
         } else {
             if (imported.kind() == Ast.ImportKind.ALL || imported.names().isEmpty()) {
