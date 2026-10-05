@@ -14,6 +14,8 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
+import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.OresFuture;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -1079,6 +1081,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("SelectCase")) return new SelectCaseFactory();
+                if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -1412,6 +1417,36 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof ChannelFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException("unknown Channel factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof SelectCaseFactory factory) {
+                return switch (name) {
+                    case "read" -> (Invokable) factory::read;
+                    case "write" -> (Invokable) factory::write;
+                    case "default" -> (Invokable) factory::defaultCase;
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectCase factory member " + name);
+                };
+            }
+            if (receiver instanceof SelectSetFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException("unknown SelectSet factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof SelectResultValue selected) {
+                return switch (name) {
+                    case "index" -> (long) selected.index();
+                    case "operation" -> selected.operation();
+                    case "value" -> selected.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectResult member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -2757,6 +2792,61 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private static final class ChannelFactory {
+        private Object create(List<Object> args) {
+            requireOne(args, "Channel.new<T>");
+            if (!(args.getFirst() instanceof Number number)) {
+                throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
+            }
+            int capacity = Math.toIntExact(number.longValue());
+            return new ChannelRuntime.Channel<>(capacity);
+        }
+    }
+
+    private static final class SelectCaseFactory {
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private Object read(List<Object> args) {
+            requireOne(args, "SelectCase.read");
+            if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
+                throw new IllegalArgumentException("SelectCase.read expects Channel<T>");
+            }
+            return ChannelRuntime.read((ChannelRuntime.Channel) channel);
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private Object write(List<Object> args) {
+            requireTwo(args, "SelectCase.write");
+            if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
+                throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
+            }
+            return ChannelRuntime.write(
+                    (ChannelRuntime.Channel) channel,
+                    args.get(1));
+        }
+
+        private Object defaultCase(List<Object> args) {
+            requireZero(args, "SelectCase.default");
+            return ChannelRuntime.defaultCase();
+        }
+    }
+
+    private record SelectSetFactory(Evaluator owner) {
+        private Object create(List<Object> args) {
+            requireOne(args, "SelectSet.new");
+            return owner.asSelectSet(args.getFirst());
+        }
+    }
+
+    private record SelectResultValue(
+            int index,
+            String operation,
+            Object value) implements OresMutex.SharedState {
+        @Override
+        public Iterable<?> sharedStateChildren() {
+            return value == null ? List.of() : List.of(value);
+        }
+    }
+
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
