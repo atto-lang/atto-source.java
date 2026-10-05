@@ -4,6 +4,7 @@ import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -45,6 +46,7 @@ public final class AsyncRuntime implements AutoCloseable {
 
     private final TurnExecutor turnExecutor;
     private final ExecutorService executor;
+    private final java.util.Set<CompletableFuture<?>> externalPending = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     public AsyncRuntime() {
@@ -90,6 +92,23 @@ public final class AsyncRuntime implements AutoCloseable {
         // Close may race submission after the initial check.
         if (closed.get()) completion.cancel(true);
         return completion;
+    }
+
+    /**
+     * Track an externally-completing runtime future (for example nb-select)
+     * under this context's lifetime. Closing the context cancels the pending
+     * operation so channel registrations cannot outlive the owning VM.
+     */
+    public <T> CompletableFuture<T> track(CompletableFuture<T> pending) {
+        Objects.requireNonNull(pending, "pending");
+        if (closed.get()) {
+            pending.cancel(true);
+            return pending;
+        }
+        externalPending.add(pending);
+        pending.whenComplete((ignored, failure) -> externalPending.remove(pending));
+        if (closed.get() && externalPending.remove(pending)) pending.cancel(true);
+        return pending;
     }
 
     private <T> void runTask(Task<T> task, TaskFuture<T> completion) {
@@ -153,6 +172,8 @@ public final class AsyncRuntime implements AutoCloseable {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        for (CompletableFuture<?> pending : externalPending) pending.cancel(true);
+        externalPending.clear();
         executor.shutdownNow();
 
         boolean interrupted = false;
