@@ -279,10 +279,38 @@ public final class CapabilityChecker {
                     checkStatements(b.body(), policy);
                 }
                 checkStatements(s.elseBody(), policy);
+            } else if (stmt instanceof Ast.MatchStmt s) {
+                checkExpr(s.subject(), policy);
+                for (Ast.MatchArm arm : s.arms()) {
+                    if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                    checkStatements(arm.body(), policy);
+                }
+            } else if (stmt instanceof Ast.SwitchStmt s) {
+                checkExpr(s.subject(), policy);
+                for (Ast.SwitchCase arm : s.cases()) {
+                    for (Ast.Expr constant : arm.constants()) checkExpr(constant, policy);
+                    checkStatements(arm.body(), policy);
+                }
+                checkStatements(s.defaultBody(), policy);
+            } else if (stmt instanceof Ast.SelectStmt s) {
+                for (Ast.SelectCase arm : s.cases()) {
+                    checkExpr(arm.channel(), policy);
+                    if (arm.value() != null) checkExpr(arm.value(), policy);
+                    checkType(arm.bindingType(), policy);
+                    checkStatements(arm.body(), policy);
+                }
+                if (s.defaultBody() != null) checkStatements(s.defaultBody(), policy);
+            } else if (stmt instanceof Ast.DynamicSelectStmt s) {
+                checkExpr(s.entries(), policy);
+                checkStatements(s.body(), policy);
+                if (s.defaultBody() != null) checkStatements(s.defaultBody(), policy);
             } else if (stmt instanceof Ast.TryStmt s) {
                 checkStatements(s.body(), policy);
                 checkStatements(s.catchBody(), policy);
                 checkStatements(s.finallyBody(), policy);
+            } else if (stmt instanceof Ast.ForOfDestructureStmt s) {
+                checkExpr(s.iterable(), policy);
+                checkStatements(s.body(), policy);
             } else if (stmt instanceof Ast.ForOfStmt s) {
                 checkExpr(s.iterable(), policy);
                 checkStatements(s.body(), policy);
