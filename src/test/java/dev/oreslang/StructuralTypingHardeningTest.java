@@ -470,6 +470,15 @@ final class StructuralTypingHardeningTest {
                   type Bad = int;
                 end
                 """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  define interface Bad
+                    @RuntimeDecoration
+                    fnc load() => int;
+                  end
+                end
+                """));
     }
 
 }
