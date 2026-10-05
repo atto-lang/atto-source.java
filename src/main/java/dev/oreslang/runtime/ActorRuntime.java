@@ -17,13 +17,11 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -1491,7 +1489,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get()) {
                         throw terminated(ref);
                     }
-                    if (!cell.mailbox.offer(envelope)) {
+                    if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
                     mailboxSlotTransferred = true;
@@ -2625,7 +2623,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
-        private final BlockingQueue<MessageEnvelope> mailbox;
+        /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
+        private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
@@ -2649,7 +2648,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
-            this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
+            this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
@@ -2862,7 +2861,7 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
-                    MessageEnvelope envelope = mailbox.poll();
+                    MessageEnvelope envelope = mailbox.tryRead().orElse(null);
                     if (envelope == null) break;
                     releaseMailboxSlot();
                     try (envelope) {
@@ -2896,7 +2895,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void drainMailboxReservations() {
             MessageEnvelope envelope;
-            while ((envelope = mailbox.poll()) != null) {
+            while ((envelope = mailbox.tryRead().orElse(null)) != null) {
                 releaseMailboxSlot();
                 envelope.close();
             }
@@ -2906,6 +2905,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
+                mailbox.close(failure);
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
@@ -2914,6 +2914,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void stop() {
             synchronized (lifecycleLock) {
                 stopped.set(true);
+                mailbox.close();
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
