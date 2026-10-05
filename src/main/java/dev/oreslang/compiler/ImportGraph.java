@@ -170,6 +170,67 @@ final class ImportGraph {
     }
 
     /**
+     * Resolve the public interface declarations explicitly selected by one
+     * code unit. This is compiler metadata only; it does not make the imported
+     * unit available as a runtime value and does not broaden filesystem access.
+     */
+    static Map<String, Ast.InterfaceDecl> resolveImportedInterfaces(
+            String importerId,
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> result = new LinkedHashMap<>();
+        Ast.Program importer = programs.get(normalizeUnitId(importerId));
+        if (importer == null) {
+            throw new IllegalArgumentException("unknown importer source unit '" + importerId + "'");
+        }
+
+        for (Ast.ImportDecl imported : importer.imports()) {
+            if (imported.wildcard()
+                    || (imported.kind() != Ast.ImportKind.INTERFACE
+                        && imported.kind() != Ast.ImportKind.TYPES)) {
+                continue;
+            }
+
+            String targetId = resolveImportUnitId(
+                    importerId, imported, programs.keySet(), importResolutions);
+            if (targetId == null) continue;
+            Ast.Program target = programs.get(targetId);
+            if (target == null) continue;
+
+            for (String sourceName : imported.names()) {
+                Ast.InterfaceDecl iface = exportedInterface(target, sourceName);
+                if (iface == null) continue; // import types may select a type alias.
+                String localName = ImportRules.localName(imported, sourceName);
+                Ast.InterfaceDecl previous = result.putIfAbsent(localName, iface);
+                if (previous != null && previous != iface) {
+                    throw new IllegalArgumentException(
+                            "imported interface binding '" + localName + "' is ambiguous in '" + importerId + "'");
+                }
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private static Ast.InterfaceDecl exportedInterface(Ast.Program program, String name) {
+        Ast.InterfaceDecl found = null;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.InterfaceDecl iface)
+                        || iface.visibility() != Ast.Visibility.PUBLIC
+                        || !iface.name().equals(name)) {
+                    continue;
+                }
+                if (found != null && found != iface) {
+                    throw new IllegalArgumentException(
+                            "exported interface '" + name + "' is ambiguous in linked source unit");
+                }
+                found = iface;
+            }
+        }
+        return found;
+    }
+
+    /**
      * Dependency-first SCC order. Members inside one SCC are lexicographically
      * ordered so init order is deterministic even though the cycle itself does
      * not define an order.
