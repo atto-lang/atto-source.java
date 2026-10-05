@@ -800,7 +800,8 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+                return functionType(
+                        fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -944,7 +945,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return asyncResult(target.async(), result);
+                    return callableResult(target.async(), target.generator(), result);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
@@ -971,7 +972,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return asyncResult(target.async(), result);
+                    return callableResult(target.async(), target.generator(), result);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -1323,7 +1324,9 @@ public final class TypeChecker {
                                 "generic callable '" + namespace.name() + "." + member.member()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), moduleFunction.async(), Set.of(), null);
+                    return functionType(
+                            moduleFunction.parameters(), moduleFunction.returnType(),
+                            moduleFunction.async(), moduleFunction.generator(), Set.of(), null);
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
@@ -2884,15 +2887,30 @@ public final class TypeChecker {
         return async ? new Named("Future", List.of(result)) : result;
     }
 
+    private Type callableResult(boolean async, boolean generator, Type declaredResult) {
+        if (!generator) return asyncResult(async, declaredResult);
+        return new Named(async ? "AsyncIterator" : "Iterator", List.of(declaredResult));
+    }
+
     private Function functionType(
             List<Ast.Param> params,
             Ast.TypeRef returns,
             boolean async,
             Set<String> generics,
             Type self) {
+        return functionType(params, returns, async, false, generics, self);
+    }
+
+    private Function functionType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean generator,
+            Set<String> generics,
+            Type self) {
         return new Function(
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
-                asyncResult(async, resolve(returns, generics, self)));
+                callableResult(async, generator, resolve(returns, generics, self)));
     }
 
     private Function callableContractType(
@@ -2902,9 +2920,21 @@ public final class TypeChecker {
             boolean async,
             Set<String> ownerGenerics,
             Type self) {
+        return callableContractType(
+                callableGenerics, params, returns, async, false, ownerGenerics, self);
+    }
+
+    private Function callableContractType(
+            List<String> callableGenerics,
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean generator,
+            Set<String> ownerGenerics,
+            Type self) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
-        Function raw = functionType(params, returns, async, all, self);
+        Function raw = functionType(params, returns, async, generator, all, self);
         if (callableGenerics.isEmpty()) return raw;
 
         Map<String, Type> canonical = new HashMap<>();
@@ -2945,6 +2975,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.YieldStmt yielded) {
+                rejectStaticClassGenericReferences(yielded.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ExprStmt expression) {
                 rejectStaticClassGenericReferences(expression.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DeferStmt defer) {
