@@ -234,7 +234,10 @@ final class ActorSpawnLanguageTest {
                           return;
                         }
                         """)));
-        assertTrue(rawMailbox.getMessage().contains("runtime-private"));
+        assertTrue(
+                rawMailbox.getMessage().contains("no public actor protocol method")
+                        || rawMailbox.getMessage().contains("no monomorphic actor protocol method"),
+                rawMailbox.getMessage());
     }
 
     @Test
