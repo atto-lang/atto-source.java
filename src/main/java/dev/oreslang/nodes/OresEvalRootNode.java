@@ -2567,6 +2567,21 @@ public final class OresEvalRootNode extends RootNode {
                             return typed;
                         });
                     };
+                    case "flatten" -> (Invokable) args -> {
+                        requireZero(args, "Future.flatten");
+                        @SuppressWarnings("unchecked")
+                        OresFuture<Object> source = (OresFuture<Object>) future;
+                        return source.flatMapOn(asyncScheduler(), value -> {
+                            if (!(value instanceof Awaitable<?> awaited)) {
+                                throw new IllegalArgumentException(
+                                        "Future.flatten requires Future<Awaitable<T>>");
+                            }
+                            @SuppressWarnings("unchecked")
+                            Awaitable<Object> typed =
+                                    (Awaitable<Object>) awaited;
+                            return typed;
+                        });
+                    };
                     case "attach_callback" -> (Invokable) args -> {
                         requireOne(args, "Future.attach_callback");
                         if (!(args.getFirst() instanceof Invokable registrar)) {
