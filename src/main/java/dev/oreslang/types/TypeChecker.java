@@ -1884,7 +1884,7 @@ public final class TypeChecker {
             case "Result" -> java.util.Set.of(
                     "map", "flat_map", "and_then", "map_err", "or_else", "flatten").contains(operation);
             case "Future", "Iterator", "Stream" -> java.util.Set.of(
-                    "map", "flat_map", "and_then").contains(operation);
+                    "map", "flat_map", "and_then", "flatten").contains(operation);
             default -> false;
         };
         if (!recognized) return null;
@@ -2093,6 +2093,7 @@ public final class TypeChecker {
                             List.of(element),
                             new Named("Awaitable", List.of(Unknown.INSTANCE)))),
                     futureOf(Unknown.INSTANCE));
+            case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
             default -> null;
         };
     }
@@ -2116,6 +2117,7 @@ public final class TypeChecker {
                             List.of(element),
                             new Named("Iterator", List.of(Unknown.INSTANCE)))),
                     new Named("Iterator", List.of(Unknown.INSTANCE)));
+            case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
             default -> null;
         };
     }
@@ -2139,6 +2141,7 @@ public final class TypeChecker {
                             List.of(element),
                             new Named("Stream", List.of(Unknown.INSTANCE)))),
                     new Named("Stream", List.of(Unknown.INSTANCE)));
+            case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
             default -> null;
         };
     }
