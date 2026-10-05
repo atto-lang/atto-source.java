@@ -509,12 +509,14 @@ public final class GpuRuntime {
 
     public void release(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
-        if (array.released.get()) {
+        if (!array.released.compareAndSet(false, true)) {
             throw new GpuTransferException("GpuArray native resource has already been released");
         }
-        array.lease.release("GpuArray");
-        if (!array.released.compareAndSet(false, true)) {
-            throw new GpuTransferException("GpuArray native resource was concurrently released");
+        try {
+            array.lease.release("GpuArray");
+        } catch (RuntimeException failure) {
+            array.released.set(false);
+            throw failure;
         }
     }
 
@@ -525,12 +527,14 @@ public final class GpuRuntime {
 
     public void release(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
-        if (stream.released.get()) {
+        if (!stream.released.compareAndSet(false, true)) {
             throw new GpuTransferException("GpuStream native resource has already been released");
         }
-        stream.lease.release("GpuStream");
-        if (!stream.released.compareAndSet(false, true)) {
-            throw new GpuTransferException("GpuStream native resource was concurrently released");
+        try {
+            stream.lease.release("GpuStream");
+        } catch (RuntimeException failure) {
+            stream.released.set(false);
+            throw failure;
         }
     }
 
