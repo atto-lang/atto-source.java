@@ -196,6 +196,104 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void linkedNamedActorImportChecksConstructorAndMailboxMessage() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> valid = Map.of(
+                "worker.ores", """
+                        define actor Worker as
+                          let int seed = 0;
+
+                          constructor(initial: int) {
+                            self.seed = initial;
+                          }
+
+                          pub receive(message: String): void {
+                            stdio.println(message);
+                            return;
+                          }
+                        end
+                        """,
+                "app.ores", """
+                        import actor (Worker as W) from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn W(1);
+                          worker.send("ok");
+                          return;
+                        }
+                        """);
+
+        assertDoesNotThrow(() -> compiler.compile(valid));
+
+        Map<String, String> badConstructor = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor (Worker as W) from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn W("wrong");
+                          return;
+                        }
+                        """);
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(badConstructor));
+
+        Map<String, String> badMessage = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor {Worker: W} from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn W(1);
+                          worker.send(42);
+                          return;
+                        }
+                        """);
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(badMessage));
+    }
+
+    @Test
+    void linkedWildcardActorNamespaceKeepsTypedMailboxContract() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> valid = Map.of(
+                "worker.ores", """
+                        define actor Worker as
+                          constructor(initial: int) { }
+                          pub receive(message: String): void { return; }
+                        end
+                        """,
+                "app.ores", """
+                        import actor * as Actors from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn Actors.Worker(1);
+                          worker.send("ok");
+                          return;
+                        }
+                        """);
+
+        assertDoesNotThrow(() -> compiler.compile(valid));
+
+        Map<String, String> invalid = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor * as Actors from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn Actors.Worker(1);
+                          worker.send(false);
+                          return;
+                        }
+                        """);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(invalid));
+    }
+
+    @Test
     void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var build = compiler.compile(Map.of(
