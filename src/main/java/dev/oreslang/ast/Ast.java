@@ -64,6 +64,12 @@ public final class Ast {
         public static TypeRef stringLiteral(String value) { return new TypeRef("$string$" + value, List.of(), false); }
         public boolean isStringLiteral() { return name.startsWith("$string$"); }
         public String stringLiteralValue() { return name.substring("$string$".length()); }
+        public static TypeRef intLiteral(long value) { return new TypeRef("$int$" + value, List.of(), false); }
+        public boolean isIntLiteral() { return name.startsWith("$int$"); }
+        public long intLiteralValue() {
+            if (!isIntLiteral()) throw new IllegalStateException("not an integer literal type");
+            return Long.parseLong(name.substring("$int$".length()));
+        }
 
         public static TypeRef union(List<TypeRef> options) {
             java.util.ArrayList<TypeRef> flattened = new java.util.ArrayList<>();
@@ -83,6 +89,24 @@ public final class Ast {
             return new TypeRef("$tuple$", List.copyOf(elements), false);
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
+
+        public static TypeRef fixedArrayType(TypeRef element, int length) {
+            if (length < 0) throw new IllegalArgumentException("FixedArray length cannot be negative");
+            return new TypeRef("$fixed_array$", List.of(element, intLiteral(length)), false);
+        }
+        public boolean isFixedArrayType() { return name.equals("$fixed_array$"); }
+        public TypeRef fixedArrayElement() {
+            if (!isFixedArrayType() || arguments.size() != 2 || !arguments.get(1).isIntLiteral()) {
+                throw new IllegalStateException("malformed FixedArray type");
+            }
+            return arguments.getFirst();
+        }
+        public int fixedArrayLength() {
+            if (!isFixedArrayType() || arguments.size() != 2 || !arguments.get(1).isIntLiteral()) {
+                throw new IllegalStateException("malformed FixedArray type");
+            }
+            return Math.toIntExact(arguments.get(1).intLiteralValue());
+        }
 
         public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
@@ -307,10 +331,17 @@ public final class Ast {
 
     public enum DestructureKind { SEQUENCE, OBJECT }
 
-    public record DestructureStmt(DestructureKind kind, List<DestructureBinding> bindings, Expr initializer) implements Stmt {
+    public record DestructureStmt(
+            DestructureKind kind,
+            List<DestructureBinding> bindings,
+            TypeRef declaredType,
+            Expr initializer) implements Stmt {
         public DestructureStmt { bindings = List.copyOf(bindings); }
+        public DestructureStmt(DestructureKind kind, List<DestructureBinding> bindings, Expr initializer) {
+            this(kind, bindings, null, initializer);
+        }
         public DestructureStmt(List<DestructureBinding> bindings, Expr initializer) {
-            this(DestructureKind.SEQUENCE, bindings, initializer);
+            this(DestructureKind.SEQUENCE, bindings, null, initializer);
         }
     }
 
@@ -428,7 +459,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, SpreadExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -477,6 +508,11 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    /** Argument-list spread. It is only legal directly inside a call/constructor argument list. */
+    public record SpreadExpr(Expr expression) implements Expr {
+        public SpreadExpr { java.util.Objects.requireNonNull(expression, "spread expression"); }
+    }
 
     public record ListExpr(List<Expr> elements) implements Expr {
         public ListExpr { elements = List.copyOf(elements); }
