@@ -152,6 +152,73 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void hostPumpKeepsSameThreadButUsesFreshDispatchAfterReadyAwait() {
+        AtomicInteger pc = new AtomicInteger();
+        AtomicReference<Thread> firstThread = new AtomicReference<>();
+        AtomicLong firstDispatch = new AtomicLong();
+
+        int result = OresScheduler.driveOnCurrentThread(
+                resume -> {
+                    int turn = pc.getAndIncrement();
+                    if (turn == 0) {
+                        assertTrue(resume.initial());
+                        firstThread.set(Thread.currentThread());
+                        firstDispatch.set(OresScheduler.currentDispatchId());
+                        return OresScheduler.await(OresFuture.completed(41));
+                    }
+
+                    assertFalse(resume.initial());
+                    assertSame(firstThread.get(), Thread.currentThread(),
+                            "host pump must remain on the context-owning thread");
+                    assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId(),
+                            "ready await must still resume through a fresh dispatch");
+                    assertEquals(41, resume.value());
+                    return OresScheduler.done(42);
+                },
+                Runnable::run);
+
+        assertEquals(42, result);
+        assertEquals(2, pc.get());
+    }
+
+    @Test
+    void tailAwaitAlwaysUsesFreshDispatchWithoutChangingLogicalTaskDomain() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger pc = new AtomicInteger();
+            AtomicReference<Object> domain = new AtomicReference<>();
+            AtomicReference<Long> firstDispatch = new AtomicReference<>();
+            AtomicBoolean insideFirstTurn = new AtomicBoolean();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int turn = pc.getAndIncrement();
+                if (turn == 0) {
+                    assertTrue(resume.initial());
+                    domain.set(OresScheduler.currentTaskDomain());
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    insideFirstTurn.set(true);
+                    try {
+                        return OresScheduler.tailAwait();
+                    } finally {
+                        insideFirstTurn.set(false);
+                    }
+                }
+
+                assertFalse(resume.initial());
+                assertFalse(insideFirstTurn.get(),
+                        "tail-await replacement must never execute inline");
+                assertSame(domain.get(), OresScheduler.currentTaskDomain(),
+                        "proper async tail transfer keeps one logical scheduler task");
+                assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId(),
+                        "tail-await must re-enter through a fresh scheduler dispatch");
+                return OresScheduler.done(42);
+            });
+
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, pc.get());
+        }
+    }
+
+    @Test
     void oneFutureMayResumeWaitersOnDifferentSchedulers() throws Exception {
         try (OresScheduler left = new OresScheduler(1);
              OresScheduler right = new OresScheduler(1)) {
@@ -298,5 +365,6 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
 
 }
