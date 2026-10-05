@@ -834,6 +834,12 @@ public final class Parser {
         if (match(IF)) return parseIf();
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
+        if (check(TRY) && checkNext(SELECT)) {
+            advance();
+            advance();
+            return parseSelect(true);
+        }
+        if (match(SELECT)) return parseSelect(false);
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -1326,6 +1332,102 @@ public final class Parser {
         return new Ast.SwitchStmt(subject, cases, defaultBody);
     }
 
+
+    private Ast.Stmt parseSelect(boolean nonBlocking) {
+        if (match(FROM)) return parseDynamicSelect(nonBlocking);
+
+        consume(LBRACE, "expected '{' after select");
+        List<Ast.SelectCase> cases = new ArrayList<>();
+        List<Ast.Stmt> defaultBody = null;
+        boolean sawDefault = false;
+
+        while (!check(RBRACE) && !check(EOF)) {
+            if (match(CASE)) {
+                if (sawDefault) throw error(previous(), "select case cannot appear after default");
+                cases.add(parseSelectCase());
+                continue;
+            }
+            if (match(DEFAULT)) {
+                if (sawDefault) throw error(previous(), "select can contain only one default arm");
+                sawDefault = true;
+                if (check(FAT_ARROW)) {
+                    throw error(peek(), "select arms use the slim arrow '->'");
+                }
+                consume(ARROW, "select default uses the slim arrow '->'");
+                defaultBody = parseBlock();
+                continue;
+            }
+            throw error(peek(), "expected 'case', 'default', or '}' in select");
+        }
+
+        consume(RBRACE, "expected '}' to close select");
+        if (cases.isEmpty()) throw error(previous(), "select requires at least one channel case");
+        return new Ast.SelectStmt(cases, defaultBody, nonBlocking);
+    }
+
+    private Ast.SelectCase parseSelectCase() {
+        Ast.SelectOperation operation;
+        if (match(READCH)) operation = Ast.SelectOperation.READ;
+        else if (match(WRITECH)) operation = Ast.SelectOperation.WRITE;
+        else throw error(peek(), "select case must start with readch(...) or writech(...)");
+
+        consume(LPAREN, "expected '(' after channel operation");
+        Ast.Expr channel = parseExpression();
+        Ast.Expr value = null;
+        if (operation == Ast.SelectOperation.WRITE) {
+            consume(COMMA, "writech select case requires a value");
+            value = parseExpression();
+        } else if (match(COMMA)) {
+            throw error(previous(), "readch select case accepts only one channel argument");
+        }
+        consume(RPAREN, "expected ')' after channel operation");
+
+        Ast.TypeRef bindingType = null;
+        String bindingName = null;
+        if (match(AS)) {
+            if (operation != Ast.SelectOperation.READ) {
+                throw error(previous(), "writech select cases do not bind a received value");
+            }
+            if (check(IDENT) && checkNext(ARROW)) {
+                bindingName = advance().lexeme();
+            } else {
+                bindingType = parseTypeRef();
+                bindingName = consume(IDENT, "expected received-value binding name").lexeme();
+            }
+        }
+
+        if (check(FAT_ARROW)) {
+            throw error(peek(), "select arms use the slim arrow '->'; '=>' is reserved for type definitions");
+        }
+        consume(ARROW, "select cases use the slim arrow '->'");
+        return new Ast.SelectCase(operation, channel, value, bindingType, bindingName, parseBlock());
+    }
+
+    private Ast.DynamicSelectStmt parseDynamicSelect(boolean nonBlocking) {
+        boolean previousSuppression = suppressRefinementOperators;
+        suppressRefinementOperators = true;
+        Ast.Expr entries;
+        try {
+            entries = parseExpression();
+        } finally {
+            suppressRefinementOperators = previousSuppression;
+        }
+
+        String binding = null;
+        if (match(AS)) binding = consume(IDENT, "expected dynamic select result binding").lexeme();
+        List<Ast.Stmt> body = parseBlock();
+
+        List<Ast.Stmt> defaultBody = null;
+        if (match(DEFAULT)) {
+            if (check(FAT_ARROW)) {
+                throw error(peek(), "select default uses the slim arrow '->'");
+            }
+            consume(ARROW, "select default uses the slim arrow '->'");
+            defaultBody = parseBlock();
+        }
+        return new Ast.DynamicSelectStmt(entries, binding, body, defaultBody, nonBlocking);
+    }
+
     private Ast.TryStmt parseTry() {
         List<Ast.Stmt> body = parseBlock();
         consume(CATCH, "expected catch after try block");
@@ -1601,7 +1703,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, FIRST, TYPE, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, SELECT, CHANNEL, READCH, WRITECH, FIRST, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -1623,6 +1725,12 @@ public final class Parser {
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
         if (match(ACTOR)) return new Ast.NameExpr("actor");
+        // Channel primitives are reserved in declarations but remain first-class
+        // runtime symbols in expression position.
+        if (match(CHANNEL)) return new Ast.NameExpr("channel");
+        if (match(READCH)) return new Ast.NameExpr("readch");
+        if (match(WRITECH)) return new Ast.NameExpr("writech");
+        if (match(SELECT)) return new Ast.NameExpr("select");
         // loop/block are contextual statement keywords: parseStatement only
         // consumes them when followed by '{'. In every expression position they
         // remain valid references to same-named callables, including first-class
