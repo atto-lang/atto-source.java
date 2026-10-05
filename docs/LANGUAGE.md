@@ -256,7 +256,7 @@ The receiver variable name is always `self`.
 
 ### Receiver-polymorphic `self` type
 
-In an instance-method type position, `self` is a receiver-polymorphic type, not an alias for the enclosing nominal class. It preserves the receiver proof needed for fluent APIs:
+In an instance-method type position, `self` is a receiver-polymorphic type, not an alias for the enclosing nominal class. It represents the receiver's concrete subtype and preserves that type information for fluent APIs:
 
 ```ores
 define class Fluent as
@@ -265,12 +265,12 @@ define class Fluent as
   }
 
   pub wrong(): self {
-    return new Fluent(); // compile error: Fluent is not the exact receiver self type
+    return new Fluent(); // compile error: the receiver might be a subtype of Fluent
   }
 end
 ```
 
-An inferred alias of the receiver preserves that proof, so `val me = self; return me;` is valid. Explicitly widening the value to the nominal class loses the proof and cannot be narrowed back to `self`.
+An inferred alias of the receiver preserves the polymorphic `self` type, so `val me = self; return me;` is valid. A parameter or other value already typed as `self` may also be returned; `self` is a receiver **type**, not a reference-identity predicate. Explicitly widening such a value to the nominal class loses the polymorphic type information and cannot be narrowed back to `self`.
 
 When a `self`-returning method is inherited, the return type rebinds to the actual static receiver type. If `Child extends Base` and `Base.same(): self`, then `child.same()` has type `Child`, which keeps subclass-only fluent chains type-safe. Interfaces and structural method contracts preserve the same receiver-polymorphic slot semantics.
 
