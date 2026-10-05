@@ -165,15 +165,22 @@ public final class GpuRuntime {
             }
         }
 
-        private void release(String kind) {
-            int remaining = references.decrementAndGet();
-            if (remaining < 0) {
-                references.incrementAndGet();
+        private synchronized void release(String kind) {
+            int current = references.get();
+            if (current <= 0 || backendReleased.get()) {
                 throw new GpuTransferException(kind + " native resource lease was released too many times");
             }
-            if (remaining == 0 && backendReleased.compareAndSet(false, true)) {
-                backendCallVoid(backend, "release(" + kind + ")", () -> backend.release(nativeHandle));
+            if (current > 1) {
+                references.decrementAndGet();
+                return;
             }
+
+            // Last owner: make backend release transactional. If the driver
+            // rejects/fails the release, keep one live reference so the caller
+            // may retry instead of leaking an unreachable native allocation.
+            backendCallVoid(backend, "release(" + kind + ")", () -> backend.release(nativeHandle));
+            backendReleased.set(true);
+            references.set(0);
         }
 
         private void ensureLive(String kind) {
@@ -502,10 +509,13 @@ public final class GpuRuntime {
 
     public void release(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
-        if (!array.released.compareAndSet(false, true)) {
+        if (array.released.get()) {
             throw new GpuTransferException("GpuArray native resource has already been released");
         }
         array.lease.release("GpuArray");
+        if (!array.released.compareAndSet(false, true)) {
+            throw new GpuTransferException("GpuArray native resource was concurrently released");
+        }
     }
 
     public void release(MatrixHandle matrix) {
@@ -515,10 +525,13 @@ public final class GpuRuntime {
 
     public void release(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
-        if (!stream.released.compareAndSet(false, true)) {
+        if (stream.released.get()) {
             throw new GpuTransferException("GpuStream native resource has already been released");
         }
         stream.lease.release("GpuStream");
+        if (!stream.released.compareAndSet(false, true)) {
+            throw new GpuTransferException("GpuStream native resource was concurrently released");
+        }
     }
 
     private static long requireNativeHandle(long nativeHandle, String where) {
