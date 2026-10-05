@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -93,16 +94,32 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
     }
 
+    private final AtomicReference<BooleanSupplier> cancelAdmission;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
     public OresFuture() {
-        this(() -> { });
+        this(() -> true, () -> { });
     }
 
     OresFuture(Runnable cancelHook) {
+        this(() -> true, cancelHook);
+    }
+
+    /**
+     * Runtime-only cancellation arbitration.
+     *
+     * <p>The admission gate runs before cancellation becomes terminal. It is
+     * used by channel operations that must atomically decide whether a pending
+     * read/write is still cancellable or has already been committed. Returning
+     * false means the producer/operation already won and cancel() must report
+     * false rather than publishing a misleading cancelled state.</p>
+     */
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
+        this.cancelAdmission = new AtomicReference<>(
+                Objects.requireNonNull(cancelAdmission, "cancelAdmission"));
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
     }
@@ -359,14 +376,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     boolean completeFromRuntime(T value) {
         boolean completed = settle(new Success<>(value));
-        if (completed) cancelHook.set(null);
+        if (completed) {
+            cancelAdmission.set(null);
+            cancelHook.set(null);
+        }
         return completed;
     }
 
     boolean failFromRuntime(Throwable failure) {
         boolean completed = settle(
                 new Failure(Objects.requireNonNull(failure, "failure")));
-        if (completed) cancelHook.set(null);
+        if (completed) {
+            cancelAdmission.set(null);
+            cancelHook.set(null);
+        }
         return completed;
     }
 
@@ -407,6 +430,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
+        BooleanSupplier admission = cancelAdmission.getAndSet(null);
+        if (admission != null) {
+            final boolean admitted;
+            try {
+                admitted = admission.getAsBoolean();
+            } catch (RuntimeException | Error failure) {
+                // A runtime cancellation arbiter must fail closed: if it
+                // cannot prove cancellation still owns the operation, do not
+                // publish a cancelled Future.
+                return false;
+            }
+            if (!admitted) return false;
+        }
+
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
         if (!settle(new Cancelled(cancelled))) return false;
