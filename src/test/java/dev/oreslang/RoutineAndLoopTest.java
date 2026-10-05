@@ -269,11 +269,15 @@ final class RoutineAndLoopTest {
                   for (let k = 0; k < 2; k++) {
                     stdio.stdout.write(k)
                   }
+
+                  for (int q = 0; q < 2; q++) do
+                    stdio.stdout.write(q)
+                  done
                   return;
                 }
                 """);
 
-        assertEquals("01232101", output);
+        assertEquals("0123210101", output);
     }
 
     @Test
