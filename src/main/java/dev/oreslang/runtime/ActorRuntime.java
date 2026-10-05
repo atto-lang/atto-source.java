@@ -2089,40 +2089,75 @@ public final class ActorRuntime implements AutoCloseable {
         Thread.yield();
     }
 
-    record FrozenActorGroupEventPayload(Object value, long reservedBytes) {
+    static final class ActorGroupEventReservation implements AutoCloseable {
+        private final AtomicReference<ActorRuntime> owner;
+        private final long bytes;
+
+        private ActorGroupEventReservation(ActorRuntime owner, long bytes) {
+            this.owner = new AtomicReference<>(Objects.requireNonNull(owner, "owner"));
+            if (bytes < 0) throw new IllegalArgumentException("bytes cannot be negative");
+            this.bytes = bytes;
+        }
+
+        long bytes() { return bytes; }
+
+        @Override
+        public void close() {
+            ActorRuntime runtime = owner.getAndSet(null);
+            if (runtime != null) runtime.releaseSharedRuntimeBytes(bytes);
+        }
+    }
+
+    record FrozenActorGroupEventPayload(
+            Object value,
+            ActorGroupEventReservation reservation) {
         FrozenActorGroupEventPayload {
             Objects.requireNonNull(value, "value");
-            if (reservedBytes < 0) {
-                throw new IllegalArgumentException("reservedBytes cannot be negative");
-            }
+            Objects.requireNonNull(reservation, "reservation");
         }
     }
 
     /**
      * Freeze a data-only ActorGroup event payload once and reserve its retained
      * bus memory against the same OresVM aggregate budget used by actor
-     * mailboxes/shared runtime state. The bus releases this reservation after
-     * the final queued delivery no longer retains the payload.
+     * mailboxes/shared runtime state. A bounded preflight runs before the deep
+     * copy so an oversized publication cannot allocate its full immutable copy
+     * before policy admission.
      */
     FrozenActorGroupEventPayload freezeActorGroupEventPayload(Object value) {
         requireCallerRuntimeAffinity("publish ActorGroup event payloads");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(value, "Oreslang events cannot carry null; use Option<T>");
+
+        validateMessageGraph(value);
+        rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
+
+        IsolatePolicy caller = currentActorPolicy();
+        long senderLimit =
+                caller == null ? policyCeiling.maxHeapBytes() : caller.maxHeapBytes();
+        long runtimeRemaining =
+                Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+        long preflightLimit = Math.min(senderLimit, runtimeRemaining);
+        long estimatedBytes = estimateFrozenBytes(value);
+        if (estimatedBytes > preflightLimit) {
+            throw new IllegalStateException(
+                    "ActorGroup event payload exceeds available memory policy: estimated="
+                            + estimatedBytes + " senderLimit=" + senderLimit
+                            + " runtimeRemaining=" + runtimeRemaining);
+        }
+
         Object frozen = freeze(value);
         long bytes = estimateFrozenBytes(frozen);
-        IsolatePolicy caller = currentActorPolicy();
-        long limit = caller == null ? policyCeiling.maxHeapBytes() : caller.maxHeapBytes();
-        if (bytes > limit) {
+        if (bytes > senderLimit) {
             throw new IllegalStateException(
                     "ActorGroup event payload exceeds sender memory policy: bytes="
-                            + bytes + " limit=" + limit);
+                            + bytes + " limit=" + senderLimit);
         }
-        reserveSharedRuntimeBytes(bytes, "ActorGroup event payload");
-        return new FrozenActorGroupEventPayload(frozen, bytes);
-    }
 
-    void releaseActorGroupEventPayload(long bytes) {
-        releaseSharedRuntimeBytes(bytes);
+        reserveSharedRuntimeBytes(bytes, "ActorGroup event payload");
+        return new FrozenActorGroupEventPayload(
+                frozen,
+                new ActorGroupEventReservation(this, bytes));
     }
 
     @SuppressWarnings("unchecked")
