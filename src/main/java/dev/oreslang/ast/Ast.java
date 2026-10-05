@@ -343,6 +343,7 @@ public final class Ast {
     }
 
     public enum SelectOperation { READ, WRITE }
+    public enum SelectPolicy { FAIR, ORDERED }
 
     public record SelectCase(
             SelectOperation operation,
@@ -372,9 +373,11 @@ public final class Ast {
     public record SelectStmt(
             List<SelectCase> cases,
             List<Stmt> defaultBody,
-            boolean nonBlocking) implements Stmt {
+            boolean nonBlocking,
+            SelectPolicy policy) implements Stmt {
         public SelectStmt {
             cases = List.copyOf(cases);
+            policy = Objects.requireNonNull(policy, "select policy");
             defaultBody = defaultBody == null ? null : List.copyOf(defaultBody);
             if (cases.isEmpty()) throw new IllegalArgumentException("select requires at least one case");
         }
@@ -391,9 +394,11 @@ public final class Ast {
             String resultBinding,
             List<Stmt> body,
             List<Stmt> defaultBody,
-            boolean nonBlocking) implements Stmt {
+            boolean nonBlocking,
+            SelectPolicy policy) implements Stmt {
         public DynamicSelectStmt {
             body = List.copyOf(body);
+            policy = Objects.requireNonNull(policy, "select policy");
             defaultBody = defaultBody == null ? null : List.copyOf(defaultBody);
         }
 
