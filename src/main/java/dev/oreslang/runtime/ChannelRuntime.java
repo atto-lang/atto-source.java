@@ -113,30 +113,11 @@ public final class ChannelRuntime {
          * Immediate receive probe. This never registers a waiter.
          */
         public Optional<T> tryRead() {
-            WriteWaiter<T> promotedWriter = null;
-            T value;
-            List<SelectRegistration> wake;
-            synchronized (this) {
-                pruneReaders();
-                pruneWriters();
-
-                if (!buffer.isEmpty()) {
-                    value = buffer.removeFirst();
-                    promotedWriter = pollActiveWriter();
-                    if (promotedWriter != null && capacity > 0) {
-                        buffer.addLast(promotedWriter.value);
-                    }
-                } else {
-                    promotedWriter = pollActiveWriter();
-                    if (promotedWriter == null) return Optional.empty();
-                    value = promotedWriter.value;
-                }
-                wake = selectSnapshot();
+            OresFuture<T> attempt = readAsync();
+            if (!attempt.isDone() && attempt.cancel(false)) {
+                return Optional.empty();
             }
-
-            if (promotedWriter != null) promotedWriter.future.completeFromRuntime(null);
-            signal(wake);
-            return Optional.of(value);
+            return Optional.of(attempt.join());
         }
 
         /**
@@ -144,23 +125,11 @@ public final class ChannelRuntime {
          */
         public boolean tryWrite(T value) {
             requireValue(value);
-            ReadWaiter<T> reader;
-            List<SelectRegistration> wake;
-            synchronized (this) {
-                if (closed) throw closedFailure();
-                pruneReaders();
-                pruneWriters();
-
-                reader = pollActiveReader();
-                if (reader == null) {
-                    if (buffer.size() >= capacity) return false;
-                    buffer.addLast(value);
-                }
-                wake = selectSnapshot();
+            OresFuture<Void> attempt = writeAsync(value);
+            if (!attempt.isDone() && attempt.cancel(false)) {
+                return false;
             }
-
-            if (reader != null) reader.future.completeFromRuntime(value);
-            signal(wake);
+            attempt.join();
             return true;
         }
 
@@ -499,9 +468,21 @@ public final class ChannelRuntime {
         private final AtomicLong fairCursor = new AtomicLong();
 
         public SelectSet(Collection<? extends SelectCase> cases) {
+            this(cases, 0L);
+        }
+
+        /**
+         * Runtime/compiler hook for static select sites that retain a
+         * deterministic fairness ticket across repeated executions while
+         * rebuilding their evaluated channel/value cases each time.
+         */
+        public SelectSet(
+                Collection<? extends SelectCase> cases,
+                long initialFairCursor) {
             Objects.requireNonNull(cases, "cases");
             if (cases.isEmpty()) throw new IllegalArgumentException("select requires at least one case");
             this.cases = List.copyOf(cases);
+            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream().filter(DefaultCase.class::isInstance).count();
             if (defaults > 1) throw new IllegalArgumentException("select permits at most one default case");
         }

@@ -157,6 +157,32 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void immediateWriteRendezvousWithPendingSelectRead() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> selected =
+                ChannelRuntime.SelectSet.of(
+                        ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        assertTrue(channel.tryWrite("direct"));
+        assertEquals("direct", selected.join().value());
+    }
+
+    @Test
+    void immediateReadRendezvousWithPendingSelectWrite() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> selected =
+                ChannelRuntime.SelectSet.of(
+                        ChannelRuntime.write(channel, "direct"))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        assertEquals("direct", channel.tryRead().orElseThrow());
+        assertEquals(
+                ChannelRuntime.SelectOperation.WRITE,
+                selected.join().operation());
+    }
+
+    @Test
     void closeFailsPendingWaitersAndSelects() {
         ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
         OresFuture<String> read = channel.readAsync();

@@ -54,6 +54,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -134,6 +135,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public ActorId actorId() { return actorId; }
+    }
+
+    /**
+     * Internal control-plane unwind used at actor scheduler safepoints.
+     * It is an Error intentionally: Oreslang source catch handles ordinary
+     * runtime failures, but cancellation must not be absorbable by guest code.
+     * Evaluator finally/defer unwinding still runs before the actor turn exits.
+     */
+    public static final class ActorCancellationSignal extends Error {
+        private ActorCancellationSignal(String message) {
+            super(message, null, false, false);
+        }
     }
 
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
@@ -816,8 +829,23 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
 
-        future.whenCompleteRuntime((value, failure) ->
-                target.enqueue(() -> continuation.accept(value, failure)));
+        ActorCell<?> cell = actors.get(target.actorId());
+        if (cell == null || cell.stopped.get()) {
+            future.cancel(false);
+            return;
+        }
+
+        cell.pendingContinuations.add(future);
+        if (cell.stopped.get()) {
+            cell.pendingContinuations.remove(future);
+            future.cancel(false);
+            return;
+        }
+
+        future.whenCompleteRuntime((value, failure) -> {
+            cell.pendingContinuations.remove(future);
+            target.enqueue(() -> continuation.accept(value, failure));
+        });
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
@@ -825,7 +853,11 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || cell.stopped.get() || closed.get()) return false;
-        if (!cell.reserveMailboxSlot()) return false;
+        if (!cell.reserveContinuationSlot()) {
+            cell.fail(new IllegalStateException(
+                    "actor internal continuation queue overflow for " + actorId));
+            return false;
+        }
 
         boolean admitted = false;
         try {
@@ -1896,9 +1928,10 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCancelledException cancellation = new ActorCancelledException(
                 ref.id(),
                 "actor " + ref.id() + " was cancelled");
-        cell.cancel(cancellation);
 
         if (mode == CancellationMode.FORCE_ISOLATED) {
+            // The outer isolation boundary must be revoked first. If this
+            // cannot be proven, force cancellation has no logical side effect.
             boolean revoked = forceCancellationHook.test(
                     ref.id(), cell.executionDomain);
             if (!revoked) {
@@ -1907,6 +1940,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 + "ordinary shared/private actor carriers can only be cancelled structurally");
             }
         }
+
+        cell.cancel(cancellation);
         return true;
     }
 
@@ -2021,13 +2056,13 @@ public final class ActorRuntime implements AutoCloseable {
      * Carrier threads remain an implementation detail.
      */
     public void schedulerSafepoint() {
-        if (closed.get()) throw new CancellationException("actor runtime is closing");
+        if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
         if (cell != null && cell.stopped.get()) {
-            throw new CancellationException("actor execution stopped");
+            throw new ActorCancellationSignal("actor execution stopped");
         }
         if (Thread.currentThread().isInterrupted()) {
-            throw new CancellationException("actor execution interrupted");
+            throw new ActorCancellationSignal("actor execution interrupted");
         }
         Thread.yield();
     }
@@ -3179,6 +3214,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final boolean trustedFactory;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
+        private final Set<OresFuture<?>> pendingContinuations = ConcurrentHashMap.newKeySet();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -3206,7 +3242,11 @@ public final class ActorRuntime implements AutoCloseable {
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.parent = parent;
-            this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
+            int mailboxCapacity = policy.maxMailboxMessages() >
+                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
+                    ? Integer.MAX_VALUE
+                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
+            this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
@@ -3216,6 +3256,18 @@ public final class ActorRuntime implements AutoCloseable {
             while (true) {
                 int current = queuedMessages.get();
                 if (current >= policy.maxMailboxMessages()) return false;
+                if (queuedMessages.compareAndSet(current, current + 1)) return true;
+            }
+        }
+
+        private boolean reserveContinuationSlot() {
+            int limit = policy.maxMailboxMessages() >
+                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
+                    ? Integer.MAX_VALUE
+                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
+            while (true) {
+                int current = queuedMessages.get();
+                if (current >= limit) return false;
                 if (queuedMessages.compareAndSet(current, current + 1)) return true;
             }
         }
@@ -3453,9 +3505,14 @@ public final class ActorRuntime implements AutoCloseable {
                     processed++;
                 }
             } catch (Throwable failure) {
-                // Fail-stop supervision for ordinary actor failures. Fatal VM
-                // errors are cleaned up and then rethrown rather than swallowed.
-                fail(failure);
+                // Actor cancellation is a control-plane unwind, not a guest
+                // failure. The actor was already marked stopped by the
+                // supervisor/cancel path; finally/endTurn completes teardown.
+                if (!(failure instanceof ActorCancellationSignal)) {
+                    // Fail-stop supervision for ordinary actor failures. Fatal
+                    // VM errors are cleaned up and then rethrown.
+                    fail(failure);
+                }
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
@@ -3490,6 +3547,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
+            List<OresFuture<?>> pending;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -3500,9 +3558,15 @@ public final class ActorRuntime implements AutoCloseable {
                 else mailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
+                pending = List.copyOf(pendingContinuations);
+                pendingContinuations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+
+            // Cancellation removes channel/select waiter registrations before
+            // any future channel activity can revive work for this dead actor.
+            for (OresFuture<?> future : pending) future.cancel(false);
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(

@@ -18,7 +18,7 @@ final class ChannelSelectSyntaxTest {
                 fnc blocking(
                     Channel<string> incoming,
                     Channel<string> payload,
-                    Channel<void> done
+                    Channel<bool> done
                 ): void {
                   select {
                   case readch incoming: let msg
@@ -31,17 +31,17 @@ final class ChannelSelectSyntaxTest {
                   return;
                 }
 
-                fnc nonblocking(
-                    Channel<string> incoming,
-                    Channel<string> payload,
-                    Channel<void> done
-                ): void {
+                actor fnc nonblocking(): void {
+                  val Channel<string> incoming = Channel.new<string>(1);
+                  val Channel<string> payload = Channel.new<string>(1);
+                  val Channel<bool> done = Channel.new<bool>(1);
+
                   nb select {
                   case readch incoming: let msg
                     stdio.println(msg);
                   case readch payload: const body
                     stdio.println(body);
-                  case readch done:
+                  case readch done: const signal
                     return;
                   }
                   stdio.println("continued immediately");
@@ -65,6 +65,30 @@ final class ChannelSelectSyntaxTest {
         assertEquals(Ast.WaitMode.NONBLOCKING, nb.mode());
 
         assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
+    void staticNbSelectRequiresActorExecutionDomain() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc wrong(Channel<int> input): void {
+                  nb select {
+                  case readch input: val value
+                    stdio.println(value);
+                  }
+                  return;
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                actor fnc right(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  nb select {
+                  case readch input: val value
+                    stdio.println(value);
+                  }
+                  return;
+                }
+                """)));
     }
 
     @Test
@@ -187,6 +211,31 @@ final class ChannelSelectSyntaxTest {
                     stdio.println("busy");
                   }
                   return;
+                }
+                """)));
+    }
+
+    @Test
+    void channelAndDynamicCaseFactoriesTypeCheckEndToEnd() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc make(): Channel<int> {
+                  return Channel.new<int>(16);
+                }
+
+                fnc arm(): Future<SelectResult> {
+                  val Channel<int> input = Channel.new<int>(4);
+                  val Channel<int> output = Channel.new<int>(4);
+                  val Array<SelectCase> cases = [
+                    SelectCase.read(input),
+                    SelectCase.write(output, 42)
+                  ];
+                  return nb select from cases;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): Channel<void> {
+                  return Channel.new<void>(1);
                 }
                 """)));
     }
