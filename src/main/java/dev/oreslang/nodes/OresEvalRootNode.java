@@ -2396,6 +2396,8 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof FutureFactory factory) {
                 return switch (name) {
                     case "from_callback" -> (Invokable) factory::fromCallback;
+                    case "all" -> (Invokable) factory::all;
+                    case "race" -> (Invokable) factory::race;
                     default -> throw new IllegalArgumentException(
                             "unknown Future static member " + name);
                 };
@@ -3468,6 +3470,14 @@ public final class OresEvalRootNode extends RootNode {
                             "Future.from_callback registrar must return void");
                 }
             });
+        }
+
+        private Object all(List<Object> args) {
+            return OresFutures.all(FuturesFacade.requireFutures(args, "Future.all"));
+        }
+
+        private Object race(List<Object> args) {
+            return OresFutures.race(FuturesFacade.requireFutures(args, "Future.race"));
         }
     }
 
