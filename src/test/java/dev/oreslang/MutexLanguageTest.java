@@ -65,19 +65,26 @@ final class MutexLanguageTest {
     }
 
     @Test
-    void actorCodeMayUseNonblockingSharedMutexOperations() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub shared actor fnc try_worker(SharedMutex<int> mutex) => void {
-                  val maybe_guard = mutex.try_lock();
-                  stdio.println(mutex.is_poisoned());
-                  return;
-                }
+    void actorCodeRejectsWritableSharedMutexEvenForNonblockingOperations() {
+        IllegalArgumentException tryLockFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub shared actor fnc try_worker(SharedMutex<int> mutex) => void {
+                          val maybe_guard = mutex.try_lock();
+                          return;
+                        }
+                        """)));
+        assertTrue(tryLockFailure.getMessage().contains("writable SharedMutex"));
 
-                pub shared actor fnc async_worker(SharedMutex<int> mutex) => void {
-                  val future_guard = mutex.lock_async();
-                  return;
-                }
-                """)));
+        IllegalArgumentException asyncLockFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub shared actor fnc async_worker(SharedMutex<int> mutex) => void {
+                          val future_guard = mutex.lock_async();
+                          return;
+                        }
+                        """)));
+        assertTrue(asyncLockFailure.getMessage().contains("writable SharedMutex"));
     }
 
     @Test
@@ -587,7 +594,7 @@ final class MutexLanguageTest {
                 """);
         IllegalArgumentException methodError = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(methodProgram));
-        assertTrue(methodError.getMessage().contains("cannot extract a bound method"));
+        assertTrue(methodError.getMessage().contains("not a first-class value"));
     }
 
     @Test
