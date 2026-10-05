@@ -409,8 +409,14 @@ public final class TypeChecker {
             }
             Type fieldType = classFieldType(klass, field);
             if (field.initializer() != null && field.type() != null) {
-                Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
-                requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
+                Ast.ClassDecl previousClassOwner = currentClassOwner;
+                currentClassOwner = klass;
+                try {
+                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                    requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
+                } finally {
+                    currentClassOwner = previousClassOwner;
+                }
             }
             if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
                 throw new IllegalArgumentException("const field '" + field.name() + "' needs a compile-time constant initializer");
