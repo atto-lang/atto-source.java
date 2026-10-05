@@ -1518,7 +1518,7 @@ public final class TypeChecker {
         return stdout.receiver() instanceof Ast.NameExpr stdio && stdio.name().equals("stdio");
     }
 
-    private static void requireSpreadable(Type type, String operation) {
+    private void requireSpreadable(Type type, String operation) {
         type = deref(type);
         if (type instanceof ListType || type instanceof Tuple) return;
         throw new IllegalArgumentException(operation + " requires an array/list/tuple value");
