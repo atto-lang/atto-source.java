@@ -4462,13 +4462,13 @@ public final class ActorRuntime implements AutoCloseable {
     /**
      * Compiler-injected scheduling/cancellation checkpoint.
      *
-     * Do not use Thread.yield() here: yielding the carrier thread does not
-     * return the current actor to the dispatcher, so a single-worker pool still
-     * cannot run a queued peer. Actor fairness is provided at resumable mailbox
-     * boundaries by the bounded message/time quantum. UNTRUSTED guest code is
-     * additionally charged fuel here and is hard-bounded by its sandbox
-     * deadline/isolate. A future resumable Oreslang fiber/continuation backend
-     * may turn this checkpoint into a true mid-message cooperative handoff.
+     * <p>Do not use Thread.yield() here: yielding the carrier thread does not
+     * release the actor execution lease and therefore cannot let a queued peer
+     * use a one-worker actor domain. This non-suspending form observes control
+     * state and records reduction/wall-clock preemption requests. Compiler
+     * lowering services such a request at the next
+     * {@link ActorContext#checkpoint(ActorContinuation)} by capturing a
+     * heap-safe continuation and unwinding the current carrier turn.</p>
      */
     /**
      * Ask a currently executing actor to yield at its next preemption-safe
@@ -6791,16 +6791,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void beginSchedulingSlice() {
-            schedulingSliceStartedNanos = System.nanoTime();
-            schedulingReductionsRemaining = DEFAULT_ACTOR_REDUCTIONS_PER_SLICE;
+            synchronized (lifecycleLock) {
+                schedulingSliceStartedNanos = System.nanoTime();
+                schedulingReductionsRemaining = DEFAULT_ACTOR_REDUCTIONS_PER_SLICE;
+            }
         }
 
         private void endSchedulingSlice() {
-            schedulingSliceStartedNanos = 0L;
-            schedulingReductionsRemaining = 0;
-            // A turn boundary already relinquishes the carrier, so a late
-            // request need not spill into the next slice.
-            preemptRequested.set(false);
+            synchronized (lifecycleLock) {
+                schedulingSliceStartedNanos = 0L;
+                schedulingReductionsRemaining = 0;
+                // A turn boundary already relinquishes the carrier. Serialize
+                // with requestPreemption() so a request racing natural turn
+                // completion cannot leak into the actor's next slice.
+                preemptRequested.set(false);
+            }
         }
 
         private void observeSchedulingCheckpoint() {
@@ -6817,10 +6822,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean requestPreemption() {
-            if (stopped.get() || closed.get()) return false;
-            if (executionLease.get() == null) return false;
-            preemptRequested.set(true);
-            return true;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || closed.get()) return false;
+                if (executionLease.get() == null || schedulingSliceStartedNanos == 0L) {
+                    return false;
+                }
+                preemptRequested.set(true);
+                return true;
+            }
         }
 
         private void enterCarrierPinnedSection() {
