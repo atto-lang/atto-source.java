@@ -10,6 +10,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresFutureCallbackTest {
 
+    private static final class TestFatalError extends VirtualMachineError {
+        private TestFatalError(String message) {
+            super(message);
+        }
+    }
+
+
     @Test
     void fromCallbackMaySettleSynchronouslyButRemainsSingleShot() throws Exception {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
@@ -42,6 +49,44 @@ final class OresFutureCallbackTest {
                 0,
                 future.pendingRuntimeWaiterCount(),
                 "late terminal registrations must not remain retained in the waiter queue");
+    }
+
+    @Test
+    void runtimeWaiterOrdinaryFailuresRemainIsolatedButFatalErrorsEscape() {
+        OresFuture<Integer> ordinary = new OresFuture<>();
+        ordinary.whenCompleteRuntime((value, failure) -> {
+            throw new IllegalStateException("plumbing bug");
+        });
+        assertDoesNotThrow(() -> ordinary.completeFromRuntime(1));
+        assertEquals(1, ordinary.join());
+
+        OresFuture<Integer> fatal = new OresFuture<>();
+        fatal.whenCompleteRuntime((value, failure) -> {
+            throw new TestFatalError("fatal waiter");
+        });
+        TestFatalError thrown = assertThrows(
+                TestFatalError.class,
+                () -> fatal.completeFromRuntime(2));
+        assertEquals("fatal waiter", thrown.getMessage());
+        assertEquals(2, fatal.join(),
+                "settlement remains authoritative even though the fatal error escapes");
+    }
+
+    @Test
+    void cancellationHookOrdinaryFailuresRemainIsolatedButFatalErrorsEscape() {
+        OresFuture<Integer> ordinary = new OresFuture<>(
+                () -> { throw new IllegalStateException("cancel hook"); });
+        assertDoesNotThrow(() -> assertTrue(ordinary.cancel(false)));
+        assertTrue(ordinary.isCancelled());
+
+        OresFuture<Integer> fatal = new OresFuture<>(
+                () -> { throw new TestFatalError("fatal cancel hook"); });
+        TestFatalError thrown = assertThrows(
+                TestFatalError.class,
+                () -> fatal.cancel(false));
+        assertEquals("fatal cancel hook", thrown.getMessage());
+        assertTrue(fatal.isCancelled(),
+                "cancellation state is terminal even when its host hook reports a fatal error");
     }
 
     @Test
