@@ -253,6 +253,45 @@ end
     }
 
     @Test
+    void regionAndRegionViewIndexedWritesAreTypedBeforeEffectChecking() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc writeRegion(Region<int> values, int i): void
+                writes values;
+                {
+                  values[i] = 7;
+                  return;
+                }
+                """));
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc writeView(RegionView<int> values, int i): void
+                writes values;
+                {
+                  values[i] = 7;
+                  return;
+                }
+                """));
+
+        assertComputeRejected("""
+                compute fnc wrongElement(Region<int> values, int i): void
+                writes values;
+                {
+                  values[i] = "no";
+                  return;
+                }
+                """);
+
+        assertComputeRejected("""
+                compute fnc wrongIndex(Region<int> values, string key): void
+                writes values;
+                {
+                  values[key] = 7;
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void computeRejectsAmbientGlobalsAndShadowedIntrinsicCalls() {
         assertComputeRejected("""
                 val int outside = 9;
