@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -261,6 +262,47 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 if (unwrapped instanceof Error error) throw error;
                 return new RuntimeException(unwrapped);
             }
+        });
+    }
+
+    /**
+     * Scheduler-safe value mapping. The mapper is guest-capable code and is
+     * therefore run only from an Ores scheduler turn, never on the thread that
+     * settles this Future.
+     */
+    public <U> OresFuture<U> mapOn(
+            OresScheduler scheduler,
+            Function<? super T, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper");
+        return attachCallback(
+                scheduler,
+                (value, completion) -> completion.resolve(mapper.apply(value)));
+    }
+
+    /**
+     * Scheduler-safe monadic bind. The mapper itself runs on the supplied Ores
+     * scheduler. Completion of the returned Awaitable only settles runtime
+     * state; it never executes the next guest continuation inline.
+     */
+    public <U> OresFuture<U> flatMapOn(
+            OresScheduler scheduler,
+            Function<? super T, ? extends Awaitable<? extends U>> mapper) {
+        Objects.requireNonNull(mapper, "mapper");
+        return attachCallback(scheduler, (value, completion) -> {
+            Awaitable<? extends U> awaited = Objects.requireNonNull(
+                    mapper.apply(value),
+                    "Future.flat_map mapper returned null");
+            OresFuture<? extends U> nested = Objects.requireNonNull(
+                    awaited.getAwaited(),
+                    "Awaitable.get_awaited returned null");
+            nested.whenCompleteRuntime((nestedValue, failure) -> {
+                if (completion.isDone()) return;
+                if (failure == null) {
+                    completion.resolve(nestedValue);
+                } else {
+                    completion.reject(unwrap(failure));
+                }
+            });
         });
     }
 
