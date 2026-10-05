@@ -198,12 +198,75 @@ final class ActorRuntimeTest {
 
             ref.stop();
 
+            assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> reply.get(2, TimeUnit.SECONDS));
+            assertTrue(reply.isCancelled());
+        }
+    }
+
+    @Test
+    void cancellingQueuedTypedProtocolCallSkipsActorMethodExecution() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Integer> gate = new CompletableFuture<>();
+            CountDownLatch firstSuspended = new CountDownLatch(1);
+            AtomicInteger cancelledExecutions = new AtomicInteger();
+
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> {
+                        if (method.equals("hold")) {
+                            firstSuspended.countDown();
+                            turnContext.suspendOn(gate, (value, failure, resumeContext) ->
+                                    resumeContext.completeProtocolReply(value));
+                            throw new AssertionError(
+                                    "suspendOn must unwind the typed protocol turn");
+                        }
+                        if (method.equals("cancelled")) {
+                            cancelledExecutions.incrementAndGet();
+                            return 99;
+                        }
+                        throw new IllegalArgumentException("unexpected method " + method);
+                    });
+
+            var first = runtime.invokeSourceProtocol(ref, "hold", List.of());
+            assertTrue(firstSuspended.await(2, TimeUnit.SECONDS));
+
+            var cancelled = runtime.invokeSourceProtocol(ref, "cancelled", List.of());
+            assertTrue(cancelled.cancel(false));
+            assertTrue(cancelled.isCancelled());
+
+            gate.complete(42);
+            assertEquals(42, first.get(2, TimeUnit.SECONDS));
+
+            Thread.sleep(30);
+            assertEquals(0, cancelledExecutions.get(),
+                    "cancelled queued RPC must not execute actor code");
+            assertTrue(ref.isAlive());
+        }
+    }
+
+    @Test
+    void typedProtocolRejectsCrossRuntimeActorRefReplies() throws Exception {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var foreign = right.spawnShared(factoryContext ->
+                    (message, turnContext) -> { });
+            var target = left.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> foreign);
+
+            var reply = left.invokeSourceProtocol(target, "foreign_ref", List.of());
+
             var failure = assertThrows(
                     java.util.concurrent.ExecutionException.class,
                     () -> reply.get(2, TimeUnit.SECONDS));
-            assertInstanceOf(
-                    java.util.concurrent.CancellationException.class,
-                    failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("different ActorRuntime"),
+                    failure.getCause().getMessage());
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (target.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertFalse(target.isAlive());
         }
     }
 
