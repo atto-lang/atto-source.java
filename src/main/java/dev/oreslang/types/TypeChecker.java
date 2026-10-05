@@ -513,6 +513,23 @@ public final class TypeChecker {
     }
 
     private void validateActorProtocolContract(Ast.ClassDecl klass) {
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null || parent.actorKind() == Ast.ActorKind.NONE) continue;
+            for (Ast.FieldDecl local : klass.fields()) {
+                if (findFieldTarget(
+                        parent,
+                        nominalClassType(parent),
+                        local.name(),
+                        new LinkedHashSet<>()) != null) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name()
+                                    + "' cannot shadow inherited actor state field '"
+                                    + local.name() + "'; actor state layout must remain unambiguous");
+                }
+            }
+        }
+
         List<Ast.MethodDecl> publicInstance = klass.methods().stream()
                 .filter(method -> !method.isStatic()
                         && method.visibility() == Ast.Visibility.PUBLIC
@@ -2506,6 +2523,92 @@ public final class TypeChecker {
         return named;
     }
 
+    private void rejectActorFieldInitializerVirtualDispatch(
+            Ast.Expr expr,
+            Ast.ClassDecl klass,
+            Ast.FieldDecl field) {
+        if (expr == null) return;
+        if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr receiver
+                    && receiver.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "actor field initializer '" + klass.name() + "." + field.name()
+                                + "' cannot call self." + member.member()
+                                + "(...); virtual dispatch is forbidden before actor state is fully initialized");
+            }
+            rejectActorFieldInitializerVirtualDispatch(call.callee(), klass, field);
+            for (Ast.Expr argument : call.arguments()) {
+                rejectActorFieldInitializerVirtualDispatch(argument, klass, field);
+            }
+            return;
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            rejectActorFieldInitializerVirtualDispatch(binary.left(), klass, field);
+            rejectActorFieldInitializerVirtualDispatch(binary.right(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            rejectActorFieldInitializerVirtualDispatch(unary.operand(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.AssignExpr assignment) {
+            rejectActorFieldInitializerVirtualDispatch(assignment.target(), klass, field);
+            rejectActorFieldInitializerVirtualDispatch(assignment.value(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            rejectActorFieldInitializerVirtualDispatch(conditional.condition(), klass, field);
+            rejectActorFieldInitializerVirtualDispatch(conditional.whenTrue(), klass, field);
+            rejectActorFieldInitializerVirtualDispatch(conditional.whenFalse(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            rejectActorFieldInitializerVirtualDispatch(member.receiver(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            rejectActorFieldInitializerVirtualDispatch(indexed.receiver(), klass, field);
+            rejectActorFieldInitializerVirtualDispatch(indexed.index(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                rejectActorFieldInitializerVirtualDispatch(argument, klass, field);
+            }
+            return;
+        }
+        if (expr instanceof Ast.AwaitExpr awaited) {
+            rejectActorFieldInitializerVirtualDispatch(awaited.expression(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.SpawnExpr spawned) {
+            rejectActorFieldInitializerVirtualDispatch(spawned.call(), klass, field);
+            return;
+        }
+        if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) {
+                rejectActorFieldInitializerVirtualDispatch(item, klass, field);
+            }
+            return;
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) {
+                rejectActorFieldInitializerVirtualDispatch(item, klass, field);
+            }
+            return;
+        }
+        if (expr instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField item : object.fields()) {
+                rejectActorFieldInitializerVirtualDispatch(item.value(), klass, field);
+            }
+            return;
+        }
+        // Lambda bodies are inert at field-initialization time. Ownership
+        // checking separately prevents actor self/borrow capture from escaping
+        // into a stored closure.
+    }
+
     private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
@@ -2543,6 +2646,10 @@ public final class TypeChecker {
         boolean previousConstructor = currentActorConstructor;
         try {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
+                rejectActorFieldInitializerVirtualDispatch(
+                        field.initializer(),
+                        klass,
+                        field);
                 currentActorKind = klass.actorKind();
                 currentActorConstructor = true;
             }
