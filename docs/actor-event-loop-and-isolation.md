@@ -57,29 +57,27 @@ and deadlines. Arbitrary trusted native/JVM stacks are never asynchronously
 suspended at an unsafe instruction. A message that ignores safepoints is handled
 by the watchdog/fail-stop path rather than unsafe thread suspension.
 
-## Shared actors: one public mailbox ingress
+## Shared actors: typed protocol over one mailbox
 
-Shared actors do not expose an object-style public method surface.
+Shared actors expose one or more typed public protocol methods while preserving
+one logical mailbox and one execution lease.
 
 A shared actor may declare:
 
-- private state;
+- private actor-owned state;
 - private helper methods;
-- exactly one effective public `receive(Message): void` mailbox ingress.
+- one or more public monomorphic protocol methods.
 
-All external interaction goes through the actor reference/mailbox. Public static
-helpers and additional public methods are rejected.
+External interaction goes through `ActorRef<Protocol>.method(...)`. The compiler
+lowers those method calls to one runtime-private mailbox dispatcher; callers
+never gain a mutable object reference and raw send/receive/mailbox operations
+are not a source actor-class surface.
 
 This preserves semantic isolation even though the backing address space is
 shared: mutable actor-owned state is reachable only while that actor holds its
-execution lease. Cross-actor shared mutation must use explicit synchronized
-capabilities such as runtime-managed shared cells/mutexes; ordinary actor state
-does not become concurrently callable shared-object state.
-
-The public ingress is deliberately singular: OresVM owns the permanent
-Erlang-style mailbox loop and source code supplies one serialized
-`receive(Message): void` turn handler. External code enqueues through
-`ActorRef.send(message)`; it does not invoke actor methods directly.
+execution lease. Cross-actor shared mutation still requires explicit
+synchronized capabilities; ordinary actor state never becomes concurrently
+callable shared-object state.
 
 ## Private / isoactors
 
