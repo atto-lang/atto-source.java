@@ -92,10 +92,16 @@ public final class TypeChecker {
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
-                // Cross-file imports are opaque to this per-unit typechecker.
-                // Track class aliases too so ClassAlias.member can survive static
-                // checking and be resolved/validated by the linked runtime.
-                importedValues.add(name);
+                // Cross-file value imports are opaque to this per-unit typechecker.
+                // Class aliases remain runtime namespace values (construction/static
+                // access), but actor/interface/type-family selectors are type-only
+                // and must not become arbitrary expression values.
+                if (switch (imported.kind()) {
+                    case MODULE, CLASS, FUNCTION, ALL -> true;
+                    case ACTOR, INTERFACE, TRAIT, STRUCT, TYPE, TYPES -> false;
+                }) {
+                    importedValues.add(name);
+                }
             }
         }
     }
