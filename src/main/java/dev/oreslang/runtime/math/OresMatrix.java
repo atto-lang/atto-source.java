@@ -366,16 +366,18 @@ public final class OresMatrix implements ImmutableGuestValue {
 
         for (int pivot = 0; pivot < n; pivot++) {
             int best = pivot;
-            double bestMagnitude = magnitudeSquared(ar[pivot * n + pivot], ai == null ? 0.0 : ai[pivot * n + pivot]);
+            double bestMagnitude = Math.hypot(
+                    ar[pivot * n + pivot],
+                    ai == null ? 0.0 : ai[pivot * n + pivot]);
             for (int row = pivot + 1; row < n; row++) {
                 int idx = row * n + pivot;
-                double magnitude = magnitudeSquared(ar[idx], ai == null ? 0.0 : ai[idx]);
+                double magnitude = Math.hypot(ar[idx], ai == null ? 0.0 : ai[idx]);
                 if (magnitude > bestMagnitude) {
                     bestMagnitude = magnitude;
                     best = row;
                 }
             }
-            if (Math.sqrt(bestMagnitude) <= tolerance) {
+            if (bestMagnitude <= tolerance) {
                 throw new IllegalArgumentException("matrix is singular or numerically rank deficient");
             }
             if (best != pivot) {
@@ -450,16 +452,18 @@ public final class OresMatrix implements ImmutableGuestValue {
 
         for (int pivot = 0; pivot < rows; pivot++) {
             int best = pivot;
-            double bestMagnitude = magnitudeSquared(ar[pivot * cols + pivot], ai == null ? 0.0 : ai[pivot * cols + pivot]);
+            double bestMagnitude = Math.hypot(
+                    ar[pivot * cols + pivot],
+                    ai == null ? 0.0 : ai[pivot * cols + pivot]);
             for (int row = pivot + 1; row < rows; row++) {
                 int idx = row * cols + pivot;
-                double magnitude = magnitudeSquared(ar[idx], ai == null ? 0.0 : ai[idx]);
+                double magnitude = Math.hypot(ar[idx], ai == null ? 0.0 : ai[idx]);
                 if (magnitude > bestMagnitude) {
                     best = row;
                     bestMagnitude = magnitude;
                 }
             }
-            if (Math.sqrt(bestMagnitude) <= tolerance) {
+            if (bestMagnitude <= tolerance) {
                 return new LuResult(ar, ai, 0);
             }
             if (best != pivot) {
@@ -517,10 +521,6 @@ public final class OresMatrix implements ImmutableGuestValue {
         if (!(value instanceof Number) && !(value instanceof OresComplex)) {
             throw new IllegalArgumentException("matrix elements must be real or complex numbers");
         }
-    }
-
-    private static double magnitudeSquared(double real, double imaginary) {
-        return real * real + imaginary * imaginary;
     }
 
     private static double maxMagnitude(double[] real, double[] imaginary) {
