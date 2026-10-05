@@ -736,17 +736,10 @@ while ready() do
 done
 ```
 
-Omitting the condition is explicit infinite-loop shorthand:
-
-```ores
-while {
-  poll();
-}
-
-while do
-  poll();
-done
-```
+`while` always requires a condition. It is deliberately **not** an
+unconditional-loop alias: the canonical explicit infinite-loop statement is
+`loop { ... }` on the control-flow integration line. Keeping these meanings
+separate avoids two independently evolving infinite-loop semantics.
 
 Post-test loops use the brace form:
 
