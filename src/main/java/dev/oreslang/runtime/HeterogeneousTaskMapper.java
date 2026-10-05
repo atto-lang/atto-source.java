@@ -87,6 +87,8 @@ public final class HeterogeneousTaskMapper {
      * cannot attach a forged root identity or disjointness proof.
      */
     public static final class RegionSlice {
+        private static final long ROOT_SLICE_ID = 1L;
+
         private final RegionIdentity root;
         private final long sliceId;
         private final DisjointFamily disjointFamily;
@@ -99,10 +101,14 @@ public final class HeterogeneousTaskMapper {
         }
 
         static RegionSlice root(RegionIdentity root) {
-            return new RegionSlice(root, 1L, null);
+            return new RegionSlice(root, ROOT_SLICE_ID, null);
         }
 
         static RegionSlice certified(RegionIdentity root, long sliceId, DisjointFamily family) {
+            if (sliceId == ROOT_SLICE_ID) {
+                throw new IllegalArgumentException(
+                        "certified partition slices cannot reuse the reserved root slice id");
+            }
             return new RegionSlice(root, sliceId, Objects.requireNonNull(family, "family"));
         }
 
@@ -130,12 +136,7 @@ public final class HeterogeneousTaskMapper {
             Objects.requireNonNull(slice, "slice");
             Objects.requireNonNull(fields, "fields");
             Objects.requireNonNull(layout, "layout");
-            fields = Set.copyOf(fields);
-            for (String field : fields) {
-                if (field == null || field.isBlank()) {
-                    throw new IllegalArgumentException("region-view field names cannot be blank");
-                }
-            }
+            fields = validateFieldPaths(fields, "region-view");
         }
 
         public static RegionView whole(RegionSlice slice) {
@@ -164,12 +165,7 @@ public final class HeterogeneousTaskMapper {
             Objects.requireNonNull(slice, "slice");
             Objects.requireNonNull(fields, "fields");
             Objects.requireNonNull(privilege, "privilege");
-            fields = Set.copyOf(fields);
-            for (String field : fields) {
-                if (field == null || field.isBlank()) {
-                    throw new IllegalArgumentException("task access field names cannot be blank");
-                }
-            }
+            fields = validateFieldPaths(fields, "task access");
             if (privilege == Privilege.REDUCE) {
                 if (reductionOperator == null || reductionOperator.isBlank()) {
                     throw new IllegalArgumentException("reduction access requires a named reduction operator");
@@ -226,8 +222,10 @@ public final class HeterogeneousTaskMapper {
         public boolean mayOverlapFields(Access other) {
             Objects.requireNonNull(other, "other");
             if (fields.isEmpty() || other.fields.isEmpty()) return true;
-            for (String field : fields) {
-                if (other.fields.contains(field)) return true;
+            for (String left : fields) {
+                for (String right : other.fields) {
+                    if (fieldPathsOverlap(left, right)) return true;
+                }
             }
             return false;
         }
@@ -338,7 +336,14 @@ public final class HeterogeneousTaskMapper {
         long targetChunks = Math.min((long) parallelism, ceilDiv(workItems, minimumChunkWorkItems));
         targetChunks = Math.max(1L, targetChunks);
         long raw = ceilDiv(workItems, targetChunks);
-        long aligned = alignUp(raw, simdWidth);
+        long aligned;
+        try {
+            aligned = alignUpExact(raw, simdWidth);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "SIMD-aligned CPU chunk size exceeds the planner's 64-bit range",
+                    overflow);
+        }
         int chunks = Math.toIntExact(ceilDiv(workItems, aligned));
         return new CpuChunkPlan(aligned, chunks, parallelism, simdWidth);
     }
@@ -456,14 +461,39 @@ public final class HeterogeneousTaskMapper {
         return numerator / denominator + (numerator % denominator == 0 ? 0 : 1);
     }
 
-    private static long alignUp(long value, long alignment) {
+    private static long alignUpExact(long value, long alignment) {
         long remainder = value % alignment;
         if (remainder == 0) return value;
-        try {
-            return Math.addExact(value, alignment - remainder);
-        } catch (ArithmeticException overflow) {
-            return Long.MAX_VALUE - (Long.MAX_VALUE % alignment);
+        return Math.addExact(value, alignment - remainder);
+    }
+
+    private static Set<String> validateFieldPaths(Set<String> fields, String owner) {
+        Objects.requireNonNull(fields, "fields");
+        Set<String> copy = Set.copyOf(fields);
+        for (String field : copy) {
+            if (field == null || field.isBlank()) {
+                throw new IllegalArgumentException(owner + " field paths cannot be blank");
+            }
+            String[] segments = field.split("\\.", -1);
+            for (String segment : segments) {
+                if (segment.isBlank()) {
+                    throw new IllegalArgumentException(
+                            owner + " field path contains an empty segment: " + field);
+                }
+            }
         }
+        return copy;
+    }
+
+    private static boolean fieldPathsOverlap(String left, String right) {
+        if (left.equals(right)) return true;
+        return isStrictPathPrefix(left, right) || isStrictPathPrefix(right, left);
+    }
+
+    private static boolean isStrictPathPrefix(String prefix, String path) {
+        return path.length() > prefix.length()
+                && path.startsWith(prefix)
+                && path.charAt(prefix.length()) == '.';
     }
 
     private Variant bestEligible(TaskSpec task, ProcessorKind processor, long workItems) {
