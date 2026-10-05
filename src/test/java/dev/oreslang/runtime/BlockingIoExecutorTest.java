@@ -145,7 +145,9 @@ final class BlockingIoExecutorTest {
             OresFuture<Integer> ores = executor.adaptJavaFuture(host);
 
             assertEquals(42, ores.get(2, TimeUnit.SECONDS));
-            assertFalse(ores instanceof java.util.concurrent.CompletionStage<?>,
+            assertFalse(
+                    java.util.concurrent.CompletionStage.class.isAssignableFrom(
+                            ores.getClass()),
                     "host Future interop must normalize into Ores-owned Future semantics");
         }
     }
