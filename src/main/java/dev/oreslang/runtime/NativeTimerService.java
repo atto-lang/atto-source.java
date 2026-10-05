@@ -3,7 +3,6 @@ package dev.oreslang.runtime;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -14,7 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * execute runtime-owned short callbacks; guest continuations must be enqueued
  * onto their owning scheduler instead of running on the timer thread.</p>
  */
-final class NativeTimerService implements AutoCloseable {
+final class NativeTimerService {
     interface Ticket {
         boolean cancel();
     }
@@ -29,7 +28,6 @@ final class NativeTimerService implements AutoCloseable {
 
     private final AtomicLong nextId = new AtomicLong(1L);
     private final ConcurrentHashMap<Long, Runnable> callbacks = new ConcurrentHashMap<>();
-    private final AtomicBoolean closed = new AtomicBoolean();
     private final long nativeHandle;
 
     private NativeTimerService() {
@@ -44,8 +42,6 @@ final class NativeTimerService implements AutoCloseable {
     Ticket schedule(Runnable callback, long delayNanos) {
         Objects.requireNonNull(callback, "callback");
         if (delayNanos < 0L) throw new IllegalArgumentException("delayNanos must be non-negative");
-        if (closed.get()) throw new RejectedExecutionException("native timer service is closed");
-
         long id = nextTimerId();
         callbacks.put(id, callback);
         boolean scheduled;
@@ -108,7 +104,7 @@ final class NativeTimerService implements AutoCloseable {
     @SuppressWarnings("unused") // invoked from JNI
     private void nativeFire(long id) {
         Runnable callback = callbacks.remove(id);
-        if (callback == null || closed.get()) return;
+        if (callback == null) return;
         try {
             callback.run();
         } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
@@ -130,15 +126,7 @@ final class NativeTimerService implements AutoCloseable {
         }
     }
 
-    @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        callbacks.clear();
-        nativeShutdown(nativeHandle);
-    }
-
     private static native long nativeCreate(NativeTimerService service);
     private static native boolean nativeSchedule(long handle, long id, long delayNanos);
     private static native boolean nativeCancel(long handle, long id);
-    private static native void nativeShutdown(long handle);
 }
