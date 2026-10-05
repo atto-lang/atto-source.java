@@ -1260,7 +1260,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             List<Ast.FieldDecl> classFields =
-                    effectiveFields(klass, new LinkedHashSet<>());
+                    effectiveActorFields(klass, new LinkedHashSet<>());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UninitializedActorField.INSTANCE);
@@ -1327,6 +1327,46 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        private List<Ast.FieldDecl> effectiveActorFields(
+                Ast.ClassDecl klass,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) {
+                throw new IllegalArgumentException(
+                        "inheritance cycle involving actor " + klass.name());
+            }
+            LinkedHashMap<String, Ast.FieldDecl> result = new LinkedHashMap<>();
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) {
+                    continue;
+                }
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) {
+                    throw new IllegalArgumentException(
+                            "unknown parent class " + parentRef.name());
+                }
+                for (Ast.FieldDecl field : effectiveActorFields(parent, seen)) {
+                    Ast.FieldDecl previous = result.putIfAbsent(field.name(), field);
+                    if (previous != null && previous != field) {
+                        throw new IllegalStateException(
+                                "actor '" + klass.name()
+                                        + "' has conflicting inherited state field '"
+                                        + field.name() + "'");
+                    }
+                }
+            }
+            for (Ast.FieldDecl field : klass.fields()) {
+                Ast.FieldDecl previous = result.putIfAbsent(field.name(), field);
+                if (previous != null && previous != field) {
+                    throw new IllegalStateException(
+                            "actor '" + klass.name()
+                                    + "' cannot shadow inherited state field '"
+                                    + field.name() + "'");
+                }
+            }
+            seen.remove(klass);
+            return List.copyOf(result.values());
         }
 
         private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> seen) {
