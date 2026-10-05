@@ -117,6 +117,22 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void runtimeRejectsLocalChannelCapabilityAsMessagePayload() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> actor =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            ChannelRuntime.Channel<String> localChannel =
+                    new ChannelRuntime.Channel<>(1);
+
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> actor.send(localChannel));
+            assertTrue(rejected.getMessage().contains("execution-domain local"));
+            actor.stop();
+        }
+    }
+
+    @Test
     void actorTeardownCancelsOwnedNonBlockingChannelRegistration() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ChannelRuntime.Channel<String> channel =
