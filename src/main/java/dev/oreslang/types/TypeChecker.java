@@ -90,7 +90,7 @@ public final class TypeChecker {
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
-                if (imported.kind() != Ast.ImportKind.CLASS || ImportRules.isJavaPath(imported.path())) {
+                if (!ImportRules.isTypeOnlyKind(imported.kind()) || ImportRules.isJavaPath(imported.path())) {
                     importedValues.add(name);
                 }
             }
