@@ -20,17 +20,19 @@ import java.util.concurrent.atomic.AtomicReference;
  * lower to scheduler suspension over those futures. The host-facing try*
  * methods are deliberately nonblocking.</p>
  *
- * <p>Selection is deterministic by default. PRIORITY scans in lexical/list
- * order. ROUND_ROBIN rotates the first case for repeated selections through a
- * {@link SelectPlan}. There is intentionally no hidden pseudo-random tie
- * breaker.</p>
+ * <p>Selection is fair and deterministic by default. FAIR rotates the first
+ * case for repeated selections through a reusable {@link SelectSet}. ORDERED
+ * scans in lexical/list order for code that intentionally wants strict
+ * priority. There is intentionally no hidden pseudo-random tie breaker.</p>
  */
 public final class ChannelRuntime {
     private ChannelRuntime() { }
 
     public enum SelectPolicy {
-        PRIORITY,
-        ROUND_ROBIN
+        /** Deterministic rotating fairness. This is the Oreslang default. */
+        FAIR,
+        /** Strict lexical/list order. Earlier ready cases win and may starve later cases. */
+        ORDERED
     }
 
     public enum Operation {
@@ -95,21 +97,23 @@ public final class ChannelRuntime {
     }
 
     /**
-     * Reusable dynamic selection plan. ROUND_ROBIN fairness belongs to the
-     * logical select site/plan rather than to a process-global random source.
+     * Reusable static/dynamic selection primitive. FAIR state belongs to this
+     * logical select site/set rather than to a process-global random source.
+     * Static source select sites should cache one SelectSet; dynamic code can
+     * construct the same type from runtime list/map cases and reuse it.
      */
-    public static final class SelectPlan {
+    public static final class SelectSet {
         private final List<SelectCase> cases;
         private final SelectPolicy policy;
         private final AtomicLong cursor = new AtomicLong();
 
-        private SelectPlan(List<? extends SelectCase> cases, SelectPolicy policy) {
+        private SelectSet(List<? extends SelectCase> cases, SelectPolicy policy) {
             this.cases = checkedCases(cases);
             this.policy = Objects.requireNonNull(policy, "policy");
         }
 
         public OresFuture<Selection> next() {
-            int start = policy == SelectPolicy.ROUND_ROBIN
+            int start = policy == SelectPolicy.FAIR
                     ? (int) Math.floorMod(cursor.getAndIncrement(), cases.size())
                     : 0;
             return ActorRuntime.trackCurrentFuture(
@@ -125,23 +129,61 @@ public final class ChannelRuntime {
         }
     }
 
-    public static SelectPlan plan(
-            List<? extends SelectCase> cases,
-            SelectPolicy policy) {
-        return new SelectPlan(cases, policy);
+    public static SelectSet selectSet(List<? extends SelectCase> cases) {
+        return selectSet(cases, SelectPolicy.FAIR);
     }
 
+    public static SelectSet selectSet(
+            List<? extends SelectCase> cases,
+            SelectPolicy policy) {
+        return new SelectSet(cases, policy);
+    }
+
+    /**
+     * Blocking source-level select lowers to await(selectSet(...).next()).
+     * This host primitive itself is always nonblocking and returns an OresFuture.
+     */
     public static OresFuture<Selection> select(
             List<? extends SelectCase> cases) {
-        return select(cases, SelectPolicy.PRIORITY);
+        return selectSet(cases).next();
     }
 
     public static OresFuture<Selection> select(
             List<? extends SelectCase> cases,
             SelectPolicy policy) {
-        List<SelectCase> checked = checkedCases(cases);
-        return ActorRuntime.trackCurrentFuture(
-                new Selector(checked, Objects.requireNonNull(policy, "policy"), 0).arm());
+        return selectSet(cases, policy).next();
+    }
+
+    /**
+     * Source-level `nb select` lowering. It is intentionally the exact same
+     * runtime operation as select without the source-level await/suspension.
+     */
+    public static OresFuture<Selection> nbSelect(
+            List<? extends SelectCase> cases) {
+        return select(cases);
+    }
+
+    public static OresFuture<Selection> nbSelect(
+            List<? extends SelectCase> cases,
+            SelectPolicy policy) {
+        return select(cases, policy);
+    }
+
+    /**
+     * Source-level `nb readch channel`. The read registration is armed now,
+     * but the owning actor is not suspended unless/ until the returned Future
+     * is explicitly awaited.
+     */
+    public static <T> OresFuture<T> nbRead(Channel<T> channel) {
+        return Objects.requireNonNull(channel, "channel").read();
+    }
+
+    /**
+     * Source-level `nb writech channel, value`. The write registration is
+     * armed now and completion is represented by the returned Future.
+     */
+    public static <T> OresFuture<Void> nbWrite(Channel<T> channel, T value) {
+        return Objects.requireNonNull(channel, "channel").write(value);
     }
 
     /**
@@ -539,7 +581,7 @@ public final class ChannelRuntime {
 
         private Selection scan() {
             int size = cases.size();
-            int first = policy == SelectPolicy.ROUND_ROBIN ? start : 0;
+            int first = policy == SelectPolicy.FAIR ? start : 0;
             for (int offset = 0; offset < size; offset++) {
                 int index = (first + offset) % size;
                 Selection selected = cases.get(index).tryPerform(index);
