@@ -120,6 +120,28 @@ final class UntrustedActorSandboxTest {
     }
 
     @Test
+    void broaderSupervisorPolicyCannotLeakGcControlIntoUntrustedActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var ref = runtime.<String>spawnUntrusted(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.UntrustedActorLimits(
+                            Duration.ofSeconds(5),
+                            100,
+                            1024,
+                            1024),
+                    null,
+                    context -> (message, turn) -> {
+                        assertFalse(turn.policy().allows(IsolatePolicy.Capability.GC_CONTROL));
+                        turn.self().stop();
+                    });
+
+            ref.send("check");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty());
+        }
+    }
+
+    @Test
     void lifetimeCanNeverExceedFiveMinutes() {
         assertThrows(
                 IllegalArgumentException.class,
