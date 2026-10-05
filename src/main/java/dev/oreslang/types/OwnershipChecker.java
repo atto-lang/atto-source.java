@@ -1940,6 +1940,29 @@ public final class OwnershipChecker {
                     ? mergedBorrowSource
                     : null;
         }
+
+        // Path correlation can make max(exit.borrowCount) too small. Example:
+        // branch A retains b, branch B retains a. Each exit has one active
+        // borrow, but after conservative joining both a and b are potential
+        // read aliases. Keep the owner's counter at least as large as the
+        // number of visible merged aliases that may release against it.
+        Map<VarState, Integer> mergedReadAliases = new IdentityHashMap<>();
+        Set<VarState> mergedMutableAliases = java.util.Collections.newSetFromMap(
+                new IdentityHashMap<>());
+        for (VarState state : base.keySet()) {
+            if (state.borrowSource == null) continue;
+            if (state.kind == ValueKind.IMM_BORROW) {
+                mergedReadAliases.merge(state.borrowSource, 1, Integer::sum);
+            } else if (state.kind == ValueKind.MUT_BORROW) {
+                mergedMutableAliases.add(state.borrowSource);
+            }
+        }
+        for (VarState owner : base.keySet()) {
+            owner.immutableBorrows = Math.max(
+                    owner.immutableBorrows,
+                    mergedReadAliases.getOrDefault(owner, 0));
+            owner.mutableBorrowed |= mergedMutableAliases.contains(owner);
+        }
     }
 
     private ValueKind mergeBranchKind(ValueKind left, ValueKind right) {
