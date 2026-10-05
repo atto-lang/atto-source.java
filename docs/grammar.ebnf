@@ -116,12 +116,21 @@ binding_kind    = "val" | "const" | "let" ;
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
                 | [ binding_kind ] object_pattern "=" expression stmt_terminator ;
-sequence_pattern= "[" sequence_destructure_item { "," sequence_destructure_item } "]" ;
-object_pattern  = "{" object_destructure_item { "," object_destructure_item } "}" ;
+sequence_pattern= "[" ( sequence_rest_item
+                                  | sequence_destructure_item
+                                    { "," sequence_destructure_item }
+                                    [ "," sequence_rest_item ] ) "]" ;
+object_pattern  = "{" ( object_rest_item
+                                  | object_destructure_item
+                                    { "," object_destructure_item }
+                                    [ "," object_rest_item ] ) "}" ;
 sequence_destructure_item
-                = [ binding_kind ] [ "..." ] IDENT | "_" ;
+                = [ binding_kind ] IDENT | "_" ;
+sequence_rest_item
+                = [ binding_kind ] "..." IDENT ;
 object_destructure_item
-                = [ binding_kind ] [ "..." ] IDENT ;
+                = [ binding_kind ] IDENT ;
+object_rest_item= [ binding_kind ] "..." IDENT ;
 
 block           = "{" { statement } "}" ;
 statement       = binding_decl
@@ -187,9 +196,13 @@ for_update      = IDENT ( "++" | "--" ) | expression ;
 
 for_of_head     = [ binding_kind ] for_of_pattern "of" expression ;
 for_of_pattern  = IDENT
-                | "[" for_of_destructure_item { "," for_of_destructure_item } "]" ;
+                | "[" ( for_of_rest_item
+                      | for_of_destructure_item
+                        { "," for_of_destructure_item }
+                        [ "," for_of_rest_item ] ) "]" ;
 for_of_destructure_item
-                = "_" | [ binding_kind ] [ "..." ] IDENT ;
+                = "_" | [ binding_kind ] IDENT ;
+for_of_rest_item= [ binding_kind ] "..." IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
