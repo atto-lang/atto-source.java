@@ -119,22 +119,171 @@ define module collections
     }
   end
 
-  define class Queue<T> extends SequenceCore<T> as
+  // Two-stack queue: enqueue is O(1), dequeue/peek are amortized O(1).
+  define class Queue<T> as
+    let Array<T> incoming = new Array<T>();
+    let Array<T> outgoing = new Array<T>();
+
+    rebalance(): void {
+      if self.outgoing.size == 0; do
+        for (let int index = self.incoming.size - 1; index >= 0; index = index - 1) {
+          self.outgoing.add(self.incoming.get(index));
+        }
+        self.incoming.clear();
+      fi
+      return;
+    }
+
+    pub size(): int {
+      return self.incoming.size + self.outgoing.size;
+    }
+
+    pub is_empty(): bool {
+      return self.size() == 0;
+    }
+
     pub enqueue(T value): void {
-      self.add(value);
+      self.incoming.add(value);
       return;
     }
 
     pub dequeue(): Option<T> {
-      if self.size() == 0; do
+      self.rebalance();
+      if self.outgoing.size == 0; do
         return None;
       fi
-      return Some(self.remove_at(0));
+      return Some(self.outgoing.remove(self.outgoing.size - 1));
     }
 
     pub peek(): Option<T> {
-      return self.first();
+      self.rebalance();
+      if self.outgoing.size == 0; do
+        return None;
+      fi
+      return Some(self.outgoing.get(self.outgoing.size - 1));
     }
+
+    pub clear(): void {
+      self.incoming.clear();
+      self.outgoing.clear();
+      return;
+    }
+
+    pub to_array(): Array<T> {
+      let Array<T> copy = new Array<T>();
+      for (let int index = self.outgoing.size - 1; index >= 0; index = index - 1) {
+        copy.add(self.outgoing.get(index));
+      }
+      for value of self.incoming do
+        copy.add(value);
+      done
+      return copy;
+    }
+
+    [Symbol.iterator](): Array<T> {
+      return self.to_array();
+    }
+  end
+
+  // Two-stack deque. front is stored in reverse logical order and back in
+  // forward logical order, giving amortized O(1) end operations.
+  define class Deque<T> as
+    let Array<T> front = new Array<T>();
+    let Array<T> back = new Array<T>();
+
+    ensure_front(): void {
+      if self.front.size == 0; do
+        for (let int index = self.back.size - 1; index >= 0; index = index - 1) {
+          self.front.add(self.back.get(index));
+        }
+        self.back.clear();
+      fi
+      return;
+    }
+
+    ensure_back(): void {
+      if self.back.size == 0; do
+        for (let int index = self.front.size - 1; index >= 0; index = index - 1) {
+          self.back.add(self.front.get(index));
+        }
+        self.front.clear();
+      fi
+      return;
+    }
+
+    pub size(): int {
+      return self.front.size + self.back.size;
+    }
+
+    pub is_empty(): bool {
+      return self.size() == 0;
+    }
+
+    pub push_front(T value): void {
+      self.front.add(value);
+      return;
+    }
+
+    pub push_back(T value): void {
+      self.back.add(value);
+      return;
+    }
+
+    pub pop_front(): Option<T> {
+      self.ensure_front();
+      if self.front.size == 0; do
+        return None;
+      fi
+      return Some(self.front.remove(self.front.size - 1));
+    }
+
+    pub pop_back(): Option<T> {
+      self.ensure_back();
+      if self.back.size == 0; do
+        return None;
+      fi
+      return Some(self.back.remove(self.back.size - 1));
+    }
+
+    pub peek_front(): Option<T> {
+      self.ensure_front();
+      if self.front.size == 0; do
+        return None;
+      fi
+      return Some(self.front.get(self.front.size - 1));
+    }
+
+    pub peek_back(): Option<T> {
+      self.ensure_back();
+      if self.back.size == 0; do
+        return None;
+      fi
+      return Some(self.back.get(self.back.size - 1));
+    }
+
+    pub clear(): void {
+      self.front.clear();
+      self.back.clear();
+      return;
+    }
+
+    pub to_array(): Array<T> {
+      let Array<T> copy = new Array<T>();
+      for (let int index = self.front.size - 1; index >= 0; index = index - 1) {
+        copy.add(self.front.get(index));
+      }
+      for value of self.back do
+        copy.add(value);
+      done
+      return copy;
+    }
+
+    [Symbol.iterator](): Array<T> {
+      return self.to_array();
+    }
+  end
+
+  define class ArrayDeque<T> extends Deque<T> as
   end
 
   // Map policy is implemented in Oreslang over native Array storage. This
