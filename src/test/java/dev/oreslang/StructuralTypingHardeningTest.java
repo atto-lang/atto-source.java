@@ -314,4 +314,110 @@ final class StructuralTypingHardeningTest {
                 """)));
     }
 
+    @Test
+    void structuralCallableContractsPreserveMutabilityModes() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Box as
+                    pub val int value = 1;
+                  end
+
+                  define interface Mutating
+                    fnc update(Box mut value) => void;
+                  end
+
+                  define class ReadOnlyCandidate as
+                    pub update(Box value): void { return; }
+                  end
+
+                  fnc use(structural Mutating candidate, Box value): void {
+                    candidate.update(value);
+                    return;
+                  }
+
+                  fnc bad(Box value): void {
+                    use(new ReadOnlyCandidate(), value);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Box as
+                    pub val int value = 1;
+                  end
+
+                  define interface ReadOnly
+                    fnc update(Box value) => void;
+                  end
+
+                  define class MutatingCandidate as
+                    pub update(Box mut value): void { return; }
+                  end
+
+                  fnc use(structural ReadOnly candidate, Box value): void {
+                    candidate.update(value);
+                    return;
+                  }
+
+                  fnc bad(Box value): void {
+                    use(new MutatingCandidate(), value);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void asyncCallableModeIsNotEquivalentToSyncFutureReturn() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  async fnc delayed(): int {
+                    return 1;
+                  }
+
+                  fnc ok(): void {
+                    val inferred = delayed;
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  async fnc delayed(): int {
+                    return 1;
+                  }
+
+                  fnc bad(): void {
+                    val Fnc<Future<int>> callback = delayed;
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void contextualStructuralKeywordDoesNotStealOrdinaryMemberNames() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Naming as
+                    pub structural(): int {
+                      return 1;
+                    }
+
+                    pub structural<T>(T value): T {
+                      return value;
+                    }
+                  end
+
+                  fnc ok(): int {
+                    val value = new Naming();
+                    return value.structural();
+                  }
+                end
+                """)));
+    }
+
 }
