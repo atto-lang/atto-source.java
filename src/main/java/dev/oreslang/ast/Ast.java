@@ -124,6 +124,8 @@ public final class Ast {
             Visibility visibility,
             boolean async,
             boolean nonLexical,
+            boolean pure,
+            boolean trapped,
             ActorKind actorKind,
             List<String> genericParameters,
             List<Param> parameters,
@@ -136,19 +138,30 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+        /** Compatibility constructor for passes that do not synthesize callable effects. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean nonLexical, ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body) {
+            this(name, kind, visibility, async, nonLexical, false, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             ActorKind actorKind, List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, actorKind, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
         }
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, false, ActorKind.NONE,
+                    genericParameters, parameters, returnType, annotations, body);
         }
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, false, false, false, ActorKind.NONE,
+                    genericParameters, parameters, returnType, annotations, body);
         }
     }
 
