@@ -753,7 +753,7 @@ public final class Parser {
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
         Ast.TypeRef annotated = annotatedReturnType(annotations);
-        Ast.TypeRef surface = match(COLON, FAT_ARROW) ? parseTypeRef() : null;
+        Ast.TypeRef surface = match(COLON, ARROW, FAT_ARROW) ? parseTypeRef() : null;
         if (annotated != null && surface != null && !sameType(annotated, surface)) {
             throw error(previous(), "@Ret type and callable return type disagree");
         }
@@ -762,7 +762,7 @@ public final class Parser {
 
     private Ast.TypeRef parseMethodReturnType(List<Ast.Annotation> annotations) {
         Ast.TypeRef annotated = annotatedReturnType(annotations);
-        Ast.TypeRef surface = match(COLON, FAT_ARROW) ? parseTypeRef() : null;
+        Ast.TypeRef surface = match(COLON, ARROW, FAT_ARROW) ? parseTypeRef() : null;
         if (annotated != null && surface != null && !sameType(annotated, surface)) {
             throw error(previous(), "@Ret type and method return type disagree");
         }
@@ -971,8 +971,8 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RPAREN, "expected ')' after function type parameters");
-        if (!match(ARROW)) {
-            throw error(peek(), "function types use the slim type arrow '->'");
+        if (!match(FAT_ARROW) && !match(ARROW)) {
+            throw error(peek(), "function types use the type arrow '=>'");
         }
         Ast.TypeRef result = parseTypeRef();
         return Ast.TypeRef.functionType(params, result);
@@ -987,7 +987,8 @@ public final class Parser {
                 depth--;
                 if (depth == 0) {
                     return i + 1 < tokens.size()
-                            && tokens.get(i + 1).type() == ARROW;
+                            && (tokens.get(i + 1).type() == FAT_ARROW
+                                || tokens.get(i + 1).type() == ARROW);
                 }
             }
         }
