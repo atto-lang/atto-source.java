@@ -140,6 +140,10 @@ public final class PureEffectChecker {
                 scanExplicitPureLambdas(destructure.initializer(), module, owner);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 scanExplicitPureLambdas(returned.value(), module, owner);
+            } else if (statement instanceof Ast.YieldStmt yielded) {
+                // Pure generators are currently rejected by TypeChecker, but a
+                // non-pure generator may still yield an explicitly pure lambda.
+                scanExplicitPureLambdas(yielded.value(), module, owner);
             } else if (statement instanceof Ast.ExprStmt expression) {
                 scanExplicitPureLambdas(expression.expression(), module, owner);
             } else if (statement instanceof Ast.DeferStmt defer) {
@@ -314,6 +318,12 @@ public final class PureEffectChecker {
                 if (returned.value() != null) {
                     checkExpr(returned.value(), scope, module, callable);
                 }
+                continue;
+            }
+            if (statement instanceof Ast.YieldStmt yielded) {
+                // TypeChecker rejects pure generators today. Keep this visitor
+                // exhaustive so future effect-typed generators cannot bypass it.
+                checkExpr(yielded.value(), scope, module, callable);
                 continue;
             }
             if (statement instanceof Ast.ExprStmt expression) {
