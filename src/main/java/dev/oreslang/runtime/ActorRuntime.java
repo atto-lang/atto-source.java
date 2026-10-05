@@ -1652,6 +1652,9 @@ public final class ActorRuntime implements AutoCloseable {
         requireCallerRuntimeAffinity("cancel actors");
         Objects.requireNonNull(ref, "ref");
         Objects.requireNonNull(mode, "mode");
+        if (mode == CancellationMode.FORCE_ISOLATED) {
+            requireSupervisorContext("force-cancel isolated actors");
+        }
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
