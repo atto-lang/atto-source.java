@@ -671,6 +671,29 @@ public final class TypeChecker {
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.SelectStmt selected) {
+            for (Ast.SelectArm arm : selected.arms()) {
+                Env armEnv = new Env(env);
+                if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
+                    Type element = channelElementType(
+                            typeOf(arm.channel(), env, generics, self),
+                            "select " + arm.operation().name().toLowerCase());
+                    if (arm.operation() == Ast.ChannelOperation.WRITE) {
+                        requireAssignable(
+                                typeOf(arm.value(), env, generics, self),
+                                element,
+                                "writech select value");
+                    } else if (arm.bindingName() != null) {
+                        armEnv.define(
+                                arm.bindingName(),
+                                element,
+                                arm.bindingKind());
+                    }
+                }
+                checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+            }
+            return;
+        }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
             Type element = iterableElementType(iterable);
@@ -1414,6 +1437,41 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "await requires Future<T>; got " + awaitedType);
         }
+        if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            Type element = channelElementType(
+                    typeOf(channelOp.channel(), env, generics, self),
+                    channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
+
+            if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
+                requireAssignable(
+                        typeOf(channelOp.value(), env, generics, self),
+                        element,
+                        "writech value");
+                return switch (channelOp.mode()) {
+                    case BLOCKING -> Primitive.VOID;
+                    case NONBLOCKING -> new Named("Future", List.of(Primitive.VOID));
+                    case IMMEDIATE -> Primitive.BOOL;
+                };
+            }
+
+            return switch (channelOp.mode()) {
+                case BLOCKING -> element;
+                case NONBLOCKING -> new Named("Future", List.of(element));
+                case IMMEDIATE -> new Named("Option", List.of(element));
+            };
+        }
+        if (expr instanceof Ast.DynamicSelectExpr selected) {
+            // Dynamic select accepts a SelectSet directly or a runtime
+            // list/map of SelectCase values. The exact case element type may
+            // remain Unknown until collection generic constraints are richer.
+            typeOf(selected.cases(), env, generics, self);
+            Type result = new Named("SelectResult", List.of());
+            return switch (selected.mode()) {
+                case BLOCKING -> result;
+                case NONBLOCKING -> new Named("Future", List.of(result));
+                case IMMEDIATE -> new Named("Option", List.of(result));
+            };
+        }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
             Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
@@ -1473,6 +1531,18 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private Type channelElementType(Type channel, String where) {
+        channel = deref(channel);
+        if (channel == Unknown.INSTANCE) return Unknown.INSTANCE;
+        if (channel instanceof Named named
+                && named.name().equals("Channel")
+                && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        throw new IllegalArgumentException(
+                where + " requires Channel<T>; got " + channel);
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
