@@ -241,6 +241,29 @@ final class ActorEventBusTest {
     }
 
     @Test
+    void privateActorsCannotSubscribeToZeroCopyGroupEvents() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+            group.events().defineTopic("bounds", ActorEventBus.DeliveryPolicy.LATEST, 1);
+
+            ActorRuntime.ActorRef<ActorRuntime.ActorGroupJoinCapability> privateActor =
+                    runtime.spawnPrivate(factoryContext -> (joinCapability, context) -> {
+                        ActorRuntime.ActorGroup joined = joinCapability.join();
+                        joined.events().subscribe("bounds");
+                    });
+
+            privateActor.send(capability);
+
+            assertTrue(privateActor.awaitTermination(2, TimeUnit.SECONDS));
+            Throwable failure = privateActor.failure().orElseThrow();
+            assertTrue(failure instanceof SecurityException, failure.toString());
+            assertEquals(0, group.memberCount(),
+                    "failed private subscriber must be removed when the actor terminates");
+        }
+    }
+
+    @Test
     void eventPayloadIsFrozenOnceBeforeFanout() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
@@ -261,6 +284,7 @@ final class ActorEventBusTest {
                 }
                 observed.set(subscription.get().tryRead().orElseThrow().value());
                 read.countDown();
+                context.self().stop();
             });
 
             subscriber.send("subscribe");
@@ -268,12 +292,17 @@ final class ActorEventBusTest {
 
             ArrayList<Integer> mutable = new ArrayList<>(List.of(1, 2));
             group.events().publishSystem("candidate", mutable);
+            assertTrue(runtime.sharedMemoryBytes() > 0,
+                    "queued event payload must consume the OresVM aggregate memory budget");
             mutable.add(3);
 
             subscriber.send("read");
             assertTrue(read.await(2, TimeUnit.SECONDS));
             assertEquals(List.of(1, 2), observed.get());
             assertThrows(UnsupportedOperationException.class, () -> observed.get().add(4));
+            assertTrue(subscriber.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "event payload reservation must be released after the final delivery is consumed");
         }
     }
 
