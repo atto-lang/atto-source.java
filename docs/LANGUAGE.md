@@ -710,7 +710,7 @@ The older `do ... fi` spelling remains accepted for source compatibility, but `t
 
 ## Loops, iterators, and scheduler safepoints
 
-Oreslang supports an explicit infinite loop:
+Oreslang supports an explicit infinite loop with either braces or `do ... done`:
 
 ```ores
 loop {
@@ -722,6 +722,16 @@ loop {
   }
   work();
 }
+
+loop do
+  if should_skip() {
+    continue;
+  }
+  if should_stop() {
+    break;
+  }
+  work()
+done
 ```
 
 `break` exits the nearest enclosing `loop` or `for`. `continue` starts the next iteration of the nearest enclosing loop. `return` exits the enclosing callable, even when nested inside one or more loops. Loop control never crosses a function or lambda boundary.
@@ -734,13 +744,19 @@ for (let i = 0; i < 10; i = i + 1) {
 }
 ```
 
-and iterator-style loops:
+and iterator-style loops. The compact `of` form does not require parentheses, and both body styles are valid:
 
 ```ores
+for item of values do
+  work(item)
+done
+
 for (val item of values) {
   work(item);
 }
 ```
+
+A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 
 Classes can expose a JavaScript-like iterator symbol:
 
