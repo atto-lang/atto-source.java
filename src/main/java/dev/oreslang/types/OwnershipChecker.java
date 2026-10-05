@@ -268,9 +268,11 @@ public final class OwnershipChecker {
             }
 
             // Case operands are evaluated once when the selection is armed.
-            // Channel references are borrowed for the registration lifetime;
-            // write payloads are transport-validated/frozen rather than
-            // implicitly moved out of the current actor.
+            // Public Channel/SelectSet capabilities are execution-domain local
+            // in the current model, so channel references are borrowed for the
+            // registration lifetime and cannot cross an actor boundary. This
+            // prevents writech from becoming an implicit shared-memory escape
+            // hatch while preserving ordinary actor-local channel use.
             List<Ast.TypeRef> elementTypes = new ArrayList<>(selected.arms().size());
             for (Ast.SelectArm arm : selected.arms()) {
                 if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
