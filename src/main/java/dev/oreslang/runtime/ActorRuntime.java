@@ -2001,7 +2001,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         try {
-            return rootTask.completion.get();
+            return rootTask.awaitableCompletion.get();
         } catch (InterruptedException interrupted) {
             rootTask.awaitableCompletion.cancel(true);
             Thread.currentThread().interrupt();
@@ -2139,7 +2139,6 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int FINISHED = 3;
 
         private final Supplier<T> task;
-        private final CompletableFuture<T> completion = new CompletableFuture<>();
         private final OresFuture<T> awaitableCompletion;
         private final AtomicInteger phase = new AtomicInteger(QUEUED);
         private final AtomicReference<RootResumeEnvelope> resumeEnvelope =
@@ -2178,13 +2177,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void completeSuccess(T value) {
-            completion.complete(value);
             awaitableCompletion.completeFromRuntime(value);
         }
 
         private void completeFailure(Throwable failure) {
             Throwable nonNull = Objects.requireNonNull(failure, "failure");
-            completion.completeExceptionally(nonNull);
             if (nonNull instanceof CancellationException cancellation) {
                 awaitableCompletion.cancelFromRuntime(cancellation);
             } else {
@@ -2320,7 +2317,7 @@ public final class ActorRuntime implements AutoCloseable {
                     // logical task after the suspension decision but before
                     // SUSPENDED became visible. Re-check after publication so a
                     // canceled task cannot remain stranded or be resurrected.
-                    if (completion.isDone()) {
+                    if (awaitableCompletion.isDone()) {
                         if (phase.compareAndSet(SUSPENDED, FINISHED)) {
                             detachAwaitRegistration();
                             releaseRootTask(this);
@@ -2424,7 +2421,6 @@ public final class ActorRuntime implements AutoCloseable {
                 int observed = phase.get();
                 if (observed == FINISHED) return;
                 if (observed == RUNNING) {
-                    completion.completeExceptionally(cancellation);
                     Thread running = carrier;
                     if (running != null) running.interrupt();
                     return;
@@ -2432,7 +2428,6 @@ public final class ActorRuntime implements AutoCloseable {
                 if (observed != QUEUED && observed != SUSPENDED) return;
                 if (!phase.compareAndSet(observed, FINISHED)) continue;
                 if (observed == QUEUED) vm.rootTaskScheduler().remove(this);
-                completion.completeExceptionally(cancellation);
                 detachAwaitRegistration();
                 releaseRootTask(this);
                 return;
