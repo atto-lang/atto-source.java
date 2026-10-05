@@ -64,6 +64,8 @@ An accelerator is usable only when it matches reference behavior for:
 - complex multiplication and conjugation;
 - NaN/Infinity policy for the selected operation;
 - singular and numerically rank-deficient solves;
+- `condition_frobenius()` exactly means `||A||_F * ||pinv(A)||_F`;
+- unqualified spectral `condition()` remains unavailable until a true reference SVD/2-norm implementation exists;
 - row-major result ordering;
 - immutable input semantics;
 - deterministic no-alias guarantees where promised.
