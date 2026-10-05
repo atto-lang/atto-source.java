@@ -10,6 +10,7 @@ import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
+import dev.oreslang.types.Types.ModuleType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
@@ -46,6 +47,7 @@ public final class TypeChecker {
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.InterfaceDecl, String> importedInterfaceNames = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
@@ -61,20 +63,49 @@ public final class TypeChecker {
     private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
+        return check(program, Map.of());
+    }
+
+    /**
+     * Type-check one code unit with the public interface declarations selected
+     * by its already-resolved imports. Imported interfaces remain type-only:
+     * this does not grant runtime access to the dependency or its filesystem
+     * path.
+     */
+    public static Ast.Program check(
+            Ast.Program program,
+            Map<String, Ast.InterfaceDecl> importedInterfaces) {
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
+        checker.collectImportedInterfaces(importedInterfaces);
         checker.collect(program);
         checker.validate(program);
         OwnershipChecker.check(program);
         return program;
     }
 
+    private void collectImportedInterfaces(Map<String, Ast.InterfaceDecl> imported) {
+        if (imported == null) throw new IllegalArgumentException("imported interface map cannot be null");
+        for (Map.Entry<String, Ast.InterfaceDecl> entry : imported.entrySet()) {
+            String localName = entry.getKey();
+            Ast.InterfaceDecl iface = entry.getValue();
+            if (localName == null || localName.isBlank() || iface == null) {
+                throw new IllegalArgumentException("imported interfaces require a non-blank local name and declaration");
+            }
+            Ast.InterfaceDecl previous = interfaces.putIfAbsent(localName, iface);
+            if (previous != null && previous != iface) {
+                throw new IllegalArgumentException("duplicate imported interface binding '" + localName + "'");
+            }
+            importedInterfaceNames.putIfAbsent(iface, localName);
+        }
+    }
+
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
-                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future", "Module",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
@@ -198,21 +229,47 @@ public final class TypeChecker {
     }
 
     private void checkModuleAdherence(Ast.ModuleDecl module) {
+        List<Ast.TypeRef> contracts = new ArrayList<>(module.contracts());
+
+        // Keep the existing annotation spelling as a compatibility bridge.
         for (Ast.Annotation annotation : module.annotations()) {
             if (!annotation.name().equals("AdheresTo")) continue;
-            if (annotation.arguments().isEmpty()) throw new IllegalArgumentException("@AdheresTo requires at least one interface");
-            Record actual = moduleShape(module);
-            for (Ast.TypeRef ref : annotation.arguments()) {
-                Ast.InterfaceDecl iface = findInterface(ref.name());
-                if (iface == null) throw new IllegalArgumentException("unknown module interface '" + ref.name() + "'");
-                Type resolvedRef = resolve(ref, Set.of(), null);
-                if (!(resolvedRef instanceof Named namedRef)) throw new IllegalArgumentException("@AdheresTo target must be a named interface type");
-                Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-                Record expected = (Record) substituteGenerics(expectedTemplate,
-                        genericBindings(iface.genericParameters(), namedRef.arguments(), "interface " + iface.name()));
-                if (!assignable(actual, expected)) {
-                    throw new IllegalArgumentException("module '" + module.name() + "' does not adhere to interface '" + ref.name() + "': expected " + expected + " but got " + actual);
-                }
+            if (annotation.arguments().isEmpty()) {
+                throw new IllegalArgumentException("@AdheresTo requires at least one interface");
+            }
+            contracts.addAll(annotation.arguments());
+        }
+
+        Set<String> seen = new LinkedHashSet<>();
+        Record actual = null;
+        for (Ast.TypeRef ref : contracts) {
+            String contractKey = ref.toString();
+            if (!seen.add(contractKey)) {
+                throw new IllegalArgumentException(
+                        "duplicate module contract '" + ref.name() + "' on module '" + module.name() + "'");
+            }
+            Ast.InterfaceDecl iface = findInterface(ref.name());
+            if (iface == null) {
+                throw new IllegalArgumentException("unknown module interface '" + ref.name() + "'");
+            }
+            Type resolvedRef = resolve(ref, Set.of(), null);
+            if (!(resolvedRef instanceof Named namedRef)) {
+                throw new IllegalArgumentException(
+                        "module contract target must be a named interface type");
+            }
+            Record expectedTemplate =
+                    interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            Record expected = (Record) substituteGenerics(
+                    expectedTemplate,
+                    genericBindings(
+                            iface.genericParameters(),
+                            namedRef.arguments(),
+                            "interface " + iface.name()));
+            if (actual == null) actual = moduleShape(module);
+            if (!assignable(actual, expected)) {
+                throw new IllegalArgumentException(
+                        "module '" + module.name() + "' does not adhere to interface '" + ref.name()
+                                + "': expected " + expected + " but got " + actual);
             }
         }
     }
@@ -243,6 +300,16 @@ public final class TypeChecker {
             }
         }
         return new Record(members);
+    }
+
+    private ModuleType moduleType(Ast.ModuleDecl module) {
+        return new ModuleType(module.name(), moduleShape(module));
+    }
+
+    private Record structuralRecord(Type type) {
+        if (type instanceof Record record) return record;
+        if (type instanceof ModuleType module) return module.shape();
+        return null;
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
@@ -1024,7 +1091,7 @@ public final class TypeChecker {
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
-            if (moduleNamespace != null) return moduleShape(moduleNamespace);
+            if (moduleNamespace != null) return moduleType(moduleNamespace);
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
@@ -1313,9 +1380,10 @@ public final class TypeChecker {
                     receiver = unwrapMutexGuard(receiver);
                 }
 
-                if (receiver instanceof Record record) {
+                Record structural = structuralRecord(receiver);
+                if (structural != null) {
                     String prefix = CallableSelector.instance(member.member(), call.arguments().size()).mangledName() + "$generics";
-                    List<Map.Entry<String, Type>> candidates = record.members().entrySet().stream()
+                    List<Map.Entry<String, Type>> candidates = structural.members().entrySet().stream()
                             .filter(entry -> entry.getKey().startsWith(prefix))
                             .toList();
                     if (candidates.size() > 1) {
@@ -1618,12 +1686,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
             }
 
-            if (receiver instanceof Record record) {
-                Type result = record.members().get(member.member());
+            Record structural = structuralRecord(receiver);
+            if (structural != null) {
+                Type result = structural.members().get(member.member());
                 if (result != null) return result;
 
                 String methodPrefix = CallableSelector.instance(member.member(), 0).mangledName().replace("$arity0", "$arity");
-                boolean structuralMethod = record.members().keySet().stream()
+                boolean structuralMethod = structural.members().keySet().stream()
                         .anyMatch(key -> key.startsWith(methodPrefix) && key.contains("$generics"));
                 if (structuralMethod) {
                     throw new IllegalArgumentException(
@@ -3729,6 +3798,9 @@ public final class TypeChecker {
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof ModuleType module) {
+            return new ModuleType(module.name(), (Record) substituteGenerics(module.shape(), bindings));
+        }
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
                 substituteGenerics(fn.result(), bindings));
@@ -3747,6 +3819,7 @@ public final class TypeChecker {
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
         if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnknown);
+        if (type instanceof ModuleType module) return containsUnknown(module.shape());
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(this::containsUnknown)
                 || containsUnknown(fn.result());
         if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsUnknown);
@@ -3761,6 +3834,7 @@ public final class TypeChecker {
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
+        if (type instanceof ModuleType module) return containsGenericNamed(module.shape(), names);
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(t -> containsGenericNamed(t, names))
                 || containsGenericNamed(fn.result(), names);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(t -> containsGenericNamed(t, names));
@@ -3825,6 +3899,30 @@ public final class TypeChecker {
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
+            }
+            case "Module" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Module requires exactly one explicit interface contract");
+                }
+                Ast.TypeRef contractRef = ref.arguments().getFirst();
+                Ast.InterfaceDecl iface = findInterface(contractRef.name());
+                if (iface == null) {
+                    throw new IllegalArgumentException(
+                            "Module<T> requires a known interface contract; unknown '" + contractRef.name() + "'");
+                }
+                Type resolvedContract = resolve(contractRef, generics, self);
+                if (!(resolvedContract instanceof Named namedContract)) {
+                    throw new IllegalArgumentException("Module<T> contract must resolve to a named interface");
+                }
+                Record template =
+                        interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+                Record expected = (Record) substituteGenerics(
+                        template,
+                        genericBindings(
+                                iface.genericParameters(),
+                                namedContract.arguments(),
+                                "interface " + iface.name()));
+                yield new ModuleType(contractRef.name(), expected);
             }
             case "DynamicStruct" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
@@ -3930,6 +4028,8 @@ public final class TypeChecker {
     }
 
     private String qualifiedInterfaceName(Ast.InterfaceDecl iface) {
+        String importedName = importedInterfaceNames.get(iface);
+        if (importedName != null) return importedName;
         String owner = interfaceOwners.get(iface);
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
