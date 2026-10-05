@@ -418,4 +418,58 @@ final class StructuralTypingHardeningTest {
                 """)));
     }
 
+    @Test
+    void lambdaMutabilityMustMatchItsContextualCallableContract() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Box as
+                    pub val int value = 1;
+                  end
+
+                  fnc bad(): void {
+                    val Fnc<Box, void> callback = |Box mut value| -> {
+                      return;
+                    };
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void asyncDeclarationIsNotAStructuralAliasForSyncFutureContract() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module contracts
+                  define interface Api
+                    fnc load() => Future<int>;
+                  end
+                end
+
+                @AdheresTo(contracts.Api)
+                define module implementation
+                  pub async fnc load(): int {
+                    return 1;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void unsupportedInterfaceCallableModifiersAreRejectedRatherThanDropped() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  define interface Bad
+                    async fnc load() => Future<int>;
+                  end
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  @structural
+                  type Bad = int;
+                end
+                """));
+    }
+
 }
