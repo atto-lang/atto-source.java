@@ -231,6 +231,201 @@ final class EmbeddingIntrinsicRuntimeTest {
         assertEquals("0.6:0.8:true", output);
     }
 
+
+    @Test
+    void intrinsicRequiresCanonicalFunctionContract() throws Exception {
+        String output = run("""
+                define class EmbeddingBatch as
+                  pub val int rows;
+                  pub val int dimensions;
+                  pub val List<float> values;
+                  pub val bool normalized;
+                  pub val String model_id;
+                  pub val String model_revision;
+                end
+
+                @Intrinsic(EmbeddingDotSimilarity)
+                fnc dot_similarity_into(
+                  EmbeddingBatch queries,
+                  EmbeddingBatch corpus,
+                  List<float> output
+                ): Result<List<float>, String> {
+                  return Err("fallback body executed");
+                }
+
+                pub routine main(): void {
+                  val EmbeddingBatch query = new EmbeddingBatch(
+                    1, 2, arr[1.0, 0.0], true, "model-a", "v1"
+                  );
+                  val EmbeddingBatch corpus = new EmbeddingBatch(
+                    1, 2, arr[1.0, 0.0], true, "model-a", "v1"
+                  );
+                  val List<float> scores = arr[99.0];
+                  val Result<List<float>, String> result =
+                    dot_similarity_into(query, corpus, scores);
+
+                  stdio.stdout.write(result.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(scores[0]);
+                  return;
+                }
+                """);
+
+        assertEquals("true:99.0", output);
+    }
+
+    @Test
+    void cosineL2AndTopKUseIntrinsicFastPaths() throws Exception {
+        String output = run("""
+                define class EmbeddingBatch as
+                  pub val int rows;
+                  pub val int dimensions;
+                  pub val List<float> values;
+                  pub val bool normalized;
+                  pub val String model_id;
+                  pub val String model_revision;
+                end
+
+                @Intrinsic(EmbeddingCosineSimilarity)
+                fnc cosine_similarity_into(
+                  EmbeddingBatch queries,
+                  EmbeddingBatch corpus,
+                  List<float> mut output
+                ): Result<List<float>, String> {
+                  return Err("fallback cosine body executed");
+                }
+
+                @Intrinsic(EmbeddingSquaredL2)
+                fnc squared_l2_distance_into(
+                  EmbeddingBatch queries,
+                  EmbeddingBatch corpus,
+                  List<float> mut output
+                ): Result<List<float>, String> {
+                  return Err("fallback l2 body executed");
+                }
+
+                @Intrinsic(EmbeddingTopK)
+                fnc top_k_indices_into(
+                  List<float> scores,
+                  int rows,
+                  int cols,
+                  int k,
+                  List<int> mut output_indices
+                ): Result<List<int>, String> {
+                  return Err("fallback top-k body executed");
+                }
+
+                pub routine main(): void {
+                  val EmbeddingBatch query = new EmbeddingBatch(
+                    1, 2, arr[1.0, 0.0], true, "model-a", "v1"
+                  );
+                  val EmbeddingBatch corpus = new EmbeddingBatch(
+                    2, 2, arr[1.0, 0.0, 0.0 - 1.0, 0.0], true, "model-a", "v1"
+                  );
+
+                  val List<float> cosine_output = arr[0.0, 0.0];
+                  val List<float> cosines =
+                    cosine_similarity_into(query, corpus, cosine_output)
+                      .expect("cosine intrinsic failed");
+
+                  val List<float> l2_output = arr[0.0, 0.0];
+                  val List<float> distances =
+                    squared_l2_distance_into(query, corpus, l2_output)
+                      .expect("l2 intrinsic failed");
+
+                  val List<float> ranking_scores = arr[
+                    0.0 - 1.0, 0.0 - 1.0, 0.0 - 2.0
+                  ];
+                  val List<int> indices = arr[9, 9];
+                  top_k_indices_into(ranking_scores, 1, 3, 2, indices)
+                    .expect("top-k intrinsic failed");
+
+                  stdio.stdout.write(cosines[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(cosines[1]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(distances[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(distances[1]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(indices[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(indices[1]);
+                  return;
+                }
+                """);
+
+        assertEquals("1.0:-1.0:0.0:4.0:0:1", output);
+    }
+
+    @Test
+    void embeddingSpaceMismatchFailsBeforeOutputMutation() throws Exception {
+        String output = run("""
+                define class EmbeddingBatch as
+                  pub val int rows;
+                  pub val int dimensions;
+                  pub val List<float> values;
+                  pub val bool normalized;
+                  pub val String model_id;
+                  pub val String model_revision;
+                end
+
+                @Intrinsic(EmbeddingDotSimilarity)
+                fnc dot_similarity_into(
+                  EmbeddingBatch queries,
+                  EmbeddingBatch corpus,
+                  List<float> mut output
+                ): Result<List<float>, String> {
+                  return Err("fallback dot body executed");
+                }
+
+                @Intrinsic(EmbeddingTopKDot)
+                fnc top_k_dot_into(
+                  EmbeddingBatch queries,
+                  EmbeddingBatch corpus,
+                  int k,
+                  List<int> mut top_indices,
+                  List<float> mut top_scores
+                ): Result<bool, String> {
+                  return Err("fallback top-k body executed");
+                }
+
+                pub routine main(): void {
+                  val EmbeddingBatch query = new EmbeddingBatch(
+                    1, 2, arr[1.0, 0.0], true, "model-a", "v1"
+                  );
+                  val EmbeddingBatch wrong_model = new EmbeddingBatch(
+                    1, 2, arr[1.0, 0.0], true, "model-b", "v1"
+                  );
+                  val EmbeddingBatch wrong_revision = new EmbeddingBatch(
+                    1, 2, arr[1.0, 0.0], true, "model-a", "v2"
+                  );
+
+                  val List<float> dot_output = arr[123.0];
+                  val Result<List<float>, String> dot_result =
+                    dot_similarity_into(query, wrong_model, dot_output);
+
+                  val List<int> indices = arr[77];
+                  val List<float> scores = arr[456.0];
+                  val Result<bool, String> top_k_result =
+                    top_k_dot_into(query, wrong_revision, 1, indices, scores);
+
+                  stdio.stdout.write(dot_result.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(dot_output[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(top_k_result.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(indices[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(scores[0]);
+                  return;
+                }
+                """);
+
+        assertEquals("true:123.0:true:77:456.0", output);
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "embedding-intrinsic.ores")
