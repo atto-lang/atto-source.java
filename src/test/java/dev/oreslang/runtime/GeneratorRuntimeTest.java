@@ -7,6 +7,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class GeneratorRuntimeTest {
     @Test
+    void rejectedBackingGuestTurnFailsThePullInsteadOfParkingForever() {
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), () -> {
+            try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+                throw new SecurityException("generator guest turn denied");
+            }); var generator = GeneratorRuntime.generator(runtime, emitter -> emitter.emit(1))) {
+                SecurityException denied = assertThrows(SecurityException.class, generator::nextStep);
+                assertEquals("generator guest turn denied", denied.getMessage());
+            }
+        });
+    }
+    @Test
     void asyncPullsUseOresFutureIncludingTerminalPulls() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {

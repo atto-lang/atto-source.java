@@ -75,6 +75,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
                 "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
@@ -1577,6 +1578,8 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = deref(receiver);
+            Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
+            if (iteratorMember != null) return iteratorMember;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
             if (sumReceiver instanceof Named sumNamed
@@ -1874,7 +1877,7 @@ public final class TypeChecker {
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
-            return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
+            return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
         if (normalized instanceof Named named) {
@@ -1911,6 +1914,7 @@ public final class TypeChecker {
                     method.parameters(),
                     method.returnType(),
                     method.async(),
+                    false,
                     memberGenerics,
                     target.ownerType());
             return substituteGenerics(
@@ -2129,7 +2133,7 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Generator") || named.name().equals("AsyncGenerator")) {
+                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -2210,14 +2214,14 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Generator")
-                || named.name().equals("AsyncGenerator") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("Future") || named.name().equals("Iterator")
+                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("DynamicStruct")) {
             return named.arguments().size() == 1
                     && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
         }
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
-        if (named.name().equals("Option")) {
+        if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
         }
         if (named.name().equals("Result")) {
@@ -2620,6 +2624,29 @@ public final class TypeChecker {
         return null;
     }
 
+    private Type builtinIteratorMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
+        Type element = named.arguments().getFirst();
+        return switch (named.name()) {
+            case "Iterator" -> switch (member) {
+                case "next" -> new Function(List.of(), new Named("IteratorResult", List.of(element)));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> null;
+            };
+            case "AsyncIterator" -> switch (member) {
+                case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("IteratorResult", List.of(element)))));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> null;
+            };
+            case "IteratorResult" -> switch (member) {
+                case "done" -> Primitive.BOOL;
+                case "value" -> new Named("Option", List.of(element));
+                default -> null;
+            };
+            default -> null;
+        };
+    }
+
     private Type builtinMutexMember(Type receiver, String member) {
         if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
         Type element = named.arguments().getFirst();
@@ -2671,10 +2698,10 @@ public final class TypeChecker {
             return result;
         }
         if (iterable instanceof Named named) {
-            if (named.name().equals("Generator") && named.arguments().size() == 1) {
+            if (named.name().equals("Iterator") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
-            if (named.name().equals("AsyncGenerator")) {
+            if (named.name().equals("AsyncIterator")) {
                 throw new IllegalArgumentException(
                         "ordinary for-of cannot consume AsyncGenerator<T>; use 'for await ... of ...'");
             }
@@ -2698,7 +2725,7 @@ public final class TypeChecker {
                     if (result instanceof ListType list) return list.element();
                     if (result instanceof Tuple tuple) return iterableElementType(tuple);
                     if (result instanceof Named generated
-                            && generated.name().equals("Generator")
+                            && generated.name().equals("Iterator")
                             && generated.arguments().size() == 1) {
                         return generated.arguments().getFirst();
                     }
@@ -2713,7 +2740,7 @@ public final class TypeChecker {
 
     private Type asyncIterableElementType(Type iterable) {
         if (iterable instanceof Named named) {
-            if (named.name().equals("AsyncGenerator") && named.arguments().size() == 1) {
+            if (named.name().equals("AsyncIterator") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
             Ast.ClassDecl klass = findClass(named.name());
@@ -2734,7 +2761,7 @@ public final class TypeChecker {
                             result,
                             classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
                     if (result instanceof Named generated
-                            && generated.name().equals("AsyncGenerator")
+                            && generated.name().equals("AsyncIterator")
                             && generated.arguments().size() == 1) {
                         return generated.arguments().getFirst();
                     }
@@ -3337,7 +3364,7 @@ public final class TypeChecker {
 
     private Type callableResult(boolean async, boolean generator, Type result) {
         if (generator) {
-            return new Named(async ? "AsyncGenerator" : "Generator", List.of(result));
+            return new Named(async ? "AsyncIterator" : "Iterator", List.of(result));
         }
         return async ? new Named("Future", List.of(result)) : result;
     }
@@ -3838,7 +3865,7 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
                 yield new Named("Future", List.of(element));
             }
-            case "Generator", "AsyncGenerator" -> {
+            case "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
                 }
@@ -3846,7 +3873,7 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) {
                     throw new IllegalArgumentException(ref.name() + "<void> is invalid");
                 }
-                yield new Named(ref.name(), List.of(element));
+                yield new Named(ref.name().equals("Generator") ? "Iterator" : ref.name().equals("AsyncGenerator") ? "AsyncIterator" : ref.name(), List.of(element));
             }
             case "SharedMutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");

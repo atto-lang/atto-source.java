@@ -1636,6 +1636,7 @@ public final class Parser {
         Token token = peek();
         if (isMemberNameToken(token.type())) {
             if (isReservedCallableName(token.type())
+                    && token.type() != DONE
                     && !reservedCallableNameFollowedByInvocation(current)) {
                 throw error(token, "'" + token.lexeme()
                         + "' is reserved and may only be used as a function name in a call or as an object/map key");

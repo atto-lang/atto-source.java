@@ -133,6 +133,7 @@ public final class GeneratorRuntime {
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicReference<OresFuture<Void>> producerTask = new AtomicReference<>();
         private volatile boolean done;
+        private volatile Throwable backingFailure;
 
         private Engine(AsyncRuntime runtime, Producer<T> producer) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -145,10 +146,13 @@ public final class GeneratorRuntime {
 
         private synchronized Step<T> next() {
             if (done || closed.get()) return Step.doneStep();
+            throwIfBackingFailed();
             startIfNeeded();
+            throwIfBackingFailed();
             putResume();
             Event<T> event = takeEvent();
             if (closed.get()) return Step.doneStep();
+            throwIfBackingFailed();
             if (event instanceof YieldEvent<?> yielded) {
                 @SuppressWarnings("unchecked")
                 T value = (T) yielded.value();
@@ -181,7 +185,25 @@ public final class GeneratorRuntime {
                 return null;
             });
             producerTask.set(task);
+            // Admission/context entry can fail before the producer body runs.
+            // Its catch block then never publishes an event. Deliver that
+            // backing failure without blocking the runtime completion thread.
+            task.whenCompleteRuntime((value, failure) -> {
+                if (failure != null && !closed.get()) {
+                    backingFailure = OresFuture.unwrap(failure);
+                    events.offer(new FailedEvent<>(backingFailure));
+                }
+            });
             if (closed.get()) task.cancel(true);
+        }
+
+        private void throwIfBackingFailed() {
+            Throwable failure = backingFailure;
+            if (failure == null) return;
+            done = true;
+            if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
+            if (failure instanceof Error error) throw error;
+            throw new RuntimeException(failure);
         }
 
         private void emit(T value) {

@@ -576,6 +576,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof ResultValue result) {
                     return new ResultValue(result.ok(), detachAsyncValue(result.value(), visiting));
                 }
+                if (value instanceof GeneratorRuntime.Step<?> step) {
+                    return step.done() ? GeneratorRuntime.Step.doneStep()
+                            : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) copy.add(detachAsyncValue(item, visiting));
@@ -1531,6 +1535,27 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown Future member " + name);
                 };
             }
+            if (receiver instanceof GeneratorRuntime.Generator<?> generator) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "Iterator.next"); return generator.nextStep(); };
+                    case "close" -> (Invokable) args -> { requireZero(args, "Iterator.close"); generator.close(); return null; };
+                    default -> throw new IllegalArgumentException("unknown Iterator member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.AsyncGenerator<?> generator) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "AsyncIterator.next"); return generator.nextStep(); };
+                    case "close" -> (Invokable) args -> { requireZero(args, "AsyncIterator.close"); generator.close(); return null; };
+                    default -> throw new IllegalArgumentException("unknown AsyncIterator member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.Step<?> step) {
+                return switch (name) {
+                    case "done" -> step.done();
+                    case "value" -> new OptionValue(!step.done(), step.value());
+                    default -> throw new IllegalArgumentException("unknown IteratorResult member " + name);
+                };
+            }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
@@ -2281,7 +2306,7 @@ public final class OresEvalRootNode extends RootNode {
         private Iterable<?> asyncIterableValues(Object value, Env env) {
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator =
-                        findMethod(object.klass, "Symbol.asyncIterator", 0, new LinkedHashSet<>());
+                        findMethod(object.klass, CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
                 if (iterator == null) {
                     return asyncSynchronousIterableValues(value, env);
                 }
@@ -2454,8 +2479,9 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("DynamicStruct")) return value instanceof DynamicStructValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
-            if (name.equals("Generator")) return value instanceof GeneratorRuntime.Generator<?>;
-            if (name.equals("AsyncGenerator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
+            if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
+            if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
+            if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -2480,6 +2506,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
+            if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
+            if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
             if (value instanceof DynamicStructValue) return "DynamicStruct";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
@@ -2851,6 +2880,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue result) {
                 return containsLiveMutexGuard(result.value(), seen);
             }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                return !step.done() && containsLiveMutexGuard(step.value(), seen);
+            }
             if (value instanceof OresMutex.GuardFuture<?> future) {
                 return future.isDone()
                         && !future.isCancelled()
@@ -2913,6 +2945,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof ResultValue result) {
                 releaseMutexGuardsInValue(result.value(), failed, seen);
+                return;
+            }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                if (!step.done()) releaseMutexGuardsInValue(step.value(), failed, seen);
                 return;
             }
             if (value instanceof OresMutex.GuardFuture<?> future) {
@@ -3064,6 +3100,9 @@ public final class OresEvalRootNode extends RootNode {
 
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
+            }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                return step.done() || runtimeSharedSafe(step.value(), seen);
             }
             if (value instanceof ResultValue result) {
                 return runtimeSharedSafe(result.value(), seen);

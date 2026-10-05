@@ -1701,7 +1701,7 @@ public final class OwnershipChecker {
             boolean generator) {
         if (generator) {
             return new Ast.TypeRef(
-                    async ? "AsyncGenerator" : "Generator",
+                    async ? "AsyncIterator" : "Iterator",
                     List.of(result),
                     false);
         }
@@ -1711,12 +1711,12 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType, boolean asyncIteration) {
         if (iterableType == null) return Ast.TypeRef.inferred();
-        if (asyncIteration && iterableType.name().equals("AsyncGenerator")
+        if (asyncIteration && (iterableType.name().equals("AsyncGenerator") || iterableType.name().equals("AsyncIterator"))
                 && iterableType.arguments().size() == 1) {
             return iterableType.arguments().getFirst();
         }
         if ((iterableType.name().equals("Array") || iterableType.name().equals("List")
-                        || iterableType.name().equals("Generator"))
+                        || iterableType.name().equals("Generator") || iterableType.name().equals("Iterator"))
                 && iterableType.arguments().size() == 1) {
             return iterableType.arguments().getFirst();
         }

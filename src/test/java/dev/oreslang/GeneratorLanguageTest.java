@@ -16,6 +16,73 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class GeneratorLanguageTest {
     @Test
+    void iteratorResultDataCrossesOrdinaryAsyncBoundary() throws Exception {
+        assertEquals("9:true", run("""
+                generator fnc values(): int { yield 9; return; }
+                async fnc pull(): IteratorResult<int> {
+                  val Iterator<int> iterator = values();
+                  val step = iterator.next();
+                  iterator.close();
+                  return step;
+                }
+                pub routine main(): void {
+                  val IteratorResult<int> step = await pull();
+                  stdio.stdout.write(step.value.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(step.value.is_some());
+                  return;
+                }
+                """));
+        IllegalArgumentException erased = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("fnc check(IteratorResult<int> result): bool { return result is IteratorResult<int>; }")));
+        assertTrue(erased.getMessage().contains("cannot test parameterized type"), erased.getMessage());
+    }
+    @Test
+    void publicIteratorProtocolsExposeTypedPullResultsAndKeepLegacyAliases() throws Exception {
+        assertEquals("false:7:true:true:8:true:77", run("""
+                generator fnc values(): int { yield 7; return; }
+                async generator fnc stream(): int { yield 8; return; }
+                pub routine main(): void {
+                  val Iterator<int> iterator = values();
+                  val IteratorResult<int> first = iterator.next();
+                  stdio.stdout.write(first.done);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(first.value.unwrap());
+                  stdio.stdout.write(":");
+                  val IteratorResult<int> terminal = iterator.next();
+                  stdio.stdout.write(terminal.done);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(terminal.value.is_none());
+                  stdio.stdout.write(":");
+                  val AsyncIterator<int> asynchronous = stream();
+                  val IteratorResult<int> pulled = await asynchronous.next();
+                  stdio.stdout.write(pulled.value.unwrap());
+                  stdio.stdout.write(":");
+                  asynchronous.close();
+                  val IteratorResult<int> closed = await asynchronous.next();
+                  stdio.stdout.write(closed.done);
+                  stdio.stdout.write(":");
+                  val Generator<int> legacy = values();
+                  for value of legacy { stdio.stdout.write(value); }
+                  val Iterator<int> current = values();
+                  for value of current { stdio.stdout.write(value); }
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void iteratorResultsAreReadonlyAndPullArityIsChecked() {
+        for (String statement : new String[]{"iterator.next(1);", "result.done = true;", "result.value = None;"}) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                    generator fnc values(): int { yield 1; return; }
+                    fnc bad(): void {
+                      val Iterator<int> iterator = values();
+                      val IteratorResult<int> result = iterator.next();
+                    """ + statement + "\nreturn;\n}")));
+        }
+    }
+    @Test
     void generatorFncAndRoutineArePullDrivenIterables() throws Exception {
         String output = run("""
                 generator fnc first(): int {

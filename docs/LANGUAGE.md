@@ -506,7 +506,18 @@ async generator routine events(): String {
 }
 ```
 
-The declared source return type is the **yielded element type**. Calling a synchronous generator produces `Generator<T>`; calling an async generator produces `AsyncGenerator<T>` directly, not `Future<Generator<T>>`.
+The declared source return type is the **yielded element type**. Calling a synchronous generator produces `Iterator<T>`; calling an async generator produces `AsyncIterator<T>` directly, not `Future<Iterator<T>>`. Existing `Generator<T>` and `AsyncGenerator<T>` annotations remain aliases for those public protocol types.
+
+`Iterator.next()` returns `IteratorResult<T>`; `AsyncIterator.next()` returns `Future<IteratorResult<T>>`. Results have readonly `done: bool` and `value: Option<T>` members: yielded values are `Some(value)`, while terminal/closed pulls return `done = true` and `None`. Both protocols expose `close()` to cancel the suspended activation. Async pulls retain serialized activation semantics and cross the Ores-owned Future boundary. Result data may cross ordinary async boundaries when its element type is task-safe; the iterator activation itself cannot.
+
+```ores
+val Iterator<int> iterator = values();
+val IteratorResult<int> result = iterator.next();
+if !result.done; do stdio.stdout.write(result.value.unwrap()); fi
+iterator.close();
+```
+
+`done` remains reserved as a lexical identifier, but is readable in the member namespace (`result.done`). Parameterized runtime `is` checks remain forbidden until generic arguments are reified; the iterator protocol does not weaken that rule.
 
 `async` and `generator` are independent modifiers and may appear in either order. Inside a generator, `yield value` suspends the activation after producing one element. A bare `return;` completes the sequence. Returning a value from a generator is rejected.
 
