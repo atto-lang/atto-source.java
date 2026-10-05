@@ -551,6 +551,177 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void parentActorCannotSynchronouslyBlockOnChildTermination() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch denied = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> child =
+                                context.runtime().spawnChildShared(
+                                        factoryContext ->
+                                                (childMessage, childContext) -> { });
+                        try {
+                            child.awaitTermination(1, TimeUnit.MILLISECONDS);
+                        } catch (SecurityException expected) {
+                            denied.countDown();
+                        }
+                        child.cancel();
+                        context.self().stop();
+                    });
+
+            parent.send("run");
+            assertTrue(
+                    denied.await(2, TimeUnit.SECONDS),
+                    "actor carriers must never block synchronously waiting for a child");
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void rawChildActorRefCannotBypassParentHandleForHardKill() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicBoolean revokerInvoked = new AtomicBoolean();
+            runtime.setForceCancellationTreeHook(request -> {
+                revokerInvoked.set(true);
+                return true;
+            });
+            CountDownLatch denied = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> child =
+                                context.runtime().spawnChildShared(
+                                        factoryContext ->
+                                                (childMessage, childContext) -> { });
+
+                        try {
+                            child.ref().forceCancel();
+                        } catch (SecurityException expected) {
+                            denied.countDown();
+                        }
+
+                        assertFalse(
+                                revokerInvoked.get(),
+                                "recipient ActorRef must not carry hard-kill authority");
+                        assertTrue(child.kill());
+                        context.self().stop();
+                    });
+
+            parent.send("run");
+            assertTrue(denied.await(2, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+            assertTrue(revokerInvoked.get());
+        }
+    }
+
+    @Test
+    void failedForceRevocationClearsFenceAndActorCanResume() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(2);
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) ->
+                            delivered.countDown());
+
+            actor.send("before");
+            long firstDeadline =
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (delivered.getCount() == 2
+                    && System.nanoTime() < firstDeadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, delivered.getCount());
+
+            runtime.setForceCancellationTreeHook(request -> false);
+            ActorRuntime.ActorControlHandle control =
+                    runtime.controlHandle(actor);
+
+            assertThrows(IllegalStateException.class, control::kill);
+            assertTrue(actor.isAlive());
+
+            actor.send("after");
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            actor.stop();
+        }
+    }
+
+    @Test
+    void forceKillFenceRejectsNewMailboxWorkUntilRevocationCompletes()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch revokerEntered = new CountDownLatch(1);
+            CountDownLatch releaseRevoker = new CountDownLatch(1);
+            AtomicReference<Throwable> killFailure = new AtomicReference<>();
+
+            runtime.setForceCancellationTreeHook(request -> {
+                revokerEntered.countDown();
+                try {
+                    assertTrue(releaseRevoker.await(2, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return true;
+            });
+
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            ActorRuntime.ActorControlHandle control =
+                    runtime.controlHandle(actor);
+
+            Thread killer = Thread.ofPlatform().start(() -> {
+                try {
+                    assertTrue(control.kill());
+                } catch (Throwable failure) {
+                    killFailure.set(failure);
+                }
+            });
+
+            assertTrue(revokerEntered.await(2, TimeUnit.SECONDS));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> actor.send("must-not-enter-mailbox"));
+            assertThrows(
+                    IllegalStateException.class,
+                    control::kill,
+                    "overlapping force-kill attempts must fail closed");
+
+            releaseRevoker.countDown();
+            killer.join(2_000);
+            assertFalse(killer.isAlive());
+            if (killFailure.get() != null) {
+                throw new AssertionError(killFailure.get());
+            }
+            assertTrue(control.awaitTermination(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void forceRevokerCannotReenterActorRuntime() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicBoolean reentryDenied = new AtomicBoolean();
+
+            runtime.setForceCancellationTreeHook(request -> {
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> runtime.spawnShared(
+                                factoryContext ->
+                                        (message, context) -> { }));
+                reentryDenied.set(true);
+                return true;
+            });
+
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            assertTrue(runtime.controlHandle(actor).kill());
+            assertTrue(reentryDenied.get());
+        }
+    }
+
+
+    @Test
     void ordinaryActorCannotInvokeForceCancellationAuthority() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicBoolean revokerInvoked = new AtomicBoolean();
