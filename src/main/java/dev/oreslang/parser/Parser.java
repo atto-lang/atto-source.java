@@ -803,6 +803,11 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
+        if (looksLikeImmediateChannelExpression()) {
+            Ast.Expr expression = parseExpression();
+            consumeStatementTerminator("channel probe expression should end with ';'");
+            return new Ast.ExprStmt(expression);
+        }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
@@ -845,6 +850,12 @@ public final class Parser {
         Ast.Expr expression = parseExpression();
         consumeStatementTerminator("expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
+    }
+
+    private boolean looksLikeImmediateChannelExpression() {
+        if (!check(TRY) || current + 1 >= tokens.size()) return false;
+        Token.Type next = tokens.get(current + 1).type();
+        return next == READCH || next == WRITECH || next == SELECT;
     }
 
     private boolean looksLikeStaticSelectStatement() {
