@@ -99,6 +99,76 @@ final class MathLanguageTest {
     }
 
     @Test
+    void portableMatrixCoreHandlesComplexMultiplySolveAndInverse() {
+        OresMatrix left = OresMatrix.fromRows(List.of(
+                List.of(new OresComplex(1.0, 2.0), new OresComplex(3.0, -1.0))));
+        OresMatrix right = OresMatrix.fromRows(List.of(
+                List.of(new OresComplex(2.0, -1.0)),
+                List.of(new OresComplex(4.0, 3.0))));
+
+        OresComplex product = assertInstanceOf(OresComplex.class, left.matmul(right).get(0, 0));
+        assertEquals(19.0, product.real(), 1e-12);
+        assertEquals(8.0, product.imaginary(), 1e-12);
+
+        OresMatrix a = OresMatrix.fromRows(List.of(
+                List.of(4.0, 7.0),
+                List.of(2.0, 6.0)));
+        OresMatrix inverse = a.inverse();
+        assertEquals(0.6, (double) inverse.get(0, 0), 1e-12);
+        assertEquals(-0.7, (double) inverse.get(0, 1), 1e-12);
+        assertEquals(-0.2, (double) inverse.get(1, 0), 1e-12);
+        assertEquals(0.4, (double) inverse.get(1, 1), 1e-12);
+        assertEquals(10.0, (double) a.determinant(), 1e-12);
+
+        OresMatrix solution = a.solve(OresMatrix.fromRows(List.of(
+                List.of(1.0),
+                List.of(0.0))));
+        assertEquals(0.6, (double) solution.get(0, 0), 1e-12);
+        assertEquals(-0.2, (double) solution.get(1, 0), 1e-12);
+    }
+
+    @Test
+    void portableMatrixCoreFailsClosedOnSingularAndPreservesTinyScales() {
+        OresMatrix singular = OresMatrix.fromRows(List.of(
+                List.of(1.0, 2.0),
+                List.of(2.0, 4.0)));
+        IllegalArgumentException singularFailure = assertThrows(
+                IllegalArgumentException.class,
+                singular::inverse);
+        assertTrue(singularFailure.getMessage().contains("singular")
+                || singularFailure.getMessage().contains("rank deficient"));
+
+        OresMatrix tiny = OresMatrix.fromRows(List.of(
+                List.of(1e-200, 0.0),
+                List.of(0.0, 2e-200)));
+        OresMatrix tinyInverse = tiny.inverse();
+        assertEquals(1e200, (double) tinyInverse.get(0, 0), 1e186);
+        assertEquals(5e199, (double) tinyInverse.get(1, 1), 1e186);
+    }
+
+    @Test
+    void rectangularPseudoInverseUsesPortableFullRankReferencePath() {
+        OresMatrix a = OresMatrix.fromRows(List.of(
+                List.of(1.0),
+                List.of(2.0)));
+        OresMatrix pinv = a.pseudoInverse();
+        assertEquals(1, pinv.rows());
+        assertEquals(2, pinv.cols());
+        assertEquals(0.2, (double) pinv.get(0, 0), 1e-12);
+        assertEquals(0.4, (double) pinv.get(0, 1), 1e-12);
+    }
+
+    @Test
+    void matrixRuntimeHasNoExternalJavaNumericsObjectInItsValueRepresentation() {
+        var fieldTypes = java.util.Arrays.stream(OresMatrix.class.getDeclaredFields())
+                .map(field -> field.getType().getName())
+                .collect(java.util.stream.Collectors.toSet());
+
+        assertFalse(fieldTypes.stream().anyMatch(name -> name.startsWith("org.ejml.")));
+        assertTrue(fieldTypes.contains("[D"));
+    }
+
+    @Test
     void integerDenseLiteralsPromoteToFloatAndDecimalDenseTypesAreRejected() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc promote() => Matrix<float> {
