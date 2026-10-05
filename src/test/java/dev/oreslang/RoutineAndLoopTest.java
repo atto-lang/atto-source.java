@@ -254,6 +254,49 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void takenForOfTransfersNonCopyTupleComponents() throws Exception {
+        String output = run("""
+                define class Box as
+                  pub val int value = 0;
+                end
+
+                pub routine main() => void {
+                  let pairs = arr[(new Box(1), new Box(2))];
+                  for [left, right] of rt take pairs do
+                    stdio.stdout.write(left.value);
+                    stdio.stdout.write(right.value)
+                  done
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void takenForOfInvalidatesOriginalIterable() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 0;
+                        end
+
+                        fnc bad() => void {
+                          let pairs = arr[(new Box(1), new Box(2))];
+                          for [left, right] of rt take pairs do
+                            stdio.println(left.value);
+                          done
+                          stdio.println(pairs);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("moved")
+                || error.getMessage().toLowerCase().contains("take"),
+                error.getMessage());
+    }
+
+    @Test
     void destructuredLetBorrowCanRebindWithoutMutatingSourceProjection() throws Exception {
         String output = run("""
                 define class Box as
