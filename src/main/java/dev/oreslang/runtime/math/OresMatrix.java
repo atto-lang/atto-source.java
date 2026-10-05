@@ -316,10 +316,15 @@ public final class OresMatrix implements ImmutableGuestValue {
     }
 
     /**
-     * Portable reference condition estimate using ||A||_F * ||pinv(A)||_F.
-     * Native accelerators may provide a more precise 2-norm estimate.
+     * Explicit Frobenius-norm condition estimate:
+     * ||A||_F * ||pinv(A)||_F.
+     *
+     * Deliberately not named condition(): the conventional unqualified matrix
+     * condition number is usually the spectral/2-norm condition number. Oreslang
+     * fails closed on that ambiguous surface until a reference SVD/spectral
+     * implementation exists.
      */
-    public double condition() {
+    public double conditionFrobenius() {
         return norm() * pseudoInverse().norm();
     }
 
