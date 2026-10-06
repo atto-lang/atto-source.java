@@ -1418,6 +1418,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "spread expressions are only valid as arguments to a variadic callable");
         }
+        if (expr instanceof Ast.NamedArgExpr) {
+            throw new IllegalArgumentException(
+                    "named arguments are only valid inside call/constructor argument lists");
+        }
         if (expr instanceof Ast.CallExpr call) {
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -1458,6 +1462,25 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
+            if (call.callee() instanceof Ast.NameExpr channelFactory
+                    && channelFactory.name().equals("Channel")
+                    && env.lookup("Channel") == null) {
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Channel<T>(capacity: N) requires exactly one explicit element type");
+                }
+                List<Ast.Expr> channelArgs = bindNamedArgumentsByNames(
+                        call.arguments(), List.of("capacity"), "Channel<T>", true);
+                Type capacity = typeOf(channelArgs.getFirst(), env, generics, self);
+                requireAssignable(capacity, Primitive.INT, "Channel capacity");
+                Type element = resolve(call.typeArguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "Channel<void> cannot carry a value; use an explicit signal/unit type");
+                }
+                return new Named("Channel", List.of(element));
+            }
+
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
                 Ast.FunctionDecl target = findFunction(functionName.name(), call.arguments().size());
@@ -1524,11 +1547,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Channel.new<T>(capacity) requires exactly one explicit element type");
                 }
-                if (call.arguments().size() != 1) {
-                    throw new IllegalArgumentException("Channel.new<T> expects exactly one capacity");
-                }
+                List<Ast.Expr> channelArgs = bindNamedArgumentsByNames(
+                        call.arguments(), List.of("capacity"), "Channel.new<T>", true);
                 requireAssignable(
-                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        typeOf(channelArgs.getFirst(), env, generics, self),
                         Primitive.INT,
                         "Channel.new capacity");
                 Type element = resolve(call.typeArguments().getFirst(), generics, self);
@@ -2161,12 +2183,8 @@ public final class TypeChecker {
 
             Ast.ConstructorDecl constructor = klass.constructor();
             if (constructor != null) {
-                if (created.arguments().size() != constructor.arity()) {
-                    throw new IllegalArgumentException(
-                            "constructor for " + klass.name() + " expects "
-                                    + constructor.arity() + " argument(s), got "
-                                    + created.arguments().size());
-                }
+                List<Ast.Expr> constructorArgs = bindNamedArguments(
+                        created.arguments(), constructor.parameters(), "constructor " + klass.name());
                 Map<String, Type> classBindings = classGenericBindings(klass, nominal);
                 Set<String> classGenerics = Set.copyOf(klass.genericParameters());
                 Type constructorSelf = nominalClassType(klass);
@@ -2175,7 +2193,7 @@ public final class TypeChecker {
                     Type expectedPattern = resolveParam(param, classGenerics, constructorSelf);
                     Type expected = substituteGenerics(expectedPattern, classBindings);
                     requireAssignable(
-                            typeOf(created.arguments().get(i), env, generics, self),
+                            typeOf(constructorArgs.get(i), env, generics, self),
                             expected,
                             "constructor parameter " + param.name());
                 }
@@ -2186,14 +2204,28 @@ public final class TypeChecker {
             // constructor exists, positional arguments still initialize fields
             // in effective storage order and remaining fields use initializers.
             List<ResolvedField> fields = effectiveFieldTargets(klass, nominal, new LinkedHashSet<>());
-            if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
+            if (created.arguments().size() > fields.size()) {
+                throw new IllegalArgumentException("constructor for " + klass.name() + " received too many fields");
+            }
+            boolean namedConstruction = created.arguments().stream()
+                    .anyMatch(Ast.NamedArgExpr.class::isInstance);
+            List<Ast.Expr> fieldArgs = namedConstruction
+                    ? bindNamedArgumentsByNames(
+                            created.arguments(),
+                            fields.stream().map(field -> field.field().name()).toList(),
+                            "constructor " + klass.name(),
+                            false)
+                    : created.arguments();
             for (int i = 0; i < fields.size(); i++) {
                 ResolvedField resolvedField = fields.get(i);
                 Ast.FieldDecl field = resolvedField.field();
-                if (i < created.arguments().size()) {
+                Ast.Expr supplied = namedConstruction
+                        ? fieldArgs.get(i)
+                        : (i < fieldArgs.size() ? fieldArgs.get(i) : null);
+                if (supplied != null) {
                     Type fieldPattern = classFieldType(resolvedField.owner(), field);
                     Type expected = substituteGenerics(fieldPattern, classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
-                    requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
+                    requireAssignable(typeOf(supplied, env, generics, self),
                             expected, "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
@@ -3690,11 +3722,8 @@ public final class TypeChecker {
 
         Ast.ConstructorDecl constructor = klass.constructor();
         if (constructor != null) {
-            if (arguments.size() != constructor.arity()) {
-                throw new IllegalArgumentException(
-                        "constructor for " + klass.name() + " expects "
-                                + constructor.arity() + " argument(s), got " + arguments.size());
-            }
+            arguments = bindNamedArguments(
+                    arguments, constructor.parameters(), "constructor " + klass.name());
             for (int i = 0; i < arguments.size(); i++) {
                 Type parameterPattern = resolveParam(
                         constructor.parameters().get(i),
@@ -3713,9 +3742,19 @@ public final class TypeChecker {
                     effectiveFieldTargets(klass, patternType, new LinkedHashSet<>());
             if (arguments.size() > fields.size()) {
                 throw new IllegalArgumentException(
-                        "constructor for " + klass.name() + " received too many positional fields");
+                        "constructor for " + klass.name() + " received too many fields");
+            }
+            boolean namedConstruction = arguments.stream()
+                    .anyMatch(Ast.NamedArgExpr.class::isInstance);
+            if (namedConstruction) {
+                arguments = bindNamedArgumentsByNames(
+                        arguments,
+                        fields.stream().map(field -> field.field().name()).toList(),
+                        "constructor " + klass.name(),
+                        false);
             }
             for (int i = 0; i < arguments.size(); i++) {
+                if (arguments.get(i) == null) continue;
                 ResolvedField resolvedField = fields.get(i);
                 Type fieldPattern = resolve(
                         resolvedField.field().type(),
@@ -4490,6 +4529,74 @@ public final class TypeChecker {
         return bindings;
     }
 
+    private List<Ast.Expr> bindNamedArguments(
+            List<Ast.Expr> arguments,
+            List<Ast.Param> params,
+            String label) {
+        return bindNamedArgumentsByNames(
+                arguments,
+                params.stream().map(Ast.Param::name).toList(),
+                label,
+                true);
+    }
+
+    private List<Ast.Expr> bindNamedArgumentsByNames(
+            List<Ast.Expr> arguments,
+            List<String> parameterNames,
+            String label,
+            boolean requireAll) {
+        boolean hasNamed = arguments.stream().anyMatch(Ast.NamedArgExpr.class::isInstance);
+        if (!hasNamed) {
+            if (requireAll && arguments.size() != parameterNames.size()) {
+                throw new IllegalArgumentException(label + " arity mismatch");
+            }
+            return arguments;
+        }
+        if (arguments.stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+            throw new IllegalArgumentException(
+                    label + " cannot mix named arguments with spread arguments");
+        }
+        if (arguments.size() > parameterNames.size()) {
+            throw new IllegalArgumentException(
+                    label + " received too many arguments");
+        }
+
+        List<Ast.Expr> ordered = new ArrayList<>(
+                java.util.Collections.nCopies(parameterNames.size(), null));
+        int positional = 0;
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.NamedArgExpr named) {
+                int index = parameterNames.indexOf(named.name());
+                if (index < 0) {
+                    throw new IllegalArgumentException(
+                            label + " has no parameter named '" + named.name() + "'");
+                }
+                if (ordered.get(index) != null) {
+                    throw new IllegalArgumentException(
+                            label + " parameter '" + named.name() + "' is supplied more than once");
+                }
+                ordered.set(index, named.value());
+                continue;
+            }
+
+            while (positional < ordered.size() && ordered.get(positional) != null) positional++;
+            if (positional >= ordered.size()) {
+                throw new IllegalArgumentException(label + " received too many positional arguments");
+            }
+            ordered.set(positional++, argument);
+        }
+
+        if (requireAll) {
+            for (int i = 0; i < ordered.size(); i++) {
+                if (ordered.get(i) == null) {
+                    throw new IllegalArgumentException(
+                            label + " is missing required parameter '" + parameterNames.get(i) + "'");
+                }
+            }
+        }
+        return java.util.Collections.unmodifiableList(ordered);
+    }
+
     private Type checkGenericCallable(
             List<String> genericNames,
             List<Ast.Param> params,
@@ -4501,6 +4608,7 @@ public final class TypeChecker {
             Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
+        arguments = bindNamedArguments(arguments, params, label);
         if (params.size() != arguments.size()) throw new IllegalArgumentException(label + " arity mismatch");
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
