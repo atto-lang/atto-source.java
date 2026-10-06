@@ -14,6 +14,97 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void callableEffectsBranchAcceptsClassAndFncCompatibilityOrders() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  class pub define Legacy as
+                  end
+
+                  define class pub Braced as {
+                    fnc pub static helper(): int {
+                      return 1;
+                    }
+                  }
+
+                  actor Worker {
+                    fnc pub async handle(int value): int {
+                      return value;
+                    }
+                  }
+
+                  actor fnc pub nlex worker(int value): int {
+                    return value;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(0));
+
+        Ast.ClassDecl braced = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(1));
+        Ast.MethodDecl helper = braced.methods().getFirst();
+        assertTrue(helper.isStatic());
+        assertEquals(Ast.Visibility.PUBLIC, helper.visibility());
+
+        Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(2));
+        assertTrue(actor.methods().getFirst().async());
+
+        Ast.FunctionDecl actorFunction =
+                assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(3));
+        assertEquals(Ast.ActorKind.SHARED, actorFunction.actorKind());
+        assertTrue(actorFunction.nonLexical());
+    }
+
+    @Test
+    void callableEffectsBranchRejectsDiscardedModifiers() {
+        List<String> invalid = List.of(
+                """
+                private define module app
+                end
+                """,
+                """
+                define module app
+                  async type Alias = int;
+                end
+                """,
+                """
+                define module app
+                  define class Box as
+                    async val int value = 1;
+                  end
+                end
+                """,
+                """
+                define module app
+                  actor Worker {
+                    generator let value = 1;
+                  }
+                end
+                """,
+                """
+                define module app
+                  define interface Api {
+                    private fnc render() => String;
+                  }
+                end
+                """,
+                """
+                define module app
+                  define class Box as
+                    static fnc static helper(): int {
+                      return 1;
+                    }
+                  end
+                end
+                """
+        );
+
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
     void callableEffectModifiersMaySurroundFncAndClassesMayUseEitherBodyStyle() {
         Ast.Program program = Parser.parse("""
                 define module app
