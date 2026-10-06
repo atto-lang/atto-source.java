@@ -1073,6 +1073,15 @@ public final class Parser {
         return new Ast.TypeRef(name, args, infer);
     }
 
+    private boolean isNamedTypeParameterStart() {
+        return (check(IDENT) || check(TYPE)) && checkNext(EQUAL);
+    }
+
+    private String consumeNamedTypeParameterName() {
+        if (check(IDENT) || check(TYPE)) return advance().lexeme();
+        throw error(peek(), "expected named type parameter name");
+    }
+
     private boolean isIntrinsicSequenceTypeName(String name) {
         return java.util.Set.of(
                 "Array", "List", "Vector", "Slice",
