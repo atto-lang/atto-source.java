@@ -3805,6 +3805,64 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                                            if (member.member().equals("dispose")) {
+                                                if (call.typeArgumentsPresent() || !values.isEmpty()) {
+                                                    continuation.accept(
+                                                            t2,
+                                                            null,
+                                                            new IllegalArgumentException(
+                                                                    "Proxy<T>.dispose() takes no arguments or type arguments"));
+                                                    return;
+                                                }
+                                                try {
+                                                    OresFuture<Void> closing = proxy.closeAsync();
+                                                    if (closing.isDone()) {
+                                                        closing.join();
+                                                        continuation.accept(t2, null, null);
+                                                    } else {
+                                                        t2.suspend(
+                                                                closing,
+                                                                (t3, ignored, failure3) ->
+                                                                        continuation.accept(
+                                                                                t3,
+                                                                                null,
+                                                                                failure3));
+                                                    }
+                                                } catch (RuntimeException | Error failure3) {
+                                                    continuation.accept(t2, null, failure3);
+                                                }
+                                                return;
+                                            }
+
+                                            completeProxyAccess(
+                                                    t2,
+                                                    proxy,
+                                                    false,
+                                                    raw -> prepareProxyInvocationLocked(
+                                                            call,
+                                                            proxy,
+                                                            raw,
+                                                            values,
+                                                            env),
+                                                    (t3, planned, failure3) -> {
+                                                        if (failure3 != null) {
+                                                            continuation.accept(
+                                                                    t3,
+                                                                    null,
+                                                                    failure3);
+                                                            return;
+                                                        }
+                                                        Invocation invocation =
+                                                                (Invocation) planned;
+                                                        completeSourceInvocation(
+                                                                t3,
+                                                                invocation,
+                                                                false,
+                                                                continuation);
+                                                    });
+                                            return;
+                                        }
                                         try {
                                             Invocation invocation =
                                                     prepareInvocationEvaluated(
@@ -3870,6 +3928,13 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation,
                 boolean declaredFuture,
                 SourceValueCont continuation) {
+            if (invocation.kind() == InvocationKind.PROXY_METHOD) {
+                completeSourceProxyInvocation(
+                        task,
+                        (ProxyMethodPlan) invocation.target(),
+                        continuation);
+                return;
+            }
             try {
                 Object result = invoke(invocation);
                 if (result instanceof OresFuture<?> future
@@ -3890,6 +3955,24 @@ public final class OresEvalRootNode extends RootNode {
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
             }
+        }
+
+        private void completeSourceProxyInvocation(
+                SourceTask task,
+                ProxyMethodPlan plan,
+                SourceValueCont continuation) {
+            completeProxyAccess(
+                    task,
+                    plan.proxy(),
+                    !plan.readOnly(),
+                    ignored -> {
+                        Object result = plan.inner().owner().invoke(plan.inner());
+                        return requireProxyBoundaryValue(
+                                plan.proxy(),
+                                result,
+                                "rt proxy method '" + plan.label() + "' result");
+                    },
+                    continuation);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
@@ -5387,8 +5470,22 @@ public final class OresEvalRootNode extends RootNode {
                 }, List.of());
             }
 
-            Invocation inner = proxy.read(raw ->
-                    prepareInvocationEvaluated(call, raw, args, env));
+            return proxy.read(raw ->
+                    prepareProxyInvocationLocked(
+                            call,
+                            proxy,
+                            raw,
+                            args,
+                            env));
+        }
+
+        private Invocation prepareProxyInvocationLocked(
+                Ast.CallExpr call,
+                ActorRuntime.Proxy<?> proxy,
+                Object raw,
+                List<Object> args,
+                Env env) {
+            Invocation inner = prepareInvocationEvaluated(call, raw, args, env);
 
             if (inner.kind() != InvocationKind.METHOD) {
                 throw new IllegalArgumentException(
