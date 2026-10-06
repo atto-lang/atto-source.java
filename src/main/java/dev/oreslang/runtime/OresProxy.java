@@ -1,0 +1,122 @@
+package dev.oreslang.runtime;
+
+import java.util.Objects;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Function;
+
+/**
+ * Explicit synchronized mutable ownership domain created by {@code rt proxy}.
+ *
+ * <p>A proxy does not publish an actor heap. The wrapped value is owned by this
+ * proxy domain and may be accessed only while holding the proxy's fair
+ * read/write lock. Source-level lowering must not expose the raw wrapped value
+ * outside the dynamic lock scope.</p>
+ */
+public final class OresProxy<T> {
+    private static final ThreadLocal<OresProxy<?>> HELD_PROXY = new ThreadLocal<>();
+
+    private final ActorRuntime runtime;
+    private final T value;
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+
+    public OresProxy(ActorRuntime runtime, T value) {
+        this.runtime = Objects.requireNonNull(runtime, "runtime");
+        this.value = Objects.requireNonNull(value, "value");
+        requireCreationAuthority();
+    }
+
+    public boolean ownedBy(ActorRuntime candidate) {
+        return runtime == candidate;
+    }
+
+    public ActorRuntime ownerRuntime() {
+        return runtime;
+    }
+
+    public <R> R read(Function<? super T, ? extends R> reader) {
+        Objects.requireNonNull(reader, "reader");
+        requireAccess("rt proxy read");
+        boolean entered = enterProxy();
+        lock.readLock().lock();
+        try {
+            return reader.apply(value);
+        } finally {
+            lock.readLock().unlock();
+            exitProxy(entered);
+        }
+    }
+
+    public <R> R write(Function<? super T, ? extends R> writer) {
+        Objects.requireNonNull(writer, "writer");
+        requireAccess("rt proxy write");
+        boolean entered = enterProxy();
+        lock.writeLock().lock();
+        try {
+            return writer.apply(value);
+        } finally {
+            lock.writeLock().unlock();
+            exitProxy(entered);
+        }
+    }
+
+    public boolean isWriteLocked() {
+        return lock.isWriteLocked();
+    }
+
+    public int readLockCount() {
+        return lock.getReadLockCount();
+    }
+
+    private void requireCreationAuthority() {
+        ActorRuntime.ActorKind kind = ActorRuntime.currentActorKind();
+        if (kind == ActorRuntime.ActorKind.PRIVATE || kind == ActorRuntime.ActorKind.UNTRUSTED) {
+            throw new SecurityException("rt proxy is unavailable to private/untrusted actors");
+        }
+        IsolatePolicy policy = ActorRuntime.currentActorPolicy();
+        if (policy != null) {
+            policy.require(IsolatePolicy.Capability.ACTOR_PROXY, "rt proxy");
+        }
+        ActorRuntime current = ActorRuntime.currentActorRuntime();
+        if (current != null && current != runtime) {
+            throw new SecurityException("rt proxy cannot capture state from another ActorRuntime");
+        }
+    }
+
+    private void requireAccess(String operation) {
+        ActorRuntime.ActorKind kind = ActorRuntime.currentActorKind();
+        if (kind == ActorRuntime.ActorKind.PRIVATE || kind == ActorRuntime.ActorKind.UNTRUSTED) {
+            throw new SecurityException(operation + " is unavailable to private/untrusted actors");
+        }
+        IsolatePolicy policy = ActorRuntime.currentActorPolicy();
+        if (policy != null) {
+            policy.require(IsolatePolicy.Capability.ACTOR_PROXY, operation);
+        }
+        ActorRuntime current = ActorRuntime.currentActorRuntime();
+        if (current != null && current != runtime) {
+            throw new SecurityException(operation + " crossed ActorRuntime ownership boundary");
+        }
+    }
+
+    private boolean enterProxy() {
+        OresProxy<?> held = HELD_PROXY.get();
+        if (held == null) {
+            HELD_PROXY.set(this);
+            return true;
+        }
+        if (held != this) {
+            throw new IllegalStateException(
+                    "nested access across different rt proxy values is forbidden; "
+                            + "snapshot/read one proxy before entering another");
+        }
+        return false;
+    }
+
+    private void exitProxy(boolean entered) {
+        if (entered) HELD_PROXY.remove();
+    }
+
+    @Override
+    public String toString() {
+        return "Proxy<" + value.getClass().getSimpleName() + ">";
+    }
+}
