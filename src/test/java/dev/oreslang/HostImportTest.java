@@ -18,6 +18,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class HostImportTest {
     @Test
+    void javaSourceAuthorityRequiresHostInteropAuthority() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                IsolatePolicy.developer().withCapabilities(
+                        IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
+        assertTrue(failure.getMessage().contains("JAVA_SOURCE_INTEROP requires JAVA_INTEROP"));
+        assertDoesNotThrow(() -> IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
+    }
+
+    @Test
     void validatesJavaImportShapesAliasesAndCollisions() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 import module Math from "java:java.lang.Math";
@@ -56,6 +67,13 @@ final class HostImportTest {
 
         assertThrows(IllegalArgumentException.class, () ->
                 IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP));
+    }
+
+    @Test
+    void javaSourceInteropRequiresJavaInterop() {
+        assertThrows(IllegalArgumentException.class, () ->
+                IsolatePolicy.developer().withCapabilities(
+                        IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
     }
 
     @Test
@@ -137,12 +155,17 @@ final class HostImportTest {
     @Test
     void runtimePrivateActorPolicyAlsoStripsJavaInterop() throws Exception {
         IsolatePolicy policy = IsolatePolicy.developer()
-                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+                .withCapabilities(
+                        IsolatePolicy.Capability.JAVA_INTEROP,
+                        IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
 
         try (ActorRuntime runtime = new ActorRuntime(policy)) {
             var ref = runtime.<String>spawnPrivate(factoryContext -> {
                 if (factoryContext.policy().allows(IsolatePolicy.Capability.JAVA_INTEROP)) {
                     throw new AssertionError("private actor retained JAVA_INTEROP");
+                }
+                if (factoryContext.policy().allows(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP)) {
+                    throw new AssertionError("private actor retained JAVA_SOURCE_INTEROP");
                 }
                 return (message, context) -> context.self().stop();
             });
