@@ -35,7 +35,12 @@ public record IsolatePolicy(
         PROCESS_INFO,
         GC_CONTROL,
         ACTOR_SHARE_READONLY,
+        ACTOR_PROXY,
         ACTOR_SPAWN,
+        /**
+         * Host/runtime-internal synchronized shared-memory authority.
+         * Ordinary actor application code must use actor messages or ACTOR_PROXY.
+         */
         SHARED_MEMORY,
         NETWORK,
         IPC,
@@ -103,8 +108,9 @@ public record IsolatePolicy(
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
                 Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO, Capability.GC_CONTROL,
-                        Capability.ACTOR_SHARE_READONLY, Capability.ACTOR_SPAWN,
-                        Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD),
+                        Capability.ACTOR_SHARE_READONLY, Capability.ACTOR_PROXY,
+                        Capability.ACTOR_SPAWN, Capability.SHARED_MEMORY,
+                        Capability.HOT_CODE_LOAD),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 
