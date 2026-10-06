@@ -41,10 +41,10 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (match(DEFINE)) {
+                modifiers = mergeModifiers(modifiers, parseModifiers());
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
-                boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
                     if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.generator || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "modules do not accept function/class modifiers");
@@ -55,7 +55,7 @@ public final class Parser {
                 if (match(CLASS)) {
                     if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
                     if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
-                    rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
+                    rootDeclarations.add(parseClass(modifiers.isAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
@@ -167,14 +167,14 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (match(DEFINE)) {
+            modifiers = mergeModifiers(modifiers, parseModifiers());
             if (modifiers.shared) {
                 throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
             }
-            boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
                 if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
                 if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
-                return parseClass(modifiers.isAbstract || afterDefineAbstract);
+                return parseClass(modifiers.isAbstract);
             }
             if (match(INTERFACE)) {
                 if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
@@ -211,8 +211,16 @@ public final class Parser {
             return parseActorClass(actorKind);
         }
         if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
-        if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
-        if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        if (match(FNC)) {
+            modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
+        }
+        if (match(ROUTINE)) {
+            modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
+            return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        }
         if (modifiers.hasCallableOnlyModifiers()) throw error(peek(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
         if (modifiers.generator) throw error(peek(), "'generator' applies only to fnc or routine declarations");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
@@ -632,7 +640,33 @@ public final class Parser {
                 break;
             }
         }
-        return new Modifiers(visibility, async, generator, nonLexical, pure, trapped, isStatic, isAbstract, shared);
+        return new Modifiers(visibility, visibilitySeen, async, generator, nonLexical, pure, trapped, isStatic, isAbstract, shared);
+    }
+
+    private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
+        if (before.visibilitySeen && after.visibilitySeen) {
+            throw error(previous(), "duplicate/conflicting visibility modifier");
+        }
+        if (before.async && after.async) throw error(previous(), "duplicate 'async' modifier");
+        if (before.generator && after.generator) throw error(previous(), "duplicate 'generator' modifier");
+        if (before.nonLexical && after.nonLexical) throw error(previous(), "duplicate 'nlex' modifier");
+        if (before.pure && after.pure) throw error(previous(), "duplicate 'pure' modifier");
+        if (before.trapped && after.trapped) throw error(previous(), "duplicate 'trap' modifier");
+        if (before.isStatic && after.isStatic) throw error(previous(), "duplicate 'static' modifier");
+        if (before.isAbstract && after.isAbstract) throw error(previous(), "duplicate 'abstract' modifier");
+        if (before.shared && after.shared) throw error(previous(), "duplicate 'shared' modifier");
+
+        return new Modifiers(
+                after.visibilitySeen ? after.visibility : before.visibility,
+                before.visibilitySeen || after.visibilitySeen,
+                before.async || after.async,
+                before.generator || after.generator,
+                before.nonLexical || after.nonLexical,
+                before.pure || after.pure,
+                before.trapped || after.trapped,
+                before.isStatic || after.isStatic,
+                before.isAbstract || after.isAbstract,
+                before.shared || after.shared);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -2032,6 +2066,7 @@ public final class Parser {
 
     private record Modifiers(
             Ast.Visibility visibility,
+            boolean visibilitySeen,
             boolean async,
             boolean generator,
             boolean nonLexical,
