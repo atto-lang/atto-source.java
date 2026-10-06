@@ -29,6 +29,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private static final int DEFAULT_MAX_TRACKED = 100_000;
     private static final int DEFAULT_MAX_TRACKED_PER_ACTOR = 4_096;
     private static final int DEFAULT_MAX_ACTOR_SWEEP_ENTRIES = 256;
+    private static final int DEFAULT_MAX_ACTOR_EXIT_SWEEP_ENTRIES = 32;
     private static final int DEFAULT_MAX_PERIODIC_SWEEP_ENTRIES = 1_024;
     private static final int DEFAULT_MAX_PROCESS_SWEEP_ENTRIES = 4_096;
     private static final Object PROCESS_DOMAIN = new Object();
@@ -331,7 +332,10 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         // Actor finalization is a latency-sensitive scheduler path. Perform one
         // small local quantum now; any remainder stays queued for fair periodic
         // cleanup instead of turning actor exit into an unbounded pause.
-        return sweepDomain(actorDomain, false, maxActorSweepEntries);
+        return sweepDomain(
+                actorDomain,
+                false,
+                Math.min(maxActorSweepEntries, DEFAULT_MAX_ACTOR_EXIT_SWEEP_ENTRIES));
     }
 
     private boolean requestJvmGcIfAllowed() {
@@ -486,6 +490,9 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             if (!tracked.contains(entry)) continue;
             inspected++;
             if (!entry.eligible(retiredDomains)) continue;
+            // Retry failures are owned by retryQueue. Do not run the same
+            // poisoned cleanup twice in one process/retirement quantum.
+            if (retryableFailures.contains(entry)) continue;
             try {
                 if (entry.tryClean()) {
                     cleanedCount++;
