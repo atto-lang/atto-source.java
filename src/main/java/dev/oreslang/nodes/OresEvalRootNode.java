@@ -83,7 +83,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return current.executeMain(new Object[0]);
+            return context.runRootMain(() -> current.executeMain(new Object[0]));
         }
         if (arguments.length >= 2
                 && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
@@ -340,11 +340,10 @@ public final class OresEvalRootNode extends RootNode {
             Ast.FunctionDecl main = functions.get(Parser.ROOT_MODULE + ".main");
             if (main == null) main = findFunction("main");
             if (main == null) return null;
-            Object result = callFunction(main, List.of(arguments));
-            if (result instanceof CompletionStage<?> stage) {
-                return AsyncRuntime.await(stage);
-            }
-            return result;
+            // MAIN_ONLY is already executing inside OresVM's ROOT_TASK.
+            // Never park the CONTROL carrier on an async result here; the
+            // enclosing root Task owns the wait and fresh-resume transition.
+            return callFunction(main, List.of(arguments));
         }
 
         private Object invokePublic(String name, Object[] arguments) {
@@ -1098,19 +1097,20 @@ public final class OresEvalRootNode extends RootNode {
                 OresFuture<?> future,
                 String operation) {
             if (future.isDone()) return future.join();
-            if (ActorRuntime.inActorExecution()) {
+            if (ActorRuntime.inActorExecution()
+                    || context.vm().isRootSchedulerCurrent()) {
                 // This registration belongs only to this attempted blocking
                 // operation. Remove it before failing closed so no waiter leaks.
                 future.cancel(false);
                 throw new IllegalStateException(
                         operation
-                                + " would suspend this actor, but the current interpreter has not yet "
-                                + "lowered this call stack to the OresScheduler resumable-task ABI; "
-                                + "the runtime refuses to park an actor carrier. Use nb "
-                                + operation
+                                + " would suspend a scheduler-owned actor/root turn, but the current "
+                                + "interpreter has not yet lowered this call stack to the OresScheduler "
+                                + "resumable-task ABI; the runtime refuses to park a scheduler carrier. "
+                                + "Use nb " + operation
                                 + " or a ready/immediate case until continuation lowering is active.");
             }
-            // Transitional root/embedder path. Actor carriers never reach here.
+            // Transitional host/embedder path. Scheduler carriers never reach here.
             return future.join();
         }
 
