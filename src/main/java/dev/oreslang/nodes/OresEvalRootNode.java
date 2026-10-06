@@ -2874,13 +2874,17 @@ public final class OresEvalRootNode extends RootNode {
                             task,
                             list.elements(),
                             env,
-                            (t, values, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            failure == null
-                                                    ? List.copyOf(values)
-                                                    : null,
-                                            failure));
+                            (t, values, failure) -> {
+                                if (failure == null) {
+                                    accountGuestSequenceAllocation(values.size());
+                                }
+                                continuation.accept(
+                                        t,
+                                        failure == null
+                                                ? List.copyOf(values)
+                                                : null,
+                                        failure);
+                            });
                     return;
                 }
 
@@ -2889,13 +2893,17 @@ public final class OresEvalRootNode extends RootNode {
                             task,
                             tuple.elements(),
                             env,
-                            (t, values, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            failure == null
-                                                    ? List.copyOf(values)
-                                                    : null,
-                                            failure));
+                            (t, values, failure) -> {
+                                if (failure == null) {
+                                    accountGuestSequenceAllocation(values.size());
+                                }
+                                continuation.accept(
+                                        t,
+                                        failure == null
+                                                ? List.copyOf(values)
+                                                : null,
+                                        failure);
+                            });
                     return;
                 }
 
@@ -2997,6 +3005,7 @@ public final class OresEvalRootNode extends RootNode {
                                 "duplicate obj field " + entry.getKey());
                     }
                 }
+                accountGuestMapAllocation(result.size());
                 continuation.accept(task, result, null);
                 return;
             }
@@ -5169,11 +5178,15 @@ public final class OresEvalRootNode extends RootNode {
                 return awaitBlockingChannelFuture(future, "dynamic select");
             }
             if (expr instanceof Ast.ListExpr list) {
+                accountGuestSequenceAllocation(list.elements().size());
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) {
+                accountGuestSequenceAllocation(tuple.elements().size());
+                return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            }
             if (expr instanceof Ast.ObjectExpr object) {
                 boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -5192,11 +5205,13 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("duplicate obj field " + key);
                     }
                 }
+                if (!dynamicKeys) accountGuestMapAllocation(result.size());
                 return dynamicKeys ? new DynamicStructValue(this, result) : Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
+                accountGuestClosureAllocation();
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
