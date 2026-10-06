@@ -290,10 +290,10 @@ public final class TypeChecker {
                         "module '" + module.name() + "' is missing required contract field '" + contract.name()
                                 + "." + required.name() + "'");
             }
-            if (actual.kind() != required.bindingKind()) {
+            if (actual.bindingKind() != required.bindingKind()) {
                 throw new IllegalArgumentException(
                         "module '" + module.name() + "." + actual.name() + "' has binding kind "
-                                + actual.kind() + " but contract '" + contract.name() + "' requires "
+                                + actual.bindingKind() + " but contract '" + contract.name() + "' requires "
                                 + required.bindingKind());
             }
         }
