@@ -983,12 +983,6 @@ public final class OresEvalRootNode extends RootNode {
                 if (call.callee() instanceof Ast.NameExpr name) {
                     Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
                     if (target != null && typeContainsProxy(target.returnType())) return true;
-                    if (namedImports.containsKey(name.name())) return true;
-                }
-                if (call.callee() instanceof Ast.MemberExpr member
-                        && member.receiver() instanceof Ast.NameExpr namespace
-                        && namespaceImports.containsKey(namespace.name())) {
-                    return true;
                 }
                 if (expressionContainsProxyCapability(call.callee())) return true;
                 for (Ast.Expr argument : call.arguments()) {
