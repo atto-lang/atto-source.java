@@ -1475,10 +1475,17 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException("rt " + operation + " expects exactly one argument");
                 }
-                Type operand = typeOf(call.arguments().getFirst(), env, generics, self);
+                Ast.Expr operandExpr = call.arguments().getFirst();
+                requireOwnershipRuntimeValueOperand(operation, operandExpr, env);
+                Type operand = typeOf(operandExpr, env, generics, self);
                 return switch (operation) {
                     case "copy" -> {
                         Type source = deref(operand);
+                        if (source instanceof ClassNamespace namespace) {
+                            throw new IllegalArgumentException(
+                                    "rt copy requires a runtime value; class namespace '"
+                                            + namespace.className() + "' is not an instance");
+                        }
                         requireCopyable(source, new LinkedHashSet<>());
                         yield source;
                     }
@@ -2388,6 +2395,37 @@ public final class TypeChecker {
             }
         }
         seen.remove(klass);
+    }
+
+    /**
+     * rt ownership operators apply to runtime values, never language namespaces.
+     *
+     * Module names currently expose a structural Record shape for member typing,
+     * so relying only on requireCopyable(Type) would accidentally make a module
+     * namespace look copyable when all of its public members are Copy. Reject
+     * namespace operands before structural typing erases that distinction.
+     */
+    private void requireOwnershipRuntimeValueOperand(
+            String operation,
+            Ast.Expr operand,
+            Env env) {
+        if (!(operand instanceof Ast.NameExpr name) || env.lookup(name.name()) != null) {
+            return;
+        }
+
+        Ast.ModuleDecl module = modules.get(name.name());
+        if (module != null) {
+            throw new IllegalArgumentException(
+                    "rt " + operation + " requires a runtime value; module namespace '"
+                            + name.name() + "' is not a value");
+        }
+
+        Ast.ClassDecl klass = findClass(name.name());
+        if (klass != null) {
+            throw new IllegalArgumentException(
+                    "rt " + operation + " requires a runtime value; class namespace '"
+                            + name.name() + "' is not an instance");
+        }
     }
 
     private boolean isOwnershipIntrinsicName(String name) {
