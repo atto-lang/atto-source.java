@@ -1081,6 +1081,38 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Object value = eval(operation.value(), env);
+            if (operation.callback()) {
+                if (!ActorRuntime.inActorExecution()) {
+                    throw new IllegalStateException(
+                            "nb cb writech can only execute inside an actor turn");
+                }
+                OresFuture<Void> completion = channel.writeAsync(value);
+                ActorRuntime.ContinuationTarget target =
+                        context.actors().captureCurrentContinuationTarget();
+                Env callbackEnv = env.snapshot();
+                context.actors().enqueueOnCompletion(
+                        completion,
+                        target,
+                        (ignored, failure) -> {
+                            if (failure != null) {
+                                throw propagateAsyncFailure(OresFuture.unwrap(failure));
+                            }
+                            try {
+                                executeBlock(operation.callbackBody(), callbackEnv, true);
+                            } catch (ReturnSignal returned) {
+                                if (returned.value != null) {
+                                    throw new IllegalStateException(
+                                            "nb cb writech callback cannot return a value");
+                                }
+                            } catch (BreakSignal | ContinueSignal control) {
+                                throw new IllegalStateException(
+                                        "nb cb writech callback cannot break/continue an enclosing loop",
+                                        control);
+                            }
+                        });
+                return null;
+            }
+
             return switch (operation.mode()) {
                 case IMMEDIATE -> channel.tryWrite(value);
                 case NONBLOCKING -> channel.writeAsync(value);
