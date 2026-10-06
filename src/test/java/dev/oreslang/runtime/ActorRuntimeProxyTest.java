@@ -281,4 +281,32 @@ final class ActorRuntimeProxyTest {
         writer.close();
     }
 
+
+    @Test
+    void disposeFailsQueuedWaitersAndDoesNotPublishStaleAccess() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.Proxy<int[]> proxy = runtime.proxy(new int[]{13});
+            ActorRuntime.Proxy<int[]>.Access held =
+                    proxy.acquireReadAsync().get(2, TimeUnit.SECONDS);
+
+            OresFuture<Void> closing = proxy.closeAsync();
+            OresFuture<ActorRuntime.Proxy<int[]>.Access> lateReader =
+                    proxy.acquireReadAsync();
+
+            assertFalse(closing.isDone(),
+                    "dispose must wait cooperatively behind an active reader");
+            assertFalse(lateReader.isDone(),
+                    "reader arriving behind dispose must queue behind the writer");
+
+            held.close();
+            closing.get(2, TimeUnit.SECONDS);
+
+            assertTrue(proxy.closed());
+            assertTrue(lateReader.isDone(),
+                    "dispose must settle queued readers instead of granting stale access");
+            assertThrows(RuntimeException.class, lateReader::join);
+            assertEquals(0, proxy.queuedWaiters());
+        }
+    }
+
 }
