@@ -317,6 +317,74 @@ final class CollectionShapeMetadataTest {
         assertTrue(capacity.getMessage().contains("runtime instance state"));
     }
 
+    @Test
+    void nominalArrayListKeepsElementTypeInGenericSlotAndRuntimeSizingInConstructor() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class ArrayList<T> as
+                  constructor(int capacity) {
+                    return;
+                  }
+                end
+
+                pub fnc main(): void {
+                  val xs: ArrayList<int> = new ArrayList<int>(capacity: 5);
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException metadata = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class ArrayList<T> as
+                        end
+
+                        pub fnc bad(ArrayList<size=5> xs): void {
+                          return;
+                        }
+                        """)));
+        assertTrue(metadata.getMessage().contains("nominal generic type"));
+        assertTrue(metadata.getMessage().contains("ArrayList<T>"));
+
+        IllegalArgumentException shape = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class ArrayList<T> as
+                        end
+
+                        pub fnc bad(ArrayList<int>[int] xs): void {
+                          return;
+                        }
+                        """)));
+        assertTrue(shape.getMessage().contains("does not accept '[...]' sequence-shape suffixes"));
+
+        IllegalArgumentException emptyShape = assertThrows(IllegalArgumentException.class, () ->
+                Parser.parse("""
+                        pub fnc bad(ArrayList<int>[] xs): void {
+                          return;
+                        }
+                        """));
+        assertTrue(emptyShape.getMessage().contains("sequence type shape cannot be empty"));
+    }
+
+    @Test
+    void canonicalArrayNotationKeepsShapeSeparateFromLegacyGenericCompatibility() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val canonical: Array[int] = [1, 2, 3];
+                  val nested: Array[Array[int]] = [[1, 2], [3, 4]];
+                  val legacy: Array<int> = [4, 5, 6];
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException mixed = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val xs: Array<int>[int] = [[1]];
+                          return;
+                        }
+                        """)));
+        assertTrue(mixed.getMessage().contains("cannot mix positional '<T>' type arguments"));
+    }
+
     private static Ast.TypeRef bindingType(Ast.Program program, String name) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
