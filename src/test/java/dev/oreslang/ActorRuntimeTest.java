@@ -2,12 +2,14 @@ package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresFuture;
 import org.junit.jupiter.api.Test;
 
 import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -34,6 +36,44 @@ final class ActorRuntimeTest {
             assertTrue(received.await(2, TimeUnit.SECONDS));
             assertEquals(List.of(1, 2), observed.get());
             assertThrows(UnsupportedOperationException.class, () -> ((List<Object>) observed.get()).add(9));
+        }
+    }
+
+    @Test
+    void stoppedProtocolActorCancelsHandedOffPendingReply() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch invoked = new CountDownLatch(1);
+            CompletableFuture<Object> producer = new CompletableFuture<>();
+
+            ActorRuntime.ActorRef<Object> ref =
+                    runtime.spawnSourceSharedProtocolActor(
+                            factoryContext ->
+                                    (method, arguments, context) -> {
+                                        invoked.countDown();
+                                        return OresFuture.from(producer);
+                                    });
+
+            OresFuture<Object> reply =
+                    runtime.invokeSourceProtocol(
+                            ref,
+                            "wait_for_result",
+                            List.of());
+
+            assertTrue(invoked.await(2, TimeUnit.SECONDS));
+            assertFalse(reply.isDone());
+
+            runtime.stop(ref);
+
+            long deadline =
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!reply.isDone()
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+
+            assertTrue(
+                    reply.isCancelled(),
+                    "target teardown must cancel a handed-off protocol reply");
         }
     }
 
