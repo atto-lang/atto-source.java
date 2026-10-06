@@ -256,7 +256,7 @@ final class ModuleContractHardeningTest {
         Map<String, String> sources = new LinkedHashMap<>();
 
         sources.put("api.ores", """
-                pub define class Secret as
+                pub define interface Secret as
                 end
 
                 pub define contract Api as
