@@ -16,6 +16,7 @@ import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.SelfType;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
+import dev.oreslang.types.Types.TupleKind;
 import dev.oreslang.types.Types.Union;
 import dev.oreslang.types.Types.Type;
 import dev.oreslang.types.Types.Unknown;
@@ -83,9 +84,9 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -233,22 +234,87 @@ public final class TypeChecker {
 
     private void checkModuleAdherence(Ast.ModuleDecl module) {
         for (Ast.Annotation annotation : module.annotations()) {
-            if (!annotation.name().equals("AdheresTo")) continue;
-            if (annotation.arguments().isEmpty()) throw new IllegalArgumentException("@AdheresTo requires at least one interface");
-            Record actual = moduleShape(module);
-            for (Ast.TypeRef ref : annotation.arguments()) {
-                Ast.InterfaceDecl iface = findInterface(ref.name());
-                if (iface == null) throw new IllegalArgumentException("unknown module interface '" + ref.name() + "'");
-                Type resolvedRef = resolve(ref, Set.of(), null);
-                if (!(resolvedRef instanceof Named namedRef)) throw new IllegalArgumentException("@AdheresTo target must be a named interface type");
-                Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-                Record expected = (Record) substituteGenerics(expectedTemplate,
-                        genericBindings(iface.genericParameters(), namedRef.arguments(), "interface " + iface.name()));
-                if (!assignable(actual, expected)) {
-                    throw new IllegalArgumentException("module '" + module.name() + "' does not adhere to interface '" + ref.name() + "': expected " + expected + " but got " + actual);
-                }
+            if (annotation.name().equals("AdheresTo")) {
+                throw new IllegalArgumentException("@AdheresTo is no longer valid for modules; use 'conforms <Contract>'");
             }
         }
+        if (module.contracts().isEmpty()) return;
+        Record actual = moduleShape(module);
+        Set<String> seenContracts = new HashSet<>();
+        for (Ast.TypeRef ref : module.contracts()) {
+            if (!seenContracts.add(ref.name())) {
+                throw new IllegalArgumentException("module '" + module.name() + "' lists contract '" + ref.name() + "' more than once");
+            }
+            Ast.InterfaceDecl contract = findInterface(ref.name());
+            if (contract == null || !contract.moduleContract()) {
+                throw new IllegalArgumentException("unknown module contract '" + ref.name() + "'");
+            }
+            Type resolvedRef = resolveModuleContractRef(ref, contract);
+            if (!(resolvedRef instanceof Named namedRef)) {
+                throw new IllegalArgumentException("module contract target must be a named contract type");
+            }
+            Record expectedTemplate = interfaceShape(contract, Set.copyOf(contract.genericParameters()), new LinkedHashSet<>());
+            Record expected = (Record) substituteGenerics(expectedTemplate,
+                    genericBindings(contract.genericParameters(), namedRef.arguments(), "contract " + contract.name()));
+            if (!assignable(actual, expected)) {
+                throw new IllegalArgumentException("module '" + module.name() + "' does not conform to contract '" + ref.name()
+                        + "': expected " + expected + " but got " + actual);
+            }
+            validateModuleContractFields(module, contract, new LinkedHashSet<>());
+        }
+    }
+
+    private void validateModuleContractFields(
+            Ast.ModuleDecl module,
+            Ast.InterfaceDecl contract,
+            Set<Ast.InterfaceDecl> stack) {
+        if (!stack.add(contract)) {
+            throw new IllegalArgumentException("module contract inheritance cycle involving '" + contract.name() + "'");
+        }
+
+        for (Ast.TypeRef parentRef : contract.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null || !parent.moduleContract()) {
+                throw new IllegalArgumentException(
+                        "module contract '" + contract.name() + "' has invalid parent '" + parentRef.name() + "'");
+            }
+            validateModuleContractFields(module, parent, stack);
+        }
+
+        Map<String, Ast.FieldDecl> actualFields = new LinkedHashMap<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
+                actualFields.put(field.name(), field);
+            }
+        }
+
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
+            Ast.FieldDecl actual = actualFields.get(required.name());
+            if (actual == null) {
+                throw new IllegalArgumentException(
+                        "module '" + module.name() + "' is missing required contract field '" + contract.name()
+                                + "." + required.name() + "'");
+            }
+            if (actual.bindingKind() != required.bindingKind()) {
+                throw new IllegalArgumentException(
+                        "module '" + module.name() + "." + actual.name() + "' has binding kind "
+                                + actual.bindingKind() + " but contract '" + contract.name() + "' requires "
+                                + required.bindingKind());
+            }
+        }
+
+        stack.remove(contract);
+    }
+
+    private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract) {
+        return resolveModuleContractRef(ref, contract, Set.of());
+    }
+
+    private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract, Set<String> generics) {
+        validateGenericArity(ref, contract.genericParameters(), "contract " + contract.name());
+        return new Named(qualifiedInterfaceName(contract),
+                ref.arguments().stream().map(arg -> resolve(arg, generics, null)).toList());
     }
 
     private Record moduleShape(Ast.ModuleDecl module) {
@@ -291,7 +357,7 @@ public final class TypeChecker {
 
     private void checkInterface(Ast.InterfaceDecl iface) {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
-        Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
+        Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
         Set<String> interfaceFieldNames = new LinkedHashSet<>();
         collectInterfaceFieldNames(iface, interfaceFieldNames, new LinkedHashSet<>());
@@ -308,8 +374,13 @@ public final class TypeChecker {
 
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
-            if (findInterface(parentRef.name()) == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            resolve(parentRef, generics, null);
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            if (iface.moduleContract() != parent.moduleContract()) {
+                throw new IllegalArgumentException("interfaces and module contracts cannot extend each other");
+            }
+            if (iface.moduleContract()) resolveModuleContractRef(parentRef, parent, generics);
+            else resolve(parentRef, generics, null);
         }
 
         for (Ast.InterfaceMember member : iface.members()) {
@@ -886,6 +957,7 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
+            if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
@@ -1077,6 +1149,48 @@ public final class TypeChecker {
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.SelectStmt selected) {
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                    && currentActorKind == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "static 'nb select { ... }' requires an actor execution domain "
+                                + "because its selected branch executes later; "
+                                + "use 'nb select from cases' when only a Future<SelectResult> is needed");
+            }
+            for (Ast.SelectArm arm : selected.arms()) {
+                Env armEnv = new Env(env);
+                if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
+                    Type element = channelElementType(
+                            typeOf(arm.channel(), env, generics, self),
+                            "select " + arm.operation().name().toLowerCase());
+                    if (arm.operation() == Ast.ChannelOperation.WRITE) {
+                        requireAssignable(
+                                typeOf(arm.value(), env, generics, self),
+                                element,
+                                "writech select value");
+                    } else if (arm.bindingName() != null) {
+                        armEnv.define(
+                                arm.bindingName(),
+                                element,
+                                arm.bindingKind());
+                    }
+                }
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // nb select arms run later as detached actor continuations.
+                    // return; exits the arm itself and loop control cannot cross
+                    // back into an already-continued enclosing loop.
+                    checkCallableBlock(
+                            arm.body(),
+                            armEnv,
+                            generics,
+                            Primitive.VOID,
+                            self);
+                } else {
+                    checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                }
+            }
+            return;
+        }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
             Type element;
@@ -1150,7 +1264,8 @@ public final class TypeChecker {
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
-            if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
+            if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
+                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -1401,6 +1516,86 @@ public final class TypeChecker {
                     return callableResult(target.async(), target.generator(), result);
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr channelCall
+                    && channelCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("Channel")
+                    && channelCall.member().equals("new")) {
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Channel.new<T>(capacity) requires exactly one explicit element type");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Channel.new<T> expects exactly one capacity");
+                }
+                requireAssignable(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        Primitive.INT,
+                        "Channel.new capacity");
+                Type element = resolve(call.typeArguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "Channel<void> cannot carry a value; use an explicit signal/unit type");
+                }
+                return new Named("Channel", List.of(element));
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr selectCaseCall
+                    && selectCaseCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("SelectCase")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "SelectCase constructors infer channel element types");
+                }
+                return switch (selectCaseCall.member()) {
+                    case "read" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase.read expects one Channel<T>");
+                        }
+                        channelElementType(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                "SelectCase.read");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "write" -> {
+                        if (call.arguments().size() != 2) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.write expects Channel<T>, value");
+                        }
+                        Type element = channelElementType(
+                                typeOf(call.arguments().get(0), env, generics, self),
+                                "SelectCase.write");
+                        requireAssignable(
+                                typeOf(call.arguments().get(1), env, generics, self),
+                                element,
+                                "SelectCase.write value");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "default" -> {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException("SelectCase.default expects no arguments");
+                        }
+                        yield new Named("SelectCase", List.of());
+                    }
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectCase constructor '" + selectCaseCall.member() + "'");
+                };
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr selectSetCall
+                    && selectSetCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("SelectSet")
+                    && selectSetCall.member().equals("new")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("SelectSet.new does not accept type arguments");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "SelectSet.new expects one list/map of SelectCase values");
+                }
+                typeOf(call.arguments().getFirst(), env, generics, self);
+                return new Named("SelectSet", List.of());
+            }
+
             if (call.callee() instanceof Ast.MemberExpr futureCall
                     && futureCall.receiver() instanceof Ast.NameExpr futureFactory
                     && futureFactory.name().equals("Future")
@@ -1792,6 +1987,19 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
+
+            Type selectedReceiver = deref(receiver);
+            if (selectedReceiver instanceof Named selected
+                    && selected.name().equals("SelectResult")) {
+                return switch (member.member()) {
+                    case "index" -> Primitive.INT;
+                    case "operation" -> Primitive.STRING;
+                    case "value" -> Unknown.INSTANCE;
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectResult member '" + member.member() + "'");
+                };
+            }
+
             receiver = receiverDispatchType(unwrapMutexGuard(deref(receiver)));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
                 if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
@@ -2003,6 +2211,58 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "await requires Future<T>; got " + awaitedType);
         }
+        if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            Type element = channelElementType(
+                    typeOf(channelOp.channel(), env, generics, self),
+                    channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
+
+            if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
+                requireAssignable(
+                        typeOf(channelOp.value(), env, generics, self),
+                        element,
+                        "writech value");
+                if (channelOp.callback()) {
+                    if (channelOp.mode() != Ast.WaitMode.NONBLOCKING) {
+                        throw new IllegalArgumentException(
+                                "channel callbacks require nonblocking writech");
+                    }
+                    if (currentActorKind == Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "nb cb writech requires an actor execution domain because its callback runs later");
+                    }
+                    checkBlock(
+                            channelOp.callbackBody(),
+                            new Env(env),
+                            generics,
+                            Primitive.VOID,
+                            self);
+                    return Primitive.VOID;
+                }
+                return switch (channelOp.mode()) {
+                    case BLOCKING -> Primitive.VOID;
+                    case NONBLOCKING -> new Named("Future", List.of(Primitive.VOID));
+                    case IMMEDIATE -> Primitive.BOOL;
+                };
+            }
+
+            return switch (channelOp.mode()) {
+                case BLOCKING -> element;
+                case NONBLOCKING -> new Named("Future", List.of(element));
+                case IMMEDIATE -> new Named("Option", List.of(element));
+            };
+        }
+        if (expr instanceof Ast.DynamicSelectExpr selected) {
+            // Dynamic select accepts a SelectSet directly or a runtime
+            // list/map of SelectCase values. The exact case element type may
+            // remain Unknown until collection generic constraints are richer.
+            typeOf(selected.cases(), env, generics, self);
+            Type result = new Named("SelectResult", List.of());
+            return switch (selected.mode()) {
+                case BLOCKING -> result;
+                case NONBLOCKING -> new Named("Future", List.of(result));
+                case IMMEDIATE -> new Named("Option", List.of(result));
+            };
+        }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
             Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
@@ -2062,6 +2322,18 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private Type channelElementType(Type channel, String where) {
+        channel = deref(channel);
+        if (channel == Unknown.INSTANCE) return Unknown.INSTANCE;
+        if (channel instanceof Named named
+                && named.name().equals("Channel")
+                && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        throw new IllegalArgumentException(
+                where + " requires Channel<T>; got " + channel);
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Env env) {
@@ -2145,12 +2417,21 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list) {
-            if (expected instanceof Tuple) {
-                return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            if (expected instanceof Tuple tupleExpected) {
+                return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
+                        tupleExpected.kind());
             }
             if (expected instanceof Union union
                     && union.options().stream().allMatch(option -> option instanceof Tuple)) {
-                return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+                List<TupleKind> kinds = union.options().stream()
+                        .map(option -> ((Tuple) option).kind())
+                        .distinct()
+                        .toList();
+                if (kinds.size() == 1) {
+                    return new Tuple(
+                            list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
+                            kinds.getFirst());
+                }
             }
         }
         return typeOf(expr, env, generics, self);
@@ -2269,7 +2550,7 @@ public final class TypeChecker {
             List<Type> result = new ArrayList<>(bindings.size());
             for (int i = 0; i < fixedArity; i++) result.add(tuple.elements().get(i));
             if (restIndex >= 0) {
-                result.add(new Tuple(tuple.elements().subList(fixedArity, tuple.elements().size())));
+                result.add(new Tuple(tuple.elements().subList(fixedArity, tuple.elements().size()), tuple.kind()));
             }
             return List.copyOf(result);
         }
@@ -2469,7 +2750,7 @@ public final class TypeChecker {
         if (type instanceof SelfType) return receiver;
         if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
         if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
-        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Named named) return new Named(
                 named.name(), named.arguments().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
@@ -2568,9 +2849,12 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Channel") || named.name().equals("SelectCase")
+                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
-                    where + " cannot use " + named.name() + " across an actor boundary");
+                    where + " cannot use " + named.name()
+                            + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
         if (named.name().equals("DynamicStruct")) {
             if (named.arguments().size() != 1) {
@@ -2584,7 +2868,7 @@ public final class TypeChecker {
             return;
         }
         if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE) {
+            if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
             }
@@ -2974,6 +3258,7 @@ public final class TypeChecker {
 
         if (a instanceof ListType && b instanceof ListType) return true;
         if (a instanceof Tuple at && b instanceof Tuple bt) {
+            if (at.kind() != bt.kind()) return false;
             if (at.elements().size() != bt.elements().size()) return false;
             for (int i = 0; i < at.elements().size(); i++) {
                 if (!typesMayOverlap(at.elements().get(i), bt.elements().get(i))) return false;
@@ -3014,7 +3299,7 @@ public final class TypeChecker {
         }
         if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
         if (type instanceof Tuple tuple) {
-            return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList());
+            return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList(), tuple.kind());
         }
         if (type instanceof Union union) {
             return Types.unionOf(union.options().stream()
@@ -3357,7 +3642,13 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            Type resolvedParent = resolve(parentRef, generics, null);
+            if (iface.moduleContract() != parent.moduleContract()) {
+                throw new IllegalArgumentException(
+                        (iface.moduleContract() ? "module contract '" : "interface '") + iface.name()
+                                + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
+                                + parent.name() + "' across the interface/contract boundary");
+            }
+            Type resolvedParent = iface.moduleContract() ? resolveModuleContractRef(parentRef, parent, generics) : resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
                 throw new IllegalArgumentException("parent interface must resolve to a named type");
             }
@@ -4009,6 +4300,15 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(attempted.body(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.catchBody(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.finallyBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.SelectStmt selected) {
+                for (Ast.SelectArm arm : selected.arms()) {
+                    rejectStaticClassGenericReferences(
+                            arm.channel(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(
+                            arm.value(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(
+                            arm.body(), classGenerics, klass, method);
+                }
             } else if (statement instanceof Ast.ForOfDestructureStmt loop) {
                 rejectStaticClassGenericReferences(loop.iterable(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
@@ -4075,6 +4375,14 @@ public final class TypeChecker {
             }
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.ChannelOpExpr operation) {
+            rejectStaticClassGenericReferences(
+                    operation.channel(), classGenerics, klass, method);
+            rejectStaticClassGenericReferences(
+                    operation.value(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.DynamicSelectExpr selected) {
+            rejectStaticClassGenericReferences(
+                    selected.cases(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
                 rejectStaticClassGenericReferences(item, classGenerics, klass, method);
@@ -4253,7 +4561,9 @@ public final class TypeChecker {
             inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
             return;
         }
-        if (pattern instanceof Tuple p && actual instanceof Tuple a && p.elements().size() == a.elements().size()) {
+        if (pattern instanceof Tuple p && actual instanceof Tuple a
+                && p.kind() == a.kind()
+                && p.elements().size() == a.elements().size()) {
             for (int i = 0; i < p.elements().size(); i++) inferGenericBindings(p.elements().get(i), a.elements().get(i), bindings, fixedBindings, label);
             return;
         }
@@ -4274,7 +4584,7 @@ public final class TypeChecker {
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
-        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Function fn) return new Function(
@@ -4355,13 +4665,13 @@ public final class TypeChecker {
         Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
         validateCollectionMetadata(ref.name(), metadata);
 
-        boolean fixed = ref.name().equals("FixedArray") || ref.name().equals("FixedList");
+        boolean fixed = ref.name().equals("Tuple") || ref.name().equals("FixedArray") || ref.name().equals("FixedList");
 
         if (dimensions.isEmpty()) {
             if (fixed) {
                 throw new IllegalArgumentException(ref.name()
                         + " requires an explicit finite sequence shape, for example "
-                        + ref.name() + "[4 of int]");
+                        + (ref.name().equals("Tuple") ? "Tuple[int, string]" : ref.name() + "[4 of int]"));
             }
             if (ref.inferArguments()) return new ListType(Unknown.INSTANCE);
             if (positional.size() != 1) {
@@ -4378,6 +4688,14 @@ public final class TypeChecker {
         }
 
         Integer declaredRank = metadataRank(metadata);
+        if (fixed && dimensions.size() != 1) {
+            throw new IllegalArgumentException(ref.name()
+                    + " is a fixed one-dimensional sequence type; nested fixed layouts must be expressed through nested element types");
+        }
+        if (fixed && declaredRank != null && declaredRank != 1) {
+            throw new IllegalArgumentException(ref.name()
+                    + " has fixed arity and currently requires rank=1; use nested Tuple/FixedArray element types for exact multidimensional layout");
+        }
         if (declaredRank != null && declaredRank != dimensions.size()) {
             if (dimensions.size() != 1) {
                 throw new IllegalArgumentException("rank=" + declaredRank + " disagrees with "
@@ -4403,9 +4721,15 @@ public final class TypeChecker {
         Ast.TypeRef shape = dimensions.getFirst();
         if (fixed) {
             List<Ast.TypeRef> exact = expandFiniteSequencePatterns(shape.arguments(), ref.name());
+            validateFixedExtentMetadata(ref.name(), metadata, exact.size());
+            TupleKind kind = switch (ref.name()) {
+                case "FixedArray" -> TupleKind.FIXED_ARRAY;
+                case "FixedList" -> TupleKind.FIXED_LIST;
+                default -> TupleKind.TUPLE;
+            };
             return new Tuple(exact.stream()
                     .map(element -> resolve(element, generics, self, allowNullMarker))
-                    .toList());
+                    .toList(), kind);
         }
 
         if (shape.arguments().size() != 1) {
@@ -4493,15 +4817,21 @@ public final class TypeChecker {
         for (Map.Entry<String, Ast.TypeRef> entry : metadata.entrySet()) {
             String name = entry.getKey();
             Ast.TypeRef value = entry.getValue();
-            if (name.equals("size") || name.equals("capacity")) {
-                throw new IllegalArgumentException("'" + name
-                        + "' is runtime instance state; pass it to the constructor '(...)', not '<...>'");
+            if (name.equals("capacity")) {
+                throw new IllegalArgumentException("'capacity' is runtime instance state; pass it to the constructor '(...)', not '<...>'");
             }
-            if (!allowed.contains(name)) {
+            boolean fixedExtent = collectionName.equals("Tuple")
+                    || collectionName.equals("FixedArray")
+                    || collectionName.equals("FixedList");
+            if (name.equals("size") && !fixedExtent) {
+                throw new IllegalArgumentException("'size' is runtime instance state for resizable collections; "
+                        + "pass it to the constructor '(...)', not '<...>'");
+            }
+            if (!allowed.contains(name) && !name.equals("size")) {
                 throw new IllegalArgumentException("unknown named type parameter '" + name
                         + "' for " + collectionName);
             }
-            if (Set.of("align", "inline_capacity", "max_capacity", "rank").contains(name)) {
+            if (Set.of("align", "inline_capacity", "max_capacity", "rank", "size").contains(name)) {
                 if (!value.isIntLiteral()) {
                     throw new IllegalArgumentException("'" + name + "' requires an integer compile-time value");
                 }
@@ -4518,6 +4848,27 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("'" + name + "' cannot be negative");
                 }
             }
+        }
+    }
+
+    private void validateFixedExtentMetadata(
+            String collectionName,
+            Map<String, Ast.TypeRef> metadata,
+            int exactSize) {
+        Ast.TypeRef size = metadata.get("size");
+        if (size != null && size.intLiteralValue() != exactSize) {
+            throw new IllegalArgumentException(collectionName + " size=" + size.intLiteralValue()
+                    + " disagrees with fixed sequence arity " + exactSize);
+        }
+        Ast.TypeRef inlineCapacity = metadata.get("inline_capacity");
+        if (inlineCapacity != null && inlineCapacity.intLiteralValue() < exactSize) {
+            throw new IllegalArgumentException(collectionName + " inline_capacity="
+                    + inlineCapacity.intLiteralValue() + " is smaller than fixed sequence arity " + exactSize);
+        }
+        Ast.TypeRef maxCapacity = metadata.get("max_capacity");
+        if (maxCapacity != null && maxCapacity.intLiteralValue() < exactSize) {
+            throw new IllegalArgumentException(collectionName + " max_capacity="
+                    + maxCapacity.intLiteralValue() + " is smaller than fixed sequence arity " + exactSize);
         }
     }
 
@@ -4613,7 +4964,13 @@ public final class TypeChecker {
             return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self, allowNullMarker)).toList());
         }
         if (ref.isTupleType()) {
-            return new Tuple(ref.arguments().stream().map(element -> resolve(element, generics, self, allowNullMarker)).toList());
+            Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
+            validateCollectionMetadata("Tuple", metadata);
+            List<Ast.TypeRef> elements = positionalTypeArguments(ref);
+            validateFixedExtentMetadata("Tuple", metadata, elements.size());
+            return new Tuple(elements.stream()
+                    .map(element -> resolve(element, generics, self, allowNullMarker))
+                    .toList(), TupleKind.TUPLE);
         }
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -4647,10 +5004,15 @@ public final class TypeChecker {
             case "f32", "f64", "float" -> Primitive.FLOAT;
             case "decimal" -> Primitive.DECIMAL;
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
-            case "bool", "Bool" -> Primitive.BOOL;
+            case "bool", "Bool" -> {
+                if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                    throw new IllegalArgumentException("bool/boolean does not accept type arguments or sequence shapes");
+                }
+                yield Primitive.BOOL;
+            }
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
-            case "Array", "List", "Vector", "Slice", "FixedArray", "FixedList" -> {
+            case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
                         && ref.arguments().stream().noneMatch(argument ->
@@ -4697,7 +5059,8 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
+                // Future<void> is the canonical completion type for nb writech.
+                // OresFuture supports a null terminal payload, so void is valid here.
                 yield new Named("Future", List.of(element));
             }
             case "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult" -> {
@@ -4736,6 +5099,7 @@ public final class TypeChecker {
                 }
                 Ast.InterfaceDecl knownInterface = findInterface(ref.name());
                 if (knownInterface != null) {
+                    if (knownInterface.moduleContract()) throw new IllegalArgumentException("module contract '" + knownInterface.name() + "' is only valid in module 'conforms' clauses");
                     validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
                     yield new Named(qualifiedInterfaceName(knownInterface),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
@@ -4820,6 +5184,8 @@ public final class TypeChecker {
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
+            Ast.InterfaceDecl actualContract = findInterface(actualNamed.name());
+            if (actualContract != null && actualContract.moduleContract()) return false;
             Ast.ClassDecl klass = findClass(actualNamed.name());
             if (klass != null) {
                 // Actors are mailbox/capability identities, not ordinary
@@ -4847,6 +5213,12 @@ public final class TypeChecker {
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
+            Ast.InterfaceDecl actualInterface = findInterface(actualNamed.name());
+            Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
+            if ((actualInterface != null && actualInterface.moduleContract())
+                    || (expectedInterface != null && expectedInterface.moduleContract())) {
+                return false;
+            }
             if (findClass(actualNamed.name()) != null) {
                 if (findClass(expectedNamed.name()) != null
                         && classTypeExtends(actualNamed, expectedNamed, new LinkedHashSet<>())) {

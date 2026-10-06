@@ -32,6 +32,7 @@ import actor Worker from "../xyz";
 import class Widget as ApiWidget from "../xyz";
 import fnc add as apiAdd from "../xyz";
 import interface ServiceApi from "../xyz";
+import contract StorageApi from "../xyz";
 import type UserId from "../xyz";
 import types ServiceApi, UserId from "../xyz";
 import types (ServiceApi, UserId) from "../xyz";
@@ -103,26 +104,25 @@ specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
 
-## Module interfaces / OCaml-style module signatures
+## Module contracts
 
-Interfaces can describe the structural public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
+Module shape is described by a dedicated `contract`, not by a trait or ordinary type interface. Traits are for structs, classes, actors, and other types; contracts are for modules.
 
 ```ores
-define module contracts
-  define interface MathApi
-    fnc add(int a, int b) => int;
-    String name;
-  end
+define contract MathApi as
+  fnc add(int a, int b) => int;
+  String name;
 end
 
-@AdheresTo(contracts.MathApi)
-define module math
+define module math conforms MathApi as
   pub fnc add(int a, int b): int { return a + b; }
   pub val String name = "math";
 end
 ```
 
-Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(A, B)` may name more than one interface.
+Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
+
+A module contract is not a class/struct interface and cannot be implemented by a class or actor.
 
 ## Functions and returns
 
@@ -196,6 +196,24 @@ Collection syntax deliberately separates three concerns:
 - `<name=value, ...>` carries compile-time type/storage metadata;
 - `(...)` carries runtime construction state such as an initial size or
   capacity.
+
+The core sequence families are intentionally distinct even when they share a
+runtime representation today:
+
+| Family | Extent | Element model | Core intent |
+| --- | --- | --- | --- |
+| `Tuple[T1, T2, ...]` / bare `[T1, T2, ...]` | compile-time fixed | positional / heterogeneous | product value; arity never grows |
+| `FixedArray[...]` | compile-time fixed | exact indexed sequence | fixed indexed storage |
+| `FixedList[...]` | compile-time fixed | exact sequence | fixed list API/storage |
+| `Array[T]`, `List[T]`, `Vector[T]` | runtime extent | homogeneous or explicit repeating pattern | owning runtime-extent sequence |
+| `Slice[T]` | runtime extent view | homogeneous | non-owning/view-style sequence |
+
+`Tuple`, `FixedArray`, and `FixedList` are distinct static kinds. A
+`FixedArray[int, string]` is therefore not silently assignable to
+`Tuple[int, string]`, even if both are currently list-backed in the
+interpreter. `ArrayList` is not a core Oreslang sequence spelling on current
+main; importing `java.util.ArrayList` remains explicit Java interop and does
+not define Oreslang collection semantics.
 
 For exact finite storage, counted repetition is part of the shape:
 
@@ -284,20 +302,35 @@ val xs: Vector[...(int, string, bool)] = [5, "foo", true];
 Conflicting inline and annotation metadata is an error; there is deliberately
 no precedence rule.
 
-Current size and capacity are not properties of a mutable collection's type.
-They belong to runtime construction:
+For runtime-extent collections, current `size` and `capacity` are not
+properties of the type. They belong to runtime construction. Fixed-extent
+sequences are different: `size=N` may be used as a compile-time layout
+assertion and must equal the statically expanded arity.
 
 ```ores
-// type/storage policy
+// runtime-extent policy: size/capacity are constructor state
 val xs: Vector<growth_policy=GP.Foo>[int] = [1, 2, 3];
 
-// size/capacity belong in constructor/runtime state, never:
+// invalid for a resizable vector:
 // Vector<size=3>[int]
 // Vector<capacity=32>[int]
+
+// fixed product/storage policy: size is a checked compile-time assertion
+val pair: Tuple<
+    growth_policy=GP.Fixed,
+    allocator=Arena,
+    align=64,
+    size=2
+>[int, string] = (7, "seven");
+
+val fixed: FixedArray<size=4, align=32>[4 of int] = [1, 2, 3, 4];
 ```
 
-This distinction ensures that a type cannot become false merely because a
-vector grows.
+`capacity=N` remains runtime state and is not accepted as type metadata.
+`growth_policy` on a tuple/fixed sequence describes backing-storage or
+construction policy only; it never makes the logical arity resizable.
+`inline_capacity` and `max_capacity`, when present on a fixed sequence,
+must be at least its exact arity.
 
 Repeated bracket suffixes provide homogeneous multidimensional shorthand:
 
@@ -518,7 +551,10 @@ val first = values[0];
 
 `arr[...]` is the canonical inline-array spelling. The original bare `[...]` literal remains accepted for source compatibility and destructuring migration.
 
-Tuples preserve per-position static types. Parenthesized tuple literals and list-backed values returned against a finite tuple type both retain the declared positional types:
+Tuples preserve per-position static types. Parenthesized tuple literals and
+list-backed values returned against a finite tuple type both retain the declared
+positional types. Bare finite tuple syntax remains the compact form; the named
+`Tuple<...>[...]` form is used when storage metadata is needed.
 
 ```ores
 val pair = (1, "one");
@@ -529,14 +565,23 @@ fnc result(): [int, bool, string] {
 }
 
 const [num, ok, answer] = result();
+
+val aligned: Tuple<align=64, size=2>[int, string] = (1, "one");
+
+@NamedParams<align=64, size=2>
+val sameShape: [int, string] = (1, "one");
 ```
+
+A tuple is a product value, not a growable array. Its `size` metadata is
+redundant by design but useful as an ABI/layout assertion; a mismatch with the
+declared positional arity is a compile-time error.
 
 ## Structural typing and interfaces
 
 Interfaces define statically checkable contracts, but named class/interface values remain
 **nominal by default**. Structural comparison is entered only through an explicit
 structural boundary, an explicit `implements` proof, or module
-`@AdheresTo(...)` conformance.
+`conforms` conformance.
 
 ```ores
 define interface Named
@@ -554,9 +599,17 @@ never erased into an ordinary structural object.
 
 ## Boolean combinator intrinsics
 
+`bool` and `boolean` are interchangeable spellings of the same primitive
+type. Both work in parameters, return types, bindings, casts, type tests,
+and nested types such as `Array<boolean>` or `Option<boolean>`. They have
+the same Copy ownership semantics. Boolean primitives do not accept type
+arguments; `boolean<int>` and `bool<>` are invalid.
+
 `And`, `Or`, and `Xor` are compiler-provided overload families in the
 built-in `BooleanOps` namespace and are also available as globals, like
 `Some`, `None`, `Ok`, and `Err`.
+No imports or declarations are needed to call `And(...)`, `Or(...)`, or
+`Xor(...)` directly. The qualified `BooleanOps` forms are also built in.
 
 Conceptually, each family has these two arity-selected overloads:
 
@@ -604,6 +657,9 @@ control-flow IR as the operators.
 The one-argument list overload has ordinary eager argument evaluation, then
 reduces the already-created list. Empty lists are valid: `And([])` is
 `true`, `Or([])` is `false`, and `Xor([])` is `false`.
+The intrinsic reads its list without consuming ownership, so the same array
+can be reused in subsequent calls. User-defined functions that shadow these
+names retain their declared parameter ownership rules.
 
 Module/top-level `fnc` and `routine` overload identity is also name + exact
 arity. Same-name/different-arity declarations are valid; same-name/same-arity
@@ -1041,7 +1097,7 @@ pub interface Foo extends Bar {
 }
 ```
 
-Explicit `implements` and module `@AdheresTo(...)` checks remain structural
+Explicit `implements` and module `conforms` checks remain structural
 conformance proofs.
 
 ## Method overloads

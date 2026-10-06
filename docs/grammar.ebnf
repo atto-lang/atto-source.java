@@ -7,7 +7,7 @@ import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
                 | import_kind import_names ;
 import_kind     = "module" | "actor" | "class" | "fnc"
-                | "interface" | "trait" | "struct"
+                | "interface" | "contract" | "trait" | "struct"
                 | "type" | "types" ;
 import_names    = IDENT { "," IDENT } [ "as" IDENT ]
                 | "(" IDENT { "," IDENT } ")"
@@ -15,6 +15,7 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
                 | "*" "as" IDENT ;
 
 top_level_item  = annotated_module_decl
+                | contract_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
@@ -23,10 +24,11 @@ top_level_item  = annotated_module_decl
                 | type_decl
                 | binding_decl ;
 
-annotated_module_decl = { annotation } "define" "module" IDENT
-                        { module_member } "end" ;
+annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
+                        [ "as" ] { module_member } "end" ;
 
-module_member   = actor_decl
+module_member   = contract_decl
+                | actor_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
@@ -91,6 +93,9 @@ static_function_decl
                 = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
+contract_decl   = "define" "contract" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] interface_body ;
+
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body
@@ -154,6 +159,7 @@ statement       = binding_decl
                 | match_stmt
                 | switch_stmt
                 | try_stmt
+                | select_stmt
                 | defer_stmt
                 | for_stmt
                 | loop_stmt
@@ -200,6 +206,20 @@ switch_default  = "default" "->" block ;
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
+select_stmt     = [ select_wait_mode ] "select" [ select_policy ]
+                  "{" select_arm { select_arm } [ select_default ] "}" ;
+select_wait_mode= "nb" | "try" ;
+select_policy   = "first" | "fair" | "random" ;
+select_arm      = "case" "readch" expression ":"
+                  [ binding_kind IDENT ] { statement }
+                | "case" "writech" expression "," expression ":"
+                  { statement } ;
+select_default  = "default" ":" { statement } ;
+
+(* In select_arm/select_default bodies, the next case/default or the closing
+   brace is a structural arm boundary and is not consumed as a nested
+   statement. At most one default arm is permitted. *)
+
 for_stmt        = "for" "(" for_of_head ")" loop_body
                 | "for" "(" c_for_head ")" loop_body
                 | "for" for_of_head loop_body
@@ -236,7 +256,14 @@ comparison      = additive
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
 unary           = [ "!" | "-" | "+" | "await" ] postfix
-                | "&" [ "mut" ] unary ;
+                | "&" [ "mut" ] unary
+                | channel_expr ;
+
+channel_expr    = [ channel_wait_mode ] "readch" unary
+                | [ channel_wait_mode ] "writech" unary "," expression
+                | [ channel_wait_mode ] "select" [ select_policy ] "from" unary ;
+channel_wait_mode
+                = "nb" | "try" ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
@@ -244,7 +271,8 @@ call_argument   = [ "..." ] expression ;
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
-                | "case" | "default" | "first" | "switch" ;
+                | "case" | "default" | "first" | "switch"
+                | "nb" | "select" | "readch" | "writech" ;
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
@@ -338,12 +366,23 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    an expression is accepted.
 
    Semantic restrictions:
+   - Channel/select waiting has three distinct modes. Plain readch/writech/select
+     is suspending; nb registers and returns a Future/arms a detached static
+     select continuation; try probes once without leaving a waiter. Static
+     select defaults to deterministic fair rotation. "select first" is strict
+     lexical priority and "select random" is explicit opt-in randomness.
+     Static nb-select arms are detached void continuation scopes: return exits
+     only the selected arm and break/continue cannot target an already-
+     continued outer loop. Dynamic selection uses "select from cases" and
+     lowers to the same SelectSet primitive as static select.
    - In collection type syntax, '[...]' describes element/sequence shape,
      '<name=value>' describes compile-time type/storage metadata, and '(...)'
      remains runtime construction/instance state. Named metadata parameters are
      order-independent after canonicalization.
-   - FixedArray/FixedList accept finite sequence shapes, including counted
-     repetition such as FixedArray[3 of int, 3 of string].
+   - Tuple/FixedArray/FixedList accept finite sequence shapes. Tuple[int,
+     string] is the named tuple spelling; bare [int, string] remains the compact
+     tuple spelling. Fixed arrays/lists also accept counted repetition such as
+     FixedArray[3 of int, 3 of string].
    - Runtime-extent collections use one homogeneous element pattern
      (Vector[int]) or explicit unbounded repetition
      (Vector[...(int, string, bool)]). A bare multi-item finite pattern such as
@@ -353,8 +392,14 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      so Vector[int][int] is the two-dimensional shorthand. The rank=N named
      parameter is an equivalent explicit rank declaration when one bracketed
      element shape is present.
-   - Runtime size/capacity are constructor state, not type metadata; size= and
-     capacity= are rejected inside '<...>'.
+   - For runtime-extent collections, size/capacity are constructor state and
+     are rejected inside '<...>'. Fixed Tuple/FixedArray/FixedList may carry
+     size=N as a compile-time extent assertion; N must equal the statically
+     expanded arity. capacity= remains runtime-only.
+   - Tuple/FixedArray/FixedList are distinct static kinds even when their
+     interpreter representation is list-backed. Fixed sequence rank is
+     currently 1; express exact multidimensional layouts with nested fixed
+     element types rather than repeated bracket rank shorthand.
    - "block" followed by "{" is a standalone lexical scope. It has no implicit
      scheduling behavior and declarations inside it do not escape the scope.
    - Unparenthesized C-style headers are distinguished by their semicolon
