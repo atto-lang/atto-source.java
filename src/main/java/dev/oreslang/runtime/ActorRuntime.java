@@ -769,10 +769,29 @@ public final class ActorRuntime implements AutoCloseable {
 
     private record ProtocolRequest(
             String method,
-            OresFuture<Object> reply) {
+            OresFuture<Object> reply,
+            AtomicBoolean replyHandedOff) {
+        private ProtocolRequest(
+                String method,
+                OresFuture<Object> reply) {
+            this(method, reply, new AtomicBoolean());
+        }
+
         private ProtocolRequest {
             Objects.requireNonNull(method, "method");
             Objects.requireNonNull(reply, "reply");
+            Objects.requireNonNull(replyHandedOff, "replyHandedOff");
+        }
+
+        private void handOffReply() {
+            if (!replyHandedOff.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "typed actor protocol reply ownership was already handed off");
+            }
+        }
+
+        private boolean ownsReply() {
+            return !replyHandedOff.get();
         }
     }
 
@@ -797,9 +816,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
+            return continuation(continuation, null);
+        }
+
+        private static MessageEnvelope continuation(
+                Runnable continuation,
+                Runnable release) {
             return new MessageEnvelope(
                     null,
-                    null,
+                    release,
                     Objects.requireNonNull(continuation, "continuation"),
                     null);
         }
@@ -811,7 +836,9 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             try {
-                if (protocolRequest != null && !protocolRequest.reply().isDone()) {
+                if (protocolRequest != null
+                        && protocolRequest.ownsReply()
+                        && !protocolRequest.reply().isDone()) {
                     protocolRequest.reply().cancel(false);
                 }
             } finally {
@@ -1086,12 +1113,13 @@ public final class ActorRuntime implements AutoCloseable {
             return false;
         }
 
-        cell.pendingOperations.add(future);
+        boolean newlyOwned = cell.pendingOperations.add(future);
         if (cell.stopped.get() || cell.finalized || closed.get()) {
-            cell.pendingOperations.remove(future);
+            if (newlyOwned) cell.pendingOperations.remove(future);
             future.cancel(false);
             return false;
         }
+        if (!newlyOwned) return true;
 
         future.whenCompleteRuntime(
                 (ignored, failure) ->
@@ -1121,27 +1149,45 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
+        return enqueueContinuation(actorId, continuation, null);
+    }
+
+    private boolean enqueueContinuation(
+            ActorId actorId,
+            Runnable continuation,
+            Runnable release) {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        if (cell == null || cell.stopped.get() || closed.get()) {
+            if (release != null) release.run();
+            return false;
+        }
         if (!cell.reserveContinuationSlot()) {
+            if (release != null) release.run();
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
             return false;
         }
 
+        MessageEnvelope envelope =
+                MessageEnvelope.continuation(continuation, release);
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                admitted = cell.mailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation));
+                admitted = cell.mailbox.tryWrite(envelope);
             }
             if (admitted) cell.schedule();
             return admitted;
         } finally {
-            if (!admitted) cell.releaseMailboxSlot(true);
+            if (!admitted) {
+                try {
+                    envelope.close();
+                } finally {
+                    cell.releaseMailboxSlot(true);
+                }
+            }
         }
     }
 
@@ -3415,6 +3461,68 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Transfer a suspending source protocol reply from the request envelope to
+     * an actor-mailbox continuation. Future completion threads never execute
+     * guest code or serialize guest values directly.
+     */
+    @SuppressWarnings("unchecked")
+    private void handOffSourceProtocolReply(
+            ProtocolRequest protocol,
+            OresFuture<?> pending) {
+        Objects.requireNonNull(protocol, "protocol");
+        Objects.requireNonNull(pending, "pending");
+
+        OresFuture<Object> owned =
+                (OresFuture<Object>) ownCurrentActorFuture(
+                        (OresFuture<Object>) pending);
+        ContinuationTarget target = captureCurrentContinuationTarget();
+        protocol.handOffReply();
+
+        Runnable cancelAbandonedReply = () -> {
+            if (!protocol.reply().isDone()) {
+                protocol.reply().cancel(false);
+            }
+        };
+
+        owned.whenCompleteRuntime((value, failure) -> {
+            boolean admitted = enqueueContinuation(
+                    target.actorId(),
+                    () -> {
+                        if (failure != null) {
+                            Throwable terminal = OresFuture.unwrap(failure);
+                            protocol.reply().failFromRuntime(terminal);
+                            throw rethrowActorProtocolFailure(terminal);
+                        }
+                        if (protocol.reply().isCancelled()) return;
+
+                        try {
+                            Object preparedReply =
+                                    prepareSourceProtocolReply(value);
+                            if (!protocol.reply().completeFromRuntime(preparedReply)
+                                    && !protocol.reply().isCancelled()) {
+                                throw new IllegalStateException(
+                                        "typed actor protocol reply was already settled");
+                            }
+                        } catch (Throwable callbackFailure) {
+                            protocol.reply().failFromRuntime(callbackFailure);
+                            throw rethrowActorProtocolFailure(callbackFailure);
+                        }
+                    },
+                    cancelAbandonedReply);
+            if (!admitted) {
+                cancelAbandonedReply.run();
+            }
+        });
+    }
+
+    private static RuntimeException rethrowActorProtocolFailure(
+            Throwable failure) {
+        if (failure instanceof RuntimeException runtime) return runtime;
+        if (failure instanceof Error error) throw error;
+        return new RuntimeException(failure);
+    }
+
+    /**
      * Cooperative scheduler hook used by compiler-injected loop safepoints.
      * Carrier threads remain an implementation detail.
      */
@@ -5138,16 +5246,21 @@ public final class ActorRuntime implements AutoCloseable {
                                             protocol.method(),
                                             arguments,
                                             protocolContext);
-                                    if (result instanceof OresFuture<?>
-                                            || result instanceof CompletionStage<?>) {
+                                    if (result instanceof OresFuture<?> pending) {
+                                        handOffSourceProtocolReply(
+                                                protocol,
+                                                pending);
+                                    } else if (result instanceof CompletionStage<?>) {
                                         throw new IllegalStateException(
-                                                "suspending source actor protocol methods are not linked to the current mailbox continuation ABI yet");
-                                    }
-                                    Object preparedReply = prepareSourceProtocolReply(result);
-                                    if (!protocol.reply().completeFromRuntime(preparedReply)
-                                            && !protocol.reply().isCancelled()) {
-                                        throw new IllegalStateException(
-                                                "typed actor protocol reply was already settled");
+                                                "host CompletionStage values cannot cross a source actor protocol boundary; use OresFuture");
+                                    } else {
+                                        Object preparedReply =
+                                                prepareSourceProtocolReply(result);
+                                        if (!protocol.reply().completeFromRuntime(preparedReply)
+                                                && !protocol.reply().isCancelled()) {
+                                            throw new IllegalStateException(
+                                                    "typed actor protocol reply was already settled");
+                                        }
                                     }
                                 } catch (Throwable failure) {
                                     protocol.reply().failFromRuntime(failure);
