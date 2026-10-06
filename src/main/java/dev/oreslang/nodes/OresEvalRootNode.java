@@ -152,6 +152,7 @@ public final class OresEvalRootNode extends RootNode {
             METHOD,
             STATIC_FUNCTION,
             STATIC_FUNCTION_BODY,
+            PROXY_METHOD,
             INVOKABLE
         }
 
@@ -161,6 +162,12 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver,
                 Object target,
                 List<Object> arguments) { }
+
+        private record ProxyMethodPlan(
+                ActorRuntime.Proxy<?> proxy,
+                Invocation inner,
+                boolean readOnly,
+                String label) { }
 
         private record TailCall(Invocation invocation) { }
 
@@ -467,6 +474,8 @@ public final class OresEvalRootNode extends RootNode {
                 case STATIC_FUNCTION_BODY -> callStaticFunctionBodyRaw(
                         (Ast.MethodDecl) invocation.target(),
                         invocation.arguments());
+                case PROXY_METHOD -> executeProxyMethod(
+                        (ProxyMethodPlan) invocation.target());
                 case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
             };
         }
@@ -3396,6 +3405,7 @@ public final class OresEvalRootNode extends RootNode {
                 case METHOD, STATIC_FUNCTION, STATIC_FUNCTION_BODY ->
                         ((Ast.MethodDecl) invocation.target()).async()
                                 || ((Ast.MethodDecl) invocation.target()).returnType().name().equals("Future");
+                case PROXY_METHOD -> false;
                 // Builtin Future-returning APIs are values, not suspended
                 // guest source calls. Their consumers explicitly await them.
                 case INVOKABLE -> true;
