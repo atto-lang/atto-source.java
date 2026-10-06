@@ -664,6 +664,9 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> deferred,
                 boolean inheritedTailBarrier) {
+            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                context.schedulerSafepoint();
+            }
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
