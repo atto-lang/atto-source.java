@@ -320,7 +320,9 @@ public final class Ast {
         }
     }
 
-    public record InterfaceFieldDecl(String name, TypeRef type) implements InterfaceMember { }
+    public record InterfaceFieldDecl(String name, TypeRef type, BindingKind bindingKind) implements InterfaceMember {
+        public InterfaceFieldDecl(String name, TypeRef type) { this(name, type, BindingKind.VAL); }
+    }
 
     public record InterfaceDecl(
             String name,
