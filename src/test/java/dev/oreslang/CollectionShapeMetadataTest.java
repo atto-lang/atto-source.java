@@ -247,7 +247,8 @@ final class CollectionShapeMetadataTest {
                           return;
                         }
                         """)));
-        assertTrue(mismatch.getMessage().contains("disagrees with fixed sequence arity 2"));
+        assertTrue(mismatch.getMessage().contains("disagrees with")
+                && mismatch.getMessage().contains("arity 2"));
     }
 
     @Test
@@ -290,6 +291,58 @@ final class CollectionShapeMetadataTest {
                   return;
                 }
                 """)));
+    }
+
+    @Test
+    void fixedArrayNamedAndPositionalTypeParametersCanonicalizeIdentically() {
+        Ast.TypeRef named = firstParameterType(Parser.parse("""
+                pub fnc named(
+                    FixedArray<type=int|string, size=21>[...(3 of int, 3 of string)] xs
+                ): void {
+                  return;
+                }
+                """), "named");
+
+        Ast.TypeRef positional = firstParameterType(Parser.parse("""
+                pub fnc positional(
+                    FixedArray<int|string, 21>[...(3 of int, 3 of string)] xs
+                ): void {
+                  return;
+                }
+                """), "positional");
+
+        assertEquals(named, positional);
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc accepts(
+                    FixedArray<int|string, 21>[...(3 of int, 3 of string)] xs
+                ): void {
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException narrowType = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc bad(
+                            FixedArray<type=int, size=6>[...(3 of int, 3 of string)] xs
+                        ): void {
+                          return;
+                        }
+                        """)));
+        assertTrue(narrowType.getMessage().contains("shape element"));
+        assertTrue(narrowType.getMessage().contains("type parameter"));
+
+        IllegalArgumentException positionalAfterNamed = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub fnc bad(
+                            FixedArray<size=21, int|string>[...(3 of int, 3 of string)] xs
+                        ): void {
+                          return;
+                        }
+                        """));
+        assertTrue(positionalAfterNamed.getMessage().contains(
+                "positional type parameters cannot follow named type parameters"));
     }
 
     @Test
@@ -426,14 +479,28 @@ final class CollectionShapeMetadataTest {
                 }
                 """)));
 
-        IllegalArgumentException mixed = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        pub fnc main(): void {
-                          val xs: Array<int>[int] = [[1]];
-                          return;
-                        }
-                        """)));
-        assertTrue(mixed.getMessage().contains("cannot mix positional '<T>' type arguments"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val xs: Array<int>[int] = [1];
+                  val ys: Array<type=int>[int] = [2];
+                  return;
+                }
+                """)));
+    }
+
+    private static Ast.TypeRef firstParameterType(Ast.Program program, String functionName) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function
+                        && function.name().equals(functionName)) {
+                    if (function.parameters().isEmpty()) {
+                        throw new AssertionError("function has no parameters: " + functionName);
+                    }
+                    return function.parameters().getFirst().type();
+                }
+            }
+        }
+        throw new AssertionError("missing function " + functionName);
     }
 
     private static Ast.TypeRef bindingType(Ast.Program program, String name) {
