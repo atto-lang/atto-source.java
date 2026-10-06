@@ -849,18 +849,21 @@ public final class ActorEventBus implements AutoCloseable {
         private void closeChannelOnly() {
             if (!subscriptionClosed.compareAndSet(false, true)) return;
             channel.close();
-            while (true) {
-                Event<T> buffered;
-                synchronized (channel) {
-                    if (channel.isEmpty()) break;
-                    buffered = channel.tryRead().orElseThrow();
-                }
+
+            // Use the runtime-only drain primitive rather than re-entering the
+            // guest-visible tryRead() path while holding the channel monitor.
+            // That keeps closed-and-empty teardown terminal rather than
+            // exceptional and releases delivery/accounting callbacks outside
+            // the channel lock.
+            while (channel.drainOne(buffered -> {
                 if (topic.policy == DeliveryPolicy.RELIABLE) {
                     releaseReliableEvent();
                 }
                 buffered.releaseDelivery();
-                // Drain buffered immutable event references so group teardown
-                // does not retain payloads after the subscription is gone.
+            })) {
+                // Drain every already-buffered immutable delivery. Pending
+                // writers were failed by channel.close() and release their own
+                // delivery/accounting reservations from completion callbacks.
             }
         }
     }
