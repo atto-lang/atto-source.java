@@ -52,16 +52,13 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void modulesAreTypedNamespacesAndCanAdhereToInterfaces() {
+    void modulesAreTypedNamespacesAndConformToContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module contracts
-                  define interface MathApi
-                    fnc add(int a, int b) => int;
-                  end
+                define contract MathApi as
+                  fnc add(int a, int b) => int;
                 end
 
-                @AdheresTo(contracts.MathApi)
-                define module math
+                define module math conforms MathApi as
                   pub fnc add(int a, int b): int { return a + b; }
                 end
 
@@ -78,14 +75,11 @@ final class LanguageHardeningTest {
     @Test
     void directOnlyRoutineStillParticipatesInModuleCallableContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module contracts
-                  define interface Api
-                    fnc ping(int value) => int;
-                  end
+                define contract Api as
+                  fnc ping(int value) => int;
                 end
 
-                @AdheresTo(contracts.Api)
-                define module service
+                define module service conforms Api as
                   pub routine ping(int value): int {
                     return value + 1;
                   }
@@ -430,20 +424,17 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void moduleAdherenceRejectsMissingExports() {
+    void moduleConformanceRejectsMissingExports() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module contracts
-                  define interface Api
-                    fnc ping() => int;
-                  end
+                define contract Api as
+                  fnc ping() => int;
                 end
 
-                @AdheresTo(contracts.Api)
-                define module broken
+                define module broken conforms Api as
                   pub fnc pong(): int { return 1; }
                 end
                 """)));
-        assertTrue(error.getMessage().contains("does not adhere"));
+        assertTrue(error.getMessage().contains("does not conform"));
     }
 
     @Test
