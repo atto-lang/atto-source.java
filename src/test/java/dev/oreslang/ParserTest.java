@@ -14,6 +14,57 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void callableEffectModifiersMaySurroundFncAndClassesMayUseEitherBodyStyle() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  pub define class LegacyBox as
+                  end
+
+                  define pub class BracedBox as {
+                  }
+
+                  fnc pub nlex pure first(): int {
+                    return 1;
+                  }
+
+                  pure nlex fnc pub second(): int {
+                    return 2;
+                  }
+
+                  fnc pub async third(): int {
+                    return 3;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl first = (Ast.FunctionDecl) module.declarations().get(2);
+        Ast.FunctionDecl second = (Ast.FunctionDecl) module.declarations().get(3);
+        Ast.FunctionDecl third = (Ast.FunctionDecl) module.declarations().get(4);
+
+        assertEquals(Ast.Visibility.PUBLIC, ((Ast.ClassDecl) module.declarations().get(0)).visibility());
+        assertEquals(Ast.Visibility.PUBLIC, ((Ast.ClassDecl) module.declarations().get(1)).visibility());
+
+        assertTrue(first.nonLexical());
+        assertTrue(first.pure());
+        assertEquals(first.visibility(), second.visibility());
+        assertEquals(first.nonLexical(), second.nonLexical());
+        assertEquals(first.pure(), second.pure());
+        assertTrue(third.async());
+    }
+
+    @Test
+    void duplicateEffectModifiersStillFailAcrossFnc() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  pure fnc pure nope(): int {
+                    return 1;
+                  }
+                end
+                """));
+    }
+
+    @Test
     void supportsMultipleModulesAndComplexNumbers() {
         String source = """
                 define module math
