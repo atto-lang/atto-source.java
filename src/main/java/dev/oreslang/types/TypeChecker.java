@@ -63,7 +63,9 @@ public final class TypeChecker {
     private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
-        return dev.oreslang.compiler.OresCompiler.analyze(program);
+        program = checkTypes(program);
+        OwnershipChecker.check(program);
+        return program;
     }
 
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
