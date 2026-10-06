@@ -1370,14 +1370,18 @@ public final class ActorRuntime implements AutoCloseable {
         DispatcherGroup(DispatcherConfig config, String prefix) {
             this.config = Objects.requireNonNull(config);
             this.maxActorMemoryBytes = configuredProcessActorMemoryLimit();
+            Objects.requireNonNull(prefix, "prefix");
+
             int controlParallelism = config.controlParallelism();
             int rootPermits = config.rootParallelism();
             int readyQueueCapacity;
             try {
                 readyQueueCapacity = Math.addExact(config.maxActors(), rootPermits);
             } catch (ArithmeticException overflow) {
-                throw new IllegalArgumentException("dispatcher ready-queue capacity overflow", overflow);
+                throw new IllegalArgumentException(
+                        "dispatcher ready-queue capacity overflow", overflow);
             }
+
             this.privateCarrierRegistry =
                     new CarrierRegistry(config.maxParallelismFor(ActorKind.PRIVATE));
             this.sharedCarrierRegistry =
@@ -1385,37 +1389,145 @@ public final class ActorRuntime implements AutoCloseable {
             this.untrustedCarrierRegistry =
                     new CarrierRegistry(config.maxParallelismFor(ActorKind.UNTRUSTED));
 
-            this.controlDispatcher = newDispatcher(
-                    controlParallelism,
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "control-plane-dispatcher-",
-                    null);
-            this.privateDispatcher = newDispatcher(
-                    config.privateParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "private-actor-dispatcher-",
-                    privateCarrierRegistry);
-            this.sharedDispatcher = newDispatcher(
-                    config.sharedParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "shared-actor-dispatcher-",
-                    sharedCarrierRegistry);
-            this.untrustedDispatcher = newDispatcher(
-                    config.untrustedParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "untrusted-actor-dispatcher-",
-                    untrustedCarrierRegistry);
-            this.untrustedWatchdog = newUntrustedWatchdog(
-                    namedFactory(prefix + "untrusted-watchdog-"));
-            this.messageWatchdog = newUntrustedWatchdog(
-                    namedFactory(prefix + "actor-turn-watchdog-"));
-            this.actorTimerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
-            this.rootSlots = new Semaphore(rootPermits, true);
-            this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
+            ThreadPoolExecutor control = null;
+            ThreadPoolExecutor privatePool = null;
+            ThreadPoolExecutor sharedPool = null;
+            ThreadPoolExecutor untrustedPool = null;
+            ScheduledThreadPoolExecutor untrustedWatchdog = null;
+            ScheduledThreadPoolExecutor messageWatchdog = null;
+            ActorTimerWheel timerWheel = null;
+            try {
+                control = newDispatcher(
+                        controlParallelism,
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "control-plane-dispatcher-",
+                        null);
+                privatePool = newDispatcher(
+                        config.privateParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "private-actor-dispatcher-",
+                        privateCarrierRegistry);
+                sharedPool = newDispatcher(
+                        config.sharedParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "shared-actor-dispatcher-",
+                        sharedCarrierRegistry);
+                untrustedPool = newDispatcher(
+                        config.untrustedParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "untrusted-actor-dispatcher-",
+                        untrustedCarrierRegistry);
+                untrustedWatchdog = newUntrustedWatchdog(
+                        namedFactory(prefix + "untrusted-watchdog-"));
+                messageWatchdog = newUntrustedWatchdog(
+                        namedFactory(prefix + "actor-turn-watchdog-"));
+                timerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
+
+                this.controlDispatcher = control;
+                this.privateDispatcher = privatePool;
+                this.sharedDispatcher = sharedPool;
+                this.untrustedDispatcher = untrustedPool;
+                this.untrustedWatchdog = untrustedWatchdog;
+                this.messageWatchdog = messageWatchdog;
+                this.actorTimerWheel = timerWheel;
+                this.rootSlots = new Semaphore(rootPermits, true);
+                this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
+            } catch (RuntimeException | Error failure) {
+                if (timerWheel != null) {
+                    try {
+                        timerWheel.close();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (messageWatchdog != null) {
+                    try {
+                        messageWatchdog.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (untrustedWatchdog != null) {
+                    try {
+                        untrustedWatchdog.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (untrustedPool != null) {
+                    try {
+                        untrustedPool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (sharedPool != null) {
+                    try {
+                        sharedPool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (privatePool != null) {
+                    try {
+                        privatePool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (control != null) {
+                    try {
+                        control.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                throw failure;
+            }
+        }
+
+        /**
+         * VM startup barrier for the CONTROL/root event-loop carriers.
+         *
+         * <p>The control pool is deliberately prestarted here rather than waiting
+         * for the first submitted task. ROOT_TASK admission, Future/await
+         * continuation dispatch, and future channel/select notifications therefore
+         * have a live carrier pool before guest main is entered.</p>
+         */
+        void startRuntime() {
+            if (controlDispatcher.isShutdown()) {
+                throw new IllegalStateException("CONTROL dispatcher is shut down");
+            }
+
+            // CONTROL is the VM bootstrap pool. Its floor must remain a real
+            // resident carrier floor: guest startup, Future/await wakeups, and
+            // channel/select continuations cannot depend on a later submission
+            // to create the first worker.
+            controlDispatcher.allowCoreThreadTimeOut(false);
+            int required = controlDispatcher.getCorePoolSize();
+            int newlyStarted = controlDispatcher.prestartAllCoreThreads();
+            int live = controlDispatcher.getPoolSize();
+
+            // ThreadPoolExecutor permits a ThreadFactory to fail to create a
+            // worker (for example by returning null). Do not publish STARTED in
+            // that case; otherwise main could enter a runtime that cannot make
+            // progress. The return value is zero when all cores were already
+            // started, so the authoritative postcondition is the live count.
+            if (live != required) {
+                throw new IllegalStateException(
+                        "CONTROL dispatcher bootstrap incomplete: required="
+                                + required
+                                + ", live=" + live
+                                + ", newlyStarted=" + newlyStarted);
+            }
+        }
+
+        int controlCarrierCount() {
+            return controlDispatcher.getPoolSize();
         }
 
         private synchronized void reserveActor(ActorKind kind) {
@@ -1573,7 +1685,28 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new RejectedExecutionException(
                         "root OresScheduler ready queue is full");
             }
-            pumpRootScheduler();
+
+            try {
+                pumpRootScheduler();
+            } catch (RejectedExecutionException rejected) {
+                /*
+                 * The task has already been removed from rootSchedulerQueue by
+                 * pumpRootScheduler(). Let the owning OresScheduler observe the
+                 * rejection so its TaskRunner can become terminal instead of
+                 * remaining permanently QUEUED.
+                 */
+                throw rejected;
+            }
+
+            /*
+             * CONTROL shutdown may race the initial admission check and queue
+             * offer. If shutdown prevented the task from being drained, remove
+             * it and fail the caller; silently leaving it in the queue would
+             * create an unresumable Future.
+             */
+            if (controlDispatcher.isShutdown() && rootSchedulerQueue.remove(task)) {
+                throw new RejectedExecutionException("CONTROL dispatcher shut down during admission");
+            }
         }
 
         private void pumpRootScheduler() {
@@ -1603,16 +1736,21 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RejectedExecutionException rejected) {
                 if (controlDispatcher.isShutdown() || messageWatchdog.isShutdown()) {
                     rootSlots.release();
-                    return;
+                    throw rejected;
                 }
 
                 // CONTROL's own bounded queue can be temporarily saturated by
                 // supervisor/mailman work. Keep this logical root slot reserved
                 // and retry without running guest code on the caller thread.
-                messageWatchdog.schedule(
-                        () -> submitRootSchedulerTurn(task),
-                        1L,
-                        TimeUnit.MILLISECONDS);
+                try {
+                    messageWatchdog.schedule(
+                            () -> submitRootSchedulerTurn(task),
+                            1L,
+                            TimeUnit.MILLISECONDS);
+                } catch (RejectedExecutionException retryRejected) {
+                    rootSlots.release();
+                    throw retryRejected;
+                }
             }
         }
 

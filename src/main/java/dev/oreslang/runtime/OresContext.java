@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -39,6 +40,8 @@ public final class OresContext implements AutoCloseable {
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     private final Set<OresScheduler> userSchedulers = ConcurrentHashMap.newKeySet();
+    private final Object userSchedulerLifecycleLock = new Object();
+    private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicInteger userSchedulerCount = new AtomicInteger();
     private final AtomicInteger userSchedulerCarriers = new AtomicInteger();
 
@@ -50,6 +53,10 @@ public final class OresContext implements AutoCloseable {
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.vm = OresVM.contextOwner(env.getApplicationArguments());
+        if (!vm.started()) {
+            throw new IllegalStateException(
+                    "Oreslang VM startup barrier was not established before context creation");
+        }
         ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory =
                 vm.generationLeaseFactory(env.getApplicationArguments());
         ActorRuntime.RuntimePlacement runtimePlacement =
@@ -144,32 +151,38 @@ public final class OresContext implements AutoCloseable {
                             + MAX_USER_SCHEDULER_PARALLELISM);
         }
 
-        int count = userSchedulerCount.incrementAndGet();
-        if (count > MAX_USER_SCHEDULERS) {
-            userSchedulerCount.decrementAndGet();
-            throw new IllegalStateException(
-                    "OresScheduler context limit exceeded: " + MAX_USER_SCHEDULERS);
-        }
+        synchronized (userSchedulerLifecycleLock) {
+            if (closed.get()) {
+                throw new IllegalStateException("OresContext is closed");
+            }
 
-        int carriers = userSchedulerCarriers.addAndGet(parallelism);
-        if (carriers > MAX_USER_SCHEDULER_CARRIERS) {
-            userSchedulerCarriers.addAndGet(-parallelism);
-            userSchedulerCount.decrementAndGet();
-            throw new IllegalStateException(
-                    "OresScheduler context carrier limit exceeded: "
-                            + MAX_USER_SCHEDULER_CARRIERS);
-        }
+            int count = userSchedulerCount.incrementAndGet();
+            if (count > MAX_USER_SCHEDULERS) {
+                userSchedulerCount.decrementAndGet();
+                throw new IllegalStateException(
+                        "OresScheduler context limit exceeded: " + MAX_USER_SCHEDULERS);
+            }
 
-        try {
-            OresScheduler scheduler = OresScheduler.managed(
-                    parallelism,
-                    this::executeSchedulerTurn);
-            userSchedulers.add(scheduler);
-            return scheduler;
-        } catch (RuntimeException | Error failure) {
-            userSchedulerCarriers.addAndGet(-parallelism);
-            userSchedulerCount.decrementAndGet();
-            throw failure;
+            int carriers = userSchedulerCarriers.addAndGet(parallelism);
+            if (carriers > MAX_USER_SCHEDULER_CARRIERS) {
+                userSchedulerCarriers.addAndGet(-parallelism);
+                userSchedulerCount.decrementAndGet();
+                throw new IllegalStateException(
+                        "OresScheduler context carrier limit exceeded: "
+                                + MAX_USER_SCHEDULER_CARRIERS);
+            }
+
+            try {
+                OresScheduler scheduler = OresScheduler.managed(
+                        parallelism,
+                        this::executeSchedulerTurn);
+                userSchedulers.add(scheduler);
+                return scheduler;
+            } catch (RuntimeException | Error failure) {
+                userSchedulerCarriers.addAndGet(-parallelism);
+                userSchedulerCount.decrementAndGet();
+                throw failure;
+            }
         }
     }
 
@@ -180,15 +193,21 @@ public final class OresContext implements AutoCloseable {
         // make a still-live pool disappear from context ownership/accounting.
         scheduler.close();
 
-        if (userSchedulers.remove(scheduler)) {
-            userSchedulerCount.decrementAndGet();
-            int remaining = userSchedulerCarriers.addAndGet(-scheduler.parallelism());
-            if (remaining < 0) {
-                userSchedulerCarriers.addAndGet(scheduler.parallelism());
-                userSchedulerCount.incrementAndGet();
-                userSchedulers.add(scheduler);
-                throw new IllegalStateException(
-                        "OresScheduler carrier accounting underflow");
+        synchronized (userSchedulerLifecycleLock) {
+            if (userSchedulers.remove(scheduler)) {
+                int nextCount = userSchedulerCount.decrementAndGet();
+                int remaining = userSchedulerCarriers.addAndGet(-scheduler.parallelism());
+                if (nextCount < 0 || remaining < 0) {
+                    if (remaining < 0) {
+                        userSchedulerCarriers.addAndGet(scheduler.parallelism());
+                    }
+                    if (nextCount < 0) {
+                        userSchedulerCount.incrementAndGet();
+                    }
+                    userSchedulers.add(scheduler);
+                    throw new IllegalStateException(
+                            "OresScheduler lifecycle accounting underflow");
+                }
             }
         }
     }
@@ -269,6 +288,8 @@ public final class OresContext implements AutoCloseable {
                 "scheduler_domains", vm.schedulerTopology().domains().stream()
                         .map(Enum::name)
                         .toList(),
+                "scheduler_started", vm.started(),
+                "control_carriers_started", vm.controlCarrierCount(),
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
                 "scheduler_safepoints", schedulerSafepoints.get());
@@ -276,8 +297,14 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        final Set<OresScheduler> schedulerSnapshot;
+        synchronized (userSchedulerLifecycleLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            schedulerSnapshot = Set.copyOf(userSchedulers);
+        }
+
         Throwable schedulerFailure = null;
-        for (OresScheduler scheduler : Set.copyOf(userSchedulers)) {
+        for (OresScheduler scheduler : schedulerSnapshot) {
             try {
                 closeUserScheduler(scheduler);
             } catch (Throwable failure) {

@@ -156,6 +156,32 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void turnAdmissionFailureSettlesTaskInsteadOfLeavingItPending() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "test-admission-failure",
+                1,
+                carrier,
+                turn -> {
+                    throw new IllegalStateException("context entry failed");
+                })) {
+            OresFuture<Integer> result =
+                    scheduler.start(resume -> OresScheduler.done(42));
+
+            java.util.concurrent.ExecutionException failure =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> result.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertEquals("context entry failed", failure.getCause().getMessage());
+            assertTrue(result.isDone());
+        } finally {
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void oneFutureMayResumeWaitersOnDifferentSchedulers() throws Exception {
         try (OresScheduler left = new OresScheduler(1);
              OresScheduler right = new OresScheduler(1)) {
