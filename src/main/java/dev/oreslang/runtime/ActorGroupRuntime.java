@@ -23,6 +23,7 @@ final class ActorGroupRuntime<Out> {
     private final ActorGroupConfig.GroupPolicy policy;
     private final UUID capabilityNonce;
     private final ActorMailman<Out> mailman;
+    private final Object mailmanLifecycleLock = new Object();
     private final ArrayBlockingQueue<OutboxEnvelope<Out>> outbox;
 
     private record OutboxEnvelope<Out>(
@@ -156,6 +157,7 @@ final class ActorGroupRuntime<Out> {
         boolean admitted = false;
         try {
             synchronized (outboxAdmissionLock) {
+                if (stopped.get()) throw new IllegalStateException("actor group " + id + " is stopped");
                 long sequence = nextSequence.getAndIncrement();
                 ActorMail<Out> mail = new ActorMail<>(
                         sender.id(),
@@ -204,10 +206,13 @@ final class ActorGroupRuntime<Out> {
 
     private void runMailmanQuantum() {
         Thread carrier = Thread.currentThread();
-        if (!executionLease.compareAndSet(null, carrier)) {
-            scheduled.set(false);
-            throw new IllegalStateException(
-                    "single-mailman execution lease violated for actor group " + id);
+        synchronized (mailmanLifecycleLock) {
+            if (stopped.get()) { scheduled.set(false); return; }
+            if (!executionLease.compareAndSet(null, carrier)) {
+                scheduled.set(false);
+                throw new IllegalStateException(
+                        "single-mailman execution lease violated for actor group " + id);
+            }
         }
 
         try {
@@ -238,9 +243,12 @@ final class ActorGroupRuntime<Out> {
                 handled++;
             }
         } finally {
-            if (!executionLease.compareAndSet(carrier, null)) {
-                throw new IllegalStateException(
-                        "mailman execution lease ownership changed for actor group " + id);
+            synchronized (mailmanLifecycleLock) {
+                if (!executionLease.compareAndSet(carrier, null)) {
+                    throw new IllegalStateException(
+                            "mailman execution lease ownership changed for actor group " + id);
+                }
+                mailmanLifecycleLock.notifyAll();
             }
             scheduled.set(false);
             if (!stopped.get() && !outbox.isEmpty()) scheduleMailman();
@@ -248,10 +256,24 @@ final class ActorGroupRuntime<Out> {
     }
 
     void stop() {
-        if (!stopped.compareAndSet(false, true)) return;
-        OutboxEnvelope<Out> envelope;
-        while ((envelope = outbox.poll()) != null) {
-            runtime.releaseActorGroupOutboxBytes(envelope.reservedBytes());
+        synchronized (outboxAdmissionLock) {
+            if (!stopped.compareAndSet(false, true)) return;
+            OutboxEnvelope<Out> envelope;
+            while ((envelope = outbox.poll()) != null) {
+                runtime.releaseActorGroupOutboxBytes(envelope.reservedBytes());
+            }
+        }
+    }
+
+    boolean awaitQuiescent(long remainingNanos) throws InterruptedException {
+        long deadline = System.nanoTime() + Math.max(0, remainingNanos);
+        synchronized (mailmanLifecycleLock) {
+            while (executionLease.get() != null) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return false;
+                java.util.concurrent.TimeUnit.NANOSECONDS.timedWait(mailmanLifecycleLock, remaining);
+            }
+            return true;
         }
     }
 

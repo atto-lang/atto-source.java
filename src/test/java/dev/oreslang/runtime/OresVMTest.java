@@ -242,6 +242,49 @@ final class OresVMTest {
     }
 
     @Test
+    void closeWaitsForInFlightMailmanReservationToBeReleased() throws Exception {
+        ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 8, 64));
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.ExecutorService closer = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            ActorGroupConfig.GroupPolicy policy = new ActorGroupConfig.GroupPolicy(
+                    ActorRuntime.ActorKind.SHARED, 0, 4, 32, 32,
+                    ActorGroupConfig.RestartStrategy.ONE_FOR_ONE, 3, Duration.ofSeconds(5),
+                    ActorGroupConfig.RestartPolicy.PERMANENT, null);
+            ActorGroupRef<String> group = runtime.defineActorGroup(ActorRuntime.ActorKind.SHARED,
+                    policy, new ActorMailman<>() {
+                        @Override public void receiveMail(ActorMail<String> mail, ActorGroupContext<String> context) {
+                            entered.countDown();
+                            boolean interrupted = false;
+                            while (release.getCount() != 0) {
+                                try { release.await(); }
+                                catch (InterruptedException ignored) { interrupted = true; }
+                            }
+                            if (interrupted) Thread.currentThread().interrupt();
+                        }
+                    });
+            ActorRuntime.ActorRef<String> actor = runtime.spawnInGroup(group, ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(), ignored -> (message, turn) -> turn.emit(message));
+            actor.send("mail");
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            java.util.concurrent.Future<?> closing = closer.submit(runtime::close);
+            try {
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> closing.get(100, TimeUnit.MILLISECONDS),
+                        "close must wait for the active mailman, not report a reservation leak");
+            } finally { release.countDown(); }
+            closing.get(5, TimeUnit.SECONDS);
+            assertEquals(0, runtime.sharedMemoryBytes());
+        } finally {
+            release.countDown();
+            closer.shutdownNow();
+            runtime.close();
+        }
+    }
+
+    @Test
     void mailmanControlCarrierDoesNotConferSupervisorAuthority() throws Exception {
         ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
                 1, 1, 1, 8,

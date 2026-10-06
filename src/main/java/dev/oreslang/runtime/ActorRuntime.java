@@ -5713,6 +5713,17 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
+        int mailmenStillRunning = 0;
+        for (ActorGroupRuntime<?> group : groupSnapshot) {
+            if (interrupted) { mailmenStillRunning++; continue; }
+            try {
+                if (!group.awaitQuiescent(deadline - System.nanoTime())) mailmenStillRunning++;
+            } catch (InterruptedException waitInterrupted) {
+                interrupted = true;
+                mailmenStillRunning++;
+            }
+        }
+
         boolean rootStillRunning = activeRootTasks.get() != 0;
         if (!interrupted && rootStillRunning) {
             synchronized (runtimeLifecycleLock) {
@@ -5734,7 +5745,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || rootStillRunning || interrupted) {
+        if (!stillRunning.isEmpty() || rootStillRunning || mailmenStillRunning != 0 || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
                     if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
@@ -5747,7 +5758,8 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "ActorRuntime close did not observe full actor termination: "
                             + stillRunning.size() + " actor(s), "
-                            + activeRootTasks.get() + " root task(s) still running");
+                            + activeRootTasks.get() + " root task(s), "
+                            + mailmenStillRunning + " mailman turn(s) still running");
         }
 
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
