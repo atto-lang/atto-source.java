@@ -456,7 +456,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || cell.kind != ActorKind.PRIVATE || !cell.ref.id().equals(owner)) {
+            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
                         "private actor memory slice may only be reserved by its owning actor");
             }
@@ -1905,7 +1905,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void rejectPrivateActorSharedMemoryAccess(String operation) {
         ActorCell<?> current = currentActor.get();
-        if (current != null && current.kind == ActorKind.PRIVATE) {
+        if (current != null && isPrivateKind(current.kind)) {
             throw new IllegalStateException("private actors cannot access synchronized shared memory via " + operation);
         }
     }
@@ -2366,7 +2366,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new SecurityException("private actors cannot receive SharedMutex<T>");
             }
             ActorKind senderKind = currentActorKind();
-            if (senderKind == ActorKind.PRIVATE) {
+            if (senderKind != null && isPrivateKind(senderKind)) {
                 throw new SecurityException("private actors cannot send SharedMutex<T>");
             }
             IsolatePolicy senderPolicy = currentActorPolicy();
@@ -3345,6 +3345,7 @@ public final class ActorRuntime implements AutoCloseable {
             // reporting success until they actually leave the runtime.
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
+            untrustedDispatcher.shutdownNow();
 
             // shutdownNow() removes queued tasks without invoking runBatch().
             // Clear those cells' scheduled bits only when no carrier actually
@@ -3415,7 +3416,11 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
-        return kind == ActorKind.PRIVATE ? privateDispatcher : sharedDispatcher;
+        return switch (kind) {
+            case PRIVATE -> privateDispatcher;
+            case SHARED -> sharedDispatcher;
+            case UNTRUSTED -> untrustedDispatcher;
+        };
     }
 
     private static ExecutorService newDispatcher(
@@ -3764,7 +3769,7 @@ public final class ActorRuntime implements AutoCloseable {
                     Behavior<M> created = Objects.requireNonNull(
                             behaviorFactory.create(context),
                             "actor behaviorFactory returned null");
-                    if (kind == ActorKind.PRIVATE && !trustedFactory) {
+                    if (isPrivateKind(kind) && !trustedFactory) {
                         validatePrivateBehaviorState(ref.id(), created);
                     }
                     behavior = created;
@@ -3781,7 +3786,7 @@ public final class ActorRuntime implements AutoCloseable {
                         } else {
                             behavior.onMessage((M) envelope.value(), context);
                         }
-                        if (kind == ActorKind.PRIVATE && !trustedFactory) {
+                        if (isPrivateKind(kind) && !trustedFactory) {
                             // Private state that survives a mailbox turn must
                             // remain in actor-owned storage/capabilities. This
                             // catches behavior fields that were null/immutable
