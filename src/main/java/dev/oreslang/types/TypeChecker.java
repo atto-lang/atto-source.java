@@ -1532,7 +1532,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return callableResult(target.async(), target.generator(), result);
+                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
