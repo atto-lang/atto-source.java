@@ -609,6 +609,22 @@ public final class OwnershipChecker {
                     }
                     yield source;
                 }
+                case "proxy" -> {
+                    ValueInfo source = checkExpr(argument, scope, true);
+                    if (source.type == null
+                            || source.type.isBorrow()
+                            || source.kind == ValueKind.IMM_BORROW
+                            || source.kind == ValueKind.MUT_BORROW) {
+                        throw error("rt proxy requires owned data; a borrow cannot become a proxy domain");
+                    }
+                    if (containsMutexGuardType(source.type)) {
+                        throw error("rt proxy cannot capture MutexGuard state");
+                    }
+                    yield new ValueInfo(
+                            new Ast.TypeRef("Proxy", List.of(source.type), false),
+                            ValueKind.COPY,
+                            null);
+                }
                 default -> throw error("unknown runtime operation 'rt " + runtime.operation() + "'");
             };
         }
@@ -704,11 +720,15 @@ public final class OwnershipChecker {
                 }
             }
             checkExpr(member.receiver(), scope, false);
+            boolean proxyReceiver = isProxyReceiver(member.receiver(), scope);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver != null
                     && concreteReceiver.name().equals("DynamicStruct")
                     && concreteReceiver.arguments().size() == 1) {
                 Ast.TypeRef valueType = concreteReceiver.arguments().getFirst();
+                if (proxyReceiver && !isCopyType(valueType)) {
+                    throw error("rt proxy field reads may return only copy/immutable data");
+                }
                 return new ValueInfo(valueType, kindOfType(valueType), null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -719,11 +739,18 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
+                    if (proxyReceiver && fieldKind != ValueKind.COPY) {
+                        throw error("rt proxy field '" + target.owner().name() + "." + member.member()
+                                + "' may be read only when its value is copy/immutable");
+                    }
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
                     return new ValueInfo(fieldType, fieldKind, null);
+                }
+                if (proxyReceiver && hasMethodNamed(klass, member.member(), new LinkedHashSet<>())) {
+                    throw error("rt proxy methods are direct-call-only so the synchronized proxy scope cannot escape");
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
                         && isRootedAtActorSelf(member.receiver(), scope)) {
@@ -1026,6 +1053,7 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            boolean proxyReceiver = isProxyReceiver(member.receiver(), scope);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) {
                 concreteReceiver = receiverValue.type.isBorrow()
@@ -1052,6 +1080,15 @@ public final class OwnershipChecker {
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                if (proxyReceiver && method.async()) {
+                    throw error("async method '" + target.owner().name() + "." + method.name()
+                            + "' cannot execute while an rt proxy lock is held");
+                }
+                if (proxyReceiver && !isCopyType(signature.result())
+                        && !signature.result().name().equals("void")) {
+                    throw error("rt proxy method '" + target.owner().name() + "." + method.name()
+                            + "' may return only copy/immutable data");
+                }
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
@@ -1628,15 +1665,36 @@ public final class OwnershipChecker {
         return null;
     }
 
-    private Ast.TypeRef receiverType(Ast.Expr receiver, Scope scope) {
+    private Ast.TypeRef rawReceiverType(Ast.Expr receiver, Scope scope) {
         Ast.TypeRef type = null;
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state != null) type = state.type;
-        } else if (receiver instanceof Ast.NewExpr created) type = created.type();
+        } else if (receiver instanceof Ast.NewExpr created) {
+            type = created.type();
+        } else if (receiver instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("proxy")
+                && runtime.arguments().size() == 1) {
+            ValueInfo source = checkExpr(runtime.arguments().getFirst(), scope, false);
+            type = new Ast.TypeRef("Proxy", List.of(source.type), false);
+        }
+        return type;
+    }
+
+    private boolean isProxyReceiver(Ast.Expr receiver, Scope scope) {
+        Ast.TypeRef type = rawReceiverType(receiver, scope);
+        if (type != null && type.isBorrow()) type = type.borrowedTarget();
+        return type != null && type.name().equals("Proxy") && type.arguments().size() == 1;
+    }
+
+    private Ast.TypeRef receiverType(Ast.Expr receiver, Scope scope) {
+        Ast.TypeRef type = rawReceiverType(receiver, scope);
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
+        if (type.name().equals("Proxy") && type.arguments().size() == 1) {
+            type = type.arguments().getFirst();
+        }
         return type;
     }
 
@@ -2323,7 +2381,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","SharedMutex",
+                    "bool","Bool","string","String","void","SharedMutex","Proxy",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
