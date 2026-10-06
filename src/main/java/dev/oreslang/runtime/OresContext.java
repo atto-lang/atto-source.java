@@ -77,7 +77,8 @@ public final class OresContext implements AutoCloseable {
             actors = new ActorRuntime(
                     isolatePolicy,
                     ActorRuntime.DispatcherConfig.defaults(),
-                    this::executeActorTurn);
+                    this::executeActorTurn,
+                    vm::executeControl);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
