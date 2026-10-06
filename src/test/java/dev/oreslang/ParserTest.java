@@ -8,11 +8,318 @@ import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
+    @Test
+    void callableEffectsBranchAcceptsClassAndFncCompatibilityOrders() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  class pub define Legacy as
+                  end
+
+                  define class pub Braced as {
+                    fnc pub static helper(): int {
+                      return 1;
+                    }
+                  }
+
+                  actor Worker {
+                    fnc pub async handle(int value): int {
+                      return value;
+                    }
+                  }
+
+                  actor pub fnc shared nlex worker(int value): int {
+                    return value;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(0));
+
+        Ast.ClassDecl braced = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(1));
+        Ast.MethodDecl helper = braced.methods().getFirst();
+        assertTrue(helper.isStatic());
+        assertEquals(Ast.Visibility.PUBLIC, helper.visibility());
+
+        Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(2));
+        assertTrue(actor.methods().getFirst().async());
+
+        Ast.FunctionDecl actorFunction =
+                assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(3));
+        assertEquals(Ast.ActorKind.SHARED, actorFunction.actorKind());
+        assertTrue(actorFunction.nonLexical());
+    }
+
+    @Test
+    void callableEffectsBranchRejectsDiscardedModifiers() {
+        List<String> invalid = List.of(
+                """
+                private define module app
+                end
+                """,
+                """
+                define module app
+                  async type Alias = int;
+                end
+                """,
+                """
+                define module app
+                  define class Box as
+                    async val int value = 1;
+                  end
+                end
+                """,
+                """
+                define module app
+                  actor Worker {
+                    generator let value = 1;
+                  }
+                end
+                """,
+                """
+                define module app
+                  define interface Api {
+                    private fnc render() => String;
+                  }
+                end
+                """,
+                """
+                define module app
+                  define class Box as
+                    static fnc static helper(): int {
+                      return 1;
+                    }
+                  end
+                end
+                """,
+                """
+                define module app
+                  isoactor fnc shared contradictory(): void {
+                    return;
+                  }
+                end
+                """,
+                """
+                define module app
+                  shared fnc missing_actor(): void {
+                    return;
+                  }
+                end
+                """,
+                """
+                define module app
+                  fnc shared missing_actor_after_fnc(): void {
+                    return;
+                  }
+                end
+                """,
+                """
+                define module app
+                  fnc shared isoactor contradictory_after_fnc(): void {
+                    return;
+                  }
+                end
+                """
+        );
+
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void effectsBranchExhaustivelyAcceptsSupportedModifierPermutations() {
+        for (List<String> order : permutations("define", "class", "abstract")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s Box as
+                      end
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        for (List<String> order : permutations("define", "interface", "pub")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s Api {
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        for (List<String> order : permutations("pub", "nlex", "pure", "fnc")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s work(): int {
+                        return 1;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        for (List<String> order : permutations("pub", "static", "fnc")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      define class Box as
+                        %s helper(): int {
+                          return 1;
+                        }
+                      end
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        int actorCases = 0;
+        for (List<String> order : permutations("pub", "nlex", "shared", "actor", "fnc")) {
+            actorCases++;
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s worker(int value): int {
+                        return value;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+        assertEquals(120, actorCases);
+
+        int actorRoutineCases = 0;
+        for (List<String> order : permutations("pub", "nlex", "shared", "actor", "routine")) {
+            actorRoutineCases++;
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s worker_routine(int value): int {
+                        return value;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+        assertEquals(120, actorRoutineCases);
+
+        int isoActorCases = 0;
+        for (List<String> order : permutations("pub", "async", "isoactor", "fnc")) {
+            isoActorCases++;
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s private_worker(int value): int {
+                        return value;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+        assertEquals(24, isoActorCases);
+    }
+
+    @Test
+    void effectsBranchInterfaceDefineKeywordsMayAppearInCompatibilityOrder() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  interface pub define ApiA {
+                  }
+
+                  pub interface define ApiB {
+                  }
+
+                  define interface pub ApiC {
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        assertEquals(3, module.declarations().size());
+        for (Ast.Decl declaration : module.declarations()) {
+            Ast.InterfaceDecl iface = assertInstanceOf(Ast.InterfaceDecl.class, declaration);
+            assertEquals(Ast.Visibility.PUBLIC, iface.visibility());
+        }
+    }
+
+    @Test
+    void effectsBranchActorMarkerMayAppearOnEitherSideOfCallableKind() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  fnc pub actor shared nlex first(int value): int {
+                    return value;
+                  }
+
+                  routine shared pub actor nlex second(int value): int {
+                    return value;
+                  }
+
+                  fnc pub isoactor nlex third(int value): int {
+                    return value;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl first = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(0));
+        Ast.FunctionDecl second = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(1));
+        Ast.FunctionDecl third = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(2));
+
+        assertEquals(Ast.ActorKind.SHARED, first.actorKind());
+        assertEquals(Ast.ActorKind.SHARED, second.actorKind());
+        assertEquals(Ast.ActorKind.PRIVATE, third.actorKind());
+        assertTrue(first.nonLexical());
+        assertTrue(second.nonLexical());
+        assertTrue(third.nonLexical());
+    }
+
+    @Test
+    void callableEffectModifiersMaySurroundFncAndClassesMayUseEitherBodyStyle() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  pub define class LegacyBox as
+                  end
+
+                  define pub class BracedBox as {
+                  }
+
+                  fnc pub nlex pure first(): int {
+                    return 1;
+                  }
+
+                  pure nlex fnc pub second(): int {
+                    return 2;
+                  }
+
+                  fnc pub async third(): int {
+                    return 3;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl first = (Ast.FunctionDecl) module.declarations().get(2);
+        Ast.FunctionDecl second = (Ast.FunctionDecl) module.declarations().get(3);
+        Ast.FunctionDecl third = (Ast.FunctionDecl) module.declarations().get(4);
+
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(0));
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(1));
+
+        assertTrue(first.nonLexical());
+        assertTrue(first.pure());
+        assertEquals(first.visibility(), second.visibility());
+        assertEquals(first.nonLexical(), second.nonLexical());
+        assertEquals(first.pure(), second.pure());
+        assertTrue(third.async());
+    }
+
+    @Test
+    void duplicateEffectModifiersStillFailAcrossFnc() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  pure fnc pure nope(): int {
+                    return 1;
+                  }
+                end
+                """));
+    }
+
     @Test
     void supportsMultipleModulesAndComplexNumbers() {
         String source = """
@@ -574,6 +881,29 @@ final class ParserTest {
                         """));
 
         assertTrue(failure.getMessage().contains("expected 'as' after class header"));
+    }
+
+    private static List<List<String>> permutations(String... tokens) {
+        List<List<String>> out = new ArrayList<>();
+        permute(new ArrayList<>(List.of(tokens)), new ArrayList<>(), out);
+        return out;
+    }
+
+    private static void permute(
+            List<String> remaining,
+            List<String> prefix,
+            List<List<String>> out) {
+        if (remaining.isEmpty()) {
+            out.add(List.copyOf(prefix));
+            return;
+        }
+        for (int index = 0; index < remaining.size(); index++) {
+            List<String> nextRemaining = new ArrayList<>(remaining);
+            String token = nextRemaining.remove(index);
+            List<String> nextPrefix = new ArrayList<>(prefix);
+            nextPrefix.add(token);
+            permute(nextRemaining, nextPrefix, out);
+        }
     }
 
 }
