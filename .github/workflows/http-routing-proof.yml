@@ -1,0 +1,32 @@
+name: http-routing-proof
+
+on:
+  push:
+    branches: ["ci/prove-http-routing-ee19932f-20261006"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  routing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Build exact pinned compiler
+        run: mvn -B -ntp -DskipTests package
+      - name: Check routing fixture
+        run: |
+          java -jar target/oreslang-source-0.1.0-SNAPSHOT.jar --check --platform=server _ci/http-routing/tests/router_semantics.ores
+      - name: Run routing fixture
+        run: |
+          java -jar target/oreslang-source-0.1.0-SNAPSHOT.jar --platform=server _ci/http-routing/tests/router_semantics.ores > /tmp/router.out
+          diff -u _ci/http-routing/tests/expected.txt /tmp/router.out
