@@ -43,18 +43,39 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
-        this.vm = OresVM.create(this::executeRootTurn);
+        OresVM vm = OresVM.create(this::executeRootTurn);
         if (!vm.started()) {
+            vm.close();
             throw new IllegalStateException(
                     "Oreslang VM startup barrier was not established before context admission");
         }
-        this.actors = new ActorRuntime(
-                isolatePolicy,
-                ActorRuntime.DispatcherConfig.defaults(),
-                this::executeActorTurn);
-        this.asyncRuntime = new AsyncRuntime(this::executeAsyncTurn);
-        this.garbageCollector = new RuntimeGarbageCollector();
-        this.actors.setActorExitHook(garbageCollector::retireActorDomain);
+
+        ActorRuntime actors = null;
+        AsyncRuntime async = null;
+        RuntimeGarbageCollector gc = null;
+        try {
+            actors = new ActorRuntime(
+                    isolatePolicy,
+                    ActorRuntime.DispatcherConfig.defaults(),
+                    this::executeActorTurn);
+            async = new AsyncRuntime(this::executeAsyncTurn);
+            gc = new RuntimeGarbageCollector();
+            actors.setActorExitHook(gc::retireActorDomain);
+
+            this.vm = vm;
+            this.actors = actors;
+            this.asyncRuntime = async;
+            this.garbageCollector = gc;
+        } catch (RuntimeException | Error failure) {
+            if (async != null) {
+                try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            }
+            if (actors != null) {
+                try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            }
+            try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            throw failure;
+        }
     }
 
     public static OresContext get(Node node) {
