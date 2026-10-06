@@ -482,7 +482,9 @@ public final class OresEvalRootNode extends RootNode {
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
+            private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
@@ -493,6 +495,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.function = Objects.requireNonNull(function, "function");
                 this.method = null;
                 this.receiver = null;
+                this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
             }
 
@@ -503,7 +506,17 @@ public final class OresEvalRootNode extends RootNode {
                 this.function = null;
                 this.method = Objects.requireNonNull(method, "method");
                 this.receiver = Objects.requireNonNull(receiver, "receiver");
+                this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+            }
+
+            private SourceTask(List<Ast.Stmt> blockBody) {
+                this.function = null;
+                this.method = null;
+                this.receiver = null;
+                this.blockBody = List.copyOf(
+                        Objects.requireNonNull(blockBody, "blockBody"));
+                this.arguments = List.of();
             }
 
             @Override
@@ -513,41 +526,58 @@ public final class OresEvalRootNode extends RootNode {
                 nextStep = null;
 
                 if (resume.initial()) {
-                    Env params = new Env(
-                            null,
-                            function != null && function.nonLexical(),
-                            function != null
-                                    ? null
-                                    : declaringClass(method));
+                    Env params;
+                    if (blockBody != null) {
+                        params = initialBlockEnv != null
+                                ? initialBlockEnv
+                                : new Env(null);
+                    } else {
+                        params = new Env(
+                                null,
+                                function != null && function.nonLexical(),
+                                function != null
+                                        ? null
+                                        : declaringClass(method));
 
-                    if (receiver != null) {
-                        params.define("self", receiver, Ast.BindingKind.VAL);
+                        if (receiver != null) {
+                            params.define(
+                                    "self",
+                                    receiver,
+                                    Ast.BindingKind.VAL);
+                        }
+
+                        List<Ast.Param> parameters =
+                                function != null
+                                        ? function.parameters()
+                                        : method.parameters();
+                        if (parameters.size() != arguments.size()) {
+                            throw new IllegalArgumentException(
+                                    "source task argument arity mismatch");
+                        }
+
+                        for (int i = 0; i < parameters.size(); i++) {
+                            Ast.Param param = parameters.get(i);
+                            params.define(
+                                    param.name(),
+                                    arguments.get(i),
+                                    param.mutable()
+                                            ? Ast.BindingKind.LET
+                                            : Ast.BindingKind.VAL);
+                        }
                     }
 
-                    List<Ast.Param> parameters =
-                            function != null
-                                    ? function.parameters()
-                                    : method.parameters();
-                    if (parameters.size() != arguments.size()) {
-                        throw new IllegalArgumentException(
-                                "source task argument arity mismatch");
-                    }
-
-                    for (int i = 0; i < parameters.size(); i++) {
-                        Ast.Param param = parameters.get(i);
-                        params.define(
-                                param.name(),
-                                arguments.get(i),
-                                param.mutable()
-                                        ? Ast.BindingKind.LET
-                                        : Ast.BindingKind.VAL);
-                    }
+                    List<Ast.Stmt> body =
+                            blockBody != null
+                                    ? blockBody
+                                    : function != null
+                                            ? function.body()
+                                            : method.body();
 
                     runBlock(
                             this,
-                            function != null ? function.body() : method.body(),
+                            body,
                             params,
-                            this::finishFunctionFlow);
+                            this::finishSourceFlow);
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
@@ -592,14 +622,30 @@ public final class OresEvalRootNode extends RootNode {
                 nextStep = OresScheduler.done(value);
             }
 
-            private void finishFunctionFlow(
+            private void finishSourceFlow(
                     SourceTask task,
                     SourceFlow flow) {
+                if (blockBody != null) {
+                    switch (flow.kind()) {
+                        case NORMAL -> done(null);
+                        case RETURN -> {
+                            if (flow.value() != null) {
+                                throw new IllegalStateException(
+                                        "detached source continuation cannot return a value");
+                            }
+                            done(null);
+                        }
+                        case THROW -> throw sourceFailure(flow.failure());
+                        case BREAK, CONTINUE ->
+                                throw new IllegalStateException(
+                                        "loop control crossed a source continuation boundary");
+                    }
+                    return;
+                }
+
                 switch (flow.kind()) {
-                    case NORMAL ->
-                            done(shapeSourceReturn(null, null));
-                    case RETURN ->
-                            done(shapeSourceReturn(flow.value(), null));
+                    case NORMAL -> done(shapeSourceReturn(null, null));
+                    case RETURN -> done(shapeSourceReturn(flow.value(), null));
                     case THROW -> throw sourceFailure(flow.failure());
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
@@ -646,6 +692,20 @@ public final class OresEvalRootNode extends RootNode {
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
+            return future;
+        }
+
+        private OresFuture<Object> startSourceBlockTask(
+                List<Ast.Stmt> body,
+                Env env) {
+            SourceTask task = new SourceTask(body);
+            if (!ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "detached source block task requires actor execution");
+            }
+            task.initialBlockEnv = env.snapshot();
+            OresFuture<Object> future = context.actors().startActorTask(task);
+            context.actors().ownCurrentActorFuture(future);
             return future;
         }
 
@@ -2621,7 +2681,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.ObjectExpr object,
                 Env env,
-                SourceFlowCont continuation) {
+                SourceValueCont continuation) {
             ArrayList<Object> values = new ArrayList<>();
             evalSuspendableObjectField(
                     task,
@@ -2632,7 +2692,8 @@ public final class OresEvalRootNode extends RootNode {
                     (t, built) ->
                             continuation.accept(
                                     t,
-                                    SourceFlow.normal()));
+                                    built,
+                                    null));
         }
 
         private void evalSuspendableObjectField(
@@ -2661,19 +2722,29 @@ public final class OresEvalRootNode extends RootNode {
             SourceValueCont afterKey =
                     (t, key, failure) -> {
                         if (failure != null) {
-                            throw sourceFailure(failure);
+                            continuation.accept(t, null, failure);
+                            return;
                         }
-                        String actualKey =
-                                field.isDynamic()
-                                        ? String.valueOf(key)
-                                        : field.name();
+                        String actualKey = field.name();
+                        if (field.isDynamic()) {
+                            if (!(key instanceof String stringKey)) {
+                                continuation.accept(
+                                        t,
+                                        null,
+                                        new IllegalArgumentException(
+                                                "dynamic obj key must evaluate to a string"));
+                                return;
+                            }
+                            actualKey = stringKey;
+                        }
                         evalSuspendableExpr(
                                 t,
                                 field.value(),
                                 env,
                                 (t2, value, failure2) -> {
                                     if (failure2 != null) {
-                                        throw sourceFailure(failure2);
+                                        continuation.accept(t2, null, failure2);
+                                        return;
                                     }
                                     values.add(
                                             Map.entry(actualKey, value));
