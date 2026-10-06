@@ -73,9 +73,10 @@ final class ChannelLanguageCombinationTest {
                   writech channel, 42;
                   return readch channel;
                 }
+                fnc identity(int value): int { return value; }
                 pub routine main(): void {
                   stdio.stdout.write(worker_shared());
-                  stdio.stdout.write(worker_private());
+                  stdio.stdout.write(identity(worker_private()));
                   return;
                 }
                 """));

@@ -914,7 +914,9 @@ public final class OresEvalRootNode extends RootNode {
                                 || (!target.async()
                                         && functionContainsPotentialSuspension(
                                                 target,
-                                                seen));
+                                                seen))
+                                || call.arguments().stream().anyMatch(
+                                        argument -> expressionContainsPotentialSuspension(argument, seen));
                     }
                 }
                 // Calls may suspend while evaluating their arguments or receiver,
