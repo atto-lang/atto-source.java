@@ -96,6 +96,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     interface RuntimeAbort { void abort(Throwable failure); }
 
+    private volatile RuntimeAbort operationOwner;
+    void runtimeAbort(RuntimeAbort owner) { operationOwner = owner; }
+
     private volatile Object taskProducer;
 
     void taskProducer(Object producer) { taskProducer = producer; }
@@ -395,7 +398,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     /** Cancel operation ownership but publish the original deadline failure. */
     boolean abortFromRuntime(Throwable failure) {
-        Object producer = taskProducer;
+        Object producer = operationOwner != null ? operationOwner : taskProducer;
         if (producer instanceof RuntimeAbort task) {
             if (isDone()) return false;
             task.abort(failure);
@@ -591,6 +594,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
         taskProducer = null;
+        operationOwner = null;
 
         RuntimeWaiterRegistration<T> waiter;
         while ((waiter = waiters.poll()) != null) {

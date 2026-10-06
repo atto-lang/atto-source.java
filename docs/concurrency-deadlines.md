@@ -49,9 +49,10 @@ must not be invoked from the timer/completion thread.
 
 The Java runtime exposes `OresScheduler.start(task, Duration)` to create a nested
 structured scope and `OresFutures.withTimeout` / `waitTimeout` for the same
-operation/observation contracts. Ordinary `start(task)` inherits its caller's
-scope. Host-started tasks outside an Oreslang root or explicit scope have no
-implicit deadline.
+operation/observation contracts. Ordinary `start(task)` creates a child lifetime
+with its caller's remaining deadline, so timing out a task also cancels its
+descendants. Inherited child lifetimes reuse the parent timer. Host-started tasks
+outside an Oreslang root or explicit scope have no implicit deadline.
 
 Policy arguments include `--ores-max-wall-ms`; this policy parser expects
 `--ores-capabilities` as well. Without a capability argument, it selects the
@@ -95,7 +96,9 @@ It does not infer arbitrary actor request/reply protocols, channel producers,
 locks, multi-way selection dependencies, or source-level wait chains. Broader
 wait-graph instrumentation can be added when those ownership relations are
 explicit. Persistent actor-class/stream work on the separate actor branch still
-needs convergence with this channel/select implementation.
+needs convergence with this channel/select implementation. One-shot actor
+invocation timeout stops its producer; replies publish only after actor
+finalization and guest-turn exit.
 
 `DeadlockSafeguardsTest` exercises stuck reads/writes/Futures/select, shared
 observation, inherited deadlines, abandoned child cleanup, carrier starvation,
@@ -104,3 +107,7 @@ and healthy work after failure. `ConcurrencyDeadlineLanguageTest` executes the
 source syntax, catch/recovery, and root deadline through the Polyglot runtime.
 JUnit/process timeouts are independent backstops; assertions check the runtime's
 own outcome and cleanup.
+
+`examples/concurrency-deadlines.ores` prints `timeout:42`. CI executes it with
+an external process backstop in JVM/JIT, AOT, and hybrid jobs. A native build
+and its smoke test must succeed before claiming that backend is verified.

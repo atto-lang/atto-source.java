@@ -31,6 +31,8 @@ public final class OresDeadlineScope implements AutoCloseable {
         var executor = new ScheduledThreadPoolExecutor(1, runnable ->
                 Thread.ofPlatform().daemon(true).name("ores-deadline-watchdog").unstarted(runnable));
         executor.setRemoveOnCancelPolicy(true);
+        executor.setKeepAliveTime(100, TimeUnit.MILLISECONDS);
+        executor.allowCoreThreadTimeOut(true);
         executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         return executor;
     }
@@ -49,6 +51,15 @@ public final class OresDeadlineScope implements AutoCloseable {
         detachParent = parent == null ? () -> { } : parent.register(this::terminate);
         timer = WATCHDOG.schedule(() -> terminate(timeoutError()), remaining, TimeUnit.NANOSECONDS);
         if (terminal.get() != null) timer.cancel(false);
+    }
+
+    /** A child lifetime inherits the same deadline without adding a timer. */
+    OresDeadlineScope(OresDeadlineScope parent, String label) {
+        this.parent = Objects.requireNonNull(parent, "parent");
+        this.label = Objects.requireNonNull(label, "label");
+        deadlineNanos = parent.deadlineNanos;
+        timer = null;
+        detachParent = parent.register(this::terminate);
     }
 
     public static OresDeadlineScope current() { return CURRENT.get(); }

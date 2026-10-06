@@ -302,4 +302,59 @@ final class DeadlockSafeguardsTest {
         }
     }
 
+    @Test void ownedTaskTimeoutCancelsItsActorChildWhileParentCanRecover() throws Exception {
+        try (var actors = new ActorRuntime(IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 1, 16));
+             var scheduler = new OresScheduler(1)) {
+            AtomicReference<ActorRuntime.ActorRef<Integer>> actor = new AtomicReference<>();
+            AtomicInteger state = new AtomicInteger();
+            var parent = scheduler.start(r -> {
+                if (state.getAndIncrement() == 0) {
+                    var child = scheduler.start(c -> {
+                        actor.set(actors.<Integer>spawn(ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                                ctx -> (m, ac) -> { }));
+                        return OresScheduler.await(new OresFuture<>());
+                    });
+                    return OresScheduler.await(OresFutures.withTimeout(child, Duration.ofMillis(50)));
+                }
+                assertInstanceOf(OresTimeoutError.class, r.failure());
+                assertFalse(actor.get().isAlive());
+                return OresScheduler.done(42);
+            }, Duration.ofSeconds(2));
+            assertEquals(42, get(parent));
+            assertTrue(actor.get().awaitTermination(1, TimeUnit.SECONDS));
+            assertEquals(0, actors.actorCount());
+        }
+    }
+
+    @Test void actorInvocationTimeoutStopsProducerAndAllowsNextInvocation() throws Exception {
+        try (var actors = new ActorRuntime(IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 1, 16))) {
+            var result = actors.<Integer, Object>invokeAsync(ActorRuntime.ActorKind.SHARED, 1,
+                    (message, context) -> actors.startActorTask(r -> OresScheduler.await(new OresFuture<>())));
+            timedOut(OresFutures.withTimeout(result, Duration.ofMillis(50)));
+            assertEquals(0, actors.actorCount());
+            assertEquals(42, get(actors.<Integer, Integer>invokeAsync(ActorRuntime.ActorKind.SHARED, 42,
+                    (message, context) -> message)));
+            assertEquals(0, actors.actorCount());
+        }
+    }
+
+    @Test void readyVersusTimeoutRaceNeverDropsOrDuplicatesBufferedValues() throws Exception {
+        try (var producer = Executors.newSingleThreadExecutor()) {
+            for (int i = 0; i < 100; i++) {
+                var channel = new ChannelRuntime.Channel<Integer>(1);
+                var read = channel.readAsync();
+                OresFutures.withTimeout(read, Duration.ZERO);
+                producer.submit(() -> channel.writeAsync(42)).get(1, TimeUnit.SECONDS);
+                try {
+                    assertEquals(42, get(read));
+                    assertTrue(channel.tryRead().isEmpty());
+                } catch (ExecutionException failure) {
+                    assertInstanceOf(OresTimeoutError.class, failure.getCause());
+                    assertEquals(42, get(channel.readAsync()));
+                    assertTrue(channel.tryRead().isEmpty());
+                }
+            }
+        }
+    }
+
 }

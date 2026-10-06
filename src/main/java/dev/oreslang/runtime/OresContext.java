@@ -169,7 +169,6 @@ public final class OresContext implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         schedulerSafepoints.incrementAndGet();
-        OresScheduler.checkpoint();
         actors.schedulerSafepoint();
     }
 

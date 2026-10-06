@@ -42,6 +42,10 @@ jobs:
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/ores-testing-semantics-jit.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
+      - name: Verify concurrency timeout and recovery
+        run: |
+          timeout 30s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/concurrency-deadlines.ores" | tee /tmp/ores-deadlines-jit.out
+          grep -F "timeout:42" /tmp/ores-deadlines-jit.out
 
   native-aot:
     runs-on: ubuntu-latest
@@ -74,6 +78,10 @@ jobs:
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-aot.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-aot.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-aot.out
+      - name: Verify AOT concurrency timeout and recovery
+        run: |
+          timeout 30s ./target/ores-aot --mode=aot --platform=linux examples/concurrency-deadlines.ores | tee /tmp/ores-deadlines-aot.out
+          grep -F "timeout:42" /tmp/ores-deadlines-aot.out
 
   native-hybrid:
     runs-on: ubuntu-latest
@@ -106,6 +114,10 @@ jobs:
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-hybrid.out
+      - name: Verify hybrid concurrency timeout and recovery
+        run: |
+          timeout 30s ./target/ores-hybrid --mode=hybrid --platform=linux examples/concurrency-deadlines.ores | tee /tmp/ores-deadlines-hybrid.out
+          grep -F "timeout:42" /tmp/ores-deadlines-hybrid.out
 
   polyglot-isolate:
     runs-on: ubuntu-latest

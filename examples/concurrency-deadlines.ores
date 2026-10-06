@@ -1,0 +1,12 @@
+pub async fnc main(): void {
+  val Channel<int> channel = Channel.new<int>(1);
+  val Future<int> read = nb readch channel;
+  try {
+    await read.with_timeout(30);
+  } catch (err) {
+    stdio.stdout.write("timeout:");
+  }
+  writech channel, 42;
+  stdio.stdout.write(readch channel);
+  return;
+}

@@ -280,7 +280,11 @@ public final class OresScheduler implements AutoCloseable {
      * scheduler does not move the waiter onto this scheduler.</p>
      */
     public <T> OresFuture<T> start(Task<T> task) {
-        return startInScope(task, OresDeadlineScope.current(), false);
+        Objects.requireNonNull(task, "task");
+        ensureOpen();
+        OresDeadlineScope parent = OresDeadlineScope.current();
+        return parent == null ? startInScope(task, null, false)
+                : startInScope(task, new OresDeadlineScope(parent, name), true);
     }
 
     /** Start a structured scope; descendants share its remaining deadline. */
@@ -292,7 +296,11 @@ public final class OresScheduler implements AutoCloseable {
 
     private <T> OresFuture<T> startInScope(Task<T> task, OresDeadlineScope scope, boolean ownsScope) {
         Objects.requireNonNull(task, "task");
-        ensureOpen();
+        try { ensureOpen(); }
+        catch (RuntimeException | Error failure) {
+            if (ownsScope && scope != null) scope.close();
+            throw failure;
+        }
         TaskRunner<T> runner = new TaskRunner<>(task, scope, ownsScope);
         tasks.add(runner);
         runner.armDeadline();
