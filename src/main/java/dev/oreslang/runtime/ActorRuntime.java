@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -1147,6 +1148,30 @@ public final class ActorRuntime implements AutoCloseable {
         future.whenCompleteRuntime(
                 (value, failure) ->
                         target.enqueue(() -> continuation.accept(value, failure)));
+    }
+
+    /**
+     * Queue host-only publication work that must not become externally visible
+     * until the current actor carrier has crossed back out of TurnExecutor.
+     *
+     * <p>The action must never execute guest code. It is used for publishing
+     * already-frozen values/failures to Futures after the Truffle execution
+     * context has been left.</p>
+     */
+    private void afterCurrentActorTurn(Runnable action) {
+        Objects.requireNonNull(action, "action");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "post-turn publication requires an executing actor turn");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.finalized) {
+                throw new IllegalStateException(
+                        "cannot publish after finalized actor " + cell.ref.id());
+            }
+            cell.postTurnActions.addLast(action);
+        }
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
@@ -3461,6 +3486,33 @@ public final class ActorRuntime implements AutoCloseable {
         return freezeForTransport(result);
     }
 
+    private void publishSourceProtocolSuccessAfterTurn(
+            ProtocolRequest protocol,
+            Object preparedReply) {
+        if (protocol.ownsReply()) protocol.handOffReply();
+        afterCurrentActorTurn(() -> {
+            if (protocol.reply().isCancelled()) return;
+            if (!protocol.reply().completeFromRuntime(preparedReply)
+                    && !protocol.reply().isCancelled()) {
+                protocol.reply().failFromRuntime(
+                        new IllegalStateException(
+                                "typed actor protocol reply was already settled"));
+            }
+        });
+    }
+
+    private void publishSourceProtocolFailureAfterTurn(
+            ProtocolRequest protocol,
+            Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (protocol.ownsReply()) protocol.handOffReply();
+        afterCurrentActorTurn(() -> {
+            if (!protocol.reply().isDone()) {
+                protocol.reply().failFromRuntime(failure);
+            }
+        });
+    }
+
     /**
      * Transfer a suspending source protocol reply from the request envelope to
      * an actor-mailbox continuation. Future completion threads never execute
@@ -3491,7 +3543,9 @@ public final class ActorRuntime implements AutoCloseable {
                     () -> {
                         if (failure != null) {
                             Throwable terminal = OresFuture.unwrap(failure);
-                            protocol.reply().failFromRuntime(terminal);
+                            publishSourceProtocolFailureAfterTurn(
+                                    protocol,
+                                    terminal);
                             throw rethrowActorProtocolFailure(terminal);
                         }
                         if (protocol.reply().isCancelled()) return;
@@ -3499,13 +3553,13 @@ public final class ActorRuntime implements AutoCloseable {
                         try {
                             Object preparedReply =
                                     prepareSourceProtocolReply(value);
-                            if (!protocol.reply().completeFromRuntime(preparedReply)
-                                    && !protocol.reply().isCancelled()) {
-                                throw new IllegalStateException(
-                                        "typed actor protocol reply was already settled");
-                            }
+                            publishSourceProtocolSuccessAfterTurn(
+                                    protocol,
+                                    preparedReply);
                         } catch (Throwable callbackFailure) {
-                            protocol.reply().failFromRuntime(callbackFailure);
+                            publishSourceProtocolFailureAfterTurn(
+                                    protocol,
+                                    callbackFailure);
                             throw rethrowActorProtocolFailure(callbackFailure);
                         }
                     },
@@ -4868,6 +4922,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /**
+         * Host-only publication callbacks drained after TurnExecutor returns.
+         * Guest code must never be placed here.
+         */
+        private final ArrayDeque<Runnable> postTurnActions = new ArrayDeque<>();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -5116,6 +5175,24 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void drainPostTurnActions() {
+            while (true) {
+                Runnable action;
+                synchronized (lifecycleLock) {
+                    action = postTurnActions.pollFirst();
+                }
+                if (action == null) return;
+                try {
+                    action.run();
+                } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    fail(fatal);
+                    throw fatal;
+                } catch (Throwable failure) {
+                    fail(failure);
+                }
+            }
+        }
+
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
             boolean carrierEntered = false;
@@ -5140,11 +5217,15 @@ public final class ActorRuntime implements AutoCloseable {
 
                 turnExecutor.execute(this::runBatchEntered);
             } catch (Throwable failure) {
+                // TurnExecutor is required to leave its guest/Truffle execution
+                // context before propagating. Post-turn publications are drained
+                // from finally below after this boundary has been crossed.
                 fail(failure);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                drainPostTurnActions();
                 // The actor remains logically scheduled until the TurnExecutor
                 // returns. OresContext's executor leaves the TruffleContext in
                 // its own finally block, so clearing this bit any earlier lets
@@ -5257,14 +5338,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     } else {
                                         Object preparedReply =
                                                 prepareSourceProtocolReply(result);
-                                        if (!protocol.reply().completeFromRuntime(preparedReply)
-                                                && !protocol.reply().isCancelled()) {
-                                            throw new IllegalStateException(
-                                                    "typed actor protocol reply was already settled");
-                                        }
+                                        publishSourceProtocolSuccessAfterTurn(
+                                                protocol,
+                                                preparedReply);
                                     }
                                 } catch (Throwable failure) {
-                                    protocol.reply().failFromRuntime(failure);
+                                    publishSourceProtocolFailureAfterTurn(
+                                            protocol,
+                                            failure);
                                     throw failure;
                                 }
                             }
