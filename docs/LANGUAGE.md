@@ -201,6 +201,36 @@ Collection syntax deliberately separates four concerns:
 Those forms are not interchangeable. In particular, the element type never
 disappears merely because a collection has sizing policy.
 
+For intrinsic collection types, `<...>` is a declared type-constructor
+parameter list and supports both positional and named binding. The current
+common positional schema begins:
+
+```text
+type, size, align, allocator, growth_policy,
+inline_capacity, max_capacity, storage, rank
+```
+
+For example, these are the same type:
+
+```ores
+FixedArray<
+    type=int|string,
+    size=21
+>[...(3 of int, 3 of string)]
+
+FixedArray<
+    int|string,
+    21
+>[...(3 of int, 3 of string)]
+```
+
+As with named call arguments, positional type parameters may come first and
+named parameters may follow, but a positional parameter may not follow a named
+parameter. The compiler canonicalizes both spellings to the named schema and
+rejects duplicate bindings. The `type=` parameter is an element-domain
+constraint and is checked against every statically resolved position in a
+fixed shape.
+
 The core sequence families are intentionally distinct even when they share a
 runtime representation today:
 
