@@ -533,7 +533,10 @@ const [num, ok, answer] = result();
 
 ## Structural typing and interfaces
 
-Interfaces are structural contracts. Explicit `implements` asks the compiler to prove conformance and documents intent; structural compatibility does not require nominal ancestry in every context.
+Interfaces define statically checkable contracts, but named class/interface values remain
+**nominal by default**. Structural comparison is entered only through an explicit
+structural boundary, an explicit `implements` proof, or module
+`@AdheresTo(...)` conformance.
 
 ```ores
 define interface Named
@@ -545,7 +548,9 @@ define class User implements Named as
 end
 ```
 
-Class interface satisfaction uses public members, including inherited public members.
+Class/interface shape proofs use public members, including inherited public members.
+Private members never satisfy an external structural contract, and actor identity is
+never erased into an ordinary structural object.
 
 ## Boolean combinator intrinsics
 
@@ -1002,19 +1007,28 @@ pub routine main(): void {
 
 ## Nominal typing and opt-in structural parameters
 
-Named classes and interfaces are nominal by default. Structural matching at an API boundary is explicit with `@Structural`:
+Named classes and interfaces are nominal by default. The canonical structural-parameter
+spelling is `structural Type name`:
 
 ```ores
 pub interface Brand {
   markerBrand: 'marking/branding'
 }
 
-fnc consume(@Structural Brand value): String {
+fnc consume(structural Brand value): String {
   return value.markerBrand;
 }
 ```
 
-A value does not need to nominally implement `Brand` for that parameter, but its public/static shape must satisfy the interface. Without `@Structural`, the normal nominal implementation/inheritance rules apply.
+A value does not need to nominally implement `Brand` for that parameter, but its
+public shape must satisfy the required contract. Structural compatibility is
+directional width subtyping: extra public members are allowed, while every required
+field/method must exist with a compatible type/signature.
+
+`@Structural Brand value`, `value structural Brand`, and
+`@AllowStructural(value)` remain compatibility spellings. Structural parameters are
+read-only borrowed views: they cannot be `mut`, survive async suspension, cross an
+actor mailbox boundary, or turn an actor reference into an ordinary object.
 
 Interfaces may inherit from other interfaces and support literal-string marker fields:
 
@@ -1027,7 +1041,8 @@ pub interface Foo extends Bar {
 }
 ```
 
-Explicit `implements` and module `@AdheresTo(...)` checks remain structural conformance proofs.
+Explicit `implements` and module `@AdheresTo(...)` checks remain structural
+conformance proofs.
 
 ## Method overloads
 
@@ -1298,49 +1313,69 @@ Each generation receives a monotonically increasing id and SHA-256 source digest
 
 This model does not require `dlopen`, `LoadLibrary`, JNI, or Truffle NFI. A production server may additionally map each context to a Graal polyglot/native isolate. On AOT-only targets the precompiled interpreter executes newly loaded Oreslang source; on JIT-capable targets the same source may warm into optimized machine code.
 
-## Explicit structural calls
+## Structural callable declarations
 
-Structural compatibility is never silently enabled for a nominal parameter. These three spellings are equivalent:
+`structural` is also declaration metadata for a `fnc`, `routine`, instance/actor
+method, `static fnc`, or interface callable signature. The annotation spelling
+`@structural` is exactly equivalent:
 
 ```ores
-pub interface Bar {
-  marker: 'brand'
+structural fnc encode(Message value): Bytes {
+  // ...
 }
 
-pub interface Foo extends Bar {
-  markerBrand: 'marking/branding'
+@structural
+routine persist(Message value): void {
+  // ...
 }
 
-fnc a(@Structural Foo y): void {
-  return;
-}
+define class Codec as
+  structural decode(Bytes value): Message {
+    // ...
+  }
+end
 
-fnc b(y structural Foo): void {
-  return;
-}
+define interface CodecApi
+  structural fnc decode(Bytes value) => Message;
+end
+```
 
-@AllowStructural(y)
-fnc c(y Foo): void {
-  return;
+The parser normalizes the keyword and annotation forms into one compiler-owned
+`structural` callable flag. `@structural` takes no arguments and is removed from
+the ordinary annotation list during normalization; it is not a runtime decorator or
+reflection hook. Writing both `@structural` and the `structural` modifier on the
+same callable is an error.
+
+Declaration-level structural metadata is deliberately separate from parameter-level
+structural matching. For example, this still has a **nominal** `Message` parameter:
+
+```ores
+structural fnc encode(Message value): Bytes {
+  // ...
 }
 ```
 
-All three may accept:
+To make that parameter structural, it must opt in independently:
 
 ```ores
-val branded = obj{
-  marker: "brand",
-  markerBrand: "marking/branding"
-};
-
-a(branded);
-b(branded);
-c(branded);
+structural fnc encode(structural Message value): Bytes {
+  // ...
+}
 ```
 
-Without one of those explicit structural opt-ins, passing that object to a nominal `Foo` parameter is a compile-time error.
+Callable contract comparison preserves parameter/result types, generic arity,
+parameter mutation mode, and async mode. Parameter types are contravariant and
+results are covariant; `mut` authority and async-vs-sync mode must match exactly.
+Consequently an `async fnc ... -> T` is not silently treated as the same callable
+contract as a synchronous `fnc ... -> Future<T>`.
 
-`structural` is a contextual keyword, so existing identifiers named `structural` remain legal elsewhere.
+The structural marker never weakens actor isolation or ownership rules. An actor
+method may carry structural callable metadata, but the actor itself remains a nominal,
+mailbox-mediated identity.
+
+`structural` remains contextual. Ordinary declarations such as a method named
+`structural()` remain legal because the parser consumes the word as a modifier only
+where the following syntax makes that interpretation unambiguous.
 
 ## Receiver identity and method calls
 

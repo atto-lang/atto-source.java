@@ -40,8 +40,28 @@ public final class Types {
         public Record { members = Map.copyOf(members); }
     }
 
-    public record Function(List<Type> parameters, Type result) implements Type {
-        public Function { parameters = List.copyOf(parameters); }
+    public record Function(
+            List<Type> parameters,
+            List<Boolean> mutableParameters,
+            boolean async,
+            Type result) implements Type {
+        public Function {
+            parameters = List.copyOf(parameters);
+            mutableParameters = List.copyOf(mutableParameters);
+            if (parameters.size() != mutableParameters.size()) {
+                throw new IllegalArgumentException(
+                        "function parameter mutability metadata must match parameter arity");
+            }
+        }
+
+        /**
+         * Source-level Fnc<...> types and built-in callables have no mutable
+         * parameters and are synchronous unless a declaration explicitly says
+         * otherwise.
+         */
+        public Function(List<Type> parameters, Type result) {
+            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result);
+        }
     }
 
     public record ListType(Type element) implements Type { }
@@ -123,6 +143,11 @@ public final class Types {
 
         if (from instanceof Function source && to instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
+            if (source.async() != target.async()) return false;
+            // Parameter mutation authority is part of the callable contract.
+            // Keep it invariant: callers and implementations must agree exactly
+            // on which arguments may be mutated.
+            if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!isAssignable(target.parameters().get(i), source.parameters().get(i))) return false;
             }

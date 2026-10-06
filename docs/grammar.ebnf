@@ -35,8 +35,8 @@ module_member   = actor_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "nlex" ;
-method_modifier   = "abstract" | "async" ;
+callable_modifier = "abstract" | "async" | "nlex" | "structural" ;
+method_modifier   = "abstract" | "async" | "structural" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
                   ( "(" [ param_list ] ")" return_spec block
@@ -44,7 +44,7 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
-                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" callable_name [ generic_params ]
+                = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 
@@ -88,7 +88,7 @@ method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list 
 explicit_receiver = "self" type_ref ;
 
 static_function_decl
-                = { annotation } visibility "static" [ "async" ] "fnc" callable_name [ generic_params ]
+                = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
@@ -101,7 +101,7 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" type_return_spec member_terminator
+interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" type_return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
@@ -115,8 +115,9 @@ type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
-                | "@Structural" type_ref [ "mut" ] IDENT
-                | IDENT "structural" type_ref [ "mut" ] ;
+                | "structural" type_ref IDENT
+                | "@Structural" type_ref IDENT
+                | IDENT "structural" type_ref ;
 
 binding_decl    = { annotation } binding_kind
                   ( IDENT ":" type_ref
@@ -507,14 +508,27 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Lambdas always have braces. Non-void lambdas must use explicit return and
      return on every path when a contextual function result type is known.
    - named class/interface types are nominal by default.
-   - @Structural, name structural Type, or @AllowStructural(name) opt a
-     parameter into public-shape compatibility.
+   - structural Type name is the canonical opt-in for structural parameter
+     typing. @Structural, name structural Type, and @AllowStructural(name) remain
+     accepted compatibility spellings. Compatibility is directional: the
+     argument may have extra public members but must provide every required
+     public field and method with a compatible signature.
+   - structural is also callable declaration metadata on fnc, routine, class/actor
+     methods, static fnc, and interface callable signatures. @structural is the
+     equivalent annotation spelling. Both forms normalize to one AST boolean;
+     @structural is compile-time metadata, not a runtime decorator. Using both
+     spellings on the same callable is an error.
+   - declaration-level structural does not implicitly structuralize any
+     parameter. Nominal parameter types remain nominal unless that parameter
+     independently opts into structural matching.
    - every loop iteration contains an injected scheduler safepoint.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
-   - "structural" is contextual in parameter position, not globally reserved.
+   - "structural" is contextual in parameter and callable-modifier positions, not globally reserved.
+     Structural views are read-only borrows: they cannot be mut, cross async
+     suspension, cross actor mailbox boundaries, or erase actor identity.
    - self is an immutable receiver borrow and cannot be rebound.
    - Parameters are immutable by default. Type "mut" name grants mutation of an
      owned parameter inside the callee, e.g. Bar mut b.

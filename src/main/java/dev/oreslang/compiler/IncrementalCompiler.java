@@ -155,6 +155,7 @@ public final class IncrementalCompiler {
             abi.append(fn.actorKind()).append(' ');
             if (fn.async()) abi.append("async ");
             if (fn.generator()) abi.append("generator ");
+            if (fn.structural()) abi.append("structural ");
             abi.append(fn.kind()).append(" pub ").append(fn.name());
             appendGenerics(abi, fn.genericParameters());
             appendParams(abi, fn.parameters());
@@ -239,6 +240,8 @@ public final class IncrementalCompiler {
 
     private static String classMethodAbi(Ast.MethodDecl method) {
         StringBuilder out = new StringBuilder();
+        if (method.async()) out.append("async ");
+        if (method.structural()) out.append("structural ");
         out.append(method.isStatic() ? " static-fnc " : " method ")
                 .append(method.name())
                 .append("#arity").append(method.arity());
@@ -250,6 +253,7 @@ public final class IncrementalCompiler {
 
     private static String interfaceFunctionAbi(Ast.InterfaceFunctionDecl fn) {
         StringBuilder out = new StringBuilder();
+        if (fn.structural()) out.append("structural ");
         out.append(" iface-fnc ").append(fn.name())
                 .append("#arity").append(fn.parameters().size());
         appendGenerics(out, fn.genericParameters());
@@ -268,7 +272,9 @@ public final class IncrementalCompiler {
         abi.append('(');
         for (Ast.Param param : params) {
             if (param.structural()) abi.append("structural ");
-            abi.append(typeRef(param.type())).append(',');
+            abi.append(typeRef(param.type()));
+            if (param.mutable()) abi.append(" mut");
+            abi.append(',');
         }
         abi.append(')');
     }
