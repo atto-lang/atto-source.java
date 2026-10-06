@@ -2517,10 +2517,11 @@ public final class Parser {
         }
 
         if (!name.equals("copy") && !name.equals("take")
-                && !name.equals("borrow") && !name.equals("share")) {
+                && !name.equals("borrow") && !name.equals("share")
+                && !name.equals("proxy")) {
             throw error(operation,
                     "unknown rt operation '" + name
-                            + "'; supported operations are cooperate, copy, take, borrow, and share");
+                            + "'; supported operations are cooperate, copy, take, borrow, share, and proxy");
         }
 
         Ast.Expr argument;
