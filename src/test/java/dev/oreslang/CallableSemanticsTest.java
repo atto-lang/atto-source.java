@@ -476,10 +476,10 @@ final class CallableSemanticsTest {
     void expressionBodyLambdaCanReturnStructuredObjectWithoutBraceConfusion() throws Exception {
         String output = run("""
                 pub routine main(): void {
-                  val Fnc<int, {return: int}> wrap =
-                    |value| -> obj{return: value * 2};
+                  val Fnc<int, {value: int}> wrap =
+                    |value| -> obj{value: value * 2};
                   val wrapped = wrap(4);
-                  stdio.stdout.write(wrapped.return);
+                  stdio.stdout.write(wrapped.value);
                   return;
                 }
                 """);
