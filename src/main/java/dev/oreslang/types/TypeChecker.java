@@ -38,7 +38,8 @@ public final class TypeChecker {
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
-    private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+    private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
@@ -74,6 +75,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
+                "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
@@ -115,7 +117,7 @@ public final class TypeChecker {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
-                    putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
+                    putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
@@ -126,6 +128,31 @@ public final class TypeChecker {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private void putFunction(String module, Ast.FunctionDecl fn) {
+        String qualified = module + "." + fn.name();
+        putFunctionSlot(qualified, fn);
+
+        String owner = unqualifiedFunctionOwners.putIfAbsent(fn.name(), module);
+        if (owner == null || owner.equals(module)) {
+            if (!ambiguousFunctions.contains(fn.name())) putFunctionSlot(fn.name(), fn);
+        } else {
+            ambiguousFunctions.add(fn.name());
+            functions.remove(fn.name());
+        }
+    }
+
+    private void putFunctionSlot(String key, Ast.FunctionDecl fn) {
+        LinkedHashMap<Integer, Ast.FunctionDecl> family =
+                functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
+        Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
+        if (previous != null) {
+            throw new IllegalArgumentException(
+                    "callable '" + key + "' already has arity " + fn.parameters().size()
+                            + "; module/top-level overload identity is name + arity only; "
+                            + "parameter types and return types do not participate");
         }
     }
 
@@ -219,6 +246,14 @@ public final class TypeChecker {
 
     private Record moduleShape(Ast.ModuleDecl module) {
         Map<String, Type> members = new LinkedHashMap<>();
+        Map<String, Integer> callableCounts = new HashMap<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FunctionDecl fn
+                    && fn.visibility() == Ast.Visibility.PUBLIC
+                    && fn.actorKind() == Ast.ActorKind.NONE) {
+                callableCounts.merge(fn.name(), 1, Integer::sum);
+            }
+        }
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
@@ -230,7 +265,9 @@ public final class TypeChecker {
                 // direct-call-only, and generic fnc values still require
                 // direct-call specialization because polymorphic function
                 // values are not implemented.
-                if (fn.kind() == Ast.CallableKind.FNC && fn.genericParameters().isEmpty()) {
+                if (fn.kind() == Ast.CallableKind.FNC
+                        && fn.genericParameters().isEmpty()
+                        && callableCounts.getOrDefault(fn.name(), 0) == 1) {
                     mergeMember(members, fn.name(), signature, "module " + module.name());
                 }
                 mergeMember(members,
@@ -1021,6 +1058,9 @@ public final class TypeChecker {
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
+            if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
+                return new Named("$BooleanOps", List.of());
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -1028,7 +1068,7 @@ public final class TypeChecker {
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
-            Ast.FunctionDecl fn = findFunction(name.name());
+            Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
                 if (fn.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException("actor callable '" + fn.name()
@@ -1168,7 +1208,7 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
-                Ast.FunctionDecl target = findFunction(functionName.name());
+                Ast.FunctionDecl target = findFunction(functionName.name(), call.arguments().size());
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -1191,11 +1231,17 @@ public final class TypeChecker {
                     return callableResult(target.async(), target.generator(), result);
                 }
             }
+            String booleanIntrinsic = booleanIntrinsicName(call, env);
+            if (booleanIntrinsic != null) {
+                return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
+            }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
-                Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
+                Ast.FunctionDecl target = findQualifiedFunction(
+                        namespace.name() + "." + qualifiedCall.member(),
+                        call.arguments().size());
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -1553,9 +1599,18 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("BooleanOps")
+                    && !modules.containsKey("BooleanOps")
+                    && isBooleanIntrinsicName(member.member())) {
+                throw new IllegalArgumentException(
+                        "overloaded builtin BooleanOps." + member.member()
+                                + " must be called so arity can select the scalar or list overload");
+            }
+            if (member.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
-                Ast.FunctionDecl moduleFunction = functions.get(namespace.name() + "." + member.member());
+                Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
+                        namespace.name() + "." + member.member());
                 if (moduleFunction != null) {
                     if (moduleFunction.kind() == Ast.CallableKind.ROUTINE) {
                         throw new IllegalArgumentException("routine '" + namespace.name() + "." + member.member()
@@ -1815,6 +1870,63 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private static boolean isBooleanIntrinsicName(String name) {
+        return name.equals("And") || name.equals("Or") || name.equals("Xor");
+    }
+
+    private String booleanIntrinsicName(Ast.CallExpr call, Env env) {
+        if (call.callee() instanceof Ast.NameExpr name
+                && isBooleanIntrinsicName(name.name())
+                && env.lookup(name.name()) == null
+                && !hasFunctionFamily(name.name())) {
+            return name.name();
+        }
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("BooleanOps")
+                && isBooleanIntrinsicName(member.member())
+                && env.lookup("BooleanOps") == null
+                && !modules.containsKey("BooleanOps")) {
+            return member.member();
+        }
+        return null;
+    }
+
+    private Type typeBooleanIntrinsicCall(
+            String name,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(name + " does not accept call-site type arguments");
+        }
+        List<Ast.Expr> arguments = call.arguments();
+        if (arguments.size() == 1) {
+            Type aggregate = deref(typeOf(arguments.getFirst(), env, generics, self));
+            if (!(aggregate instanceof ListType list)) {
+                throw new IllegalArgumentException(
+                        name + " arity 1 selects the List<bool> overload; got " + aggregate);
+            }
+            Type element = deref(list.element());
+            if (element != Unknown.INSTANCE) {
+                requireAssignable(element, Primitive.BOOL, name + " list element");
+            }
+            return Primitive.BOOL;
+        }
+        if (arguments.size() < 2) {
+            throw new IllegalArgumentException(
+                    name + " expects either one List<bool> argument or at least two bool arguments");
+        }
+        for (int i = 0; i < arguments.size(); i++) {
+            requireAssignable(
+                    typeOf(arguments.get(i), env, generics, self),
+                    Primitive.BOOL,
+                    name + " scalar argument " + (i + 1));
+        }
+        return Primitive.BOOL;
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -4056,9 +4168,50 @@ public final class TypeChecker {
         return false;
     }
 
-    private Ast.FunctionDecl findFunction(String name) {
-        if (ambiguousFunctions.contains(name)) throw new IllegalArgumentException("ambiguous function/routine name '" + name + "'; qualify it with its module");
-        return functions.get(name);
+    private boolean hasFunctionFamily(String name) {
+        if (ambiguousFunctions.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
+        }
+        return functions.containsKey(name);
+    }
+
+    private Ast.FunctionDecl findFunction(String name, int arity) {
+        if (ambiguousFunctions.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
+        }
+        LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
+        return family == null ? null : family.get(arity);
+    }
+
+    private Ast.FunctionDecl findSingleFunction(String name) {
+        if (ambiguousFunctions.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
+        }
+        return singleFunction(functions.get(name), name);
+    }
+
+    private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
+        LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
+        return family == null ? null : family.get(arity);
+    }
+
+    private Ast.FunctionDecl findSingleQualifiedFunction(String qualifiedName) {
+        return singleFunction(functions.get(qualifiedName), qualifiedName);
+    }
+
+    private Ast.FunctionDecl singleFunction(
+            LinkedHashMap<Integer, Ast.FunctionDecl> family,
+            String displayName) {
+        if (family == null || family.isEmpty()) return null;
+        if (family.size() > 1) {
+            throw new IllegalArgumentException(
+                    "overloaded callable '" + displayName
+                            + "' must be called so name + arity can select a slot");
+        }
+        return family.values().iterator().next();
     }
 
     private Ast.ClassDecl findClass(String name) {
