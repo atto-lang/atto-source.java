@@ -1,7 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -126,6 +128,26 @@ public final class OresVM implements AutoCloseable {
                     "Oreslang VM root scheduler was requested before startup");
         }
         return rootScheduler;
+    }
+
+    /**
+     * Admit runtime CONTROL work through the already-owned root scheduler.
+     *
+     * Mailmen and other control services share the VM root/CONTROL admission
+     * boundary. In a strict isolate this preserves the isolate's JNI/root-turn
+     * admission executor rather than hopping guest work onto an unadmitted
+     * native carrier.
+     */
+    OresFuture<Void> executeControl(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        if (!started()) {
+            throw new RejectedExecutionException(
+                    "Oreslang VM CONTROL dispatcher is not available");
+        }
+        return rootScheduler.startSync(() -> {
+            task.run();
+            return null;
+        });
     }
 
     public boolean isRootSchedulerCurrent() {
