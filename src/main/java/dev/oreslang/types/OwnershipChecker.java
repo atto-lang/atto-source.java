@@ -1739,6 +1739,7 @@ public final class OwnershipChecker {
                 boolean namespaced = name.name().startsWith("$rt$");
                 if ((operation.equals("borrow") || operation.equals("take")
                         || operation.equals("copy") || operation.equals("share")
+                        || operation.equals("proxy")
                         || (namespaced && (operation.equals("ptr") || operation.equals("deref"))))
                         && call.arguments().size() == 1) {
                     Ast.TypeRef target = ownershipTypeOfExpr(call.arguments().getFirst(), scope);
