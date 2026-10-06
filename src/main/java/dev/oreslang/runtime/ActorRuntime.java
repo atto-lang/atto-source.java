@@ -5532,7 +5532,6 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
-            Runnable abandonedQuiescentCompletion;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -5545,7 +5544,6 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
-                abandonedQuiescentCompletion = abandonQuiescentStopLocked();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
@@ -5553,9 +5551,6 @@ public final class ActorRuntime implements AutoCloseable {
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
             for (OresFuture<?> future : pending) future.cancel(false);
-            if (abandonedQuiescentCompletion != null) {
-                abandonedQuiescentCompletion.run();
-            }
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
