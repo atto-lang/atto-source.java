@@ -13,6 +13,12 @@ import java.util.function.Function;
  * outside the dynamic lock scope.</p>
  */
 public final class OresProxy<T> {
+    public static final class ProxyContendedException extends IllegalStateException {
+        public ProxyContendedException(String operation) {
+            super(operation + " would block an actor carrier; retry/cooperate or use cooperative proxy access");
+        }
+    }
+
     private static final ThreadLocal<OresProxy<?>> HELD_PROXY = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> HELD_WRITE = new ThreadLocal<>();
 
@@ -38,11 +44,11 @@ public final class OresProxy<T> {
         Objects.requireNonNull(reader, "reader");
         requireAccess("rt proxy read");
         boolean entered = enterProxy(false);
-        lock.readLock().lock();
+        boolean locked = acquireRead();
         try {
             return reader.apply(value);
         } finally {
-            lock.readLock().unlock();
+            if (locked) lock.readLock().unlock();
             exitProxy(entered);
         }
     }
@@ -51,11 +57,11 @@ public final class OresProxy<T> {
         Objects.requireNonNull(writer, "writer");
         requireAccess("rt proxy write");
         boolean entered = enterProxy(true);
-        lock.writeLock().lock();
+        boolean locked = acquireWrite();
         try {
             return writer.apply(value);
         } finally {
-            lock.writeLock().unlock();
+            if (locked) lock.writeLock().unlock();
             exitProxy(entered);
         }
     }
@@ -66,6 +72,28 @@ public final class OresProxy<T> {
 
     public int readLockCount() {
         return lock.getReadLockCount();
+    }
+
+    private boolean acquireRead() {
+        if (!ActorRuntime.inActorExecution()) {
+            lock.readLock().lock();
+            return true;
+        }
+        if (!lock.readLock().tryLock()) {
+            throw new ProxyContendedException("rt proxy read");
+        }
+        return true;
+    }
+
+    private boolean acquireWrite() {
+        if (!ActorRuntime.inActorExecution()) {
+            lock.writeLock().lock();
+            return true;
+        }
+        if (!lock.writeLock().tryLock()) {
+            throw new ProxyContendedException("rt proxy write");
+        }
+        return true;
     }
 
     private void requireCreationAuthority() {
