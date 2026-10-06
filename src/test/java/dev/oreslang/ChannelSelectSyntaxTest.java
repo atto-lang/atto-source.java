@@ -241,6 +241,59 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
+    void nonblockingWriteHasRepresentableFutureVoidSurface() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                fnc write(Channel<int> output): Future<void> {
+                  return nb writech output, 42;
+                }
+                """));
+
+        Ast.FunctionDecl fn =
+                (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class, fn.body().getFirst());
+        Ast.ChannelOpExpr write =
+                assertInstanceOf(Ast.ChannelOpExpr.class, returned.value());
+        assertEquals(Ast.WaitMode.NONBLOCKING, write.mode());
+        assertEquals(Ast.ChannelOperation.WRITE, write.operation());
+        assertEquals(false, write.callback());
+    }
+
+    @Test
+    void nonblockingWriteCallbackUsesTheSameChannelOperationSurface() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                actor fnc write(Channel<int> output): void {
+                  nb cb writech output, 42 || -> {
+                    stdio.println("write complete");
+                  };
+                  return;
+                }
+                """));
+
+        Ast.FunctionDecl fn =
+                (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.ExprStmt statement =
+                assertInstanceOf(Ast.ExprStmt.class, fn.body().getFirst());
+        Ast.ChannelOpExpr write =
+                assertInstanceOf(Ast.ChannelOpExpr.class, statement.expression());
+        assertEquals(Ast.WaitMode.NONBLOCKING, write.mode());
+        assertEquals(Ast.ChannelOperation.WRITE, write.operation());
+        assertTrue(write.callback());
+        assertEquals(1, write.callbackBody().size());
+    }
+
+    @Test
+    void nonblockingWriteCallbackRequiresActorExecutionDomain() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc wrong(Channel<int> output): void {
+                  nb cb writech output, 42 || -> {
+                    stdio.println("wrong");
+                  };
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void rejectsMalformedChannelAndSelectForms() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Channel<int> ch): void {
