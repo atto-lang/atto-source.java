@@ -7,6 +7,7 @@
 
 #include <jni.h>
 #include <pthread.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -323,27 +324,41 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeBindCurrentThreadToCarrier
     int cpu_capacity = configured_cpus > 0 && configured_cpus <= INT32_MAX
             ? (int)configured_cpus
             : CPU_SETSIZE;
-    size_t set_size = CPU_ALLOC_SIZE(cpu_capacity);
+    if (cpu_capacity < CPU_SETSIZE) cpu_capacity = CPU_SETSIZE;
 
-    cpu_set_t *allowed = CPU_ALLOC(cpu_capacity);
-    cpu_set_t *target = CPU_ALLOC(cpu_capacity);
-    if (allowed == NULL || target == NULL) {
-        if (allowed != NULL) CPU_FREE(allowed);
-        if (target != NULL) CPU_FREE(target);
-        return -1;
-    }
+    cpu_set_t *allowed = NULL;
+    size_t set_size = 0;
+    int affinity_loaded = 0;
 
-    CPU_ZERO_S(set_size, allowed);
-    if (sched_getaffinity(0, set_size, allowed) != 0) {
+    /*
+     * Linux returns EINVAL when cpusetsize is smaller than the kernel's CPU
+     * mask. CPU IDs may be sparse after hotplug, so _SC_NPROCESSORS_CONF is
+     * not by itself a safe upper bound on the highest possible CPU id.
+     */
+    for (int attempt = 0; attempt < 8; attempt++) {
+        set_size = CPU_ALLOC_SIZE(cpu_capacity);
+        allowed = CPU_ALLOC(cpu_capacity);
+        if (allowed == NULL) return -1;
+        CPU_ZERO_S(set_size, allowed);
+
+        errno = 0;
+        if (sched_getaffinity(0, set_size, allowed) == 0) {
+            affinity_loaded = 1;
+            break;
+        }
+
+        int error = errno;
         CPU_FREE(allowed);
-        CPU_FREE(target);
-        return -1;
+        allowed = NULL;
+        if (error != EINVAL || cpu_capacity > INT32_MAX / 2) return -1;
+        cpu_capacity *= 2;
     }
+
+    if (!affinity_loaded || allowed == NULL) return -1;
 
     int allowed_count = CPU_COUNT_S(set_size, allowed);
     if (allowed_count <= 0) {
         CPU_FREE(allowed);
-        CPU_FREE(target);
         return -1;
     }
 
@@ -358,10 +373,14 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeBindCurrentThreadToCarrier
     }
     if (selected < 0) {
         CPU_FREE(allowed);
-        CPU_FREE(target);
         return -1;
     }
 
+    cpu_set_t *target = CPU_ALLOC(cpu_capacity);
+    if (target == NULL) {
+        CPU_FREE(allowed);
+        return -1;
+    }
     CPU_ZERO_S(set_size, target);
     CPU_SET_S(selected, set_size, target);
     int bind_status = pthread_setaffinity_np(
