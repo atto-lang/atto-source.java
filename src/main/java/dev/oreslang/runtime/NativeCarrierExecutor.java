@@ -257,13 +257,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         int enabled = Math.max(1, corePoolSize.get());
         if (enabled <= 1) return null;
 
-        int probes = Math.min(enabled - 1, MAX_STEAL_PROBES);
+        int maxProbes = Math.min(enabled - 1, MAX_STEAL_PROBES);
         int start = Math.floorMod(nextStealVictim.getAndIncrement(), enabled);
-        for (int offset = 0; offset < probes; offset++) {
-            int victimSlot = (start + offset) % enabled;
-            if (victimSlot == thiefSlot) {
-                victimSlot = (victimSlot + 1) % enabled;
-            }
+        int examined = 0;
+        int probes = 0;
+        while (examined < enabled && probes < maxProbes) {
+            int victimSlot = (start + examined++) % enabled;
+            if (victimSlot == thiefSlot) continue;
+            probes++;
 
             ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
             if (victim.peek() == null) continue;
@@ -359,10 +360,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 }
             }
             if (!offered) {
-                if (affinityAware) affinityGlobalSpills.incrementAndGet();
                 slot = -1;
                 offered = queue.offer(task);
-                if (offered) destination = queue;
+                if (offered) {
+                    destination = queue;
+                    if (affinityAware) affinityGlobalSpills.incrementAndGet();
+                }
             }
             if (!offered) {
                 throw new RejectedExecutionException("native carrier ready queue is full");
