@@ -1669,6 +1669,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorGroup group;
         private final ActorMailman<Out> mailman;
         private final ArrayBlockingQueue<GroupMailmanEnvelope<Out>> outbox;
+        private final Object admissionLock = new Object();
         private final AtomicLong nextSequence = new AtomicLong();
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
@@ -1706,20 +1707,28 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             FrozenActorGroupEventPayload frozen = freezeActorGroupEventPayload(output);
-            long sequence = nextSequence.getAndIncrement();
-            GroupMailmanEnvelope<Out> envelope =
-                    new GroupMailmanEnvelope<>(
-                            new ActorMail<>(
-                                    sender,
-                                    group.id,
-                                    sequence,
-                                    (Out) frozen.value()),
-                            frozen.reservation());
+            GroupMailmanEnvelope<Out> envelope;
+            synchronized (admissionLock) {
+                if (stopped.get() || group.closed() || closed.get()) {
+                    frozen.reservation().close();
+                    throw new IllegalStateException(
+                            "ActorGroup Mailman stopped during admission for " + group.id);
+                }
+                long sequence = nextSequence.getAndIncrement();
+                envelope =
+                        new GroupMailmanEnvelope<>(
+                                new ActorMail<>(
+                                        sender,
+                                        group.id,
+                                        sequence,
+                                        (Out) frozen.value()),
+                                frozen.reservation());
 
-            if (!outbox.offer(envelope)) {
-                envelope.release();
-                throw new IllegalStateException(
-                        "ActorGroup Mailman outbox capacity exceeded for " + group.id);
+                if (!outbox.offer(envelope)) {
+                    envelope.release();
+                    throw new IllegalStateException(
+                            "ActorGroup Mailman outbox capacity exceeded for " + group.id);
+                }
             }
 
             try {
@@ -1835,17 +1844,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void failAndDrain(Throwable cause) {
-            failure.compareAndSet(
-                    null,
-                    cause == null
-                            ? new IllegalStateException("ActorGroup Mailman CONTROL dispatch failed")
-                            : cause);
-            stopped.set(true);
-            scheduled.set(false);
-            drainOutbox();
+            synchronized (admissionLock) {
+                failure.compareAndSet(
+                        null,
+                        cause == null
+                                ? new IllegalStateException("ActorGroup Mailman CONTROL dispatch failed")
+                                : cause);
+                stopped.set(true);
+                scheduled.set(false);
+                drainOutboxLocked();
+            }
         }
 
         private void drainOutbox() {
+            synchronized (admissionLock) {
+                drainOutboxLocked();
+            }
+        }
+
+        private void drainOutboxLocked() {
             GroupMailmanEnvelope<Out> envelope;
             while ((envelope = outbox.poll()) != null) {
                 envelope.release();
@@ -1858,8 +1875,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            stopped.set(true);
-            drainOutbox();
+            synchronized (admissionLock) {
+                stopped.set(true);
+                drainOutboxLocked();
+            }
         }
     }
 
