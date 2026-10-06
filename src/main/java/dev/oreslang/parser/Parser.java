@@ -68,7 +68,20 @@ public final class Parser {
                     modules.add(parseModule(annotations));
                     continue;
                 }
-                if (match(CLASS)) {
+                if (match(CONTRACT)) {
+                    if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                        throw error(previous(), "contracts do not accept class/callable modifiers");
+                    }
+                    rejectCallableStructuralAnnotation(annotations, "contract declarations");
+                    rootDeclarations.add(parseContract(modifiers.visibility));
+                    continue;
+                }
+                if (match(CONTRACT)) {
+                if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) throw error(previous(), "contracts do not accept class/callable modifiers");
+                rejectCallableStructuralAnnotation(annotations, "contract declarations");
+                return parseContract(modifiers.visibility);
+            }
+            if (match(CLASS)) {
                     if (modifiers.structural) throw error(previous(), "structural cannot modify a class");
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     validateClassModifiers(modifiers);
@@ -79,8 +92,13 @@ public final class Parser {
                             modifiers.isAbstract || afterDefineAbstract, true));
                     continue;
                 }
-                if (match(INTERFACE)) {
-                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
+                if (match(CONTRACT)) {
+                    if (modifiers.generator || modifiers.nonLexical || modifiers.structural || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) throw error(previous(), "contract declarations do not accept callable/class modifiers");
+                    rejectCallableStructuralAnnotation(annotations, "contract declarations");
+                    rootDeclarations.add(parseContract(modifiers.visibility));
+                    continue;
+                }
+                if (match(INTERFACE)) { throw error(previous(), "'generator' applies only to fnc or routine declarations");
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                     if (modifiers.structural) throw error(previous(), "'structural' applies to callable declarations, not interface declarations");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
@@ -96,7 +114,7 @@ public final class Parser {
         }
 
         if (!rootDeclarations.isEmpty()) {
-            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), rootDeclarations));
+            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(namespace, imports, modules);
@@ -122,11 +140,12 @@ public final class Parser {
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
             else if (match(INTERFACE)) kind = Ast.ImportKind.INTERFACE;
+            else if (match(CONTRACT)) kind = Ast.ImportKind.CONTRACT;
             else if (match(TRAIT)) kind = Ast.ImportKind.TRAIT;
             else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
             else if (match(TYPE)) kind = Ast.ImportKind.TYPE;
             else if (match(TYPES)) kind = Ast.ImportKind.TYPES;
-            else throw error(peek(), "expected module, actor, class, fnc, interface, trait, struct, type, types, or * after import");
+            else throw error(peek(), "expected module, actor, class, fnc, interface, contract, trait, struct, type, types, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
@@ -179,13 +198,14 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
+        List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
         // Canonical module syntax is "define module Name as ... end".
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
-        return new Ast.ModuleDecl(name, annotations, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
 
     private Ast.Decl parseModuleMember() {
@@ -254,6 +274,10 @@ public final class Parser {
         if (modifiers.structural) throw error(peek(), "'structural' applies only to fnc, routine, methods, or interface callable signatures");
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
         if (modifiers.generator) throw error(peek(), "'generator' applies only to fnc or routine declarations");
+        if (match(CONTRACT)) {
+            rejectCallableStructuralAnnotation(annotations, "contract declarations");
+            return parseContract(modifiers.visibility);
+        }
         if (match(INTERFACE)) {
             rejectCallableStructuralAnnotation(annotations, "interface declarations");
             return parseInterface(modifiers.visibility);
@@ -468,6 +492,11 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods);
+    }
+
+    private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
+        Ast.InterfaceDecl iface = parseInterface(visibility);
+        return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
