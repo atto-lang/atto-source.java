@@ -100,15 +100,15 @@ final class OresVM {
                 prefix);
         this.blockingIo = new BlockingIoExecutor(prefix);
         this.processVm = processVm;
-        VM_BINDINGS.put(contextBindingToken, this);
 
         // VM construction is the runtime bootstrap boundary. The physical
-        // CONTROL carrier pool must already be live before any Oreslang root
-        // task (including pub routine main) can be admitted to the scheduler.
+        // CONTROL carrier pool must already be live before this VM can be
+        // published through its opaque context binding. No context lookup can
+        // therefore observe a partially-started VM.
         try {
             startup();
+            VM_BINDINGS.put(contextBindingToken, this);
         } catch (RuntimeException | Error failure) {
-            VM_BINDINGS.remove(contextBindingToken, this);
             blockingIo.close();
             dispatchers.shutdownNow();
             throw failure;
