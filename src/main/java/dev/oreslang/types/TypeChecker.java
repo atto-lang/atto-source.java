@@ -290,10 +290,10 @@ public final class TypeChecker {
                         "module '" + module.name() + "' is missing required contract field '" + contract.name()
                                 + "." + required.name() + "'");
             }
-            if (actual.kind() != required.bindingKind()) {
+            if (actual.bindingKind() != required.bindingKind()) {
                 throw new IllegalArgumentException(
                         "module '" + module.name() + "." + actual.name() + "' has binding kind "
-                                + actual.kind() + " but contract '" + contract.name() + "' requires "
+                                + actual.bindingKind() + " but contract '" + contract.name() + "' requires "
                                 + required.bindingKind());
             }
         }
@@ -302,9 +302,13 @@ public final class TypeChecker {
     }
 
     private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract) {
+        return resolveModuleContractRef(ref, contract, Set.of());
+    }
+
+    private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract, Set<String> generics) {
         validateGenericArity(ref, contract.genericParameters(), "contract " + contract.name());
         return new Named(qualifiedInterfaceName(contract),
-                ref.arguments().stream().map(arg -> resolve(arg, Set.of(), null)).toList());
+                ref.arguments().stream().map(arg -> resolve(arg, generics, null)).toList());
     }
 
     private Record moduleShape(Ast.ModuleDecl module) {
@@ -364,8 +368,13 @@ public final class TypeChecker {
 
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
-            if (findInterface(parentRef.name()) == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            resolve(parentRef, generics, null);
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            if (iface.moduleContract() != parent.moduleContract()) {
+                throw new IllegalArgumentException("interfaces and module contracts cannot extend each other");
+            }
+            if (iface.moduleContract()) resolveModuleContractRef(parentRef, parent, generics);
+            else resolve(parentRef, generics, null);
         }
 
         for (Ast.InterfaceMember member : iface.members()) {
@@ -3633,7 +3642,7 @@ public final class TypeChecker {
                                 + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
                                 + parent.name() + "' across the interface/contract boundary");
             }
-            Type resolvedParent = resolve(parentRef, generics, null);
+            Type resolvedParent = iface.moduleContract() ? resolveModuleContractRef(parentRef, parent, generics) : resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
                 throw new IllegalArgumentException("parent interface must resolve to a named type");
             }
