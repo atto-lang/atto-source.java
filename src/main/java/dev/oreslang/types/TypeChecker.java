@@ -911,6 +911,16 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                if (!method.isStatic()
+                        && klass.actorKind() != Ast.ActorKind.NONE
+                        && method.visibility() == Ast.Visibility.PUBLIC) {
+                    validateActorCallableBoundaryType(
+                            parameterType,
+                            klass.actorKind(),
+                            false,
+                            "parameter '" + param.name() + "' of actor method '"
+                                    + klass.name() + "." + method.name() + "'");
+                }
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
@@ -930,6 +940,15 @@ public final class TypeChecker {
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (!method.isStatic()
+                    && klass.actorKind() != Ast.ActorKind.NONE
+                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                validateActorCallableBoundaryType(
+                        returns,
+                        klass.actorKind(),
+                        true,
+                        "return type of actor method '" + klass.name() + "." + method.name() + "'");
+            }
             if (method.async()) {
                 validateAsyncBoundaryType(
                         returns,
@@ -1801,6 +1820,66 @@ public final class TypeChecker {
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
+                    if (named.name().equals("ActorRef")) {
+                        if (named.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef<T> requires exactly one actor target type");
+                        }
+                        if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                            throw new IllegalArgumentException(
+                                    "untrusted actors cannot issue mailbox request/reply calls");
+                        }
+                        Type targetType = deref(named.arguments().getFirst());
+                        if (!(targetType instanceof Named actorType)) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef<T> target must be a concrete actor class type");
+                        }
+                        Ast.ClassDecl actorClass = findClass(actorType.name());
+                        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef target '" + actorType.name() + "' is not an actor class");
+                        }
+                        ResolvedMethod target = findMethodTarget(
+                                actorClass,
+                                actorType,
+                                member.member(),
+                                call.arguments().size(),
+                                new LinkedHashSet<>());
+                        if (target == null || target.method().isStatic()) {
+                            throw new IllegalArgumentException(
+                                    "no actor protocol method '" + member.member()
+                                            + "' with arity " + call.arguments().size()
+                                            + " on " + actorClass.name());
+                        }
+                        Ast.MethodDecl method = target.method();
+                        Ast.ClassDecl owner = target.owner();
+                        if (method.visibility() != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException(
+                                    "actor protocol method '" + owner.name() + "." + method.name()
+                                            + "' is private; only pub actor methods are mailbox-callable");
+                        }
+                        if (!method.genericParameters().isEmpty() || call.typeArgumentsPresent()) {
+                            throw new IllegalArgumentException(
+                                    "generic actor protocol methods are not enabled yet; "
+                                            + "mailbox request/reply ABI must remain reified and stable");
+                        }
+                        String label = "actor method " + owner.name() + "." + method.name();
+                        List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
+                        Map<String, Type> bindings =
+                                new HashMap<>(classGenericBindings(owner, target.ownerType()));
+                        Type result = checkGenericCallable(
+                                callableGenerics,
+                                method.parameters(),
+                                method.returnType(),
+                                call.arguments(),
+                                env,
+                                generics,
+                                self,
+                                actorType,
+                                bindings,
+                                label);
+                        return new Named("Future", List.of(result));
+                    }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && member.member().equals("with_lock")) {
@@ -2069,6 +2148,27 @@ public final class TypeChecker {
                 return dynamic.arguments().getFirst();
             }
             if (receiver instanceof Named named) {
+                if (named.name().equals("ActorRef")) {
+                    if (named.arguments().size() != 1
+                            || !(deref(named.arguments().getFirst()) instanceof Named actorType)) {
+                        throw new IllegalArgumentException(
+                                "ActorRef<T> requires a concrete actor target type");
+                    }
+                    Ast.ClassDecl actorClass = findClass(actorType.name());
+                    if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "ActorRef target '" + actorType.name() + "' is not an actor class");
+                    }
+                    if (!findMethodsByName(actorClass, member.member(), new LinkedHashSet<>()).isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor protocol method '" + actorClass.name() + "." + member.member()
+                                        + "' is direct-call-only and returns Future<T>; "
+                                        + "invoke it as actorRef." + member.member() + "(...)");
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown actor protocol member '" + member.member()
+                                    + "' on " + actorClass.name());
+                }
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
