@@ -23,6 +23,9 @@ final class ParserTest {
                   define pub abstract class CanonicalBox as
                   end
 
+                  define pub class BracedBox as {
+                  }
+
                   fnc pub async late_visibility(): void {
                     return;
                   }
@@ -40,12 +43,14 @@ final class ParserTest {
         Ast.ModuleDecl module = program.modules().getFirst();
         Ast.ClassDecl legacyClass = (Ast.ClassDecl) module.declarations().get(0);
         Ast.ClassDecl canonicalClass = (Ast.ClassDecl) module.declarations().get(1);
-        Ast.FunctionDecl lateVisibility = (Ast.FunctionDecl) module.declarations().get(2);
-        Ast.FunctionDecl mixedOrder = (Ast.FunctionDecl) module.declarations().get(3);
-        Ast.FunctionDecl canonicalOrder = (Ast.FunctionDecl) module.declarations().get(4);
+        Ast.ClassDecl bracedClass = (Ast.ClassDecl) module.declarations().get(2);
+        Ast.FunctionDecl lateVisibility = (Ast.FunctionDecl) module.declarations().get(3);
+        Ast.FunctionDecl mixedOrder = (Ast.FunctionDecl) module.declarations().get(4);
+        Ast.FunctionDecl canonicalOrder = (Ast.FunctionDecl) module.declarations().get(5);
 
         assertEquals(Ast.Visibility.PUBLIC, legacyClass.visibility());
         assertEquals(Ast.Visibility.PUBLIC, canonicalClass.visibility());
+        assertEquals(Ast.Visibility.PUBLIC, bracedClass.visibility());
         assertTrue(canonicalClass.isAbstract());
 
         assertEquals(Ast.Visibility.PUBLIC, lateVisibility.visibility());
