@@ -1597,6 +1597,24 @@ public final class TypeChecker {
                     return new Named("Future", List.of(Unknown.INSTANCE));
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr importedQualified
+                    && importedQualified.receiver() instanceof Ast.NameExpr importedNamespace
+                    && env.lookup(importedNamespace.name()) == null
+                    && importedValues.contains(importedNamespace.name())
+                    && importedAsyncCallables.contains(
+                            linkedCallableKey(
+                                    importedNamespace.name() + "." + importedQualified.member(),
+                                    call.arguments().size()))) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "opaque imported async callables do not accept call-site type arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    typeOf(argument, env, generics, self);
+                }
+                return new Named("Future", List.of(Unknown.INSTANCE));
+            }
+
             if (call.callee() instanceof Ast.MemberExpr channelCall
                     && channelCall.receiver() instanceof Ast.NameExpr factory
                     && factory.name().equals("Channel")
