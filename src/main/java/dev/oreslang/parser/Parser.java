@@ -272,10 +272,24 @@ public final class Parser {
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "actor functions are declared with 'actor fnc', not 'actor fn'");
             }
-            if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
-            if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
-            if (modifiers.async || modifiers.structural || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
-                throw error(actorToken, "actor declarations do not accept async, structural, nlex, static, or abstract modifiers");
+            if (match(FNC)) {
+                Modifiers trailing = parseModifiers();
+                if (trailing.shared || trailing.untrusted) {
+                    throw error(previous(), "'shared'/'untrusted' must appear before the actor keyword");
+                }
+                modifiers = mergeModifiers(modifiers, trailing);
+                return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
+            }
+            if (match(ROUTINE)) {
+                Modifiers trailing = parseModifiers();
+                if (trailing.shared || trailing.untrusted) {
+                    throw error(previous(), "'shared'/'untrusted' must appear before the actor keyword");
+                }
+                modifiers = mergeModifiers(modifiers, trailing);
+                return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
+            }
+            if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
+                throw error(actorToken, "actor declarations do not accept callable/static/abstract modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
             return parseActorClass(actorKind);
@@ -400,25 +414,31 @@ public final class Parser {
                 if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
             }
-            if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
-            if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
-                if (mods.structural) throw error(peek(), "'structural' applies to methods/static fnc, not fields");
-                if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
+                validateClassFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (check(IDENT) && checkNext(COLON)) {
-                if (mods.structural) throw error(peek(), "'structural' applies to methods/static fnc, not fields");
-                if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
+                validateClassFieldModifiers(mods);
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
             }
+
+            boolean explicitFnc = match(FNC);
+            if (explicitFnc) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
+            if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
+            if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
+            if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
-                consume(FNC, "static class functions must be declared with 'static fnc'");
+                if (!explicitFnc) {
+                    consume(FNC, "static class functions must be declared with 'static fnc'");
+                }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-            } else if (check(FNC)) {
-                throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
+            } else if (explicitFnc) {
+                throw error(previous(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -439,10 +459,10 @@ public final class Parser {
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
         Token keyword = advance(); // contextual 'constructor'
-        if (mods.async || mods.generator || mods.nonLexical || mods.isStatic
-                || mods.isAbstract || mods.shared) {
+        if (mods.async || mods.generator || mods.structural || mods.nonLexical || mods.isStatic
+                || mods.isAbstract || mods.shared || mods.untrusted) {
             throw error(keyword,
-                    "constructors accept only private/pub visibility; async, generator, nlex, static, abstract, and shared are not permitted");
+                    "constructors accept only private/pub visibility; callable/actor modifiers are not permitted");
         }
         if (mods.visibility == Ast.Visibility.PUBLIC
                 && (filePrivateScope || classVisibility != Ast.Visibility.PUBLIC)) {
@@ -468,10 +488,25 @@ public final class Parser {
         }
     }
 
+    private void validateClassFieldModifiers(Modifiers modifiers) {
+        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+            throw error(peek(), "class fields accept only private/pub visibility modifiers");
+        }
+    }
+
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
+        }
+    }
+
+    private void validateInterfaceCallableModifiers(Modifiers modifiers) {
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+            throw error(previous(),
+                    "interface callable signatures currently accept only the structural callable modifier");
         }
     }
 
@@ -505,8 +540,6 @@ public final class Parser {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
             }
-            if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
-            if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
             if (isContextualIdentifier("constructor")) {
                 throw error(peek(),
                         "actors do not declare constructors; actor state is initialized by the actor runtime");
@@ -518,20 +551,18 @@ public final class Parser {
             }
 
             if (isBindingKind(peek().type())) {
-                if (mods.structural) throw error(peek(), "'structural' applies to actor methods/static fnc, not actor state");
-                if (mods.isStatic) throw error(peek(), "actor state cannot be static");
-                if (mods.visibility == Ast.Visibility.PUBLIC) {
-                    throw error(peek(), "actor state fields are private; expose state through actor methods");
-                }
+                validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
 
-            if (mods.isAbstract) throw error(peek(), "actor methods cannot be abstract");
-            if (mods.isStatic) {
+            boolean explicitFnc = match(FNC);
+            if (explicitFnc) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
+            validateActorMethodModifiers(mods);
+            if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
-            } else {
-                match(FNC);
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -540,6 +571,23 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods);
+    }
+
+    private void validateActorFieldModifiers(Modifiers modifiers) {
+        if (modifiers.visibility == Ast.Visibility.PUBLIC) {
+            throw error(peek(), "actor state fields are private; expose state through actor methods");
+        }
+        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+            throw error(peek(), "actor state fields do not accept callable/static/actor modifiers");
+        }
+    }
+
+    private void validateActorMethodModifiers(Modifiers modifiers) {
+        if (modifiers.generator || modifiers.nonLexical || modifiers.isAbstract
+                || modifiers.shared || modifiers.untrusted) {
+            throw error(peek(), "actor methods do not accept generator, nlex, abstract, shared, or untrusted modifiers");
+        }
     }
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
@@ -561,27 +609,19 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> memberAnnotations = parseAnnotations();
             Modifiers memberModifiers = parseModifiers();
-            if (memberModifiers.visibility == Ast.Visibility.PUBLIC
-                    || memberModifiers.async
-                    || memberModifiers.nonLexical
-                    || memberModifiers.isStatic
-                    || memberModifiers.isAbstract
-                    || memberModifiers.shared) {
-                throw error(previous(),
-                        "interface callable signatures currently accept only the structural callable modifier; "
-                                + "unsupported modifiers must not be silently discarded");
-            }
-            CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
-            if (!callableStructural.annotations().isEmpty()) {
-                throw error(previous(),
-                        "interface-member annotations are not represented by the current AST; "
-                                + "only @structural is accepted here and unsupported annotations must not be silently discarded");
-            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
             if (match(FNC)) {
+                memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
+                validateInterfaceCallableModifiers(memberModifiers);
+                CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
+                if (!callableStructural.annotations().isEmpty()) {
+                    throw error(previous(),
+                            "interface-member annotations are not represented by the current AST; "
+                                    + "only @structural is accepted here and unsupported annotations must not be silently discarded");
+                }
                 String memberName = consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
@@ -593,8 +633,10 @@ public final class Parser {
                 continue;
             }
 
-            if (callableStructural.enabled()) {
-                throw error(peek(), "'structural' callable metadata is only valid on interface fnc signatures");
+            validateNoModifiers(memberModifiers, "interface fields");
+            if (!memberAnnotations.isEmpty()) {
+                throw error(previous(),
+                        "interface-field annotations are not represented by the current AST and must not be silently discarded");
             }
 
             Ast.BindingKind fieldBindingKind = Ast.BindingKind.VAL;
