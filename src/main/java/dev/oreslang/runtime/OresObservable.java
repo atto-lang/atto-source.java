@@ -8,6 +8,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Native rx-ores stream abstraction.
@@ -122,6 +123,77 @@ public abstract class OresObservable<T> {
     }
 
     /** Adapt a native Oreslang channel into a hot Observable view. */
+    /**
+     * Adapt a lazily-created native channel into a cold Observable.
+     *
+     * <p>The provider is invoked exactly once for each subscription. The
+     * returned channel belongs to that subscription and is therefore closed
+     * when the subscription is cancelled or reaches a terminal state. This is
+     * the native channel equivalent of a cold source factory: the channel
+     * itself remains an ordinary Oreslang channel.</p>
+     */
+    public static <T> OresObservable<T> fromChProvider(
+            Supplier<? extends ChannelRuntime.Channel<T>> provider) {
+        Objects.requireNonNull(provider, "provider");
+        return new OresObservable<>() {
+            @Override protected OresSubscription<T> subscribeFromRuntime() {
+                ChannelRuntime.Channel<T> channel = null;
+                Throwable startupFailure = null;
+                try {
+                    channel = Objects.requireNonNull(provider.get(),
+                            "rx-ores channel provider returned null channel");
+                } catch (Throwable failure) {
+                    startupFailure = failure;
+                }
+
+                final ChannelRuntime.Channel<T> ownedChannel = channel;
+                final Throwable failure = startupFailure;
+                return new OresSubscription<>() {
+                    private boolean failed;
+                    private OresFuture<T> pending;
+
+                    @Override protected OresFuture<OresNotification<T>> nextFromRuntime() {
+                        if (failure != null) {
+                            if (failed) return OresFuture.completed(OresNotification.complete());
+                            failed = true;
+                            return OresFuture.failed(failure);
+                        }
+
+                        pending = ownedChannel.readAsync();
+                        OresFuture<OresNotification<T>> result =
+                                new OresFuture<>(() -> pending.cancel(true));
+                        pending.whenCompleteRuntime((value, readFailure) -> {
+                            if (readFailure != null) {
+                                Throwable cause = OresFuture.unwrap(readFailure);
+                                if (cause instanceof ChannelRuntime.ChannelClosedException) {
+                                    result.completeFromRuntime(OresNotification.complete());
+                                } else if (pending.isCancelled()) {
+                                    result.cancel(true);
+                                } else {
+                                    result.failFromRuntime(cause);
+                                }
+                            } else {
+                                try {
+                                    result.completeFromRuntime(OresNotification.next(
+                                            Objects.requireNonNull(value)));
+                                } catch (Throwable e) {
+                                    result.failFromRuntime(e);
+                                }
+                            }
+                        });
+                        return result;
+                    }
+
+                    @Override protected void cancelFromRuntime() {
+                        OresFuture<T> p = pending;
+                        if (p != null) p.cancel(true);
+                        if (ownedChannel != null) ownedChannel.close();
+                    }
+                };
+            }
+        };
+    }
+
     public static <T> OresObservable<T> from(ChannelRuntime.Channel<T> channel) {
         Objects.requireNonNull(channel, "channel");
         return new OresObservable<>() {
