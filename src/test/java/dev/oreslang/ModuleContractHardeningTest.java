@@ -250,4 +250,31 @@ final class ModuleContractHardeningTest {
         assertTrue(failure.getMessage().contains("parent provenance"), failure::getMessage);
     }
 
+    @Test
+    void importedContractRejectsUnprovenForeignNominalTypes() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+
+        sources.put("api.ores", """
+                pub define class Secret as
+                end
+
+                pub define contract Api as
+                  fnc reveal(Secret value): int;
+                end
+                """);
+
+        sources.put("worker.ores", """
+                import contract Api from "./api.ores";
+
+                define module Worker conforms Api as
+                  pub fnc reveal(Secret value): int { return 1; }
+                end
+                """);
+
+        IllegalArgumentException failure =
+                assertThrows(IllegalArgumentException.class, () -> compiler.compile(sources));
+        assertTrue(failure.getMessage().contains("without linker provenance"), failure::getMessage);
+    }
+
 }
