@@ -233,6 +233,44 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void explicitCloseCancelsQuiescentOneShotResult() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CompletableFuture<Void> producer = new CompletableFuture<>();
+        CountDownLatch invoked = new CountDownLatch(1);
+        try {
+            OresFuture<Integer> result =
+                    runtime.invokeAsync(
+                            ActorRuntime.ActorKind.SHARED,
+                            41,
+                            (value, context) -> {
+                                OresFuture<Void> pending =
+                                        OresFuture.from(producer);
+                                ActorRuntime.ContinuationTarget target =
+                                        runtime.captureCurrentContinuationTarget();
+                                runtime.enqueueOnCompletion(
+                                        pending,
+                                        target,
+                                        (ignored, failure) -> { });
+                                invoked.countDown();
+                                return value + 1;
+                            });
+
+            assertTrue(invoked.await(2, TimeUnit.SECONDS));
+            assertFalse(
+                    result.isDone(),
+                    "normal result must remain pending while a detached continuation lease is outstanding");
+
+            runtime.close();
+
+            assertTrue(
+                    result.isCancelled(),
+                    "explicit shutdown must abandon/cancel a quiescent normal completion");
+        } finally {
+            if (!runtime.isClosed()) runtime.close();
+        }
+    }
+
+    @Test
     void rejectsUnknownMutableHostObjects() {
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new StringBuilder("mutable")));
     }
