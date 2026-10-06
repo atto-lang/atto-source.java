@@ -581,7 +581,7 @@ declared positional arity is a compile-time error.
 Interfaces define statically checkable contracts, but named class/interface values remain
 **nominal by default**. Structural comparison is entered only through an explicit
 structural boundary, an explicit `implements` proof, or module
-`@AdheresTo(...)` conformance.
+`conforms` conformance.
 
 ```ores
 define interface Named
