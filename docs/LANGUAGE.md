@@ -599,6 +599,12 @@ never erased into an ordinary structural object.
 
 ## Boolean combinator intrinsics
 
+`bool` and `boolean` are interchangeable spellings of the same primitive
+type. Both work in parameters, return types, bindings, casts, type tests,
+and nested types such as `Array<boolean>` or `Option<boolean>`. They have
+the same Copy ownership semantics. Boolean primitives do not accept type
+arguments; `boolean<int>` and `bool<>` are invalid.
+
 `And`, `Or`, and `Xor` are compiler-provided overload families in the
 built-in `BooleanOps` namespace and are also available as globals, like
 `Some`, `None`, `Ok`, and `Err`.
