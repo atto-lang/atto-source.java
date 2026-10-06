@@ -998,6 +998,15 @@ public final class OwnershipChecker {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
             }
+            if (concreteReceiver != null && concreteReceiver.isRecordType()) {
+                Ast.TypeRef signature = concreteReceiver.recordMembers().get(
+                        dev.oreslang.ast.CallableSelector.instance(member.member(), call.arguments().size()).contractKey(0));
+                if (signature != null && signature.isMethodType()) {
+                    checkArguments(call.arguments(), signature.methodParameters(), scope, "structural method " + member.member());
+                    Ast.TypeRef result = callableResultType(signature.methodResult(), signature.methodAsync(), false);
+                    return new ValueInfo(result, kindOfType(result), null);
+                }
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());

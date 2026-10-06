@@ -453,4 +453,186 @@ final class MatchExpressionTest {
         assertTrue(error.getMessage().contains("module namespace"), error.getMessage());
     }
 
+    @Test void structuralMethodsMixWithFieldsAndUseInheritedOverloads() throws Exception {
+        assertEquals("Hi Ada\nhello\nHi Ada\n", run("""
+                define interface Named as
+                  name: String;
+                end
+                define class Parent implements Named as
+                  pub val String name = "Ada";
+                  pub greet(String prefix): String { return prefix + self.name; }
+                end
+                define class Child extends Parent as
+                  pub greet(): String { return "hello"; }
+                end
+                fnc greet(Named value): String {
+                  return match value {
+                    structural { name: String; fnc greet(String prefix) => String; } as named -> named.greet("Hi ")
+                    _ -> "unsupported"
+                  };
+                }
+                pub fnc main(): void {
+                  val child = new Child();
+                  stdio.println(greet(new Child()));
+                  val getter = match child {
+                    structural { fnc greet() => String; fnc greet(String prefix) => String; } as named ->
+                      || -> { return named.greet(); }
+                    _ -> || -> { return "unsupported"; }
+                  };
+                  stdio.println(getter());
+                  val other = new Child();
+                  val cast = other as structural { fnc greet(String prefix) => String; };
+                  stdio.println(cast.greet("Hi "));
+                  return;
+                }
+                """));
+    }
+
+    @Test void structuralMethodChecksCompareSignaturesWithoutExecutingMethods() throws Exception {
+        assertEquals("true\nfalse\nfalse\nfalse\nfalse\nfalse\n", run("""
+                define class Candidate as
+                  pub greet(String prefix): String { stdio.println("must not execute"); return prefix; }
+                  hidden(): String { return "hidden"; }
+                  pub static fnc staticOnly(): String { return "static"; }
+                end
+                pub fnc main(): void {
+                  val value = new Candidate();
+                  stdio.println(value is structural { fnc greet(String prefix) => String; });
+                  stdio.println(value is structural { fnc greet(int prefix) => String; });
+                  stdio.println(value is structural { fnc greet(String prefix) => int; });
+                  stdio.println(value is structural { fnc greet() => String; });
+                  stdio.println(value is structural { fnc hidden() => String; });
+                  stdio.println(value is structural { fnc staticOnly() => String; });
+                  return;
+                }
+                """));
+    }
+
+    @Test void structuralMethodSignaturesRespectVarianceAndMutability() throws Exception {
+        assertEquals("true\nfalse\ntrue\nfalse\n", run("""
+                define class Base as
+                end
+                define class Child extends Base as
+                end
+                define class Candidate as
+                  pub choose(Base input): Child { return new Child(); }
+                  pub update(Base mut input): void { return; }
+                end
+                pub fnc main(): void {
+                  val value = new Candidate();
+                  stdio.println(value is structural { fnc choose(Child input) => Base; });
+                  stdio.println(value is structural { fnc choose(Base input) => String; });
+                  stdio.println(value is structural { fnc update(Base mut input) => void; });
+                  stdio.println(value is structural { fnc update(Base input) => void; });
+                  return;
+                }
+                """));
+    }
+
+    @Test void structuralMethodSignaturesPreserveAsyncModeAndAwaitFutureResults() throws Exception {
+        assertEquals("true\nfalse\n8\n", run("""
+                async fnc delayed(): int { return 8; }
+                define class Candidate as
+                  val Future<int> pending = delayed();
+                  pub load(): Future<int> { return self.pending; }
+                end
+                pub async fnc main(): void {
+                  val value = new Candidate();
+                  stdio.println(value is structural { fnc load() => Future<int>; });
+                  stdio.println(value is structural { async fnc load() => int; });
+                  val result = match value {
+                    structural { fnc load() => Future<int>; } as loader -> await loader.load()
+                    _ -> 0
+                  };
+                  stdio.println(result);
+                  return;
+                }
+                """));
+    }
+
+    @Test void structuralMethodCallsPreserveBorrowedParameterOwnership() throws Exception {
+        assertEquals("5\n5\n", run("""
+                define class Box as
+                  pub val int value = 5;
+                end
+                define class Reader as
+                  pub read(&Box box): int { return box.value; }
+                end
+                pub fnc main(): void {
+                  val box = new Box();
+                  val reader = new Reader();
+                  stdio.println(match reader {
+                    structural { fnc read(&Box box) => int; } as view -> view.read(&box)
+                    _ -> 0
+                  });
+                  stdio.println(box.value);
+                  return;
+                }
+                """));
+    }
+
+    @Test void structuralMethodSlotsAreDistinctFromCallableFieldsAndNonReifiableMethods() throws Exception {
+        assertEquals("false\n", run("""
+                pub fnc main(): void {
+                  val value = obj { print: || -> { return "field"; } };
+                  stdio.println(value is structural { fnc print() => String; });
+                  return;
+                }
+                """));
+        var error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define class Candidate as
+                  pub print(): String { return "hello"; }
+                end
+                fnc bad(Candidate value): void {
+                  val method = match value {
+                    structural { fnc print() => String; } as view -> view.print
+                    _ -> || -> { return "fallback"; }
+                  };
+                  return;
+                }
+                """));
+        assertTrue(error.getMessage().contains("direct-call-only"), error.getMessage());
+    }
+
+    @Test void malformedStructuralMethodContractsFailWithDiagnostics() {
+        for (String shape : new String[] {
+                "fnc print() -> String;", "fnc print<T>(T value) => T;",
+                "fnc print() => String; fnc print() => int;",
+                "print: String; fnc print() => String;",
+                "fnc print() => String; print: String;"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                    "fnc bad(int value): bool { return value is structural { " + shape + " }; }"), shape);
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                    "fnc bad(int value): int { return match value { structural { " + shape
+                            + " } as view -> 1 _ -> 0 }; }"), shape);
+        }
+    }
+
+    @Test void privateOverridesDoNotExposeInheritedPublicMethodsThroughStructure() throws Exception {
+        assertEquals("false\n", run("""
+                define class Parent as
+                  pub print(): String { return "parent"; }
+                end
+                define class Child extends Parent as
+                  print(): String { return "child"; }
+                end
+                pub fnc main(): void {
+                  val value = new Child();
+                  stdio.println(value is structural { fnc print() => String; });
+                  return;
+                }
+                """));
+    }
+
+    @Test void quotedCallableFieldsCannotSpoofMethodSlotsOrExhaustiveness() {
+        var error = assertThrows(IllegalArgumentException.class, () -> check("""
+                fnc bad(): int {
+                  val value = obj { "instance$print$arity0$generics0": || -> { return 1; } };
+                  return match value { is structural { fnc print() => int; } -> 1 };
+                }
+                """));
+        assertTrue(error.getMessage().contains("non-exhaustive"), error.getMessage());
+    }
+
 }

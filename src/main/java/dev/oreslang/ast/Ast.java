@@ -63,6 +63,35 @@ public final class Ast {
             all.add(result);
             return new TypeRef("Fnc", all, false);
         }
+        /** A structural method slot is distinct from a field containing a function value. */
+        public static TypeRef methodType(List<Param> parameters, TypeRef result, boolean async) {
+            java.util.ArrayList<TypeRef> all = new java.util.ArrayList<>();
+            for (Param parameter : parameters) {
+                if (parameter.structural()) throw new IllegalArgumentException("inline method parameters require explicit types");
+                all.add(new TypeRef(parameter.mutable() ? "$method_param_mut$" : "$method_param$",
+                        List.of(parameter.type()), false));
+            }
+            all.add(result);
+            return new TypeRef(async ? "$method_async$" : "$method$", all, false);
+        }
+        public boolean isMethodType() { return name.equals("$method$") || name.equals("$method_async$"); }
+        public boolean methodAsync() { return name.equals("$method_async$"); }
+        public List<Param> methodParameters() {
+            if (!isMethodType() || arguments.isEmpty()) throw new IllegalStateException("malformed structural method type");
+            java.util.ArrayList<Param> parameters = new java.util.ArrayList<>();
+            for (int i = 0; i < arguments.size() - 1; i++) {
+                TypeRef parameter = arguments.get(i);
+                if ((!parameter.name().equals("$method_param$") && !parameter.name().equals("$method_param_mut$"))
+                        || parameter.arguments().size() != 1) throw new IllegalStateException("malformed structural method parameter");
+                parameters.add(new Param(parameter.arguments().getFirst(), "arg" + i, false,
+                        parameter.name().equals("$method_param_mut$")));
+            }
+            return List.copyOf(parameters);
+        }
+        public TypeRef methodResult() {
+            if (!isMethodType() || arguments.isEmpty()) throw new IllegalStateException("malformed structural method type");
+            return arguments.getLast();
+        }
         public static TypeRef stringLiteral(String value) { return new TypeRef("$string$" + value, List.of(), false); }
         public boolean isStringLiteral() { return name.startsWith("$string$"); }
         public String stringLiteralValue() { return name.substring("$string$".length()); }

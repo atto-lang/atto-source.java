@@ -987,15 +987,35 @@ public final class Parser {
 
         if (match(LBRACE)) {
             java.util.LinkedHashMap<String, Ast.TypeRef> members = new java.util.LinkedHashMap<>();
-            if (!check(RBRACE)) {
-                do {
-                    String field = consumeStaticObjectKeyName("expected record type field name");
+            java.util.Set<String> fields = new java.util.HashSet<>();
+            java.util.Set<String> methods = new java.util.HashSet<>();
+            while (!check(RBRACE) && !check(EOF)) {
+                String field;
+                Ast.TypeRef fieldType;
+                boolean async = match(ASYNC);
+                if (async || match(FNC)) {
+                    if (async) consume(FNC, "async structural signatures use 'async fnc'");
+                    String method = consumeCallableName("expected structural method name");
+                    if (check(LT)) throw error(peek(), "generic inline method signatures are not supported yet");
+                    consume(LPAREN, "expected '(' after structural method name");
+                    List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+                    consume(RPAREN, "expected ')' after structural method parameters");
+                    consume(FAT_ARROW, "structural method type signatures use the fat arrow '=>'");
+                    fieldType = Ast.TypeRef.methodType(parameters, parseTypeRef(), async);
+                    if (fields.contains(method)) throw error(previous(), "structural field/method name collision '" + method + "'");
+                    methods.add(method);
+                    field = dev.oreslang.ast.CallableSelector.instance(method, parameters.size()).contractKey(0);
+                } else {
+                    field = consumeStaticObjectKeyName("expected record type field or fnc signature");
                     consume(COLON, "expected ':' after record type field name");
-                    Ast.TypeRef fieldType = parseTypeRef();
-                    if (members.putIfAbsent(field, fieldType) != null) {
-                        throw error(previous(), "duplicate record type field '" + field + "'");
-                    }
-                } while (match(COMMA));
+                    fieldType = parseTypeRef();
+                    if (methods.contains(field)) throw error(previous(), "structural field/method name collision '" + field + "'");
+                    fields.add(field);
+                }
+                if (members.putIfAbsent(field, fieldType) != null) throw error(previous(), "duplicate structural member '" + field + "'");
+                if (!match(COMMA) && !match(SEMICOLON) && !check(RBRACE)) {
+                    throw error(peek(), "structural members must be separated by ',' or ';'");
+                }
             }
             consume(RBRACE, "expected '}' after record type");
             return Ast.TypeRef.recordType(members);
@@ -2024,7 +2044,11 @@ public final class Parser {
         // constructor or catch-all patterns when no 'as' follows the type.
         int patternStart = current;
         Ast.TypeRef castTarget = null;
-        try { castTarget = parseTypeRef(); } catch (IllegalArgumentException ignored) { }
+        if ((check(IDENT) || check(STRUCTURAL)) && peek().lexeme().equals("structural") && checkNext(LBRACE)) {
+            castTarget = parseTypeRef(); // preserve diagnostics for an explicit structural target
+        } else {
+            try { castTarget = parseTypeRef(); } catch (IllegalArgumentException ignored) { }
+        }
         if (castTarget != null && match(AS)) {
             return new Ast.TypePattern(castTarget,
                     consume(IDENT, "expected binding name after 'as'").lexeme());

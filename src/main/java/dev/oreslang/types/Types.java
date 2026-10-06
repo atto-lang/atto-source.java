@@ -36,8 +36,18 @@ public final class Types {
     /** Compile-time meta-value for access to static class functions. */
     public record ClassNamespace(String className) implements Type { }
 
-    public record Record(Map<String, Type> members) implements Type {
-        public Record { members = Map.copyOf(members); }
+    public record Record(Map<String, Type> members, java.util.Set<String> methodMembers) implements Type {
+        public Record {
+            members = Map.copyOf(members);
+            methodMembers = methodMembers.stream().filter(members::containsKey).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        }
+        public Record(Map<String, Type> members) { this(members, java.util.Set.of()); }
+        /** Declaration names cannot contain the synthetic slot delimiters. */
+        public static Record declaredShape(Map<String, Type> members) {
+            return new Record(members, members.keySet().stream()
+                    .filter(key -> key.startsWith("instance$") && key.contains("$generics"))
+                    .collect(java.util.stream.Collectors.toSet()));
+        }
     }
 
     public record Function(
@@ -141,6 +151,7 @@ public final class Types {
 
         if (from instanceof Record source && to instanceof Record target) {
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
+                if (source.methodMembers().contains(required.getKey()) != target.methodMembers().contains(required.getKey())) return false;
                 Type actual = source.members().get(required.getKey());
                 if (actual == null || !isAssignable(actual, required.getValue())) return false;
             }

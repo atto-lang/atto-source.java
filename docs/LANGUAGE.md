@@ -1782,7 +1782,32 @@ Structural tests and casts use public declared member types for classes and
 accessible record fields. Private class state and actor identity cannot satisfy
 an ordinary structural contract. Structural record bindings/casts may not narrow
 a mutable member using only its current contents. Members must have runtime-reifiable
-types; parameterized targets and callable member contracts are not yet reifiable.
+field types; parameterized field targets and function-valued field contracts are
+not yet reifiable. Inline method requirements compare declared signatures directly:
+
+```ores
+match value {
+  structural {
+    name: String;
+    fnc greet(String prefix) => String;
+  } as named -> named.greet("Hello ")
+  _ -> "unsupported"
+}
+```
+
+Inline methods use interface-style type signatures with `=>`; arms and executable
+bodies use `->`. Fields and methods may be separated by commas or semicolons.
+The check includes public inherited instance methods, overload arity, parameter
+types (contravariant), return types (covariant), parameter mutation authority,
+borrow types, and async mode. It does not invoke methods or require a nominal
+interface declaration. Function-valued fields and static/private methods cannot
+satisfy instance-method requirements. A matched method is direct-call-only;
+wrap a call in an explicit closure to produce a function value.
+
+Generic inline method declarations and receiver-polymorphic `self` signatures
+are not supported yet. Ordinary concrete parameterized types such as `Future<int>`
+can appear in method signatures because the check uses declared type metadata.
+Existing restrictions on async instance implementations and actor identity remain.
 
 Refinement and pattern bindings are ownership aliases, not copies. A move
 through a narrowed alias consumes the same underlying move-only place.

@@ -355,7 +355,7 @@ public final class TypeChecker {
                 mergeMember(members, field.name(), type, "module " + module.name());
             }
         }
-        return new Record(members);
+        return Record.declaredShape(members);
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
@@ -2697,7 +2697,7 @@ public final class TypeChecker {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder);
+            return new Record(remainder, record.methodMembers());
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
@@ -2803,7 +2803,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
-            return new Record(members);
+            return new Record(members, record.methodMembers());
         }
         return type;
     }
@@ -3400,6 +3400,12 @@ public final class TypeChecker {
             return true;
         }
         if (a instanceof Record && b instanceof Record) return true;
+        if (a instanceof Record && b instanceof Named named && findInterface(named.name()) != null) {
+            return !findInterface(named.name()).moduleContract();
+        }
+        if (b instanceof Record && a instanceof Named named && findInterface(named.name()) != null) {
+            return !findInterface(named.name()).moduleContract();
+        }
         if (a instanceof Record && b instanceof Named named && findClass(named.name()) != null) {
             return findClass(named.name()).actorKind() == Ast.ActorKind.NONE;
         }
@@ -3420,7 +3426,11 @@ public final class TypeChecker {
             return;
         }
         if (ref.isRecordType()) {
-            for (Ast.TypeRef member : ref.recordMembers().values()) requireRuntimeReifiableType(member, operator, aliases);
+            for (Ast.TypeRef member : ref.recordMembers().values()) {
+                // Method signatures are checked against declared type metadata,
+                // rather than probing live callable values or invoking methods.
+                if (!member.isMethodType()) requireRuntimeReifiableType(member, operator, aliases);
+            }
             return;
         }
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
@@ -3475,7 +3485,7 @@ public final class TypeChecker {
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
                 members.put(entry.getKey(), resolveSharedGeneric(entry.getValue(), bindings));
             }
-            return new Record(members);
+            return new Record(members, record.methodMembers());
         }
         return type;
     }
@@ -3756,7 +3766,7 @@ public final class TypeChecker {
                     "class " + klass.name());
         }
         stack.remove(klass);
-        Record result = new Record(members);
+        Record result = Record.declaredShape(members);
         classShapeCache.put(klass, result);
         return result;
     }
@@ -3778,6 +3788,7 @@ public final class TypeChecker {
         Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+            else members.remove(field.name());
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
@@ -3785,10 +3796,10 @@ public final class TypeChecker {
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
                         callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
                         "class " + klass.name());
-            }
+            } else if (!method.isStatic()) members.remove(methodContractKey(method.name(), method.arity(), method.genericParameters().size()));
         }
         stack.remove(klass);
-        return new Record(members);
+        return Record.declaredShape(members);
     }
 
     private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
@@ -3828,7 +3839,7 @@ public final class TypeChecker {
             }
         }
         stack.remove(iface);
-        return new Record(members);
+        return Record.declaredShape(members);
     }
 
     private Named inferConstructedClassType(
@@ -4754,7 +4765,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
-            return new Record(members);
+            return new Record(members, record.methodMembers());
         }
         return type;
     }
@@ -5105,6 +5116,13 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (ref.isMethodType()) {
+            Function signature = functionType(ref.methodParameters(), ref.methodResult(), ref.methodAsync(), false, generics, null);
+            if (containsUnknown(signature) || containsGenericNamed(signature, generics)) {
+                throw new IllegalArgumentException("inline structural method signatures require concrete declared type metadata");
+            }
+            return signature;
+        }
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
@@ -5133,10 +5151,12 @@ public final class TypeChecker {
         }
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
+            Set<String> methods = new LinkedHashSet<>();
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
                 members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
+                if (member.getValue().isMethodType()) methods.add(member.getKey());
             }
-            return new Record(members);
+            return new Record(members, methods);
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
 
@@ -5396,6 +5416,7 @@ public final class TypeChecker {
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
+            if (actual.methodMembers().contains(required.getKey()) != expected.methodMembers().contains(required.getKey())) return false;
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
         }

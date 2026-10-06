@@ -164,3 +164,27 @@ statement matches. Returned closures may capture an arm binding under the
 ordinary ownership rules. Borrowed results cannot outlive arm-local owners.
 A module namespace is not an ordinary value and cannot be a scrutinee/result;
 a qualified module path must select an exported non-module value.
+
+## Inline structural method requirements
+
+Structural targets can combine field types and interface-style method signatures:
+
+```ores
+structural {
+  name: String;
+  fnc greet(String prefix) => String;
+} as named -> named.greet("Hello ")
+```
+
+`is`, checked `as`, optional `as?`, and typed match bindings use the same public
+declared shape. Inherited instance methods participate; private/static methods
+and function-valued fields do not satisfy method slots. Checking a shape never
+executes a method. Overloads are distinguished by arity, with contravariant
+parameter types, covariant results, invariant mutation authority, borrow modes,
+and async declaration mode. An `async fnc load() => int` requirement differs from
+a synchronous `fnc load() => Future<int>` requirement.
+
+Methods stay direct-call-only on the bound view. An explicit closure can capture
+the view and call the method later. Generic inline method declarations and `self`
+types are rejected; concrete parameterized signature types are supported.
+This introduces inline contracts, not new nominal trait or struct declarations.

@@ -6452,6 +6452,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (value instanceof Map<?, ?> map) {
                     for (Map.Entry<String, Ast.TypeRef> field : target.recordMembers().entrySet()) {
+                        if (field.getValue().isMethodType()) return false;
                         if (!map.containsKey(field.getKey()) || !oresTypeMatches(map.get(field.getKey()), field.getValue())) return false;
                     }
                     return true;
