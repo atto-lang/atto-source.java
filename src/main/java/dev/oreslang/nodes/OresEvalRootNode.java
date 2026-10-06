@@ -4117,31 +4117,11 @@ public final class OresEvalRootNode extends RootNode {
                                     value,
                                     env));
                 }
-                if (receiver instanceof OresObject object) {
-                    OwnedField targetField =
-                            object.owner.findField(
-                                    object.klass,
-                                    member.member(),
-                                    new LinkedHashSet<>());
-                    if (targetField == null) {
-                        throw new IllegalArgumentException(
-                                "unknown field " + member.member());
-                    }
-                    if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
-                        throw new IllegalArgumentException(
-                                "field '" + object.klass.name()
-                                        + "." + member.member()
-                                        + "' is immutable");
-                    }
-                    object.fields.put(member.member(), value);
-                    return value;
-                }
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    dynamic.fields.put(member.member(), value);
-                    return value;
-                }
-                throw new IllegalArgumentException(
-                        "member assignment requires mutable object state");
+                return assignMemberEvaluated(
+                        receiver,
+                        member.member(),
+                        value,
+                        env);
             }
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
@@ -4150,26 +4130,71 @@ public final class OresEvalRootNode extends RootNode {
                     return proxy.write(raw ->
                             assignProxyIndexRaw(raw, key, value));
                 }
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(key instanceof String string)) {
-                        throw new IllegalArgumentException(
-                                "DynamicStruct key must be a string");
-                    }
-                    dynamic.fields.put(string, value);
-                    return value;
-                }
-                if (receiver instanceof List<?> raw
-                        && key instanceof Number number) {
-                    @SuppressWarnings("unchecked")
-                    List<Object> list = (List<Object>) raw;
-                    list.set(Math.toIntExact(number.longValue()), value);
-                    return value;
-                }
-                throw new IllegalArgumentException(
-                        "indexed assignment requires mutable array/list or DynamicStruct");
+                return assignIndexEvaluated(receiver, key, value);
             }
             throw new IllegalArgumentException(
                     "unsupported assignment target");
+        }
+
+        private Object assignMemberEvaluated(
+                Object receiver,
+                String member,
+                Object value,
+                Env env) {
+            if (receiver instanceof OresObject object) {
+                OwnedField targetField =
+                        object.owner.findField(
+                                object.klass,
+                                member,
+                                new LinkedHashSet<>());
+                if (targetField == null) {
+                    throw new IllegalArgumentException(
+                            "unknown field " + member);
+                }
+                object.owner.requireClassMemberVisible(
+                        targetField.field().visibility(),
+                        targetField.owner(),
+                        env == null ? null : env.accessClass(),
+                        "field",
+                        targetField.field().name());
+                if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "field '" + object.klass.name()
+                                    + "." + member
+                                    + "' is immutable");
+                }
+                object.fields.put(member, value);
+                return value;
+            }
+            if (receiver instanceof DynamicStructValue dynamic) {
+                dynamic.fields.put(member, value);
+                return value;
+            }
+            throw new IllegalArgumentException(
+                    "member assignment requires mutable object state");
+        }
+
+        private Object assignIndexEvaluated(
+                Object receiver,
+                Object key,
+                Object value) {
+            if (receiver instanceof DynamicStructValue dynamic) {
+                if (!(key instanceof String string)) {
+                    throw new IllegalArgumentException(
+                            "DynamicStruct key must be a string");
+                }
+                dynamic.fields.put(string, value);
+                return value;
+            }
+            if (receiver instanceof List<?> raw
+                    && key instanceof Number number) {
+                @SuppressWarnings("unchecked")
+                List<Object> list = (List<Object>) raw;
+                list.set(Math.toIntExact(number.longValue()), value);
+                return value;
+            }
+            throw new IllegalArgumentException(
+                    "indexed assignment requires mutable array/list or DynamicStruct");
         }
 
         private Object assignProxyMemberRaw(
