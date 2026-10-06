@@ -403,13 +403,15 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      element shape is present.
    - For runtime-extent collections, size/capacity are constructor state and
      are rejected inside '<...>'. Fixed Tuple/FixedArray/FixedList may carry
-     size=N as a compile-time extent assertion; N must equal the statically
-     expanded arity. capacity= remains runtime-only. Nominal generic collection
-     classes keep their element type in the ordinary generic position, e.g.
-     ArrayList<T>; runtime sizing is written at construction as
-     "new ArrayList<T>(capacity: 5)". "ArrayList<size=5>[]" is not a valid
-     replacement for the element type and empty sequence-shape suffixes are
-     invalid.
+     size=N as compile-time extent metadata. With an already-finite shape it
+     must equal the statically expanded arity. With a final unbounded '...'
+     repeating shape it closes that shape to exactly N positions; the repeated
+     unit is cycled and the final cycle may be truncated. capacity= remains
+     runtime-only. Nominal generic collection classes keep their element type
+     in the ordinary generic position, e.g. ArrayList<T>; runtime sizing is
+     written at construction as "new ArrayList<T>(capacity: 5)".
+     "ArrayList<size=5>[]" is not a valid replacement for the element type and
+     empty sequence-shape suffixes are invalid.
    - Tuple/FixedArray/FixedList are distinct static kinds even when their
      interpreter representation is list-backed. Fixed sequence rank is
      currently 1; express exact multidimensional layouts with nested fixed
