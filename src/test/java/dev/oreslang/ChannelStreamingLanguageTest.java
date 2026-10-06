@@ -135,6 +135,46 @@ final class ChannelStreamingLanguageTest {
     }
 
     @Test
+    void sustainedStreamsPreserveEveryValueAcrossBufferedAndRendezvousBackpressure() throws Exception {
+        StringBuilder expected = new StringBuilder();
+        for (int i = 0; i < 128; i++) expected.append(i).append(',');
+        for (int capacity : new int[]{0, 1}) {
+            String writes = capacity == 0 ? """
+                    val Future<void> first = nb writech output, value;
+                    stdio.stdout.write(readch output);
+                    stdio.stdout.write(",");
+                    await first;
+                    val Future<void> second = nb writech output, value + 1;
+                    stdio.stdout.write(readch output);
+                    stdio.stdout.write(",");
+                    await second;
+                    """ : """
+                    writech output, value;
+                    val Future<void> pending = nb writech output, value + 1;
+                    stdio.stdout.write(readch output);
+                    stdio.stdout.write(",");
+                    await pending;
+                    stdio.stdout.write(readch output);
+                    stdio.stdout.write(",");
+                    """;
+            assertEquals(expected.toString(), run("""
+                    async generator fnc values(): int {
+                      for let i = 0; i < 64; i++ {
+                        yield i * 2;
+                      }
+                      return;
+                    }
+                    pub async routine main(): void {
+                    """ + "  val Channel<int> output = Channel.new<int>(" + capacity + ");\n"
+                    + "  for await const value of values() {\n" + writes + """
+                      }
+                      return;
+                    }
+                    """));
+        }
+    }
+
+    @Test
     void nonblockingBracedSelectRelaysFromActorContinuation() throws Exception {
         assertEquals("70", run("""
                 actor fnc relay(): void {
