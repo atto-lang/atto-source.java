@@ -849,12 +849,16 @@ public final class ActorEventBus implements AutoCloseable {
         private void closeChannelOnly() {
             if (!subscriptionClosed.compareAndSet(false, true)) return;
             channel.close();
-            Optional<Event<T>> buffered;
-            while ((buffered = channel.tryRead()).isPresent()) {
+            while (true) {
+                Event<T> buffered;
+                synchronized (channel) {
+                    if (channel.isEmpty()) break;
+                    buffered = channel.tryRead().orElseThrow();
+                }
                 if (topic.policy == DeliveryPolicy.RELIABLE) {
                     releaseReliableEvent();
                 }
-                buffered.get().releaseDelivery();
+                buffered.releaseDelivery();
                 // Drain buffered immutable event references so group teardown
                 // does not retain payloads after the subscription is gone.
             }
