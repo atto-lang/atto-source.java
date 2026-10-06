@@ -1028,6 +1028,7 @@ public final class Parser {
         String name = operation.lexeme();
         if (!name.equals("copy") && !name.equals("take")
                 && !name.equals("borrow") && !name.equals("share")
+                && !name.equals("proxy")
                 && !name.equals("ptr") && !name.equals("deref")) {
             throw error(operation, "unknown rt operation '" + name + "'");
         }
