@@ -571,8 +571,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private Object awaitState(long timeout, TimeUnit unit) throws InterruptedException {
         Object observed = state.get();
         if (observed != PENDING) return observed;
-        // A zero timeout is observation only, including on an actor carrier.
-        if (unit != null && timeout == 0L) return PENDING;
+        // Non-positive timeouts are observation only, including on an actor carrier.
+        // CountDownLatch.await(timeout, unit) returns immediately for these values.
+        if (unit != null && timeout <= 0L) return PENDING;
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
