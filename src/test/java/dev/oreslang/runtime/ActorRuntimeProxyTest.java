@@ -120,14 +120,14 @@ final class ActorRuntimeProxyTest {
             CountDownLatch sharedRead = new CountDownLatch(1);
             AtomicInteger observed = new AtomicInteger();
 
-            var shared = runtime.<ActorRuntime.Proxy<int[]>>spawnShared(
+            var shared = runtime.<ActorRuntime.Proxy<int[]>>spawnSharedTrusted(
                     context -> (message, actorContext) -> {
                         observed.set(message.read(value -> value[0]));
                         sharedRead.countDown();
                         actorContext.self().stop();
                     });
 
-            var isolated = runtime.<ActorRuntime.Proxy<int[]>>spawnPrivate(
+            var isolated = runtime.<ActorRuntime.Proxy<int[]>>spawnPrivateTrusted(
                     context -> (message, actorContext) ->
                             actorContext.self().stop());
 
