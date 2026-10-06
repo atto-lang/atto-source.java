@@ -2036,11 +2036,14 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireBlockingHostContext(String operation) {
-        if (inActorExecution() || OresScheduler.current() != null) {
+        if (inActorExecution()
+                || inActorGroupMailmanExecution()
+                || OresScheduler.current() != null) {
             throw new SecurityException(
                     operation
-                            + " is a host/embedder blocking operation; actor and scheduler turns "
-                            + "must use nonblocking cancellation plus Future/Awaitable suspension");
+                            + " is a host/embedder blocking operation; actor, Mailman CONTROL, "
+                            + "and scheduler turns must use nonblocking cancellation plus "
+                            + "Future/Awaitable suspension");
         }
     }
 
