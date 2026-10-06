@@ -267,10 +267,12 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         consume(AS, "expected 'as' after class header");
+        boolean braceStyle = match(LBRACE);
+        Token.Type classTerminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
 
-        while (!check(END) && !check(EOF)) {
+        while (!check(classTerminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isLegacyFnSpelling()) {
@@ -297,7 +299,11 @@ public final class Parser {
             }
             methods.add(parseMethod(annotations, mods));
         }
-        consume(END, "expected 'end' to close class " + name);
+        consume(
+                classTerminator,
+                braceStyle
+                        ? "expected '}' to close class " + name
+                        : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(name, isAbstract, Ast.ActorKind.NONE, generics, parents, interfaces, fields, methods);
     }
 
