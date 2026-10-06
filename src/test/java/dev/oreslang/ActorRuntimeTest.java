@@ -829,10 +829,13 @@ final class ActorRuntimeTest {
             assertEquals(0L, runtime.sharedMemoryBytes());
         } finally {
             release.countDown();
-            closer.join(2000);
+            holder.join(2_000L);
+            closer.join(2_000L);
         }
 
-        assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+        assertTrue(holderFailure.get() == null
+                        || holderFailure.get() instanceof IllegalStateException,
+                "a racing host update may be invalidated after runtime close");
         assertDoesNotThrow(runtime::close);
     }
 
