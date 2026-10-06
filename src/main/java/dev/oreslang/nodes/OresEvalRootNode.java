@@ -2823,7 +2823,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             failure == null
-                                                    ? List.copyOf(values)
+                                                    ? new ArrayList<>(values)
                                                     : null,
                                             failure));
                     return;
@@ -3599,6 +3599,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Array")) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Array<T> constructor takes no positional arguments");
+                }
+                return new ArrayList<>();
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
@@ -5049,6 +5056,13 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Array")) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Array<T> constructor takes no positional arguments");
+                    }
+                    return new ArrayList<>();
+                }
                 if (created.type().name().equals("DynamicStruct")) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
