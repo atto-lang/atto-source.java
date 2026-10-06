@@ -76,14 +76,7 @@ public final class Parser {
                     rootDeclarations.add(parseContract(modifiers.visibility));
                     continue;
                 }
-            if (match(CONTRACT)) {
-                if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
-                    throw error(previous(), "contracts do not accept class/callable modifiers");
-                }
-                rejectCallableStructuralAnnotation(annotations, "contract declarations");
-                return parseContract(modifiers.visibility);
-            }
-            if (match(CLASS)) {
+                        if (match(CLASS)) {
                     if (modifiers.structural) throw error(previous(), "structural cannot modify a class");
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     validateClassModifiers(modifiers);
@@ -219,6 +212,13 @@ public final class Parser {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             boolean afterDefineAbstract = match(ABSTRACT);
+            if (match(CONTRACT)) {
+                if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    throw error(previous(), "contracts do not accept class/callable modifiers");
+                }
+                rejectCallableStructuralAnnotation(annotations, "contract declarations");
+                return parseContract(modifiers.visibility);
+            }
             if (match(CLASS)) {
                     if (modifiers.structural) throw error(previous(), "structural cannot modify a class");
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
