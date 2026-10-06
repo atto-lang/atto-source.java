@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -57,6 +59,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    private static final int UNTRUSTED_YIELD_QUANTUM = 64;
+    private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
+    private static final long UNTRUSTED_MIN_FUEL = 256L;
+    private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -118,7 +124,21 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
-    public enum ActorKind { PRIVATE, SHARED }
+    public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
+
+    public static final class UntrustedActorQuotaExceededException extends SecurityException {
+        public enum Resource { FUEL, WALL_TIME, CPU_TIME }
+        private final Resource resource;
+        private UntrustedActorQuotaExceededException(Resource resource, String message) {
+            super(message);
+            this.resource = resource;
+        }
+        public Resource resource() { return resource; }
+    }
+
+    private static boolean isPrivateKind(ActorKind kind) {
+        return kind == ActorKind.PRIVATE || kind == ActorKind.UNTRUSTED;
+    }
 
     /**
      * Structured cancellation requests actor shutdown and cascades through the
@@ -261,6 +281,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
+    private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
@@ -302,6 +323,10 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherConfig.sharedParallelism(),
                 dispatcherConfig.maxActors(),
                 "ores-shared-actor-dispatcher-");
+        this.untrustedDispatcher = newDispatcher(
+                Math.max(1, dispatcherConfig.privateParallelism()),
+                dispatcherConfig.maxActors(),
+                "ores-untrusted-actor-dispatcher-");
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
