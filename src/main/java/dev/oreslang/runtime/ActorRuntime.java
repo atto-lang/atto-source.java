@@ -1028,7 +1028,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (admitted) cell.schedule();
             return admitted;
         } finally {
-            if (!admitted) cell.releaseMailboxSlot();
+            if (!admitted) cell.releaseMailboxSlot(true);
         }
     }
 
@@ -2802,7 +2802,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         cell.schedule();
         } finally {
-            if (!mailboxSlotTransferred) cell.releaseMailboxSlot();
+            if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
     }
 
@@ -4118,7 +4118,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private volatile boolean forceKillFenced;
-        private final AtomicInteger queuedMessages = new AtomicInteger();
+        private final AtomicInteger queuedUserMessages = new AtomicInteger();
+        private final AtomicInteger queuedContinuations = new AtomicInteger();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
@@ -4157,30 +4158,29 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean reserveMailboxSlot() {
             while (true) {
-                int current = queuedMessages.get();
+                int current = queuedUserMessages.get();
                 if (current >= policy.maxMailboxMessages()) return false;
-                if (queuedMessages.compareAndSet(current, current + 1)) return true;
+                if (queuedUserMessages.compareAndSet(current, current + 1)) return true;
             }
         }
 
         private boolean reserveContinuationSlot() {
-            int limit = policy.maxMailboxMessages() >
-                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
-                    ? Integer.MAX_VALUE
-                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
             while (true) {
-                int current = queuedMessages.get();
-                if (current >= limit) return false;
-                if (queuedMessages.compareAndSet(current, current + 1)) return true;
+                int current = queuedContinuations.get();
+                if (current >= INTERNAL_CONTINUATION_SLOTS) return false;
+                if (queuedContinuations.compareAndSet(current, current + 1)) return true;
             }
         }
 
-        private void releaseMailboxSlot() {
-            int remaining = queuedMessages.decrementAndGet();
+        private void releaseMailboxSlot(boolean continuation) {
+            AtomicInteger counter =
+                    continuation ? queuedContinuations : queuedUserMessages;
+            int remaining = counter.decrementAndGet();
             if (remaining < 0) {
-                queuedMessages.incrementAndGet();
+                counter.incrementAndGet();
                 throw new IllegalStateException(
-                        "actor mailbox accounting underflow for " + ref.id());
+                        "actor mailbox accounting underflow for " + ref.id()
+                                + " (" + (continuation ? "continuation" : "user") + ")");
             }
         }
 
@@ -4428,7 +4428,7 @@ public final class ActorRuntime implements AutoCloseable {
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
                     MessageEnvelope envelope = mailbox.tryRead().orElse(null);
                     if (envelope == null) break;
-                    releaseMailboxSlot();
+                    releaseMailboxSlot(envelope.isContinuation());
                     try (envelope) {
                         if (envelope.isContinuation()) {
                             envelope.continuation().run();
@@ -4469,7 +4469,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void drainMailboxReservations() {
             while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot();
+                releaseMailboxSlot(envelope.isContinuation());
                 envelope.close();
             })) {
                 // drain all committed mailbox envelopes, including after close
