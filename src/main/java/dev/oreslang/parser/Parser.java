@@ -1073,7 +1073,11 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseSequenceShapeDimension() {
-        if (check(RBRACKET)) throw error(peek(), "sequence type shape cannot be empty");
+        if (check(RBRACKET)) {
+            throw error(peek(),
+                    "sequence type shape cannot be empty; Oreslang does not use suffix-array syntax T[]; "
+                            + "use Array[T] (or Array[ArrayList<T>] for an array of lists)");
+        }
         List<Ast.TypeRef> patterns = new ArrayList<>();
         do patterns.add(parseSequenceTypePattern()); while (match(COMMA));
         return Ast.TypeRef.sequenceShape(patterns);
