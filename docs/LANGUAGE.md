@@ -1111,7 +1111,7 @@ Oreslang combines Java-like reference ergonomics with affine ownership/lifetime 
 - `rt borrow x` / `rt borrow(x)` creates a stored immutable view tied to `x`'s lifetime;
 - `rt take x` / `rt take(x)` explicitly transfers ownership;
 - `rt copy x` / `rt copy(x)` creates an independent value when the type satisfies the copy contract;
-- `rt share x` / `rt share(x)` converts unique ownership into read-only **shared ownership of the same runtime object/reference**. It does not invoke `copy()` and does not create a detached snapshot.
+- `rt share x` / `rt share(x)` converts unique ownership into read-only **shared ownership of the same runtime object/reference**. It does not invoke `[Symbol.rtCopy]()` and does not create a detached snapshot.
 
 The command and call spellings are semantically identical. The command form has unary precedence, so `rt copy x.field + y` means `(rt copy x.field) + y`. Parentheses may be used whenever a wider operand or explicit grouping is desired.
 
