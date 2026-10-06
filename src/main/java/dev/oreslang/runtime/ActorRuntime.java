@@ -2150,6 +2150,11 @@ public final class ActorRuntime implements AutoCloseable {
             M message,
             Invocation<M, R> invocation) {
         Objects.requireNonNull(kind, "kind");
+        if (OresScheduler.current() != null) {
+            @SuppressWarnings("unchecked")
+            R futureSurface = (R) (Object) invokeAsync(kind, message, invocation);
+            return futureSurface;
+        }
         Objects.requireNonNull(invocation, "invocation");
         requireCallerRuntimeAffinity("invoke actor callables");
         if (inActorExecution()) {
@@ -2247,6 +2252,94 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /**
+     * Nonblocking actor-call bridge for scheduler-owned language execution.
+     * The returned Future completes from the actor mailbox continuation when a
+     * suspendable source body finishes. Host callers that require synchronous
+     * actor invocation should continue to use invoke(...).
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public <M, R> OresFuture<R> invokeAsync(
+            ActorKind kind,
+            M message,
+            Invocation<M, R> invocation) {
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(invocation, "invocation");
+        requireCallerRuntimeAffinity("invoke actor callables");
+        if (inActorExecution()) {
+            throw new IllegalStateException(
+                    "actor callable invocation from an actor turn is forbidden; "
+                            + "use mailbox-oriented actor composition");
+        }
+
+        IsolatePolicy policy = defaultSpawnPolicy();
+        OresFuture<R> completion = new OresFuture<>();
+
+        ActorRef<M> ref = spawnInternal(
+                kind,
+                policy,
+                factoryContext -> (delivered, turnContext) -> {
+                    try {
+                        Object result = invocation.run(delivered, turnContext);
+                        if (result instanceof OresFuture<?> future) {
+                            OresFuture<?> owned =
+                                    ownCurrentActorFuture((OresFuture) future);
+                            ContinuationTarget target =
+                                    captureCurrentContinuationTarget();
+
+                            enqueueOnCompletion(
+                                    (OresFuture) owned,
+                                    target,
+                                    (value, failure) -> {
+                                        try {
+                                            if (failure != null) {
+                                                completion.failFromRuntime(
+                                                        OresFuture.unwrap(failure));
+                                            } else {
+                                                R frozen = (R) freeze(value);
+                                                completion.completeFromRuntime(frozen);
+                                            }
+                                        } catch (Throwable callbackFailure) {
+                                            completion.failFromRuntime(callbackFailure);
+                                        } finally {
+                                            turnContext.self().stop();
+                                        }
+                                    });
+                            return;
+                        }
+
+                        R frozen = (R) freeze(result);
+                        completion.completeFromRuntime(frozen);
+                        turnContext.self().stop();
+                    } catch (VirtualMachineError fatal) {
+                        completion.failFromRuntime(fatal);
+                        throw fatal;
+                    } catch (ThreadDeath fatal) {
+                        completion.failFromRuntime(fatal);
+                        throw fatal;
+                    } catch (LinkageError fatal) {
+                        completion.failFromRuntime(fatal);
+                        throw fatal;
+                    } catch (Throwable failure) {
+                        completion.failFromRuntime(failure);
+                        turnContext.self().stop();
+                    }
+                },
+                true);
+
+        try {
+            send(ref, message);
+        } catch (Throwable failure) {
+            completion.failFromRuntime(failure);
+            try {
+                if (ref.isAlive()) stop(ref);
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+        }
+        return completion;
     }
 
     private void reserveActorSlot() {
