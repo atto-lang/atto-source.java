@@ -58,6 +58,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final int UNTRUSTED_YIELD_QUANTUM = 64;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -65,6 +66,12 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
+            new ThreadLocal<>();
+
+    private record ActorGroupMailmanExecution(
+            ActorRuntime runtime,
+            ActorGroupId groupId) { }
 
     private record ActorExecutionContext(
             ActorRuntime runtime,
@@ -82,12 +89,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Admission boundary for runtime CONTROL work such as ActorGroup Mailmen.
+     *
+     * Implementations must enqueue onto a VM-owned CONTROL scheduler/pool; they
+     * must not create a scheduler or carrier pool per ActorGroup.
+     */
+    @FunctionalInterface
+    public interface ControlDispatcher {
+        OresFuture<Void> execute(Runnable turn);
+
+        static ControlDispatcher unavailable() {
+            return turn -> {
+                throw new RejectedExecutionException(
+                        "ActorGroup Mailman CONTROL dispatcher is not configured");
+            };
+        }
+    }
+
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
     }
 
     public static boolean inActorExecution() {
         return CURRENT_ACTOR_EXECUTION.get() != null;
+    }
+
+    public static boolean inActorGroupMailmanExecution() {
+        return CURRENT_ACTOR_GROUP_MAILMAN.get() != null;
     }
 
     public static IsolatePolicy currentActorPolicy() {
@@ -317,6 +346,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
+    private final ControlDispatcher controlDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
 
     /**
@@ -362,9 +392,22 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor) {
+        this(
+                policyCeiling,
+                dispatcherConfig,
+                turnExecutor,
+                ControlDispatcher.unavailable());
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
                 dispatcherConfig.maxActors(),
