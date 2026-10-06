@@ -44,6 +44,7 @@ final class ImportSelectorSyntaxTest {
                 import class Box from './dep';
                 import fnc make from './dep';
                 import interface Api from './dep';
+                import contract ContractApi from './dep';
                 import trait Retryable from './dep';
                 import struct Point from './dep';
                 import type Identifier from './dep';
@@ -59,6 +60,7 @@ final class ImportSelectorSyntaxTest {
                         Ast.ImportKind.CLASS,
                         Ast.ImportKind.FUNCTION,
                         Ast.ImportKind.INTERFACE,
+                        Ast.ImportKind.CONTRACT,
                         Ast.ImportKind.TRAIT,
                         Ast.ImportKind.STRUCT,
                         Ast.ImportKind.TYPE,
@@ -157,6 +159,45 @@ final class ImportSelectorSyntaxTest {
 
         assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(actorAsClass));
         assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(classAsActor));
+    }
+
+    @Test
+    void contractAndInterfaceSelectorsDoNotAliasEachOther() throws Exception {
+        Path child = temp.resolve("contracts.ores");
+        Files.writeString(child, """
+                pub define contract Config as
+                  val String name;
+                end
+
+                pub interface Api {
+                  fnc value() => int;
+                }
+                """);
+
+        Path contractMain = temp.resolve("contract-main.ores");
+        Files.writeString(contractMain, """
+                import contract Config from './contracts';
+                pub routine main(): void { return; }
+                """);
+        LinkedProgramRunner.validate(contractMain);
+
+        Path contractAsInterface = temp.resolve("contract-as-interface.ores");
+        Files.writeString(contractAsInterface, """
+                import interface Config from './contracts';
+                pub routine main(): void { return; }
+                """);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(contractAsInterface));
+
+        Path interfaceAsContract = temp.resolve("interface-as-contract.ores");
+        Files.writeString(interfaceAsContract, """
+                import contract Api from './contracts';
+                pub routine main(): void { return; }
+                """);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(interfaceAsContract));
     }
 
     @Test
