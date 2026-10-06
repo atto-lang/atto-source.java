@@ -14,6 +14,71 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void declarationModifiersMayAppearOnEitherSideOfDefineAndCallableKind() {
+        Ast.Program program = Parser.parse("""
+                define module app as
+                  pub define class LegacyBox as
+                  end
+
+                  define pub abstract class CanonicalBox as
+                  end
+
+                  fnc pub async late_visibility(): void {
+                    return;
+                  }
+
+                  async nlex fnc pub mixed_order(): void {
+                    return;
+                  }
+
+                  pub async nlex fnc canonical_order(): void {
+                    return;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.ClassDecl legacyClass = (Ast.ClassDecl) module.declarations().get(0);
+        Ast.ClassDecl canonicalClass = (Ast.ClassDecl) module.declarations().get(1);
+        Ast.FunctionDecl lateVisibility = (Ast.FunctionDecl) module.declarations().get(2);
+        Ast.FunctionDecl mixedOrder = (Ast.FunctionDecl) module.declarations().get(3);
+        Ast.FunctionDecl canonicalOrder = (Ast.FunctionDecl) module.declarations().get(4);
+
+        assertEquals(Ast.Visibility.PUBLIC, legacyClass.visibility());
+        assertEquals(Ast.Visibility.PUBLIC, canonicalClass.visibility());
+        assertTrue(canonicalClass.isAbstract());
+
+        assertEquals(Ast.Visibility.PUBLIC, lateVisibility.visibility());
+        assertTrue(lateVisibility.async());
+
+        assertEquals(Ast.Visibility.PUBLIC, mixedOrder.visibility());
+        assertTrue(mixedOrder.async());
+        assertTrue(mixedOrder.nonLexical());
+
+        assertEquals(canonicalOrder.visibility(), mixedOrder.visibility());
+        assertEquals(canonicalOrder.async(), mixedOrder.async());
+        assertEquals(canonicalOrder.nonLexical(), mixedOrder.nonLexical());
+    }
+
+    @Test
+    void duplicateModifiersRemainRejectedAcrossDeclarationKeywords() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app as
+                  pub fnc pub nope(): void {
+                    return;
+                  }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app as
+                  pub define pub class Nope as
+                  end
+                end
+                """));
+    }
+
+    @Test
     void supportsMultipleModulesAndComplexNumbers() {
         String source = """
                 define module math
