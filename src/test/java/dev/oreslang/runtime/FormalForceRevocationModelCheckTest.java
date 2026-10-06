@@ -49,7 +49,7 @@ final class FormalForceRevocationModelCheckTest {
     @Test
     void everyReachableStatePreservesTwoPhaseRevocationOrdering() {
         Set<State> states = explore();
-        assertTrue(states.size() >= 10,
+        assertTrue(states.size() >= 20,
                 "force-revocation model must cover success, failure, throw, and fence races");
 
         for (State state : states) {
