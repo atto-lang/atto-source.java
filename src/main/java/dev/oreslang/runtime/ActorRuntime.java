@@ -876,16 +876,25 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(reader);
             requireReadonlySharedAccess("SyncCell.read");
             boolean entered = enterSyncCell(this);
+            final T snapshot;
             lock.lock();
             try {
                 requireOpen();
-                Object frozen = freeze(reader.apply(value));
+                snapshot = value;
+            } finally {
+                lock.unlock();
+            }
+
+            try {
+                // The cell stores only frozen data, so the callback does not
+                // need to hold the shared lock. This prevents a slow actor
+                // reader from blocking supervisor/runtime publication.
+                Object frozen = freeze(reader.apply(snapshot));
                 rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
                 @SuppressWarnings("unchecked")
                 R result = (R) frozen;
                 return result;
             } finally {
-                lock.unlock();
                 exitSyncCell(entered);
             }
         }
