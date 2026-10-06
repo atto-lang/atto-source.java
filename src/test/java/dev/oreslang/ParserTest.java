@@ -641,6 +641,32 @@ final class ParserTest {
     }
 
     @Test
+    void declarationNestingAllowsClassesInsideModulesButNotModulesOrClassesInsideClasses() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define module Accounts as
+                  define class Account as
+                    pub let int balance = 100;
+                  end
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module Outer as
+                  define module Inner as
+                    fnc value(): int { return 1; }
+                  end
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Outer as
+                  define class Inner as
+                  end
+                end
+                """));
+    }
+
+    @Test
     void classDeclarationsRequireAsDelimiter() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class CounterState as
