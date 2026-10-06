@@ -251,6 +251,48 @@ final class CollectionShapeMetadataTest {
     }
 
     @Test
+    void fixedSizeCanCloseAndTruncateAnUnboundedRepeatingShape() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val xs: FixedArray<size=21>[...(3 of int, 3 of string)] =
+                      [1, 2, 3, "a", "b", "c",
+                       4, 5, 6, "d", "e", "f",
+                       7, 8, 9, "g", "h", "i",
+                       10, 11, 12];
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException wrongTail = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val xs: FixedArray<size=21>[...(3 of int, 3 of string)] =
+                              [1, 2, 3, "a", "b", "c",
+                               4, 5, 6, "d", "e", "f",
+                               7, 8, 9, "g", "h", "i",
+                               "wrong", 11, 12];
+                          return;
+                        }
+                        """)));
+        assertTrue(wrongTail.getMessage().contains("fixed sequence"));
+
+        IllegalArgumentException missingSize = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val xs: FixedArray[...(3 of int, 3 of string)] = [];
+                          return;
+                        }
+                        """)));
+        assertTrue(missingSize.getMessage().contains("requires size=N"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc accepts(FixedArray<size=21>[...(3 of int, 3 of string)] xs): void {
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void tupleAndFixedArrayRemainNominallyDistinctFiniteSequences() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc takesTuple(Tuple[int, string] value): void { return; }
