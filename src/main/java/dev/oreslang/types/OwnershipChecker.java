@@ -87,7 +87,29 @@ public final class OwnershipChecker {
         scope.close();
     }
 
+    private Ast.ClassDecl initializingClass;
+
     private void checkClass(Ast.ClassDecl klass) {
+        if (klass.constructor() != null) {
+            Ast.ConstructorDecl constructor = klass.constructor();
+            Scope scope = new Scope(null);
+            scope.define("self", new VarState(
+                    Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
+                    false,
+                    ValueKind.MUT_BORROW,
+                    Origin.PARAM));
+            for (Ast.Param param : constructor.parameters()) {
+                scope.define(param.name(), stateForParam(param));
+            }
+            initializingClass = klass;
+            try {
+                checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
+            } finally {
+                initializingClass = null;
+            }
+            scope.close();
+        }
+
         for (Ast.MethodDecl method : klass.methods()) {
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
@@ -946,7 +968,9 @@ public final class OwnershipChecker {
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
                 if (field == null) throw error("unknown field '" + member.member() + "' on " + klass.name());
-                if (field.bindingKind() != Ast.BindingKind.LET) {
+                if (field.bindingKind() != Ast.BindingKind.LET
+                        && !(klass == initializingClass && member.receiver() instanceof Ast.NameExpr name
+                            && name.name().equals("self"))) {
                     throw error("field '" + klass.name() + "." + member.member() + "' is immutable; declare the field with let to permit mutation");
                 }
             }

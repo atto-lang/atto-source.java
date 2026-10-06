@@ -68,9 +68,12 @@ public final class Parser {
                     continue;
                 }
                 if (match(CLASS)) {
-                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
-                    rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
+                    validateClassModifiers(modifiers);
+                    if (modifiers.visibility == Ast.Visibility.PUBLIC) {
+                        throw error(previous(), "top-level classes are file-private; put the class in a module to export it");
+                    }
+                    rootDeclarations.add(parseClass(Ast.Visibility.PRIVATE,
+                            modifiers.isAbstract || afterDefineAbstract, true));
                     continue;
                 }
                 if (match(INTERFACE)) {
@@ -190,9 +193,9 @@ public final class Parser {
             }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
-                if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
-                return parseClass(modifiers.isAbstract || afterDefineAbstract);
+                validateClassModifiers(modifiers);
+                return parseClass(modifiers.visibility,
+                        modifiers.isAbstract || afterDefineAbstract, false);
             }
             if (match(INTERFACE)) {
                 if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
@@ -276,7 +279,10 @@ public final class Parser {
                 returnType, annotations, body);
     }
 
-    private Ast.ClassDecl parseClass(boolean isAbstract) {
+    private Ast.ClassDecl parseClass(
+            Ast.Visibility visibility,
+            boolean isAbstract,
+            boolean filePrivateScope) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -284,10 +290,33 @@ public final class Parser {
         consume(AS, "expected 'as' after class header");
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        Ast.ConstructorDecl constructor = null;
 
         while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+
+            if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
+                    || check(ACTOR) || check(ISOACTOR)) {
+                throw error(peek(),
+                        "declarations cannot be nested inside classes; declare nested types at file or module scope");
+            }
+
+            if (isContextualIdentifier("constructor")) {
+                if (constructor != null) {
+                    throw error(peek(), "class '" + name + "' may declare only one constructor");
+                }
+                constructor = parseConstructor(
+                        annotations, mods, name, visibility, filePrivateScope);
+                continue;
+            }
+
+            if (check(IDENT) && peek().lexeme().equals(name) && checkNext(LPAREN)) {
+                throw error(peek(),
+                        "constructors are declared with 'constructor(...)', not the class name '"
+                                + name + "(...)'");
+            }
+
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
@@ -313,7 +342,49 @@ public final class Parser {
             methods.add(parseMethod(annotations, mods));
         }
         consume(END, "expected 'end' to close class " + name);
-        return new Ast.ClassDecl(name, isAbstract, Ast.ActorKind.NONE, generics, parents, interfaces, fields, methods);
+        return new Ast.ClassDecl(
+                name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
+                parents, interfaces, fields, constructor, methods);
+    }
+
+    private Ast.ConstructorDecl parseConstructor(
+            List<Ast.Annotation> annotations,
+            Modifiers mods,
+            String className,
+            Ast.Visibility classVisibility,
+            boolean filePrivateScope) {
+        Token keyword = advance(); // contextual 'constructor'
+        if (mods.async || mods.generator || mods.nonLexical || mods.isStatic
+                || mods.isAbstract || mods.shared) {
+            throw error(keyword,
+                    "constructors accept only private/pub visibility; async, generator, nlex, static, abstract, and shared are not permitted");
+        }
+        if (mods.visibility == Ast.Visibility.PUBLIC
+                && (filePrivateScope || classVisibility != Ast.Visibility.PUBLIC)) {
+            throw error(keyword,
+                    "a public constructor requires a public module class; top-level classes and private module classes cannot export constructors");
+        }
+
+        consume(LPAREN, "expected '(' after constructor");
+        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after constructor parameters");
+        if (check(COLON) || check(ARROW) || check(FAT_ARROW)) {
+            throw error(peek(), "constructors do not declare a return type");
+        }
+        List<Ast.Stmt> body = parseBlock();
+        return new Ast.ConstructorDecl(mods.visibility, params, annotations, body);
+    }
+
+    private void validateClassModifiers(Modifiers modifiers) {
+        if (modifiers.async || modifiers.generator || modifiers.nonLexical
+                || modifiers.isStatic || modifiers.shared) {
+            throw error(previous(),
+                    "classes accept only private/pub visibility and abstract; async, generator, nlex, static, and shared are not permitted");
+        }
+    }
+
+    private boolean isContextualIdentifier(String lexeme) {
+        return check(IDENT) && peek().lexeme().equals(lexeme);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -336,6 +407,15 @@ public final class Parser {
             }
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
             if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
+            if (isContextualIdentifier("constructor")) {
+                throw error(peek(),
+                        "actors do not declare constructors; actor state is initialized by the actor runtime");
+            }
+            if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
+                    || check(ACTOR) || check(ISOACTOR)) {
+                throw error(peek(),
+                        "declarations cannot be nested inside actors; declare nested types at file or module scope");
+            }
 
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "actor state cannot be static");
