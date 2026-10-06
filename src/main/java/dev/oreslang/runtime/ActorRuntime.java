@@ -3578,6 +3578,34 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("MutexGuard<T> is lexical and cannot cross actor mailboxes");
         }
+        if (value instanceof Proxy<?> proxy) {
+            if (target.kind != ActorKind.SHARED) {
+                throw new SecurityException("rt Proxy<T> may only be delivered to SHARED actors");
+            }
+            if (!proxy.ownedBy(this) || proxy.closed()) {
+                throw new IllegalArgumentException(
+                        "rt Proxy<T> belongs to a different/closed ActorRuntime");
+            }
+            ActorKind senderKind = currentActorKind();
+            if (senderKind != null && senderKind != ActorKind.SHARED) {
+                throw new SecurityException(
+                        "private/untrusted actors cannot send rt Proxy<T>");
+            }
+            IsolatePolicy senderPolicy = currentActorPolicy();
+            if (senderPolicy != null) {
+                senderPolicy.require(
+                        IsolatePolicy.Capability.ACTOR_SHARED_PROXY,
+                        "rt Proxy actor send");
+            } else {
+                policyCeiling.require(
+                        IsolatePolicy.Capability.ACTOR_SHARED_PROXY,
+                        "rt Proxy host send");
+            }
+            target.policy.require(
+                    IsolatePolicy.Capability.ACTOR_SHARED_PROXY,
+                    "rt Proxy actor receive");
+            return;
+        }
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
             if (target.kind != ActorKind.SHARED) {
                 throw new SecurityException("private actors cannot receive SharedMutex<T>");
@@ -3800,6 +3828,14 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.closed()) throw new IllegalArgumentException("SyncCell is closed");
             return;
         }
+        if (value instanceof Proxy<?> proxy) {
+            if (!proxy.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "rt Proxy<T> belongs to a different ActorRuntime");
+            }
+            if (proxy.closed()) throw new IllegalArgumentException("rt Proxy<T> is closed");
+            return;
+        }
         if (value instanceof OresMutex.Shared<?>) {
             // Runtime affinity is reserved atomically immediately before mailbox admission.
             return;
@@ -3924,6 +3960,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof Proxy<?>
                 || value instanceof OresMutex.Lock<?>
                 || value instanceof OresMutex.Guard<?>) {
             throw new SecurityException(
@@ -3974,6 +4011,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
+        }
+        if (value instanceof Proxy<?>) {
+            throw new IllegalArgumentException(
+                    "rt Proxy<T> is synchronized shared mutable state and cannot be wrapped as Shared");
         }
         if (value instanceof OresMutex.Shared<?>) {
             throw new IllegalArgumentException("SharedMutex is mutable shared state and cannot be wrapped as Shared");
@@ -4048,6 +4089,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof Proxy<?>
                 || value instanceof OresMutex.Shared<?>) {
             return;
         }
@@ -4122,6 +4164,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof Proxy<?>
                 || value instanceof OresMutex.Lock<?>
                 || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException(
@@ -4164,6 +4207,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
+        if (value instanceof ActorRuntime.Proxy<?> proxy) return proxy;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
@@ -4280,6 +4324,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof ActorRuntime.Proxy<?>) return requireWithinLimit(96L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4348,6 +4393,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return scalar;
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
+        if (value instanceof ActorRuntime.Proxy<?>) return 96L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
