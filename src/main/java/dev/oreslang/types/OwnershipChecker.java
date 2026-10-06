@@ -646,7 +646,12 @@ public final class OwnershipChecker {
                     && concreteReceiver.name().equals("DynamicStruct")
                     && concreteReceiver.arguments().size() == 1) {
                 Ast.TypeRef valueType = concreteReceiver.arguments().getFirst();
-                return new ValueInfo(valueType, kindOfType(valueType), null);
+                ValueKind valueKind = kindOfType(valueType);
+                if (isProxyReceiver(member.receiver(), scope) && valueKind != ValueKind.COPY) {
+                    throw error("cannot extract move-only DynamicStruct value through rt Proxy<T>; "
+                            + "return a copy/immutable snapshot or keep mutation behind the proxy");
+                }
+                return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             if (klass != null) {
@@ -680,6 +685,10 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = collectionElementType(receiver.type);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
+            if (isProxyReceiver(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
+                throw error("cannot extract move-only indexed state through rt Proxy<T>; "
+                        + "return a copy/immutable snapshot or keep mutation behind the proxy");
+            }
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
             }
@@ -2058,6 +2067,7 @@ public final class OwnershipChecker {
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        if (isProxyType(concrete)) concrete = concrete.arguments().getFirst();
         if ((concrete.name().equals("Array") || concrete.name().equals("List")
                 || concrete.name().equals("DynamicStruct")) && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
@@ -2277,7 +2287,9 @@ public final class OwnershipChecker {
             VarState state = scope.lookup(name.name());
             return state != null && isProxyType(state.type);
         }
-        return false;
+        return receiver instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr intrinsic
+                && intrinsic.name().equals("$rt$proxy");
     }
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
