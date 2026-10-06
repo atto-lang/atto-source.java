@@ -379,4 +379,56 @@ final class TupleSyntaxTest {
         assertTrue(text.contains("true\nfalse\ntrue\ntrue\nfalse"));
     }
 
+    @Test
+    void tupleKeywordAndNewTupleShareValueSemantics() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val keyword = tuple ("same", 9);
+                  val constructor = new Tuple("same", 9);
+                  stdio.println(keyword.isEqualsTo(constructor));
+                  stdio.println(keyword eq constructor);
+                  return;
+                }
+                """;
+
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "tuple-constructor-equivalence.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertTrue(text.contains("true\ntrue"));
+    }
+
+    @Test
+    void oneElementTupleTypeAndValueStayDistinctFromGrouping() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type One = (int,);
+
+                fnc one(): One {
+                  return tuple (5);
+                }
+
+                fnc grouped(): (int) {
+                  return 5;
+                }
+
+                pub fnc main(): void {
+                  const (n) = one();
+                  val plain: int = grouped();
+                  stdio.println(n);
+                  stdio.println(plain);
+                  return;
+                }
+                """)));
+    }
+
 }
