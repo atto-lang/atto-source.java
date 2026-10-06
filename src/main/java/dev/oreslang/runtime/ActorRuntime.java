@@ -3666,10 +3666,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
-            MessageEnvelope envelope;
-            while ((envelope = mailbox.tryRead().orElse(null)) != null) {
+            while (mailbox.drainOne(envelope -> {
                 releaseMailboxSlot();
                 envelope.close();
+            })) {
+                // drain all committed mailbox envelopes, including after close
             }
         }
 
