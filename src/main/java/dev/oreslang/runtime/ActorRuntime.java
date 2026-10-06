@@ -1144,20 +1144,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorCell<?> cell = actors.get(target.actorId());
         if (cell == null || !ownFuture(cell, future)) return;
-        if (!cell.acquireContinuationLease()) return;
 
-        boolean registered = false;
-        try {
-            future.whenCompleteRuntime(
-                    (value, failure) ->
-                            enqueueContinuation(
-                                    target.actorId(),
-                                    () -> continuation.accept(value, failure),
-                                    cell::releaseContinuationLease));
-            registered = true;
-        } finally {
-            if (!registered) cell.releaseContinuationLease();
-        }
+        future.whenCompleteRuntime(
+                (value, failure) ->
+                        target.enqueue(() -> continuation.accept(value, failure)));
     }
 
     /**
