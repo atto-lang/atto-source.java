@@ -65,6 +65,68 @@ public final class Ast {
         public boolean isStringLiteral() { return name.startsWith("$string$"); }
         public String stringLiteralValue() { return name.substring("$string$".length()); }
 
+        // Compiler-only TypeRef forms for named metadata and sequence shapes.
+        // These synthetic names cannot collide with source identifiers.
+        public static TypeRef intLiteral(String value) {
+            return new TypeRef("$int$" + value.replace("_", ""), List.of(), false);
+        }
+        public boolean isIntLiteral() { return name.startsWith("$int$"); }
+        public long intLiteralValue() {
+            if (!isIntLiteral()) throw new IllegalStateException("not an integer meta literal");
+            return Long.parseLong(name.substring("$int$".length()));
+        }
+
+        public static TypeRef boolLiteral(boolean value) {
+            return new TypeRef(value ? "$bool$true" : "$bool$false", List.of(), false);
+        }
+        public boolean isBoolLiteral() { return name.equals("$bool$true") || name.equals("$bool$false"); }
+        public boolean boolLiteralValue() {
+            if (!isBoolLiteral()) throw new IllegalStateException("not a boolean meta literal");
+            return name.equals("$bool$true");
+        }
+
+        public static TypeRef namedParameter(String parameterName, TypeRef value) {
+            if (parameterName == null || parameterName.isBlank()) {
+                throw new IllegalArgumentException("named parameter name cannot be blank");
+            }
+            return new TypeRef("$named$" + parameterName, List.of(value), false);
+        }
+        public boolean isNamedParameter() { return name.startsWith("$named$"); }
+        public String namedParameterName() {
+            if (!isNamedParameter()) throw new IllegalStateException("not a named parameter");
+            return name.substring("$named$".length());
+        }
+        public TypeRef namedParameterValue() {
+            if (!isNamedParameter() || arguments.size() != 1) {
+                throw new IllegalStateException("malformed named parameter");
+            }
+            return arguments.getFirst();
+        }
+
+        public static TypeRef sequenceShape(List<TypeRef> patterns) {
+            if (patterns.isEmpty()) throw new IllegalArgumentException("sequence shape cannot be empty");
+            return new TypeRef("$shape$", List.copyOf(patterns), false);
+        }
+        public boolean isSequenceShape() { return name.equals("$shape$"); }
+
+        public static TypeRef repeatExact(String count, TypeRef pattern) {
+            long parsed = Long.parseLong(count.replace("_", ""));
+            if (parsed < 0) throw new IllegalArgumentException("sequence repeat count cannot be negative");
+            return new TypeRef("$repeat_exact$" + parsed, List.of(pattern), false);
+        }
+        public boolean isRepeatExact() { return name.startsWith("$repeat_exact$"); }
+        public long repeatExactCount() {
+            if (!isRepeatExact()) throw new IllegalStateException("not an exact sequence repeat");
+            return Long.parseLong(name.substring("$repeat_exact$".length()));
+        }
+
+        public static TypeRef repeatMany(List<TypeRef> group) {
+            if (group.isEmpty()) throw new IllegalArgumentException("repeating sequence group cannot be empty");
+            return new TypeRef("$repeat_many$", List.copyOf(group), false);
+        }
+        public boolean isRepeatMany() { return name.equals("$repeat_many$"); }
+
+
         public static TypeRef union(List<TypeRef> options) {
             java.util.ArrayList<TypeRef> flattened = new java.util.ArrayList<>();
             for (TypeRef option : options) {

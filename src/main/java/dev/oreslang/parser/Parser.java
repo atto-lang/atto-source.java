@@ -429,6 +429,7 @@ public final class Parser {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
         consumeStatementTerminator("field declaration should end with ';'");
+        if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
 
@@ -438,6 +439,7 @@ public final class Parser {
         Ast.TypeRef type = parseTypeRef();
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
         Ast.BindingKind kind = hasAnnotation(annotations, "FromJson") ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
+        type = applyTypeMetadataAnnotations(type, annotations, false);
         consumeClassFieldTerminator("field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
@@ -451,6 +453,7 @@ public final class Parser {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
         }
+        if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
         consumeStatementTerminator("module binding should end with ';'");
@@ -516,10 +519,20 @@ public final class Parser {
             if (match(LT)) close = GT;
             else if (match(LPAREN)) close = RPAREN;
             if (close != null) {
-                if (!check(close)) do args.add(parseTypeRef()); while (match(COMMA));
+                if (!check(close)) {
+                    do {
+                        if (check(IDENT) && checkNext(EQUAL)) {
+                            String parameterName = advance().lexeme();
+                            consume(EQUAL, "expected '=' after named annotation parameter");
+                            args.add(Ast.TypeRef.namedParameter(parameterName, parseMetaValue()));
+                        } else {
+                            args.add(parseMetaValue());
+                        }
+                    } while (match(COMMA));
+                }
                 consume(close, "expected annotation terminator");
             }
-            result.add(new Ast.Annotation(name, args));
+            result.add(new Ast.Annotation(name, canonicalizeNamedParameters(args)));
         }
         return result;
     }
@@ -801,11 +814,77 @@ public final class Parser {
                 while (match(COMMA)) args.add(parseTypeRef());
                 consume(GT, "expected '>' after type arguments");
             } else {
-                do args.add(parseTypeRef()); while (match(COMMA));
-                consume(GT, "expected '>' after type arguments");
+                do {
+                    if (check(IDENT) && checkNext(EQUAL)) {
+                        String parameterName = advance().lexeme();
+                        consume(EQUAL, "expected '=' after named type parameter");
+                        args.add(Ast.TypeRef.namedParameter(parameterName, parseMetaValue()));
+                    } else {
+                        args.add(parseTypeRef());
+                    }
+                } while (match(COMMA));
+                consume(GT, "expected '>' after type arguments / named parameters");
             }
         }
+
+        args = canonicalizeNamedParameters(args);
+        while (match(LBRACKET)) {
+            args.add(parseSequenceShapeDimension());
+            consume(RBRACKET, "expected ']' after sequence type shape");
+        }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private Ast.TypeRef parseMetaValue() {
+        if (match(INT)) return Ast.TypeRef.intLiteral(previous().lexeme());
+        if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
+        if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
+        if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
+        return parseTypeRef();
+    }
+
+    private Ast.TypeRef parseSequenceShapeDimension() {
+        if (check(RBRACKET)) throw error(peek(), "sequence type shape cannot be empty");
+        List<Ast.TypeRef> patterns = new ArrayList<>();
+        do patterns.add(parseSequenceTypePattern()); while (match(COMMA));
+        return Ast.TypeRef.sequenceShape(patterns);
+    }
+
+    private Ast.TypeRef parseSequenceTypePattern() {
+        if (match(ELLIPSIS)) {
+            if (match(LPAREN)) {
+                if (check(RPAREN)) throw error(peek(), "repeating sequence group cannot be empty");
+                List<Ast.TypeRef> group = new ArrayList<>();
+                do group.add(parseSequenceTypePattern()); while (match(COMMA));
+                consume(RPAREN, "expected ')' after repeating sequence group");
+                return Ast.TypeRef.repeatMany(group);
+            }
+            return Ast.TypeRef.repeatMany(List.of(parseSequenceTypePattern()));
+        }
+        if (check(INT) && checkNext(OF)) {
+            String count = advance().lexeme();
+            consume(OF, "expected 'of' in counted sequence pattern");
+            return Ast.TypeRef.repeatExact(count, parseTypeRef());
+        }
+        return parseTypeRef();
+    }
+
+    private List<Ast.TypeRef> canonicalizeNamedParameters(List<Ast.TypeRef> args) {
+        List<Ast.TypeRef> positional = new ArrayList<>();
+        java.util.TreeMap<String, Ast.TypeRef> named = new java.util.TreeMap<>();
+        List<Ast.TypeRef> shapes = new ArrayList<>();
+        for (Ast.TypeRef arg : args) {
+            if (arg.isNamedParameter()) {
+                String key = arg.namedParameterName();
+                if (named.putIfAbsent(key, arg) != null) {
+                    throw error(previous(), "duplicate named type parameter '" + key + "'");
+                }
+            } else if (arg.isSequenceShape()) shapes.add(arg);
+            else positional.add(arg);
+        }
+        positional.addAll(named.values());
+        positional.addAll(shapes);
+        return positional;
     }
 
     private Ast.TypeRef parseFunctionTypeSignature() {
@@ -881,6 +960,13 @@ public final class Parser {
             throw error(peek(), "trait declarations are static/module-scope declarations; runtime trait creation is forbidden");
         }
 
+        if (check(AT)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
+            if (!isBindingKind(peek().type())) {
+                throw error(peek(), "local annotations currently apply only to typed bindings");
+            }
+            return parseBindingStatement(annotations);
+        }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
@@ -1236,18 +1322,108 @@ public final class Parser {
     }
 
     private Ast.BindingStmt parseBindingStatement() {
+        return parseBindingStatement(List.of());
+    }
+
+    private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
-        else {
+        if (check(IDENT) && checkNext(COLON)) {
+            name = advance().lexeme();
+            consume(COLON, "expected ':' after binding name");
+            type = parseTypeRef();
+        } else if (check(IDENT) && checkNext(EQUAL)) {
+            name = advance().lexeme();
+        } else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
+        }
+        if (!annotations.isEmpty()) {
+            if (type == null) {
+                throw error(previous(), "type metadata annotations require an explicit declared type");
+            }
+            type = applyTypeMetadataAnnotations(type, annotations, true);
         }
         consume(EQUAL, "binding requires initializer");
         Ast.Expr initializer = parseExpression();
         consumeStatementTerminator("binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer);
+    }
+
+    private Ast.TypeRef applyTypeMetadataAnnotations(
+            Ast.TypeRef type,
+            List<Ast.Annotation> annotations,
+            boolean rejectUnknown) {
+        java.util.LinkedHashMap<String, Ast.TypeRef> additions = new java.util.LinkedHashMap<>();
+        for (Ast.Annotation annotation : annotations) {
+            String annotationName = annotation.name();
+            if (annotationName.equals("NamedParams")) {
+                if (annotation.arguments().isEmpty()) {
+                    throw error(previous(), "@NamedParams requires at least one name=value entry");
+                }
+                for (Ast.TypeRef argument : annotation.arguments()) {
+                    if (!argument.isNamedParameter()) {
+                        throw error(previous(), "@NamedParams arguments must use name=value syntax");
+                    }
+                    putMetadataAnnotation(additions, argument.namedParameterName(), argument.namedParameterValue());
+                }
+                continue;
+            }
+
+            String parameterName = switch (annotationName) {
+                case "GrowthPolicy" -> "growth_policy";
+                case "Allocator" -> "allocator";
+                case "Align" -> "align";
+                case "InlineCapacity" -> "inline_capacity";
+                case "MaxCapacity" -> "max_capacity";
+                case "Storage" -> "storage";
+                case "Rank" -> "rank";
+                default -> null;
+            };
+            if (parameterName == null) {
+                if (rejectUnknown) {
+                    throw error(previous(), "unsupported local annotation @" + annotationName
+                            + "; local annotations must map to named type parameters");
+                }
+                continue;
+            }
+            if (annotation.arguments().size() != 1 || annotation.arguments().getFirst().isNamedParameter()) {
+                throw error(previous(), "@" + annotationName + " requires exactly one positional compile-time value");
+            }
+            putMetadataAnnotation(additions, parameterName, annotation.arguments().getFirst());
+        }
+        if (additions.isEmpty()) return type;
+
+        List<Ast.TypeRef> positional = new ArrayList<>();
+        java.util.TreeMap<String, Ast.TypeRef> named = new java.util.TreeMap<>();
+        List<Ast.TypeRef> shapes = new ArrayList<>();
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (argument.isNamedParameter()) {
+                String key = argument.namedParameterName();
+                named.put(key, argument);
+            } else if (argument.isSequenceShape()) shapes.add(argument);
+            else positional.add(argument);
+        }
+        for (java.util.Map.Entry<String, Ast.TypeRef> entry : additions.entrySet()) {
+            if (named.containsKey(entry.getKey())) {
+                throw error(previous(), "named type parameter '" + entry.getKey()
+                        + "' is specified both inline and by annotation");
+            }
+            named.put(entry.getKey(), Ast.TypeRef.namedParameter(entry.getKey(), entry.getValue()));
+        }
+        positional.addAll(named.values());
+        positional.addAll(shapes);
+        return new Ast.TypeRef(type.name(), positional, type.inferArguments());
+    }
+
+    private void putMetadataAnnotation(
+            java.util.Map<String, Ast.TypeRef> values,
+            String name,
+            Ast.TypeRef value) {
+        if (values.putIfAbsent(name, value) != null) {
+            throw error(previous(), "duplicate named type parameter '" + name + "' in annotations");
+        }
     }
 
     private Ast.DestructureStmt parseDestructure(Ast.DestructureKind kind, Ast.BindingKind inheritedKind) {

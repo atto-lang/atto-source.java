@@ -102,7 +102,9 @@ interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" type_ret
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
-annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
+annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
+annotation_args = annotation_arg { "," annotation_arg } ;
+annotation_arg  = named_type_param | meta_value | type_ref ;
 return_spec     = [ ( ":" | "->" ) type_ref ] ;
 type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
@@ -111,7 +113,10 @@ param           = type_ref [ "mut" ] IDENT
                 | "@Structural" type_ref [ "mut" ] IDENT
                 | IDENT "structural" type_ref [ "mut" ] ;
 
-binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
+binding_decl    = { annotation } binding_kind
+                  ( IDENT ":" type_ref
+                  | [ type_ref ] IDENT )
+                  "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
@@ -289,7 +294,20 @@ record_type_field
 alias_marker    = "type" named_type ;
 callable_generic_type
                 = ( "Fnc" | "Function" ) "<" type_ref "(" [ function_type_params ] ")" ">" ;
-named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
+named_type      = qualified_name
+                  [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
+                  { sequence_type_shape } ;
+type_arg_or_named = type_ref | named_type_param ;
+named_type_param = IDENT "=" meta_value ;
+meta_value      = INT_LITERAL | STRING_LITERAL | "true" | "false" | type_ref ;
+
+sequence_type_shape
+                = "[" sequence_type_item { "," sequence_type_item } "]" ;
+sequence_type_item
+                = type_ref
+                | INT_LITERAL "of" type_ref
+                | "..." type_ref
+                | "..." "(" sequence_type_item { "," sequence_type_item } ")" ;
 function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "=>" type_ref
                 | "(" [ function_type_params ] ")" "=>" type_ref ;
 grouped_type    = "(" type_ref ")" ;
@@ -314,6 +332,23 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    an expression is accepted.
 
    Semantic restrictions:
+   - In collection type syntax, '[...]' describes element/sequence shape,
+     '<name=value>' describes compile-time type/storage metadata, and '(...)'
+     remains runtime construction/instance state. Named metadata parameters are
+     order-independent after canonicalization.
+   - FixedArray/FixedList accept finite sequence shapes, including counted
+     repetition such as FixedArray[3 of int, 3 of string].
+   - Runtime-extent collections use one homogeneous element pattern
+     (Vector[int]) or explicit unbounded repetition
+     (Vector[...(int, string, bool)]). A bare multi-item finite pattern such as
+     Vector[int, string, bool] is rejected because it is ambiguous with a
+     resizable collection contract.
+   - Repeated bracket suffixes on homogeneous runtime collections denote rank,
+     so Vector[int][int] is the two-dimensional shorthand. The rank=N named
+     parameter is an equivalent explicit rank declaration when one bracketed
+     element shape is present.
+   - Runtime size/capacity are constructor state, not type metadata; size= and
+     capacity= are rejected inside '<...>'.
    - "block" followed by "{" is a standalone lexical scope. It has no implicit
      scheduling behavior and declarations inside it do not escape the scope.
    - Unparenthesized C-style headers are distinguished by their semicolon
