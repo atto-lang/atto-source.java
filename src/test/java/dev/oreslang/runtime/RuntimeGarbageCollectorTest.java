@@ -26,6 +26,26 @@ final class RuntimeGarbageCollectorTest {
     }
 
     @Test
+    void explicitReleaseFailureIsRetriedWhileOwnerRemainsReachable() {
+        AtomicInteger attempts = new AtomicInteger();
+        Object owner = new Object();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1))) {
+            var handle = gc.track(owner, () -> {
+                if (attempts.incrementAndGet() == 1) throw new IllegalStateException("transient");
+            });
+            assertThrows(IllegalStateException.class, handle::close);
+            assertEquals(1, attempts.get());
+
+            var retry = gc.collectPeriodic();
+            assertEquals(1, retry.cleaned());
+            assertEquals(0, retry.trackedAfter());
+            assertEquals(2, attempts.get());
+
+            java.lang.ref.Reference.reachabilityFence(owner);
+        }
+    }
+
+    @Test
     void queuedFailureIsRetriedAfterItsNotificationWasConsumed() throws Exception {
         AtomicInteger attempts = new AtomicInteger();
         try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1))) {
