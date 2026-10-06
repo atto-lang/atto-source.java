@@ -76,8 +76,10 @@ public final class Parser {
                     rootDeclarations.add(parseContract(modifiers.visibility));
                     continue;
                 }
-                if (match(CONTRACT)) {
-                if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) throw error(previous(), "contracts do not accept class/callable modifiers");
+            if (match(CONTRACT)) {
+                if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    throw error(previous(), "contracts do not accept class/callable modifiers");
+                }
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 return parseContract(modifiers.visibility);
             }
