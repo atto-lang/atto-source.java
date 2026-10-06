@@ -19,6 +19,36 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 public final class OresFutures {
     private OresFutures() { }
 
+    /**
+     * Transfer deadline/cancellation ownership of this operation. All observers
+     * see its outcome; do not use this to time out a shared producer locally.
+     */
+    public static <T> OresFuture<T> withTimeout(OresFuture<T> source, java.time.Duration timeout) {
+        Objects.requireNonNull(source, "source");
+        OresDeadlineScope scope = new OresDeadlineScope(timeout, "Future.with_timeout");
+        Runnable detach = scope.register(source::abortFromRuntime);
+        source.whenCompleteRuntime((value, failure) -> { detach.run(); scope.close(); });
+        return source;
+    }
+
+    /** Bound only this observation. The shared producer remains untouched. */
+    public static <T> OresFuture<T> waitTimeout(OresFuture<T> source, java.time.Duration timeout) {
+        Objects.requireNonNull(source, "source");
+        OresDeadlineScope scope = new OresDeadlineScope(timeout, "Future.wait_timeout");
+        OresFuture<T> observation = new OresFuture<>();
+        Runnable detach = scope.register(observation::abortFromRuntime);
+        var registration = source.whenCompleteRuntimeCancellable((value, failure) -> {
+            if (failure == null) observation.completeFromRuntime(value);
+            else observation.failFromRuntime(failure);
+        });
+        observation.whenCompleteRuntime((value, failure) -> {
+            registration.detach();
+            detach.run();
+            scope.close();
+        });
+        return observation;
+    }
+
     public record Settled<T>(T value, Throwable error) {
         public boolean ok() {
             return error == null;
