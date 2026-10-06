@@ -79,6 +79,30 @@ final class RuntimeProxyLanguageTest {
     }
 
     @Test
+    void proxyAssignmentCannotReturnMoveOnlyValueOutsideLock() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> check("""
+                        define class Inner as
+                          pub let int value = 1;
+                        end
+
+                        define class Outer as
+                          pub let Inner inner = new Inner();
+                        end
+
+                        fnc bad(): Inner {
+                          val guarded = rt proxy new Outer();
+                          return guarded.inner = new Inner();
+                        }
+                        """));
+
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("void") || message.contains("return"),
+                failure.getMessage());
+    }
+
+    @Test
     void proxyDoesNotLeakMoveOnlyFields() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
