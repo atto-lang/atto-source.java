@@ -1564,6 +1564,23 @@ public final class TypeChecker {
                         typeOf(channelOp.value(), env, generics, self),
                         element,
                         "writech value");
+                if (channelOp.callback()) {
+                    if (channelOp.mode() != Ast.WaitMode.NONBLOCKING) {
+                        throw new IllegalArgumentException(
+                                "channel callbacks require nonblocking writech");
+                    }
+                    if (currentActorKind == Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "nb cb writech requires an actor execution domain because its callback runs later");
+                    }
+                    checkBlock(
+                            channelOp.callbackBody(),
+                            new Env(env),
+                            generics,
+                            Primitive.VOID,
+                            self);
+                    return Primitive.VOID;
+                }
                 return switch (channelOp.mode()) {
                     case BLOCKING -> Primitive.VOID;
                     case NONBLOCKING -> new Named("Future", List.of(Primitive.VOID));
