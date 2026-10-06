@@ -175,11 +175,25 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
-            for (Ast.DestructureBinding binding : destructure.bindings()) {
+            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW) {
+                throw error("cannot destructure a borrowed aggregate into owned bindings; "
+                        + "borrow provenance for destructured members is not represented end-to-end");
+            }
+            for (int i = 0; i < destructure.bindings().size(); i++) {
+                Ast.DestructureBinding binding = destructure.bindings().get(i);
+                if (binding.isDiscard()) continue;
+                Ast.TypeRef bindingType = destructureBindingType(
+                        destructure,
+                        source.type,
+                        i,
+                        binding.name());
+                ValueKind valueKind = bindingType.name().equals("$infer$")
+                        ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
+                        : kindOfType(bindingType);
                 scope.define(binding.name(), new VarState(
-                        Ast.TypeRef.inferred(),
-                        binding.kind() == Ast.BindingKind.LET,
-                        source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                        bindingType,
+                        binding.mutable(),
+                        valueKind,
                         Origin.LOCAL));
             }
             return;
@@ -617,7 +631,9 @@ public final class OwnershipChecker {
                 blockLocals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 scanExpr(destructure.initializer(), blockLocals, outer, recursiveBinding, captures, false);
-                for (Ast.DestructureBinding binding : destructure.bindings()) blockLocals.add(binding.name());
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) blockLocals.add(binding.name());
+                }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
@@ -871,6 +887,45 @@ public final class OwnershipChecker {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
         }
+    }
+
+    private Ast.TypeRef destructureBindingType(
+            Ast.DestructureStmt destructure,
+            Ast.TypeRef source,
+            int index,
+            String name) {
+        Ast.Expr initializer = destructure.initializer();
+
+        if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+            if (initializer instanceof Ast.TupleExpr tuple && index < tuple.elements().size()) {
+                return inferFieldType(tuple.elements().get(index));
+            }
+            if (initializer instanceof Ast.ListExpr list && index < list.elements().size()) {
+                return inferFieldType(list.elements().get(index));
+            }
+        } else if (initializer instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (field.name().equals(name)) return inferFieldType(field.value());
+            }
+        }
+
+        if (source == null) return Ast.TypeRef.inferred();
+        if (source.isBorrow()) source = source.borrowedTarget();
+
+        if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+            if ((source.name().equals("Array") || source.name().equals("List"))
+                    && source.arguments().size() == 1) {
+                return source.arguments().getFirst();
+            }
+            return Ast.TypeRef.inferred();
+        }
+
+        Ast.ClassDecl aggregate = findClass(source.name());
+        if (aggregate != null) {
+            Ast.FieldDecl field = findField(aggregate, name, new LinkedHashSet<>());
+            if (field != null) return field.type();
+        }
+        return Ast.TypeRef.inferred();
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {

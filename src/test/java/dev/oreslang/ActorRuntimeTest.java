@@ -16,6 +16,32 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
     @Test
+    void actorLocalStatePersistsAcrossMessagesWithoutCrossingActors() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            Object key = new Object();
+            var observations = new java.util.concurrent.LinkedBlockingQueue<String>();
+            java.util.function.Supplier<ActorRuntime.Behavior<String>> behavior = () -> (message, context) -> {
+                var state = runtime.currentActorLocal(key, java.util.concurrent.atomic.AtomicInteger::new);
+                observations.add(message + ":" + state.incrementAndGet());
+            };
+            var first = runtime.spawn(behavior);
+            var second = runtime.spawn(behavior);
+            first.send("first");
+            first.send("first");
+            second.send("second");
+            second.send("second");
+            var actual = new java.util.HashSet<String>();
+            for (int i = 0; i < 4; i++) {
+                String observation = observations.poll(2, TimeUnit.SECONDS);
+                assertNotNull(observation, "actor did not deliver its local-state observation");
+                actual.add(observation);
+            }
+            assertEquals(java.util.Set.of("first:1", "first:2", "second:1", "second:2"), actual);
+            assertNull(runtime.currentActorLocal(key, () -> { fail("initializer ran outside an actor"); return null; }));
+        }
+    }
+
+    @Test
     void freezesMessagesBeforeDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);

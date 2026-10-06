@@ -6,6 +6,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -944,7 +945,7 @@ public final class TraitComposer {
                         composeExpr(moduleName, binding.initializer()));
             }
             if (stmt instanceof Ast.DestructureStmt destructure) {
-                return new Ast.DestructureStmt(destructure.bindings(), composeExpr(moduleName, destructure.initializer()));
+                return new Ast.DestructureStmt(destructure.kind(), destructure.bindings(), composeExpr(moduleName, destructure.initializer()));
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 return new Ast.ReturnStmt(composeExpr(moduleName, ret.value()));
@@ -1414,6 +1415,7 @@ public final class TraitComposer {
             }
             if (statement instanceof Ast.DestructureStmt destructure) {
                 return new Ast.DestructureStmt(
+                        destructure.kind(),
                         destructure.bindings(),
                         substitute(destructure.initializer(), substitutions));
             }

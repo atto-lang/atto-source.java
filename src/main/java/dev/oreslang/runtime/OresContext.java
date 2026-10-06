@@ -10,7 +10,9 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 public final class OresContext implements AutoCloseable {
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
@@ -26,6 +28,7 @@ public final class OresContext implements AutoCloseable {
     private final ExecutionProfile executionProfile;
     private final boolean graalIsolated;
     private final long codeGeneration;
+    private final Map<Object, Object> contextLocals = new ConcurrentHashMap<>();
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -53,6 +56,11 @@ public final class OresContext implements AutoCloseable {
     public ExecutionProfile executionProfile() { return executionProfile; }
     public boolean graalIsolated() { return graalIsolated; }
     public long codeGeneration() { return codeGeneration; }
+
+    @SuppressWarnings("unchecked")
+    public <T> T contextLocal(Object key, Supplier<T> initializer) {
+        return (T) contextLocals.computeIfAbsent(key, ignored -> initializer.get());
+    }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         isolatePolicy.require(capability, api);
@@ -95,6 +103,7 @@ public final class OresContext implements AutoCloseable {
     @Override
     public void close() {
         actors.close();
+        contextLocals.clear();
         output.flush();
     }
 }
