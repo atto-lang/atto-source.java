@@ -16,11 +16,11 @@ async generator fnc async_ids(): int {
 }
 
 pub async fnc main(): void {
-  for id of ids() do
+  for const id of ids() do
     stdio.println(id);
   done
 
-  for await id of async_ids() do
+  for await const id of async_ids() do
     stdio.println(id);
   done
   return;

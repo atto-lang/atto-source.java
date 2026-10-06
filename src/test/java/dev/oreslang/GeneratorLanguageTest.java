@@ -63,9 +63,9 @@ final class GeneratorLanguageTest {
                   stdio.stdout.write(closed.done);
                   stdio.stdout.write(":");
                   val Generator<int> legacy = values();
-                  for value of legacy { stdio.stdout.write(value); }
+                  for const value of legacy { stdio.stdout.write(value); }
                   val Iterator<int> current = values();
-                  for value of current { stdio.stdout.write(value); }
+                  for const value of current { stdio.stdout.write(value); }
                   return;
                 }
                 """));
@@ -98,10 +98,10 @@ final class GeneratorLanguageTest {
                 }
 
                 pub routine main(): void {
-                  for value of first() do
+                  for const value of first() do
                     stdio.stdout.write(value);
                   done
-                  for value of second() do
+                  for const value of second() do
                     stdio.stdout.write(value);
                   done
                   return;
@@ -126,7 +126,7 @@ final class GeneratorLanguageTest {
                 }
 
                 pub async fnc main(): void {
-                  for await value of values() do
+                  for await const value of values() do
                     stdio.stdout.write(value);
                   done
                   return;
@@ -164,9 +164,9 @@ final class GeneratorLanguageTest {
                   pub [Symbol.iterator](): Array<int> { return [5, 6]; }
                 end
                 pub async routine main(): void {
-                  for await value of [1, 2] { stdio.stdout.write(value); }
-                  for await value of values() { stdio.stdout.write(value); }
-                  for await value of new Bag() { stdio.stdout.write(value); }
+                  for await const value of [1, 2] { stdio.stdout.write(value); }
+                  for await const value of values() { stdio.stdout.write(value); }
+                  for await const value of new Bag() { stdio.stdout.write(value); }
                   return;
                 }
                 """));
@@ -189,7 +189,7 @@ final class GeneratorLanguageTest {
 
                 pub async routine main(): void {
                   val bag = new Bag();
-                  for await item of bag {
+                  for await const item of bag {
                     stdio.stdout.write(item);
                   }
                   return;
@@ -227,7 +227,7 @@ final class GeneratorLanguageTest {
                 }
 
                 pub async fnc main(): void {
-                  for value of values() {
+                  for const value of values() {
                     stdio.stdout.write(value);
                   }
                   return;
@@ -241,7 +241,7 @@ final class GeneratorLanguageTest {
                 }
 
                 pub routine main(): void {
-                  for await value of values() {
+                  for await const value of values() {
                     stdio.stdout.write(value);
                   }
                   return;
@@ -291,7 +291,7 @@ final class GeneratorLanguageTest {
                 async fnc bad(): void {
                   val Box box = new Box();
                   val &Box borrowed = &box;
-                  for await value of [1, 2] { stdio.stdout.write(value); }
+                  for await const value of [1, 2] { stdio.stdout.write(value); }
                   stdio.stdout.write(borrowed.value);
                   return;
                 }
