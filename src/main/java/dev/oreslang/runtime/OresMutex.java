@@ -881,6 +881,11 @@ public final class OresMutex {
             }
 
             private void requireOwnerDomain() {
+                // A guard is itself mutable shared-memory authority. Recheck
+                // here so a host-acquired guard cannot be captured/laundered
+                // into actor code even when domain enforcement was disabled for
+                // the original host acquisition.
+                Shared.this.requireActorAccess();
                 if (enforceOwnerDomain
                         && !Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
                     throw new WrongMutexDomainException(
