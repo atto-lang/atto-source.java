@@ -41,13 +41,13 @@ final class ReturnedDestructuringTest {
     void returnedStructsAndObjectsUseNamedObjectPatterns() throws Exception {
         String output = run("""
                 struct Result {
-                  pub x: int
-                  pub bar: String
+                  pub x: int;
+                  pub bar: String;
                 }
 
                 define class Payload as
-                  pub val int x;
-                  pub val String bar;
+                  pub val int x2;
+                  pub val String bar2;
                 end
 
                 fnc getBar() => Result {
@@ -178,8 +178,8 @@ final class ReturnedDestructuringTest {
     void objectDestructureCanExposeMutableOwnedMembers() throws Exception {
         String output = run("""
                 struct Bag {
-                  pub values: Array<int>
-                  pub name: String
+                  pub values: Array<int>;
+                  pub name: String;
                 }
 
                 fnc getBag() => Bag {
@@ -300,10 +300,9 @@ final class ReturnedDestructuringTest {
                 }
                 """);
 
-        TypeChecker.check(program);
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
-                () -> OwnershipChecker.check(program));
+                () -> TypeChecker.check(program));
         assertTrue(error.getMessage().contains("borrowed aggregate"));
         assertTrue(error.getMessage().contains("provenance"));
     }
@@ -313,7 +312,7 @@ final class ReturnedDestructuringTest {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         struct Result {
-                          pub x: int
+                          pub x: int;
                         }
 
                         fnc result() => Result {

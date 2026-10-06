@@ -33,6 +33,13 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long MAX_FREEZE_BYTES = 16L * 1024 * 1024;
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final ThreadLocal<Map<Object, Object>> currentActorLocals = new ThreadLocal<>();
+
+    @SuppressWarnings("unchecked")
+    public <T> T currentActorLocal(Object key, Supplier<T> initializer) {
+        Map<Object, Object> locals = currentActorLocals.get();
+        return locals == null ? null : (T) locals.computeIfAbsent(key, ignored -> initializer.get());
+    }
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
 
@@ -327,6 +334,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
         private volatile Thread thread;
+        private final Map<Object, Object> locals = new java.util.HashMap<>();
 
         private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
             this.ref = ref;
@@ -341,6 +349,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void run() {
+            currentActorLocals.set(locals);
             try {
                 final Behavior<M> behavior = java.util.Objects.requireNonNull(
                         behaviorFactory.get(), "actor behavior factory returned null");
@@ -363,6 +372,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // so subsequent sends fail immediately instead of targeting a
                 // dead actor left behind in the runtime registry.
             } finally {
+                currentActorLocals.remove();
+                locals.clear();
                 actors.remove(ref.id(), this);
             }
         }
