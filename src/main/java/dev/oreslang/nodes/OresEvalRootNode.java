@@ -3724,11 +3724,11 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' is immutable");
                 }
                 object.fields.put(member, value);
-                return value;
+                return null;
             }
             if (receiver instanceof DynamicStructValue dynamic) {
                 dynamic.fields.put(member, value);
-                return value;
+                return null;
             }
             throw new IllegalArgumentException(
                     "rt Proxy<T> member assignment requires class/struct state");
@@ -3744,7 +3744,7 @@ public final class OresEvalRootNode extends RootNode {
                             "DynamicStruct key must be a string");
                 }
                 dynamic.fields.put(key, value);
-                return value;
+                return null;
             }
             throw new IllegalArgumentException(
                     "indexed rt Proxy<T> assignment currently requires DynamicStruct<T>");
