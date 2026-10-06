@@ -34,7 +34,7 @@ final class GeneratorLanguageTest {
                 }
                 """));
         IllegalArgumentException erased = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("fnc check(IteratorResult<int> result): bool { return result is IteratorResult<int>; }")));
+                TypeChecker.check(Parser.parse("fnc check(IteratorResult<int> result): bool { return result is type IteratorResult<int>; }")));
         assertTrue(erased.getMessage().contains("cannot test parameterized type"), erased.getMessage());
     }
     @Test
