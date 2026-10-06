@@ -3534,6 +3534,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object indexValue(Object receiver, Object index) {
+            if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                return proxy.read(raw -> requireProxyBoundaryValue(
+                        indexValue(raw, index),
+                        "rt proxy indexed read"));
+            }
             if (receiver instanceof DynamicStructValue dynamic) {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
@@ -3567,6 +3572,48 @@ public final class OresEvalRootNode extends RootNode {
                     "value is not indexable");
         }
 
+        private Object requireProxyBoundaryValue(
+                Object value,
+                String operation) {
+            if (value == null
+                    || value instanceof String
+                    || value instanceof Boolean
+                    || value instanceof Character
+                    || value instanceof Byte
+                    || value instanceof Short
+                    || value instanceof Integer
+                    || value instanceof Long
+                    || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof Enum<?>
+                    || value instanceof java.util.UUID
+                    || value instanceof Complex
+                    || value instanceof OptionUnwrapError) {
+                return value;
+            }
+            if (value instanceof OptionValue option) {
+                if (!option.present()) return option;
+                return new OptionValue(
+                        true,
+                        requireProxyBoundaryValue(
+                                option.value(),
+                                operation + " Option payload"));
+            }
+            if (value instanceof ResultValue result) {
+                return new ResultValue(
+                        result.ok(),
+                        requireProxyBoundaryValue(
+                                result.value(),
+                                operation + " Result payload"));
+            }
+            throw new IllegalArgumentException(
+                    operation
+                            + " cannot expose mutable/capability state from behind rt Proxy<T>; "
+                            + "return a scalar/immutable value or publish an explicit snapshot");
+        }
+
         private Object unaryValue(String operator, Object value) {
             return switch (operator) {
                 case "&", "&mut", "+" -> value;
@@ -3588,6 +3635,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target instanceof Ast.MemberExpr member) {
                 Object receiver = eval(member.receiver(), env);
+                if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                    return proxy.write(raw ->
+                            assignProxyMemberRaw(
+                                    raw,
+                                    member.member(),
+                                    value,
+                                    env));
+                }
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
                             object.owner.findField(
@@ -3617,6 +3672,10 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
+                if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                    return proxy.write(raw ->
+                            assignProxyIndexRaw(raw, key, value));
+                }
                 if (receiver instanceof DynamicStructValue dynamic) {
                     if (!(key instanceof String string)) {
                         throw new IllegalArgumentException(
@@ -3637,6 +3696,58 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException(
                     "unsupported assignment target");
+        }
+
+        private Object assignProxyMemberRaw(
+                Object receiver,
+                String member,
+                Object value,
+                Env env) {
+            if (receiver instanceof OresObject object) {
+                OwnedField ownedField = object.owner.findField(
+                        object.klass,
+                        member,
+                        new LinkedHashSet<>());
+                if (ownedField == null) {
+                    throw new IllegalArgumentException(
+                            "unknown field " + object.klass.name() + "." + member);
+                }
+                object.owner.requireClassMemberVisible(
+                        ownedField.field().visibility(),
+                        ownedField.owner(),
+                        env == null ? null : env.accessClass(),
+                        "field",
+                        ownedField.field().name());
+                if (ownedField.field().bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "field '" + object.klass.name() + "." + member
+                                    + "' is immutable");
+                }
+                object.fields.put(member, value);
+                return value;
+            }
+            if (receiver instanceof DynamicStructValue dynamic) {
+                dynamic.fields.put(member, value);
+                return value;
+            }
+            throw new IllegalArgumentException(
+                    "rt Proxy<T> member assignment requires class/struct state");
+        }
+
+        private Object assignProxyIndexRaw(
+                Object receiver,
+                Object index,
+                Object value) {
+            if (receiver instanceof DynamicStructValue dynamic) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "DynamicStruct key must be a string");
+                }
+                dynamic.fields.put(key, value);
+                return value;
+            }
+            throw new IllegalArgumentException(
+                    "indexed rt Proxy<T> assignment currently requires DynamicStruct<T>");
         }
 
         private Object instantiateEvaluated(
@@ -5291,6 +5402,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                return proxy.read(raw -> {
+                    Object value = member(raw, name, env);
+                    if (value instanceof Invokable) {
+                        throw new IllegalArgumentException(
+                                "rt Proxy<T> methods are direct-call-only; invoke '"
+                                        + name + "(...)' instead of extracting the method");
+                    }
+                    return requireProxyBoundaryValue(
+                            value,
+                            "rt proxy member '" + name + "'");
+                });
+            }
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host class " + host.className());
