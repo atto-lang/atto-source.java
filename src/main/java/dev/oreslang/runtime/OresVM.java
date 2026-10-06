@@ -122,6 +122,24 @@ public final class OresVM implements AutoCloseable {
         return rootScheduler;
     }
 
+    /**
+     * Admit runtime CONTROL work through the already-owned root scheduler.
+     *
+     * Mailmen and other control services share the VM CONTROL carrier pool;
+     * they never create a scheduler or carrier pool per ActorGroup.
+     */
+    OresFuture<Void> executeControl(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        if (!started()) {
+            throw new RejectedExecutionException(
+                    "Oreslang VM CONTROL dispatcher is not available");
+        }
+        return rootScheduler.startSync(() -> {
+            task.run();
+            return null;
+        });
+    }
+
     public boolean isRootSchedulerCurrent() {
         return OresScheduler.current() == rootScheduler;
     }
