@@ -525,7 +525,7 @@ final class ParserTest {
                     end
                     """.formatted(keyword, keyword)));
 
-            assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+            if (!keyword.equals("done")) assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                     define class Flow as
                       pub %s(): int { return 1; }
                     end
@@ -538,6 +538,13 @@ final class ParserTest {
                     end
                     """.formatted(keyword, keyword)));
         }
+    }
+
+    @Test
+    void doneIsReadableAsAProtocolMemberButIsNotALexicalIdentifier() {
+        assertDoesNotThrow(() -> Parser.parse("fnc check(IteratorResult<int> result): bool { return result.done; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("fnc bad(): void { val done = true; return; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("fnc bad(): bool { return done; }"));
     }
 
     @Test

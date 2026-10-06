@@ -46,18 +46,20 @@ public final class Parser {
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
                     modules.add(parseModule(annotations));
                     continue;
                 }
                 if (match(CLASS)) {
+                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
+                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
@@ -154,6 +156,9 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
+        // Canonical module syntax is "define module Name as ... end".
+        // Keep the pre-"as" spelling accepted while existing source migrates.
+        match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
@@ -170,10 +175,12 @@ public final class Parser {
             }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
+                if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
             if (match(INTERFACE)) {
+                if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseInterface(modifiers.visibility);
             }
@@ -210,6 +217,7 @@ public final class Parser {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
+        if (modifiers.generator) throw error(peek(), "'generator' applies only to fnc or routine declarations");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
@@ -239,7 +247,7 @@ public final class Parser {
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
             List<Ast.Stmt> body = parseBlock();
-            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind,
+            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, modifiers.nonLexical, actorKind,
                     generics, params, returnType, annotations, body);
         }
 
@@ -249,7 +257,7 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics, params,
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, modifiers.nonLexical, actorKind, generics, params,
                 returnType, annotations, body);
     }
 
@@ -269,6 +277,7 @@ public final class Parser {
                 if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
             }
+            if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
@@ -503,12 +512,14 @@ public final class Parser {
     private Modifiers parseModifiers() {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
+        boolean generator = false;
         boolean nonLexical = false;
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean shared = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
+        boolean generatorSeen = false;
         boolean nonLexicalSeen = false;
         boolean staticSeen = false;
         boolean abstractSeen = false;
@@ -527,6 +538,10 @@ public final class Parser {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
                 async = true;
+            } else if (match(GENERATOR)) {
+                if (generatorSeen) throw error(previous(), "duplicate 'generator' modifier");
+                generatorSeen = true;
+                generator = true;
             } else if (match(NLEX)) {
                 if (nonLexicalSeen) throw error(previous(), "duplicate 'nlex' modifier");
                 nonLexicalSeen = true;
@@ -547,7 +562,7 @@ public final class Parser {
                 break;
             }
         }
-        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared);
+        return new Modifiers(visibility, async, generator, nonLexical, isStatic, isAbstract, shared);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -749,8 +764,28 @@ public final class Parser {
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
         if (match(LT)) {
-            if (match(GT)) infer = true;
-            else {
+            if (match(GT)) {
+                infer = true;
+            } else if (name.equals("Fnc") || name.equals("Function")) {
+                /*
+                 * Callable types support both:
+                 *   Fnc<Arg1, Arg2, Result>       (legacy comma form)
+                 *   Fnc<Result(Arg1, Arg2)>       (signature-in-generics form)
+                 *
+                 * The signature form is normalized immediately to the same
+                 * TypeRef representation used by "(Args...) => Result".
+                 */
+                Ast.TypeRef first = parseTypeRef();
+                if (match(LPAREN)) {
+                    List<Ast.TypeRef> params = parseFunctionTypeParametersAfterOpen();
+                    consume(GT, "expected '>' after callable signature type");
+                    return Ast.TypeRef.functionType(params, first);
+                }
+
+                args.add(first);
+                while (match(COMMA)) args.add(parseTypeRef());
+                consume(GT, "expected '>' after type arguments");
+            } else {
                 do args.add(parseTypeRef()); while (match(COMMA));
                 consume(GT, "expected '>' after type arguments");
             }
@@ -760,6 +795,13 @@ public final class Parser {
 
     private Ast.TypeRef parseFunctionTypeSignature() {
         consume(LPAREN, "expected '(' in function type");
+        List<Ast.TypeRef> params = parseFunctionTypeParametersAfterOpen();
+        consume(FAT_ARROW, "function types use the fat arrow '=>'");
+        Ast.TypeRef result = parseTypeRef();
+        return Ast.TypeRef.functionType(params, result);
+    }
+
+    private List<Ast.TypeRef> parseFunctionTypeParametersAfterOpen() {
         List<Ast.TypeRef> params = new ArrayList<>();
         if (!check(RPAREN)) {
             do {
@@ -769,9 +811,7 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RPAREN, "expected ')' after function type parameters");
-        consume(FAT_ARROW, "function types use the fat arrow '=>'");
-        Ast.TypeRef result = parseTypeRef();
-        return Ast.TypeRef.functionType(params, result);
+        return params;
     }
 
     private boolean looksLikeFunctionType() {
@@ -802,6 +842,30 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        // Runtime blocks may create values, never declaration identities. This
+        // keeps source semantics compatible with both closed-world AOT and JIT:
+        // JIT may specialize known declarations, but it cannot invent modules,
+        // namespaces, classes, or trait/impl identities while executing code.
+        if (check(NAMESPACE)) {
+            throw error(peek(), "namespace declarations are file-scope compile-time declarations and cannot execute inside a block");
+        }
+        if (check(DEFINE)) {
+            Token define = peek();
+            Token.Type next = current + 1 < tokens.size() ? tokens.get(current + 1).type() : EOF;
+            if (next == MODULE) {
+                throw error(define, "module declarations are compile-time declarations and cannot execute inside a block");
+            }
+            if (next == CLASS) {
+                throw error(define, "class declarations are compile-time declarations and cannot execute inside a block");
+            }
+            if (next == TRAIT) {
+                throw error(define, "trait declarations are compile-time declarations and cannot execute inside a block");
+            }
+        }
+        if (check(TRAIT)) {
+            throw error(peek(), "trait declarations are static/module-scope declarations; runtime trait creation is forbidden");
+        }
+
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
@@ -813,6 +877,12 @@ public final class Parser {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeStatementTerminator("return statement should end with ';'");
             return new Ast.ReturnStmt(value);
+        }
+        if (match(YIELD)) {
+            if (check(SEMICOLON) || isSafeStatementBoundary()) throw error(previous(), "yield requires a value");
+            Ast.Expr value = parseExpression();
+            consumeStatementTerminator("yield statement should end with ';'");
+            return new Ast.YieldStmt(value);
         }
         if (match(DEFER)) {
             Ast.Expr expression = parseExpression();
@@ -839,14 +909,17 @@ public final class Parser {
             advance();
             return new Ast.LoopStmt(parseLoopBody());
         }
-        if (match(FOR)) return parseFor();
+        if (match(FOR)) {
+            boolean asyncIteration = match(AWAIT);
+            return parseFor(asyncIteration);
+        }
 
         Ast.Expr expression = parseExpression();
         consumeStatementTerminator("expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
     }
 
-    private Ast.Stmt parseFor() {
+    private Ast.Stmt parseFor(boolean asyncIteration) {
         if (!match(LPAREN)) {
             if (looksLikeUnparenthesizedForOf()) {
                 Ast.BindingKind kind = isBindingKind(peek().type())
@@ -856,14 +929,17 @@ public final class Parser {
                     List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
                     consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
                     Ast.Expr iterable = parseExpression();
-                    return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+                    return new Ast.ForOfDestructureStmt(bindings, iterable, asyncIteration, parseLoopBody());
                 }
                 String name = consume(IDENT, "iterator for-loop requires a binding name").lexeme();
                 consume(OF, "iterator for-loop shorthand uses 'for x of iterable'");
                 Ast.Expr iterable = parseExpression();
-                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
+                return new Ast.ForOfStmt(kind, name, iterable, asyncIteration, parseLoopBody());
             }
 
+            if (asyncIteration) {
+                throw error(peek(), "'for await' requires iterator syntax: for await x of asyncIterable");
+            }
             Ast.Stmt initializer = parseUnparenthesizedForInitializer();
             consume(SEMICOLON, "expected ';' after for initializer");
             Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
@@ -879,16 +955,19 @@ public final class Parser {
                 consume(OF, "expected 'of' after for-of destructure pattern");
                 Ast.Expr iterable = parseExpression();
                 consume(RPAREN, "expected ')' after for-of header");
-                return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+                return new Ast.ForOfDestructureStmt(bindings, iterable, asyncIteration, parseLoopBody());
             }
             if (check(IDENT) && checkNext(OF)) {
                 String name = advance().lexeme();
                 consume(OF, "expected 'of' in for-of loop");
                 Ast.Expr iterable = parseExpression();
                 consume(RPAREN, "expected ')' after for-of header");
-                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
+                return new Ast.ForOfStmt(kind, name, iterable, asyncIteration, parseLoopBody());
             }
 
+            if (asyncIteration) {
+                throw error(peek(), "'for await' requires iterator syntax: for await (x of asyncIterable)");
+            }
             Ast.TypeRef type = null;
             String name;
             if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
@@ -907,6 +986,26 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
+        if (looksLikeForOfDestructurePattern()) {
+            List<Ast.DestructureBinding> bindings = parseForSequenceBindings(Ast.BindingKind.VAL);
+            consume(OF, "expected 'of' after for-of destructure pattern");
+            Ast.Expr iterable = parseExpression();
+            consume(RPAREN, "expected ')' after for-of header");
+            return new Ast.ForOfDestructureStmt(bindings, iterable, asyncIteration, parseLoopBody());
+        }
+
+        if (check(IDENT) && checkNext(OF)) {
+            String name = advance().lexeme();
+            consume(OF, "expected 'of' in for-of loop");
+            Ast.Expr iterable = parseExpression();
+            consume(RPAREN, "expected ')' after for-of header");
+            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, asyncIteration, parseLoopBody());
+        }
+
+        if (asyncIteration) {
+            throw error(peek(), "'for await' requires iterator syntax: for await (x of asyncIterable)");
+        }
+
         if (looksLikeTypedForInitializer()) {
             Ast.TypeRef type = parseTypeRef();
             String name = consume(IDENT, "expected typed loop binding name").lexeme();
@@ -922,22 +1021,6 @@ public final class Parser {
             Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
             consume(RPAREN, "expected ')' after for header");
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
-        }
-
-        if (looksLikeForOfDestructurePattern()) {
-            List<Ast.DestructureBinding> bindings = parseForSequenceBindings(Ast.BindingKind.VAL);
-            consume(OF, "expected 'of' after for-of destructure pattern");
-            Ast.Expr iterable = parseExpression();
-            consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
-        }
-
-        if (check(IDENT) && checkNext(OF)) {
-            String name = advance().lexeme();
-            consume(OF, "expected 'of' in for-of loop");
-            Ast.Expr iterable = parseExpression();
-            consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseLoopBody());
         }
 
         Ast.Stmt initializer = null;
@@ -1581,6 +1664,7 @@ public final class Parser {
         Token token = peek();
         if (isMemberNameToken(token.type())) {
             if (isReservedCallableName(token.type())
+                    && token.type() != DONE
                     && !reservedCallableNameFollowedByInvocation(current)) {
                 throw error(token, "'" + token.lexeme()
                         + "' is reserved and may only be used as a function name in a call or as an object/map key");
@@ -1601,8 +1685,8 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, FIRST, TYPE, TYPEOF,
-                    INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, FIRST, TYPE, TYPES, TYPEOF,
+                    INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
         };
@@ -1879,5 +1963,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean generator, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
 }

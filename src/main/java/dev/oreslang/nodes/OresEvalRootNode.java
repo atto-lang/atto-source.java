@@ -7,6 +7,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -14,6 +15,9 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
+import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresFutures;
+import dev.oreslang.runtime.GeneratorRuntime;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -114,7 +118,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
-        private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+        private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+        private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
@@ -130,6 +135,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
+        private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
 
         private enum InvocationKind {
@@ -250,7 +256,7 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.ModuleDecl module : program.modules()) {
                 modules.put(module.name(), module);
                 for (Ast.Decl decl : module.declarations()) {
-                    if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                    if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
@@ -258,6 +264,30 @@ public final class OresEvalRootNode extends RootNode {
                         index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
                     } else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
                 }
+            }
+        }
+
+        private void indexFunction(String module, Ast.FunctionDecl fn) {
+            String qualified = module + "." + fn.name();
+            indexFunctionSlot(qualified, fn);
+
+            String owner = unqualifiedFunctionOwners.putIfAbsent(fn.name(), module);
+            if (owner == null || owner.equals(module)) {
+                if (!ambiguousFunctions.contains(fn.name())) indexFunctionSlot(fn.name(), fn);
+            } else {
+                ambiguousFunctions.add(fn.name());
+                functions.remove(fn.name());
+            }
+        }
+
+        private void indexFunctionSlot(String key, Ast.FunctionDecl fn) {
+            LinkedHashMap<Integer, Ast.FunctionDecl> family =
+                    functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
+            Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
+            if (previous != null) {
+                throw new IllegalArgumentException(
+                        "callable '" + key + "' already has arity " + fn.parameters().size()
+                                + "; overload identity is name + arity only");
             }
         }
 
@@ -270,9 +300,46 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private Ast.FunctionDecl findFunction(String name) {
-            if (ambiguousFunctions.contains(name)) throw new IllegalArgumentException("ambiguous function " + name + "; qualify it with its module");
-            return functions.get(name);
+        private boolean hasFunctionFamily(String name) {
+            if (ambiguousFunctions.contains(name)) {
+                throw new IllegalArgumentException(
+                        "ambiguous function " + name + "; qualify it with its module");
+            }
+            return functions.containsKey(name);
+        }
+
+        private Ast.FunctionDecl findFunction(String name, int arity) {
+            if (ambiguousFunctions.contains(name)) {
+                throw new IllegalArgumentException(
+                        "ambiguous function " + name + "; qualify it with its module");
+            }
+            LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
+            return family == null ? null : family.get(arity);
+        }
+
+        private Ast.FunctionDecl findSingleFunction(String name) {
+            if (ambiguousFunctions.contains(name)) {
+                throw new IllegalArgumentException(
+                        "ambiguous function " + name + "; qualify it with its module");
+            }
+            return singleFunction(functions.get(name), name);
+        }
+
+        private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
+            LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
+            return family == null ? null : family.get(arity);
+        }
+
+        private Ast.FunctionDecl singleFunction(
+                LinkedHashMap<Integer, Ast.FunctionDecl> family,
+                String displayName) {
+            if (family == null || family.isEmpty()) return null;
+            if (family.size() > 1) {
+                throw new IllegalArgumentException(
+                        "overloaded callable '" + displayName
+                                + "' must be called so name + arity can select a slot");
+            }
+            return family.values().iterator().next();
         }
 
         private Ast.ClassDecl findClass(String name) {
@@ -332,10 +399,13 @@ public final class OresEvalRootNode extends RootNode {
                         "main cannot run before successful initialization of code unit "
                                 + codeUnitId + "; current phase=" + startupPhase);
             }
-            Ast.FunctionDecl main = functions.get(Parser.ROOT_MODULE + ".main");
-            if (main == null) main = findFunction("main");
+            Ast.FunctionDecl main = findQualifiedFunction(Parser.ROOT_MODULE + ".main", 0);
+            if (main == null) main = findFunction("main", 0);
             if (main == null) return null;
             Object result = callFunction(main, List.of(arguments));
+            if (result instanceof OresFuture<?> future) {
+                return AsyncRuntime.await(future);
+            }
             if (result instanceof CompletionStage<?> stage) {
                 return AsyncRuntime.await(stage);
             }
@@ -343,7 +413,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokePublic(String name, Object[] arguments) {
-            Ast.FunctionDecl fn = findFunction(name);
+            Ast.FunctionDecl fn = findFunction(name, arguments.length);
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
@@ -409,6 +479,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation invokableInvocation(Invokable callable, List<?> args) {
+            // Extracted method/static values must enter the same trampoline
+            // slots as direct calls, not recursively start nested trampolines.
+            if (callable instanceof BoundMethod bound) {
+                return bound.receiver.owner.prepareBoundMethodInvocation(
+                        bound.receiver, bound.methodName, objectArguments(args), bound.accessClass);
+            }
+            if (callable instanceof StaticFunctionValue function) {
+                return function.owner.prepareStaticValueInvocation(
+                        function.klass, function.functionName, objectArguments(args), function.accessClass);
+            }
             return new Invocation(this, InvocationKind.INVOKABLE, null, callable, objectArguments(args));
         }
 
@@ -431,6 +511,26 @@ public final class OresEvalRootNode extends RootNode {
                         "init is a lifecycle hook and cannot be invoked directly; startup runs it exactly once");
             }
             List<Object> normalized = normalizeFunctionArguments(fn, args);
+            if (fn.generator()) {
+                if (fn.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalStateException(
+                            "actor callables cannot expose generator activations across mailbox turns");
+                }
+
+                List<?> captured = fn.async()
+                        ? detachAsyncArguments(normalized)
+                        : List.copyOf(normalized);
+                GeneratorRuntime.Producer<Object> producer = emitter -> {
+                    GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
+                            ? value -> emitter.emit(detachAsyncValue(value, new IdentityHashMap<>()))
+                            : emitter;
+                    callGeneratorBodyRaw(fn, captured, boundaryEmitter);
+                };
+                return fn.async()
+                        ? GeneratorRuntime.asyncGenerator(context.asyncRuntime(), producer)
+                        : GeneratorRuntime.generator(context.asyncRuntime(), producer);
+            }
+
             if (fn.actorKind() == Ast.ActorKind.NONE) {
                 if (!fn.async()) return callFunctionBodyRaw(fn, normalized);
 
@@ -538,6 +638,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof ResultValue result) {
                     return new ResultValue(result.ok(), detachAsyncValue(result.value(), visiting));
                 }
+                if (value instanceof GeneratorRuntime.Step<?> step) {
+                    return step.done() ? GeneratorRuntime.Step.doneStep()
+                            : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) copy.add(detachAsyncValue(item, visiting));
@@ -597,6 +701,37 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void callGeneratorBodyRaw(
+                Ast.FunctionDecl fn,
+                List<?> args,
+                GeneratorRuntime.Emitter<Object> emitter) {
+            Env env = new Env(null, fn.nonLexical());
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+
+            GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
+            activeGeneratorEmitter.set(emitter);
+            try {
+                executeBlock(fn.body(), env);
+            } catch (ReturnSignal signal) {
+                if (signal.value != null) {
+                    throw new IllegalStateException(
+                            "generator return cannot carry a value; use yield for sequence elements");
+                }
+            } catch (TailCallSignal signal) {
+                throw new IllegalStateException(
+                        "generator completion cannot be tail-call lowered; use a bare return to finish", signal);
+            } catch (BreakSignal | ContinueSignal signal) {
+                throw new IllegalStateException(
+                        "loop control cannot cross a generator function boundary", signal);
+            } finally {
+                if (previous == null) activeGeneratorEmitter.remove();
+                else activeGeneratorEmitter.set(previous);
+            }
+        }
+
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             return invoke(methodInvocation(receiver, method, args));
         }
@@ -606,10 +741,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "async instance methods are not admitted until receiver ownership can be moved into the task");
             }
-            if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
+            for (int i = 0; i < method.arity(); i++) {
                 Ast.Param param = method.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -698,6 +833,19 @@ public final class OresEvalRootNode extends RootNode {
                         ret.value(),
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+            }
+            if (stmt instanceof Ast.YieldStmt yielded) {
+                if (env.hasLiveMutexGuards()) {
+                    throw new IllegalStateException("cannot yield while holding a live MutexGuard");
+                }
+                GeneratorRuntime.Emitter<Object> emitter = activeGeneratorEmitter.get();
+                if (emitter == null) {
+                    throw new IllegalStateException("yield executed outside a generator activation");
+                }
+                Object value = eval(yielded.value(), env);
+                context.schedulerSafepoint();
+                emitter.emit(value);
+                return;
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
@@ -830,50 +978,64 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
-                for (Object item : iterableValues(iterable, env)) {
-                    context.schedulerSafepoint();
-                    List<?> items = asSequence(item);
-                    if (items.size() != loop.bindings().size()) {
-                        throw new IllegalArgumentException(
-                                "for-of destructure arity mismatch: value has " + items.size()
-                                        + " element(s), pattern has " + loop.bindings().size());
-                    }
-                    Env iteration = new Env(env);
-                    for (int i = 0; i < items.size(); i++) {
-                        Ast.DestructureBinding binding = loop.bindings().get(i);
-                        if (!binding.isDiscard()) {
-                            iteration.define(binding.name(), items.get(i), binding.kind());
+                Iterable<?> values = loop.asyncIteration()
+                        ? asyncIterableValues(iterable, env)
+                        : iterableValues(iterable, env);
+                try {
+                    for (Object item : values) {
+                        context.schedulerSafepoint();
+                        List<?> items = asSequence(item);
+                        if (items.size() != loop.bindings().size()) {
+                            throw new IllegalArgumentException(
+                                    "for-of destructure arity mismatch: value has " + items.size()
+                                            + " element(s), pattern has " + loop.bindings().size());
+                        }
+                        Env iteration = new Env(env);
+                        for (int i = 0; i < items.size(); i++) {
+                            Ast.DestructureBinding binding = loop.bindings().get(i);
+                            if (!binding.isDiscard()) {
+                                iteration.define(binding.name(), items.get(i), binding.kind());
+                            }
+                        }
+                        try {
+                            executeBlock(
+                                    loop.body(),
+                                    iteration,
+                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        } catch (ContinueSignal ignored) {
+                            continue;
+                        } catch (BreakSignal ignored) {
+                            break;
                         }
                     }
-                    try {
-                        executeBlock(
-                                loop.body(),
-                                iteration,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    } catch (ContinueSignal ignored) {
-                        continue;
-                    } catch (BreakSignal ignored) {
-                        break;
-                    }
+                } finally {
+                    closeIterable(values);
                 }
                 return;
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
-                for (Object item : iterableValues(iterable, env)) {
-                    context.schedulerSafepoint();
-                    Env iteration = new Env(env);
-                    iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    try {
-                        executeBlock(
-                                loop.body(),
-                                iteration,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                    } catch (ContinueSignal ignored) {
-                        continue;
-                    } catch (BreakSignal ignored) {
-                        break;
+                Iterable<?> values = loop.asyncIteration()
+                        ? asyncIterableValues(iterable, env)
+                        : iterableValues(iterable, env);
+                try {
+                    for (Object item : values) {
+                        context.schedulerSafepoint();
+                        Env iteration = new Env(env);
+                        iteration.define(loop.bindingName(), item, loop.bindingKind());
+                        try {
+                            executeBlock(
+                                    loop.body(),
+                                    iteration,
+                                    inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        } catch (ContinueSignal ignored) {
+                            continue;
+                        } catch (BreakSignal ignored) {
+                            break;
+                        }
                     }
+                } finally {
+                    closeIterable(values);
                 }
                 return;
             }
@@ -924,6 +1086,9 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!tailBarrier) {
                 if (value instanceof Ast.CallExpr call) {
+                    if (isBooleanIntrinsicCall(call, env)) {
+                        throw new ReturnSignal(evalBooleanIntrinsic(call, env));
+                    }
                     Invocation invocation = prepareInvocation(call, env);
                     boolean localTailTarget = invocation.kind() == InvocationKind.INVOKABLE
                             ? invocation.target() instanceof TailCallable callable
@@ -952,7 +1117,7 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name());
+                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return functionInvocation(direct, args);
@@ -965,7 +1130,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -1002,7 +1167,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ClassFacade klass) {
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), methodCall.member(), args.size(), new LinkedHashSet<>());
+                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
@@ -1027,7 +1192,7 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -1051,6 +1216,18 @@ public final class OresEvalRootNode extends RootNode {
                 return invokableInvocation(invokable, args);
             }
 
+            if (call.callee() instanceof Ast.NameExpr importedName) {
+                ImportedBinding directImport = namedImports.get(importedName.name());
+                if (directImport != null
+                        && directImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
+                    List<Object> args = evaluateArguments(call.arguments(), env);
+                    return importedTarget(directImport.declaration()).prepareImportedInvocation(
+                            Ast.ImportKind.FUNCTION,
+                            directImport.sourceName(),
+                            args);
+                }
+            }
+
             Object callee = eval(call.callee(), env);
             List<Object> args = evaluateArguments(call.arguments(), env);
             if (!(callee instanceof Invokable invokable)) {
@@ -1071,6 +1248,109 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(values);
         }
 
+        private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
+            return booleanIntrinsicName(call, env) != null;
+        }
+
+        private String booleanIntrinsicName(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.NameExpr name
+                    && isBooleanIntrinsicName(name.name())
+                    && env.lookup(name.name()) == Env.MISSING
+                    && !hasFunctionFamily(name.name())) {
+                return name.name();
+            }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("BooleanOps")
+                    && isBooleanIntrinsicName(member.member())
+                    && env.lookup("BooleanOps") == Env.MISSING
+                    && !modules.containsKey("BooleanOps")) {
+                return member.member();
+            }
+            return null;
+        }
+
+        private static boolean isBooleanIntrinsicName(String name) {
+            return name.equals("And") || name.equals("Or") || name.equals("Xor");
+        }
+
+        private boolean evalBooleanIntrinsic(Ast.CallExpr call, Env env) {
+            String name = booleanIntrinsicName(call, env);
+            if (name == null) throw new IllegalStateException("not a boolean intrinsic call");
+            if (call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(name + " does not accept call-site type arguments");
+            }
+            List<Ast.Expr> arguments = call.arguments();
+
+            if (arguments.size() == 1) {
+                Object aggregate = eval(arguments.getFirst(), env);
+                if (aggregate instanceof List<?> list) return foldBooleanValues(name, list);
+                if (aggregate instanceof Object[] array) {
+                    return foldBooleanValues(name, java.util.Arrays.asList(array));
+                }
+                throw new IllegalArgumentException(name + " arity 1 selects the List<bool> overload");
+            }
+
+            if (arguments.size() < 2) {
+                throw new IllegalArgumentException(
+                        name + " expects either one List<bool> argument or at least two bool arguments");
+            }
+            return evalBooleanExpressions(name, arguments, env);
+        }
+
+        private boolean evalBooleanExpressions(String name, List<Ast.Expr> expressions, Env env) {
+            return switch (name) {
+                case "And" -> {
+                    for (Ast.Expr expression : expressions) {
+                        if (!booleanIntrinsicValue(name, eval(expression, env))) yield false;
+                    }
+                    yield true;
+                }
+                case "Or" -> {
+                    for (Ast.Expr expression : expressions) {
+                        if (booleanIntrinsicValue(name, eval(expression, env))) yield true;
+                    }
+                    yield false;
+                }
+                case "Xor" -> {
+                    boolean parity = false;
+                    for (Ast.Expr expression : expressions) {
+                        parity ^= booleanIntrinsicValue(name, eval(expression, env));
+                    }
+                    yield parity;
+                }
+                default -> throw new IllegalStateException("unknown boolean intrinsic " + name);
+            };
+        }
+
+        private boolean foldBooleanValues(String name, Iterable<?> values) {
+            return switch (name) {
+                case "And" -> {
+                    for (Object value : values) {
+                        if (!booleanIntrinsicValue(name, value)) yield false;
+                    }
+                    yield true;
+                }
+                case "Or" -> {
+                    for (Object value : values) {
+                        if (booleanIntrinsicValue(name, value)) yield true;
+                    }
+                    yield false;
+                }
+                case "Xor" -> {
+                    boolean parity = false;
+                    for (Object value : values) parity ^= booleanIntrinsicValue(name, value);
+                    yield parity;
+                }
+                default -> throw new IllegalStateException("unknown boolean intrinsic " + name);
+            };
+        }
+
+        private boolean booleanIntrinsicValue(String name, Object value) {
+            if (value instanceof Boolean bool) return bool;
+            throw new IllegalArgumentException(name + " operands must be bool");
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
@@ -1085,6 +1365,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("Future")) return FutureFactory.INSTANCE;
+                if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
+                    return BooleanOpsNamespace.INSTANCE;
+                }
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -1116,7 +1400,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (klass != null) return new ClassFacade(this, klass);
                 Object imported = importedValue(name.name());
                 if (imported != Env.MISSING) return imported;
-                Ast.FunctionDecl fn = findFunction(name.name());
+                Ast.FunctionDecl fn = findSingleFunction(name.name());
                 if (fn != null) {
                     if (fn.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException("actor callable " + fn.name()
@@ -1254,6 +1538,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
@@ -1318,6 +1603,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
+                if (value instanceof OresFuture<?> future) {
+                    return AsyncRuntime.await(future);
+                }
                 if (value instanceof CompletionStage<?> stage) {
                     return AsyncRuntime.await(stage);
                 }
@@ -1429,6 +1717,40 @@ public final class OresEvalRootNode extends RootNode {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof FutureFactory) {
+                return switch (name) {
+                    case "all" -> (Invokable) args -> {
+                        requireOne(args, "Future.all");
+                        return OresFutures.all(asSequence(args.getFirst()));
+                    };
+                    case "race" -> (Invokable) args -> {
+                        requireOne(args, "Future.race");
+                        return OresFutures.race(asSequence(args.getFirst()));
+                    };
+                    default -> throw new IllegalArgumentException("unknown Future member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.Generator<?> generator) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "Iterator.next"); return generator.nextStep(); };
+                    case "close" -> (Invokable) args -> { requireZero(args, "Iterator.close"); generator.close(); return null; };
+                    default -> throw new IllegalArgumentException("unknown Iterator member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.AsyncGenerator<?> generator) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "AsyncIterator.next"); return generator.nextStep(); };
+                    case "close" -> (Invokable) args -> { requireZero(args, "AsyncIterator.close"); generator.close(); return null; };
+                    default -> throw new IllegalArgumentException("unknown AsyncIterator member " + name);
+                };
+            }
+            if (receiver instanceof GeneratorRuntime.Step<?> step) {
+                return switch (name) {
+                    case "done" -> step.done();
+                    case "value" -> new OptionValue(!step.done(), step.value());
+                    default -> throw new IllegalArgumentException("unknown IteratorResult member " + name);
+                };
+            }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
@@ -1438,6 +1760,11 @@ public final class OresEvalRootNode extends RootNode {
                     case "is_released" -> (Invokable) args -> { requireZero(args, "MutexGuard.is_released"); return guard.released(); };
                     default -> member(guard.value(), name, env);
                 };
+            }
+            if (receiver == BooleanOpsNamespace.INSTANCE && isBooleanIntrinsicName(name)) {
+                throw new IllegalArgumentException(
+                        "overloaded builtin BooleanOps." + name
+                                + " must be called so arity can select the scalar or list overload");
             }
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
@@ -1457,10 +1784,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    return klass.owner().tailCallable(
-                            args -> klass.owner().callStaticFunctionRaw(fn, objectArguments(args)));
                 }
-                if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
+                if (!functions.isEmpty()) {
+                    return new StaticFunctionValue(klass.owner(), klass.klass(), name, env == null ? null : env.accessClass());
+                }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
@@ -1478,9 +1805,7 @@ public final class OresEvalRootNode extends RootNode {
                     return object.fields.get(name);
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
-                    throw new IllegalArgumentException("instance method " + object.klass.name() + "." + name
-                            + " is direct-call-only and cannot be used as a first-class callable value; "
-                            + "wrap receiver." + name + "(...) in an explicit lambda when a callback is required");
+                    return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
@@ -1551,8 +1876,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object normalizeHostResult(Object value) {
             if (value == null) return new OptionValue(false, null);
+            if (value instanceof CompletionStage<?> stage) {
+                return OresFuture.from(stage);
+            }
             if (value instanceof Number || value instanceof Boolean || value instanceof String
-                    || value instanceof Character || value instanceof CompletionStage<?>) {
+                    || value instanceof Character || value instanceof OresFuture<?>) {
                 return value;
             }
             return new HostObjectFacade(value);
@@ -1675,16 +2003,22 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
-        private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
-            Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
+        private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
+            CallableSelector selector = CallableSelector.instance(name, args.size());
+            Ast.MethodDecl method = findMethod(receiver.klass, selector, new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            return callMethod(receiver, method, args);
+            requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
+            if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
+            return methodInvocation(receiver, method, args);
         }
 
-        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
-            Ast.MethodDecl fn = findStaticFunction(klass, name, args.size(), new LinkedHashSet<>());
+        private Invocation prepareStaticValueInvocation(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
+            CallableSelector selector = CallableSelector.staticFunction(name, args.size());
+            Ast.MethodDecl fn = findStaticFunction(klass, selector, new LinkedHashSet<>());
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
-            return callStaticFunction(klass, fn, args);
+            requireClassMemberVisible(fn.visibility(), declaringClass(fn), accessClass, "static function", name);
+            if (!fn.genericParameters().isEmpty()) throw new IllegalArgumentException("generic static function values require direct-call specialization");
+            return staticFunctionInvocation(fn, args);
         }
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
@@ -1694,7 +2028,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunctionRaw(Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + fn.name());
-            if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            if (args.size() != fn.arity()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             if (!fn.async()) return callStaticFunctionBodyRaw(fn, args);
 
             List<?> detached = detachAsyncArguments(args);
@@ -1706,7 +2040,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
             Env env = new Env(null, false, declaringClass(fn));
-            for (int i = 0; i < fn.parameters().size(); i++) {
+            for (int i = 0; i < fn.arity(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -1719,6 +2053,56 @@ public final class OresEvalRootNode extends RootNode {
                 return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a static function boundary", signal);
+            }
+        }
+
+        /**
+         * Go-style method value: method code remains shared in the class method
+         * table.  Extraction materializes only the receiver identity plus the
+         * statically known method-name family; callback arity selects the same
+         * closed-world CallableSelector slot used by direct calls.
+         *
+         * <p>Direct receiver.method(...) calls bypass this object entirely, so
+         * ordinary method invocation has no bound-method allocation.  An AOT
+         * backend may lower a non-escaping value to a register/stack "fat
+         * pointer" (receiver + resolved slot) instead of heap allocating it.
+         */
+        /**
+         * First-class static callable counterpart to BoundMethod.  No receiver
+         * is captured; only the owning class and shared static slot family are
+         * retained.  Invocation arity selects the closed-world static selector.
+         */
+        private static final class StaticFunctionValue implements Invokable {
+            private final Evaluator owner;
+            private final Ast.ClassDecl klass;
+            private final String functionName;
+            private final Ast.ClassDecl accessClass;
+
+            private StaticFunctionValue(Evaluator owner, Ast.ClassDecl klass, String functionName, Ast.ClassDecl accessClass) {
+                this.owner = owner;
+                this.klass = klass;
+                this.functionName = functionName;
+                this.accessClass = accessClass;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return owner.invoke(owner.prepareStaticValueInvocation(klass, functionName, arguments, accessClass));
+            }
+        }
+
+        private static final class BoundMethod implements Invokable {
+            private final OresObject receiver;
+            private final String methodName;
+            private final Ast.ClassDecl accessClass;
+
+            private BoundMethod(OresObject receiver, String methodName, Ast.ClassDecl accessClass) {
+                this.receiver = receiver;
+                this.methodName = methodName;
+                this.accessClass = accessClass;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return receiver.owner.invoke(receiver.owner.prepareBoundMethodInvocation(receiver, methodName, arguments, accessClass));
             }
         }
 
@@ -1764,7 +2148,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
-            Ast.FunctionDecl fn = findFunction(name);
+            Ast.FunctionDecl fn = findFunction(name, args.size());
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export callable '" + name + "'");
@@ -1795,7 +2179,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object exportValue(Ast.ImportKind kind, String name) {
             return switch (kind) {
                 case FUNCTION -> {
-                    Ast.FunctionDecl fn = findFunction(name);
+                    Ast.FunctionDecl fn = findSingleFunction(name);
                     if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                         throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export function '" + name + "'");
                     }
@@ -1836,7 +2220,7 @@ public final class OresEvalRootNode extends RootNode {
             if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
             Ast.ClassDecl klass = findClass(name);
             if (klass != null) return new ClassFacade(this, klass);
-            Ast.FunctionDecl fn = findFunction(name);
+            Ast.FunctionDecl fn = findSingleFunction(name);
             if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
                 if (fn.kind() == Ast.CallableKind.ROUTINE) {
                     throw new IllegalArgumentException(
@@ -1895,22 +2279,34 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object moduleMember(Ast.ModuleDecl module, String name) {
+            List<Ast.FunctionDecl> callableFamily = module.declarations().stream()
+                    .filter(Ast.FunctionDecl.class::isInstance)
+                    .map(Ast.FunctionDecl.class::cast)
+                    .filter(fn -> fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC)
+                    .toList();
+            if (callableFamily.size() > 1) {
+                throw new IllegalArgumentException(
+                        "overloaded callable '" + module.name() + "." + name
+                                + "' must be called so name + arity can select a slot");
+            }
+            if (callableFamily.size() == 1) {
+                Ast.FunctionDecl fn = callableFamily.getFirst();
+                if (fn.kind() == Ast.CallableKind.ROUTINE || fn.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("callable '" + module.name() + "." + name
+                            + "' is direct-call-only and cannot be extracted as a value");
+                }
+                if (!fn.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic fnc '" + module.name() + "." + name
+                                    + "' must be specialized by a direct call; "
+                                    + "polymorphic function values are not supported yet");
+                }
+                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+            }
+
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
                     return new ClassFacade(this, klass);
-                }
-                if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    if (fn.kind() == Ast.CallableKind.ROUTINE || fn.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException("callable '" + module.name() + "." + name
-                                + "' is direct-call-only and cannot be extracted as a value");
-                    }
-                    if (!fn.genericParameters().isEmpty()) {
-                        throw new IllegalArgumentException(
-                                "generic fnc '" + module.name() + "." + name
-                                        + "' must be specialized by a direct call; "
-                                        + "polymorphic function values are not supported yet");
-                    }
-                    return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
@@ -1921,15 +2317,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
+            Ast.FunctionDecl match = null;
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn
                         && fn.name().equals(name)
+                        && fn.parameters().size() == args.size()
                         && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    return functionInvocation(fn, args);
+                    if (match != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate callable slot '" + module.name() + "." + name
+                                        + "' at arity " + args.size());
+                    }
+                    match = fn;
                 }
             }
+            if (match != null) return functionInvocation(match, args);
             throw new IllegalArgumentException("module '" + module.name()
-                    + "' does not export callable '" + name + "'");
+                    + "' does not export callable '" + name + "' at arity " + args.size());
         }
 
         private Object invokeModuleFunction(Ast.ModuleDecl module, String name, List<Object> args) {
@@ -2021,10 +2425,16 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
-        private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        private Ast.MethodDecl findMethod(
+                Ast.ClassDecl klass,
+                CallableSelector selector,
+                Set<Ast.ClassDecl> seen) {
+            if (selector.kind() != CallableSelector.Kind.INSTANCE) {
+                throw new IllegalArgumentException("instance dispatch requires an INSTANCE selector");
+            }
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl method : klass.methods()) {
-                if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+                if (selector.matches(method)) {
                     seen.remove(klass);
                     return method;
                 }
@@ -2033,7 +2443,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                Ast.MethodDecl candidate = findMethod(parent, name, arity, seen);
+                Ast.MethodDecl candidate = findMethod(parent, selector, seen);
                 if (candidate != null) {
                     seen.remove(klass);
                     return candidate;
@@ -2043,10 +2453,16 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
-        private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        private Ast.MethodDecl findStaticFunction(
+                Ast.ClassDecl klass,
+                CallableSelector selector,
+                Set<Ast.ClassDecl> seen) {
+            if (selector.kind() != CallableSelector.Kind.STATIC) {
+                throw new IllegalArgumentException("static dispatch requires a STATIC selector");
+            }
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl fn : klass.methods()) {
-                if (fn.isStatic() && fn.name().equals(name) && fn.parameters().size() == arity) {
+                if (selector.matches(fn)) {
                     seen.remove(klass);
                     return fn;
                 }
@@ -2055,7 +2471,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                Ast.MethodDecl candidate = findStaticFunction(parent, name, arity, seen);
+                Ast.MethodDecl candidate = findStaticFunction(parent, selector, seen);
                 if (candidate != null) {
                     seen.remove(klass);
                     return candidate;
@@ -2069,23 +2485,31 @@ public final class OresEvalRootNode extends RootNode {
             if (!seen.add(klass)) return List.of();
             LinkedHashMap<Integer, Ast.MethodDecl> result = new LinkedHashMap<>();
             for (Ast.MethodDecl fn : klass.methods()) {
-                if (fn.isStatic() && fn.name().equals(name)) result.put(fn.parameters().size(), fn);
+                if (fn.isStatic() && fn.name().equals(name)) result.put(fn.arity(), fn);
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.parameters().size(), fn);
+                for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.arity(), fn);
             }
             seen.remove(klass);
             return List.copyOf(result.values());
         }
 
-        private List<?> iterableValues(Object value, Env env) {
+        private Iterable<?> iterableValues(Object value, Env env) {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
+            if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
+            if (value instanceof GeneratorRuntime.AsyncGenerator<?>) {
+                throw new IllegalArgumentException(
+                        "AsyncGenerator values require 'for await ... of ...'");
+            }
             if (value instanceof OresObject object) {
-                Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                Ast.MethodDecl iterator = findMethod(
+                        object.klass,
+                        CallableSelector.instance("Symbol.iterator", 0),
+                        new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
                 object.owner.requireClassMemberVisible(
                         iterator.visibility(),
@@ -2096,7 +2520,82 @@ public final class OresEvalRootNode extends RootNode {
                 Object produced = callMethod(object, iterator, List.of());
                 return iterableValues(produced, env);
             }
-            throw new IllegalArgumentException("value is not iterable");
+            throw new IllegalArgumentException("value is not synchronously iterable");
+        }
+
+        private Iterable<?> asyncIterableValues(Object value, Env env) {
+            if (value instanceof OresObject object) {
+                Ast.MethodDecl iterator =
+                        findMethod(object.klass, CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
+                if (iterator == null) {
+                    return asyncSynchronousIterableValues(value, env);
+                }
+                object.owner.requireClassMemberVisible(
+                        iterator.visibility(),
+                        object.owner.declaringClass(iterator),
+                        env == null ? null : env.accessClass(),
+                        "method",
+                        iterator.name());
+                return asyncIterableValues(callMethod(object, iterator, List.of()), env);
+            }
+            if (!(value instanceof GeneratorRuntime.AsyncGenerator<?> generator)) {
+                return asyncSynchronousIterableValues(value, env);
+            }
+
+            final class AsyncPullIterable implements Iterable<Object>, AutoCloseable {
+                @Override
+                public java.util.Iterator<Object> iterator() {
+                    return new java.util.Iterator<>() {
+                        private GeneratorRuntime.Step<?> buffered;
+
+                        @Override
+                        public boolean hasNext() {
+                            if (buffered == null) {
+                                buffered = AsyncRuntime.await(generator.nextStep());
+                            }
+                            return !buffered.done();
+                        }
+
+                        @Override
+                        public Object next() {
+                            if (!hasNext()) throw new java.util.NoSuchElementException();
+                            Object result = buffered.value();
+                            buffered = null;
+                            return result;
+                        }
+                    };
+                }
+
+                @Override
+                public void close() {
+                    generator.close();
+                }
+            }
+            return new AsyncPullIterable();
+        }
+
+        private Iterable<?> asyncSynchronousIterableValues(Object value, Env env) {
+            Iterable<?> synchronous = iterableValues(value, env);
+            GeneratorRuntime.AsyncGenerator<Object> adapter = GeneratorRuntime.asyncGenerator(
+                    context.asyncRuntime(), emitter -> {
+                        try {
+                            for (Object item : synchronous) emitter.emit(item);
+                        } finally {
+                            closeIterable(synchronous);
+                        }
+                    });
+            return asyncIterableValues(adapter, env);
+        }
+
+        private void closeIterable(Iterable<?> iterable) {
+            if (!(iterable instanceof AutoCloseable closeable)) return;
+            try {
+                closeable.close();
+            } catch (RuntimeException | Error failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new IllegalStateException("failed to close generator activation", failure);
+            }
         }
 
         private ConditionResult evalCondition(Ast.Expr condition, Env env) {
@@ -2200,6 +2699,9 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("DynamicStruct")) return value instanceof DynamicStructValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
+            if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
+            if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
+            if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -2224,6 +2726,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
+            if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
+            if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
             if (value instanceof DynamicStructValue) return "DynamicStruct";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
@@ -2595,6 +3100,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue result) {
                 return containsLiveMutexGuard(result.value(), seen);
             }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                return !step.done() && containsLiveMutexGuard(step.value(), seen);
+            }
             if (value instanceof OresMutex.GuardFuture<?> future) {
                 return future.isDone()
                         && !future.isCancelled()
@@ -2657,6 +3165,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof ResultValue result) {
                 releaseMutexGuardsInValue(result.value(), failed, seen);
+                return;
+            }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                if (!step.done()) releaseMutexGuardsInValue(step.value(), failed, seen);
                 return;
             }
             if (value instanceof OresMutex.GuardFuture<?> future) {
@@ -2768,6 +3280,9 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private enum FutureFactory { INSTANCE }
+    private enum BooleanOpsNamespace { INSTANCE }
+
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
@@ -2806,6 +3321,9 @@ public final class OresEvalRootNode extends RootNode {
 
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
+            }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                return step.done() || runtimeSharedSafe(step.value(), seen);
             }
             if (value instanceof ResultValue result) {
                 return runtimeSharedSafe(result.value(), seen);

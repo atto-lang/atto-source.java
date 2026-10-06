@@ -252,6 +252,7 @@ type_atom       = borrow_type
                 | tuple_type
                 | record_type
                 | alias_marker
+                | callable_generic_type
                 | named_type
                 | function_type
                 | grouped_type
@@ -266,6 +267,8 @@ record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
 alias_marker    = "type" named_type ;
+callable_generic_type
+                = ( "Fnc" | "Function" ) "<" type_ref "(" [ function_type_params ] ")" ">" ;
 named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
 function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "=>" type_ref
                 | "(" [ function_type_params ] ")" "=>" type_ref ;
@@ -361,6 +364,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      declarations. Ordinary named executable declarations use ": ReturnType".
    - "=>" is type-level syntax for function types and interface callable
      signatures; it is not an executable return separator.
+   - Fnc<Result(Arg1, Arg2)> and Function<Result(Arg1, Arg2)> are callable-type
+     signature-in-generics spellings. They normalize to the same function type
+     as (Arg1, Arg2) => Result and the compatibility form
+     Fnc<Arg1, Arg2, Result>. In the comma form, the final type is the result.
    - match/switch arm implementations use "->". "=>" is rejected in executable
      arms so the slim-arrow/execution versus fat-arrow/type distinction remains
      syntactically enforceable.
