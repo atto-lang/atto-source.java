@@ -1012,6 +1012,10 @@ public final class Parser {
             }
             Ast.TypeRef first = parseTypeRef();
             if (match(COMMA)) {
+                if (check(RPAREN)) {
+                    throw error(peek(),
+                            "singleton tuple type shorthand is intentionally reserved; use Tuple[T] until singleton tuple syntax is finalized");
+                }
                 List<Ast.TypeRef> elements = new ArrayList<>();
                 elements.add(first);
                 while (!check(RPAREN)) {
