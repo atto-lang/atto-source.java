@@ -5160,6 +5160,8 @@ public final class TypeChecker {
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
+            Ast.InterfaceDecl actualContract = findInterface(actualNamed.name());
+            if (actualContract != null && actualContract.moduleContract()) return false;
             Ast.ClassDecl klass = findClass(actualNamed.name());
             if (klass != null) {
                 // Actors are mailbox/capability identities, not ordinary
@@ -5187,6 +5189,12 @@ public final class TypeChecker {
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
+            Ast.InterfaceDecl actualInterface = findInterface(actualNamed.name());
+            Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
+            if ((actualInterface != null && actualInterface.moduleContract())
+                    || (expectedInterface != null && expectedInterface.moduleContract())) {
+                return false;
+            }
             if (findClass(actualNamed.name()) != null) {
                 if (findClass(expectedNamed.name()) != null
                         && classTypeExtends(actualNamed, expectedNamed, new LinkedHashSet<>())) {
