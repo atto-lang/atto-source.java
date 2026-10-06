@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, Shared, ClassNamespace, SingletonProxy, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, Shared, Proxy, ClassNamespace, SingletonProxy, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -26,6 +26,13 @@ public final class Types {
      * first-class Shared<T> surface syntax/callable ABI support is specified.
      */
     public record Shared(Type target) implements Type { }
+
+    /**
+     * Owning synchronized capability produced by rt proxy. The raw unique
+     * source owner is consumed when the proxy is created; access to the
+     * underlying mutable graph must remain mediated by the proxy runtime.
+     */
+    public record Proxy(Type target) implements Type { }
 
     /** Compile-time meta-value for access to static class functions. */
     public record ClassNamespace(String className) implements Type { }
@@ -71,6 +78,10 @@ public final class Types {
         }
 
         if (from instanceof Shared source && to instanceof Shared target) {
+            return isAssignable(source.target(), target.target())
+                    && isAssignable(target.target(), source.target());
+        }
+        if (from instanceof Proxy source && to instanceof Proxy target) {
             return isAssignable(source.target(), target.target())
                     && isAssignable(target.target(), source.target());
         }
