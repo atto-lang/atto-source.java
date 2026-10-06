@@ -41,6 +41,39 @@ final class RuntimeProxyLanguageTest {
     }
 
     @Test
+    void proxyDisposeIsExplicitAndRevokesGuestAccess() throws Exception {
+        String output = run("""
+                define class Box as
+                  pub let int value = 1;
+                end
+
+                pub routine main(): void {
+                  val guarded = rt proxy new Box();
+                  guarded.dispose();
+                  stdio.stdout.write("done");
+                  return;
+                }
+                """);
+
+        assertEquals("done", output);
+
+        IllegalArgumentException shape = assertThrows(
+                IllegalArgumentException.class,
+                () -> check("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        fnc bad(): void {
+                          val guarded = rt proxy new Box();
+                          guarded.dispose(1);
+                          return;
+                        }
+                        """));
+        assertTrue(shape.getMessage().contains("dispose"), shape.getMessage());
+    }
+
+    @Test
     void callFormAndCommandFormBothParseAndTypecheck() {
         assertDoesNotThrow(() -> check("""
                 define class Box as
