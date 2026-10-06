@@ -163,29 +163,33 @@ final class FormalForceRevocationModelCheckTest {
                     yield Optional.empty();
                 }
                 if (s.actor() == ActorState.FENCED) {
+                    if (s.rejectedMessages() >= 1) yield Optional.empty();
                     yield Optional.of(new State(
                             ActorState.FENCED,
                             false,
                             s.deliveredMessages(),
-                            s.rejectedMessages() + 1,
+                            1,
                             s.rejectedKills()));
                 }
+                if (s.deliveredMessages() >= 1) yield Optional.empty();
                 yield Optional.of(new State(
                         ActorState.ACTIVE,
                         false,
-                        s.deliveredMessages() + 1,
+                        1,
                         s.rejectedMessages(),
                         s.rejectedKills()));
             }
 
             case OVERLAPPING_KILL -> {
-                if (s.actor() != ActorState.FENCED) yield Optional.empty();
+                if (s.actor() != ActorState.FENCED || s.rejectedKills() >= 1) {
+                    yield Optional.empty();
+                }
                 yield Optional.of(new State(
                         ActorState.FENCED,
                         false,
                         s.deliveredMessages(),
                         s.rejectedMessages(),
-                        s.rejectedKills() + 1));
+                        1));
             }
         };
     }
