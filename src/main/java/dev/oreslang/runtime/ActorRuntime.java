@@ -1530,6 +1530,37 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private void requireBlockingHostContext(String operation) {
+        if (inActorExecution() || OresScheduler.current() != null) {
+            throw new SecurityException(
+                    operation
+                            + " is a host/embedder blocking operation; actor and scheduler turns "
+                            + "must use nonblocking cancellation plus Future/Awaitable suspension");
+        }
+    }
+
+    private void requireActorLifecycleAuthority(
+            ActorRef<?> target,
+            String operation) {
+        ActorCell<?> caller = currentActor.get();
+        if (caller == null) return;
+
+        ActorCell<?> targetCell = actors.get(target.id());
+        if (targetCell == null) return;
+        if (caller == targetCell) return;
+
+        for (ActorCell<?> ancestor = targetCell.parent;
+                ancestor != null;
+                ancestor = ancestor.parent) {
+            if (ancestor == caller) return;
+        }
+
+        throw new SecurityException(
+                "actor " + caller.ref.id() + " cannot " + operation
+                        + " unrelated actor " + target.id()
+                        + "; actor lifecycle authority is limited to self and structured descendants");
+    }
+
     private IsolatePolicy defaultSpawnPolicy() {
         IsolatePolicy caller = currentActorPolicy();
         return caller == null ? policyCeiling : caller;
@@ -2200,14 +2231,15 @@ public final class ActorRuntime implements AutoCloseable {
     public void stop(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("stop actors");
         Objects.requireNonNull(ref);
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
+        requireActorLifecycleAuthority(ref, "stop");
         ActorCell<?> caller = currentActor.get();
         if (caller != null
                 && caller.kind == ActorKind.UNTRUSTED
                 && !caller.ref.id().equals(ref.id())) {
             throw new SecurityException("untrusted actors cannot stop other actors");
-        }
-        if (!ref.ownedBy(this)) {
-            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return;
@@ -2243,30 +2275,139 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref, "ref");
         Objects.requireNonNull(mode, "mode");
         if (!ref.ownedBy(this)) {
-            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+            throw new IllegalArgumentException(
+                    "ActorRef belongs to a different ActorRuntime");
         }
 
+        if (mode == CancellationMode.FORCE_ISOLATED) {
+            requireSupervisorContext("force-cancel isolated actors");
+            return forceCancelInternal(ref);
+        }
+
+        requireActorLifecycleAuthority(ref, "cancel");
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null || cell.finalized()) return false;
 
-        ActorCancelledException cancellation = new ActorCancelledException(
+        cell.cancel(new ActorCancelledException(
                 ref.id(),
-                "actor " + ref.id() + " was cancelled");
+                "actor " + ref.id() + " was cancelled"));
+        return true;
+    }
 
-        if (mode == CancellationMode.FORCE_ISOLATED) {
-            // The outer isolation boundary must be revoked first. If this
-            // cannot be proven, force cancellation has no logical side effect.
-            boolean revoked = forceCancellationHook.test(
-                    ref.id(), cell.executionDomain);
-            if (!revoked) {
+    private boolean forceCancelInternal(ActorRef<?> ref) {
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.finalized()) return false;
+
+        ForceCancellationAttempt attempt =
+                fenceForceCancellationSubtree(cell);
+        if (attempt == null) return false;
+
+        final boolean revoked;
+        try {
+            if (Boolean.TRUE.equals(forceCancellationCallback.get())) {
                 throw new IllegalStateException(
-                        "force cancellation requires a host-owned isolated execution domain; "
-                                + "ordinary shared/private actor carriers can only be cancelled structurally");
+                        "nested force-cancellation revocation is forbidden");
+            }
+
+            forceCancellationCallback.set(Boolean.TRUE);
+            try {
+                revoked = forceCancellationHook.revoke(attempt.request);
+            } finally {
+                forceCancellationCallback.remove();
+            }
+        } catch (VirtualMachineError | ThreadDeath fatal) {
+            clearForceKillFence(attempt, true);
+            throw fatal;
+        } catch (LinkageError fatal) {
+            clearForceKillFence(attempt, true);
+            throw fatal;
+        } catch (RuntimeException revocationFailure) {
+            clearForceKillFence(attempt, true);
+            throw new IllegalStateException(
+                    "force-cancellation revoker failed before logical actor teardown; "
+                            + "revokers must be atomic and side-effect-free on false/throw",
+                    revocationFailure);
+        }
+
+        if (!revoked) {
+            clearForceKillFence(attempt, true);
+            throw new IllegalStateException(
+                    "force cancellation requires VM-owned atomic revocation of the complete actor subtree; "
+                            + "no logical cancellation/teardown was published");
+        }
+
+        try {
+            attempt.root.cancel(new ActorCancelledException(
+                    ref.id(),
+                    "actor " + ref.id() + " was force-cancelled"));
+            return true;
+        } finally {
+            clearForceKillFence(attempt, false);
+        }
+    }
+
+    private ForceCancellationAttempt fenceForceCancellationSubtree(
+            ActorCell<?> root) {
+        synchronized (runtimeLifecycleLock) {
+            ActorCell<?> current = actors.get(root.ref.id());
+            if (current != root || root.finalized()) return null;
+
+            List<ActorCell<?>> cells = new ArrayList<>();
+            List<ActorCell<?>> pending = new ArrayList<>();
+            Set<ActorId> seen = new LinkedHashSet<>();
+            pending.add(root);
+
+            for (int i = 0; i < pending.size(); i++) {
+                ActorCell<?> cell = pending.get(i);
+                if (!seen.add(cell.ref.id())) continue;
+                if (cell.forceKillFenced) {
+                    throw new IllegalStateException(
+                            "force cancellation is already in progress for actor "
+                                    + cell.ref.id());
+                }
+                cells.add(cell);
+                pending.addAll(List.copyOf(cell.children));
+            }
+
+            for (ActorCell<?> cell : cells) {
+                cell.forceKillFenced = true;
+            }
+
+            List<IsolationTarget> targets = cells.stream()
+                    .map(cell -> new IsolationTarget(
+                            cell.ref.id(),
+                            cell.executionDomain))
+                    .toList();
+
+            return new ForceCancellationAttempt(
+                    root,
+                    cells,
+                    new ForceCancellationRequest(
+                            root.ref.id(),
+                            targets));
+        }
+    }
+
+    private void clearForceKillFence(
+            ForceCancellationAttempt attempt,
+            boolean resume) {
+        List<ActorCell<?>> resumeCells = new ArrayList<>();
+
+        synchronized (runtimeLifecycleLock) {
+            for (ActorCell<?> cell : attempt.cells) {
+                cell.forceKillFenced = false;
+                if (resume
+                        && !cell.stopped.get()
+                        && !cell.finalized()
+                        && !cell.mailbox.isEmpty()) {
+                    resumeCells.add(cell);
+                }
             }
         }
 
-        cell.cancel(cancellation);
-        return true;
+        for (ActorCell<?> cell : resumeCells) {
+            cell.schedule();
+        }
     }
 
     private ActorTerminatedException terminated(ActorRef<?> ref) {
