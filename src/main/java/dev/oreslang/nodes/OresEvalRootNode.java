@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
@@ -45,6 +46,33 @@ public final class OresEvalRootNode extends RootNode {
      * to a pinned/native address while preserving the same source semantics.
      */
     private record OresPtr(Object target) { }
+
+    /**
+     * Runtime representation of rt proxy. The wrapped storage remains in its
+     * original allocation/ownership domain; the proxy is only a synchronized
+     * capability. Nested class/struct views reuse the same fair RW lock.
+     */
+    private static final class SynchronizedProxy {
+        private final Object target;
+        private final ReentrantReadWriteLock lock;
+
+        private SynchronizedProxy(Object target) {
+            this(target, new ReentrantReadWriteLock(true));
+        }
+
+        private SynchronizedProxy(Object target, ReentrantReadWriteLock lock) {
+            this.target = Objects.requireNonNull(target, "proxy target");
+            this.lock = Objects.requireNonNull(lock, "proxy lock");
+        }
+
+        private Object target() { return target; }
+        private ReentrantReadWriteLock lock() { return lock; }
+
+        @Override
+        public String toString() {
+            return "Proxy<" + target.getClass().getSimpleName() + ">";
+        }
+    }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
         this(language, program, "<anonymous>", digestText(program.toString()));
@@ -692,6 +720,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
+                    if (receiver instanceof SynchronizedProxy proxy) {
+                        return assignProxyMember(proxy, target.member(), value, env.singletonState);
+                    }
                     if (receiver instanceof OresObject object) {
                         Ast.FieldDecl field = runtimeField(object.klass, target.member());
                         if (field == null || !object.fields.containsKey(target.member())) {
@@ -759,6 +790,7 @@ public final class OresEvalRootNode extends RootNode {
                             : intrinsic.name();
                     if (operation.equals("borrow") || operation.equals("take")
                             || operation.equals("copy") || operation.equals("share")
+                            || operation.equals("proxy")
                             || (namespacedRuntimeIntrinsic
                                 && (operation.equals("ptr") || operation.equals("deref")))) {
                         if (call.arguments().size() != 1) {
@@ -772,8 +804,16 @@ public final class OresEvalRootNode extends RootNode {
                             // operations. Runtime object identity is unchanged;
                             // only rt copy constructs independent storage.
                             case "borrow", "take", "share" -> value;
-                            case "copy" -> copyValue(value, env.singletonState, new IdentityHashMap<>());
-                            case "ptr" -> new OresPtr(value);
+                            case "proxy" -> createSynchronizedProxy(value);
+                            case "copy" -> copyPossiblyProxiedValue(
+                                    value, env.singletonState, new IdentityHashMap<>());
+                            case "ptr" -> {
+                                if (value instanceof SynchronizedProxy) {
+                                    throw new IllegalArgumentException(
+                                            "rt ptr cannot expose the raw target of a synchronized proxy");
+                                }
+                                yield new OresPtr(value);
+                            }
                             case "deref" -> {
                                 if (!(value instanceof OresPtr pointer)) {
                                     throw new IllegalArgumentException("rt deref requires Ptr<T>");
@@ -789,6 +829,9 @@ public final class OresEvalRootNode extends RootNode {
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
                     if (receiver instanceof OresObject object) {
                         return invokeMethod(object, methodCall.member(), args, env.singletonState);
+                    }
+                    if (receiver instanceof SynchronizedProxy proxy) {
+                        return invokeProxyMethod(proxy, methodCall.member(), args, env.singletonState);
                     }
                     if (receiver instanceof SingletonObjectProxy proxy) {
                         return invokeSingletonProxy(proxy, methodCall.member(), args);
@@ -938,6 +981,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("singleton object proxy members must be invoked directly and awaited: "
                         + proxy.module().name() + "." + proxy.fieldName() + "." + name + "(...)");
             }
+            if (receiver instanceof SynchronizedProxy proxy) {
+                return readProxyMember(proxy, name, singletonState);
+            }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
                 return new BoundMethod(object, name, singletonState);
@@ -947,6 +993,190 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+
+        private SynchronizedProxy createSynchronizedProxy(Object value) {
+            if (value instanceof SynchronizedProxy) {
+                throw new IllegalArgumentException("rt proxy requires a raw unique owner, not an existing proxy");
+            }
+            if (value instanceof OresObject || value instanceof Map<?, ?>) {
+                return new SynchronizedProxy(value);
+            }
+            throw new IllegalArgumentException(
+                    "rt proxy requires an Ores class/struct runtime value, got "
+                            + (value == null ? "null" : value.getClass().getName()));
+        }
+
+        private Object copyPossiblyProxiedValue(
+                Object value,
+                SingletonState singletonState,
+                IdentityHashMap<Object, Object> copies) {
+            if (!(value instanceof SynchronizedProxy proxy)) {
+                return copyValue(value, singletonState, copies);
+            }
+            ReentrantReadWriteLock.ReadLock read = proxy.lock().readLock();
+            read.lock();
+            try {
+                return copyValue(proxy.target(), singletonState, copies);
+            } finally {
+                read.unlock();
+            }
+        }
+
+        private Object readProxyMember(
+                SynchronizedProxy proxy,
+                String name,
+                SingletonState singletonState) {
+            ReentrantReadWriteLock.ReadLock read = proxy.lock().readLock();
+            read.lock();
+            try {
+                Object target = proxy.target();
+                Object result;
+                if (target instanceof OresObject object) {
+                    if (!object.fields.containsKey(name)) {
+                        throw new IllegalArgumentException(
+                                "method values cannot be extracted from rt proxy; call '"
+                                        + name + "(...)' directly");
+                    }
+                    result = object.fields.get(name);
+                } else if (target instanceof Map<?, ?> map) {
+                    if (!map.containsKey(name)) {
+                        throw new IllegalArgumentException("unknown proxied struct member " + name);
+                    }
+                    result = map.get(name);
+                } else {
+                    throw new IllegalStateException("unsupported synchronized proxy target");
+                }
+                return proxyReadResult(proxy, result, "member '" + name + "'");
+            } finally {
+                read.unlock();
+            }
+        }
+
+        private Object assignProxyMember(
+                SynchronizedProxy proxy,
+                String name,
+                Object value,
+                SingletonState singletonState) {
+            ReentrantReadWriteLock.WriteLock write = proxy.lock().writeLock();
+            write.lock();
+            try {
+                Object target = proxy.target();
+                if (target instanceof OresObject object) {
+                    Ast.FieldDecl field = runtimeField(object.klass, name);
+                    if (field == null || !object.fields.containsKey(name)) {
+                        throw new IllegalArgumentException("unknown field " + name);
+                    }
+                    if (field.bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException(
+                                "field '" + object.klass.name() + "." + name + "' is immutable");
+                    }
+                    Object previous = object.fields.put(name, value);
+                    try {
+                        if (singletonState != null) singletonState.validateStorageGraph();
+                    } catch (RuntimeException | Error failure) {
+                        object.fields.put(name, previous);
+                        throw failure;
+                    }
+                    return value;
+                }
+                if (target instanceof Map<?, ?> raw) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> map = (Map<String, Object>) raw;
+                    if (!map.containsKey(name)) {
+                        throw new IllegalArgumentException("unknown proxied struct member " + name);
+                    }
+                    map.put(name, value);
+                    return value;
+                }
+                throw new IllegalStateException("unsupported synchronized proxy target");
+            } finally {
+                write.unlock();
+            }
+        }
+
+        private Object invokeProxyMethod(
+                SynchronizedProxy proxy,
+                String name,
+                List<Object> args,
+                SingletonState singletonState) {
+            if (!(proxy.target() instanceof OresObject object)) {
+                throw new IllegalArgumentException(
+                        "struct proxies expose synchronized fields but do not have class methods");
+            }
+
+            Ast.ClassDecl dispatchClass = runtimeDispatchClass(object, singletonState);
+            Ast.MethodDecl method =
+                    findMethod(dispatchClass, name, args.size(), new LinkedHashSet<>());
+            if (method == null) {
+                throw new IllegalArgumentException(
+                        "no method " + dispatchClass.name() + "." + name
+                                + " with arity " + args.size());
+            }
+            if (method.async()) {
+                throw new IllegalArgumentException(
+                        "async method '" + method.name()
+                                + "' cannot execute through rt proxy while proxy locking is synchronous");
+            }
+            Ast.TypeRef receiverType = method.explicitReceiverType();
+            if (receiverType != null && !receiverType.isBorrow()) {
+                throw new IllegalArgumentException(
+                        "consuming method '" + method.name()
+                                + "' cannot execute through rt proxy");
+            }
+
+            boolean writeReceiver =
+                    receiverType != null
+                            && receiverType.isBorrow()
+                            && receiverType.mutableBorrow();
+            if (writeReceiver) {
+                ReentrantReadWriteLock.WriteLock write = proxy.lock().writeLock();
+                write.lock();
+                try {
+                    Object result = callMethod(object, dispatchClass, method, args, singletonState);
+                    return proxyReadResult(proxy, result, "method '" + method.name() + "'");
+                } finally {
+                    write.unlock();
+                }
+            }
+
+            ReentrantReadWriteLock.ReadLock read = proxy.lock().readLock();
+            read.lock();
+            try {
+                Object result = callMethod(object, dispatchClass, method, args, singletonState);
+                return proxyReadResult(proxy, result, "method '" + method.name() + "'");
+            } finally {
+                read.unlock();
+            }
+        }
+
+        private Object proxyReadResult(
+                SynchronizedProxy parent,
+                Object result,
+                String where) {
+            if (result == null || isKnownImmutableCopyScalar(result)) return result;
+            if (result instanceof OptionValue option) {
+                if (!option.present()) return option;
+                Object nested = option.value();
+                if (nested == null || isKnownImmutableCopyScalar(nested)) return option;
+                throw new IllegalArgumentException(
+                        where + " cannot expose Option containing mutable state through rt proxy");
+            }
+            if (result instanceof OresObject || result instanceof Map<?, ?>) {
+                return new SynchronizedProxy(result, parent.lock());
+            }
+            if (result instanceof SynchronizedProxy nested) {
+                if (nested.lock() != parent.lock()) {
+                    throw new IllegalArgumentException(
+                            where + " returned a proxy from a different synchronization domain");
+                }
+                return nested;
+            }
+            throw new IllegalArgumentException(
+                    where + " cannot expose raw mutable value of type "
+                            + result.getClass().getName()
+                            + " through rt proxy");
         }
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args, SingletonState singletonState) {
