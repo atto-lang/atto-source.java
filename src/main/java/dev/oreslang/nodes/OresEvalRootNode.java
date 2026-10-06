@@ -461,6 +461,7 @@ public final class OresEvalRootNode extends RootNode {
                 case NONE -> throw new AssertionError("non-actor callable reached actor lowering");
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
+                case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
             };
 
             return context.actors().invoke(
