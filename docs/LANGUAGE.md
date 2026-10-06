@@ -1079,7 +1079,7 @@ Borrow rules:
 - ordinary borrows cannot be hidden inside owning lists/tuples/objects/structs/classes/Options until explicit container lifetime relationships are modeled;
 - temporary call borrows end at the call boundary;
 - borrows stored or re-bound in local bindings remain active until every registered alias leaves lexical scope;
-- detached values created by `share(...)` are not ordinary borrows and may be stored, captured, or returned safely.
+- shared owners created by `share(...)` are not ordinary borrows: they retain the same runtime identity while relinquishing unique mutation/take authority. Unqualified storage/return surfaces must fail closed until shared ownership is represented explicitly.
 
 The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
@@ -1103,14 +1103,25 @@ The operations are:
 - `borrow(x)` — immutable borrow of `x`. A persistent binding created from it keeps the owner borrowed until that binding leaves scope.
 - `copy(x)` — produce a new owned value while preserving `x`. `copy(borrow(x))` is valid and returns a new owner.
 - `take(x)` — explicitly transfer ownership. It rejects borrowed values; after taking a move-only owner, the old binding is unusable.
-- `share(x)` — produce an independent, deeply read-only snapshot. It is typed as an immutable view but has no borrow dependency on the source owner, so the source may be mutated afterward and the shared snapshot may safely escape the source's local lifetime.
+- `share(x)` — convert unique ownership into read-only shared ownership of the **same runtime value/reference**. It does not copy or freeze a detached snapshot. The original binding and new alias are readable shared owners, but neither retains unique mutation/take authority.
 
 `copy` intentionally differs by aggregate kind:
 
-- **struct** — copy behavior is compiler-derived from every stored field, including trait-composed fields. Nested structs/lists/tuples/records recurse automatically.
-- **class** — never implicitly copyable. The developer must provide a concrete, synchronous, non-generic, public instance `copy() => Self` method whose receiver is immutable.
-- **trait** — has no independent runtime identity; once composed, its stored fields follow the host struct/class rule.
+- **struct** — copy behavior is compiler-derived from every stored field, including trait-composed fields. Nested structs/lists/tuples/records recurse automatically. If a stored field is a class, that concrete class must itself satisfy the class copy contract; the struct does not need or permit a hand-written struct-level `copy()` merely to become copyable.
+- **class** — never implicitly copyable. Every concrete class that wants to participate in `copy(...)` must declare its **own** concrete, synchronous, non-generic, public instance `copy() => Self` method with an immutable receiver. An inherited method or trait-composed method does not satisfy the concrete class's identity-copy contract; subclasses opt in again explicitly so copying cannot silently slice or reuse base-class identity/state.
+- **trait** — has no independent runtime identity; once composed, its stored fields follow the host struct/class rule. A trait-provided method named `copy` does not make a host class copyable.
 - **interface** — is a contract, not concrete storage, so an interface-typed value does not by itself prove copyability.
+
+The four ownership operations are deliberately type-aware rather than aliases for pointer operations:
+
+| operation | struct value | class value |
+| --- | --- | --- |
+| `copy(x)` | compiler-derived recursive value copy; original remains usable | invokes the concrete class's own verified `copy() => Self`; original identity remains usable |
+| `take(x)` | transfers ownership of the whole value without copying | transfers ownership of the class identity/owning handle without cloning the object graph |
+| `borrow(x)` | temporary immutable view into the owned value; no copy | temporary immutable alias to the same class identity; no ownership transfer |
+| `share(x)` | read-only shared ownership of the same value/reference; no copy | read-only shared ownership of the same class identity/reference; no copy |
+
+This distinction is semantic, not an optimization hint. Backends may elide physical moves/copies when uniqueness and escape analysis prove that doing so preserves these observable ownership rules.
 
 A class copy implementation is checked twice. Static ownership analysis prevents mutation through `self`, including nested projections such as `self.child.bump()` when `bump` requires a mutable receiver. At runtime, Oreslang also verifies that `copy()` did not mutate the source graph, returned the same concrete class, and retained no mutable object/list/set/map/array aliases from the source graph. Immutable wrappers are traversed so mutable aliases cannot be hidden inside `Option` or similar containers.
 
@@ -1137,9 +1148,9 @@ pub copy() => Bucket {
 }
 ```
 
-`share` uses the same guaranteed-copy boundary and then freezes the detached graph. The freeze is recursive and identity-aware, so shared snapshots cannot become a writable alias back into the source graph.
+`share` is deliberately **not** part of the Copy contract. It preserves runtime identity and changes ownership authority rather than constructing independent storage. The same-reference shared-ownership semantics are authoritative in the pointerless-reference stack (#186); this copy-focused draft must not reintroduce detached snapshot/freeze semantics.
 
-The legacy `&T` / `&mut T` syntax remains supported for compatibility. `borrow(x)` is the preferred pointer-free immutable-borrow spelling while the broader Java-like default-borrow parameter model continues to evolve.
+This copy-focused branch predates the final pointerless surface. When consolidated with #186, `&T`, `&mut T`, unary `&`, and pointer dereference are rejected; temporary access is expressed through ordinary reference parameters, `Type mut name`, and the reserved `rt borrow` / `rt take` / `rt copy` / `rt share` operations. The older bare intrinsic spellings in examples on this branch are migration-only, not the final surface contract.
 
 ## Multi-threaded targets
 
@@ -1147,7 +1158,7 @@ Actors/isolate message passing remains the primary concurrency model, but the ow
 
 The same compiled program can target a secondary multi-threaded runtime because:
 
-- mutable state has one owner unless temporarily accessed through an exclusive `&mut` borrow;
+- mutable state has one owner unless temporarily accessed through the pointerless exclusive `Type mut name` parameter/borrow contract;
 - shared aliases are immutable;
 - move-only values cannot remain accessible from both sides of an ownership transfer;
 - closures cannot smuggle an outstanding stack borrow into a longer-lived task;
