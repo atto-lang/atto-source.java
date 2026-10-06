@@ -362,6 +362,15 @@ final class CollectionShapeMetadataTest {
                         }
                         """));
         assertTrue(emptyShape.getMessage().contains("sequence type shape cannot be empty"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class ArrayList<T> as
+                end
+
+                pub fnc acceptsArrayOfLists(Array[ArrayList<int>] values): void {
+                  return;
+                }
+                """)));
     }
 
     @Test
