@@ -2978,6 +2978,30 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                                    completeProxyAccess(
+                                            t,
+                                            proxy,
+                                            false,
+                                            raw -> {
+                                                Object value = member(
+                                                        raw,
+                                                        member.member(),
+                                                        env);
+                                                if (value instanceof Invokable) {
+                                                    throw new IllegalArgumentException(
+                                                            "rt Proxy<T> methods are direct-call-only; invoke '"
+                                                                    + member.member()
+                                                                    + "(...)' instead of extracting the method");
+                                                }
+                                                return requireProxyBoundaryValue(
+                                                        proxy,
+                                                        value,
+                                                        "rt proxy member '" + member.member() + "'");
+                                            },
+                                            continuation);
+                                    return;
+                                }
                                 try {
                                     continuation.accept(
                                             t,
@@ -3015,6 +3039,18 @@ public final class OresEvalRootNode extends RootNode {
                                                         failure2);
                                                 return;
                                             }
+                                            if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                                                completeProxyAccess(
+                                                        t2,
+                                                        proxy,
+                                                        false,
+                                                        raw -> requireProxyBoundaryValue(
+                                                                proxy,
+                                                                indexValue(raw, key),
+                                                                "rt proxy indexed read"),
+                                                        continuation);
+                                                return;
+                                            }
                                             try {
                                                 continuation.accept(
                                                         t2,
@@ -3043,17 +3079,104 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
-                                try {
-                                    continuation.accept(
-                                            t,
-                                            assignEvaluated(
-                                                    assignment.target(),
-                                                    value,
-                                                    env),
-                                            null);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                if (assignment.target() instanceof Ast.NameExpr name) {
+                                    try {
+                                        env.assign(name.name(), value);
+                                        continuation.accept(t, value, null);
+                                    } catch (RuntimeException | Error failure2) {
+                                        continuation.accept(t, null, failure2);
+                                    }
+                                    return;
                                 }
+                                if (assignment.target() instanceof Ast.MemberExpr target) {
+                                    evalSuspendableExpr(
+                                            t,
+                                            target.receiver(),
+                                            env,
+                                            (t2, receiver, failure2) -> {
+                                                if (failure2 != null) {
+                                                    continuation.accept(t2, null, failure2);
+                                                    return;
+                                                }
+                                                if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                                                    completeProxyAccess(
+                                                            t2,
+                                                            proxy,
+                                                            true,
+                                                            raw -> assignProxyMemberRaw(
+                                                                    raw,
+                                                                    target.member(),
+                                                                    value,
+                                                                    env),
+                                                            continuation);
+                                                    return;
+                                                }
+                                                try {
+                                                    continuation.accept(
+                                                            t2,
+                                                            assignMemberEvaluated(
+                                                                    receiver,
+                                                                    target.member(),
+                                                                    value,
+                                                                    env),
+                                                            null);
+                                                } catch (RuntimeException | Error failure3) {
+                                                    continuation.accept(t2, null, failure3);
+                                                }
+                                            });
+                                    return;
+                                }
+                                if (assignment.target() instanceof Ast.IndexExpr target) {
+                                    evalSuspendableExpr(
+                                            t,
+                                            target.receiver(),
+                                            env,
+                                            (t2, receiver, failure2) -> {
+                                                if (failure2 != null) {
+                                                    continuation.accept(t2, null, failure2);
+                                                    return;
+                                                }
+                                                evalSuspendableExpr(
+                                                        t2,
+                                                        target.index(),
+                                                        env,
+                                                        (t3, key, failure3) -> {
+                                                            if (failure3 != null) {
+                                                                continuation.accept(t3, null, failure3);
+                                                                return;
+                                                            }
+                                                            if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                                                                completeProxyAccess(
+                                                                        t3,
+                                                                        proxy,
+                                                                        true,
+                                                                        raw -> assignProxyIndexRaw(
+                                                                                raw,
+                                                                                key,
+                                                                                value),
+                                                                        continuation);
+                                                                return;
+                                                            }
+                                                            try {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        assignIndexEvaluated(
+                                                                                receiver,
+                                                                                key,
+                                                                                value),
+                                                                        null);
+                                                            } catch (RuntimeException | Error failure4) {
+                                                                continuation.accept(t3, null, failure4);
+                                                            }
+                                                        });
+                                            });
+                                    return;
+                                }
+                                continuation.accept(
+                                        t,
+                                        null,
+                                        new IllegalArgumentException(
+                                                "unsupported assignment target"));
                             });
                     return;
                 }
@@ -3324,6 +3447,79 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     result,
                                     failure));
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private void completeProxyAccess(
+                SourceTask task,
+                ActorRuntime.Proxy<?> proxy,
+                boolean write,
+                Function<Object, Object> operation,
+                SourceValueCont continuation) {
+            final OresFuture<?> acquisition;
+            try {
+                ActorRuntime.Proxy rawProxy = (ActorRuntime.Proxy) proxy;
+                acquisition = write
+                        ? rawProxy.acquireWriteAsync()
+                        : rawProxy.acquireReadAsync();
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+
+            if (acquisition.isDone()) {
+                try {
+                    completeGrantedProxyAccess(
+                            task,
+                            acquisition.join(),
+                            write,
+                            operation,
+                            continuation);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                }
+                return;
+            }
+
+            task.suspend(
+                    acquisition,
+                    (resumed, granted, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(resumed, null, failure);
+                            return;
+                        }
+                        completeGrantedProxyAccess(
+                                resumed,
+                                granted,
+                                write,
+                                operation,
+                                continuation);
+                    });
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private void completeGrantedProxyAccess(
+                SourceTask task,
+                Object granted,
+                boolean write,
+                Function<Object, Object> operation,
+                SourceValueCont continuation) {
+            if (!(granted instanceof ActorRuntime.Proxy.Access access)) {
+                continuation.accept(
+                        task,
+                        null,
+                        new IllegalStateException(
+                                "rt Proxy acquisition resumed without an access lease"));
+                return;
+            }
+            try (ActorRuntime.Proxy.Access lease = access) {
+                Object result = write
+                        ? lease.write((Function) operation)
+                        : lease.read((Function) operation);
+                continuation.accept(task, result, null);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+            }
         }
 
         private void evalSuspendableChannel(
