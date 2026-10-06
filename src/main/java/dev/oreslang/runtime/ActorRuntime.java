@@ -372,6 +372,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
+    private final ThreadLocal<ReentrantReadWriteLock> currentProxyLock = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
     public ActorRuntime() {
@@ -953,6 +954,7 @@ public final class ActorRuntime implements AutoCloseable {
         public <R> R read(Function<? super T, ? extends R> reader) {
             Objects.requireNonNull(reader, "reader");
             requireProxyAccess("read rt proxy");
+            boolean entered = enterProxyLock(lock, false);
             var readLock = lock.readLock();
             readLock.lock();
             try {
@@ -961,12 +963,14 @@ public final class ActorRuntime implements AutoCloseable {
                 return reader.apply(live);
             } finally {
                 readLock.unlock();
+                exitProxyLock(entered);
             }
         }
 
         public <R> R write(Function<? super T, ? extends R> writer) {
             Objects.requireNonNull(writer, "writer");
             requireProxyAccess("write rt proxy");
+            boolean entered = enterProxyLock(lock, true);
             var writeLock = lock.writeLock();
             writeLock.lock();
             try {
@@ -975,6 +979,7 @@ public final class ActorRuntime implements AutoCloseable {
                 return writer.apply(live);
             } finally {
                 writeLock.unlock();
+                exitProxyLock(entered);
             }
         }
 
@@ -1048,6 +1053,33 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("actor runtime is closed");
         }
         return proxy;
+    }
+
+    private boolean enterProxyLock(
+            ReentrantReadWriteLock lock,
+            boolean write) {
+        ReentrantReadWriteLock held = currentProxyLock.get();
+        if (held == null) {
+            currentProxyLock.set(lock);
+            return true;
+        }
+        if (held != lock) {
+            throw new IllegalStateException(
+                    "nested synchronization across different rt Proxy values is forbidden; "
+                            + "snapshot one proxy first or route mutation through an owner actor");
+        }
+        if (write
+                && held.getReadHoldCount() > 0
+                && !held.isWriteLockedByCurrentThread()) {
+            throw new IllegalStateException(
+                    "cannot upgrade an rt Proxy read lock to a write lock; "
+                            + "finish the read section before mutating");
+        }
+        return false;
+    }
+
+    private void exitProxyLock(boolean entered) {
+        if (entered) currentProxyLock.remove();
     }
 
     private void requireProxyAccess(String operation) {
