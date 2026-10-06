@@ -1,5 +1,9 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+/* Keep Darwin's pthread/Mach extensions visible alongside POSIX APIs. */
+#define _DARWIN_C_SOURCE
+#endif
 
 #include <jni.h>
 #include <pthread.h>
