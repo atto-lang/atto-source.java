@@ -160,7 +160,61 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
+    /**
+     * Returns the currently executing actor's semantic allocation domain.
+     * Off-actor callers receive an empty result because a process domain is
+     * runtime-specific and must be requested from an ActorRuntime instance.
+     */
+    public static Optional<AllocationDomain> currentActorAllocationDomain() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null) return Optional.empty();
+        return Optional.of(current.runtime().allocationDomainFor(current));
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
+
+    /**
+     * Semantic allocation domain. This is deliberately keyed by runtime/actor
+     * identity rather than carrier-thread identity: actor turns may migrate
+     * between carriers without changing ownership or heap provenance.
+     *
+     * <p>The JVM reference backend may enforce some domains logically through
+     * accounting/owner checks before every ordinary guest allocation is backed
+     * by a physically distinct arena. Native/isolate backends may map the same
+     * token to physical heaps without changing source semantics.</p>
+     */
+    public enum AllocationDomainKind {
+        PROCESS,
+        ACTOR_LOCAL,
+        ACTOR_PRIVATE,
+        RUNTIME_SHARED,
+        UNTRUSTED_ISOLATE
+    }
+
+    public record AllocationDomain(
+            UUID runtimeId,
+            AllocationDomainKind kind,
+            ActorId actorId,
+            ActorKind actorKind) {
+        public AllocationDomain {
+            Objects.requireNonNull(runtimeId, "runtimeId");
+            Objects.requireNonNull(kind, "kind");
+            boolean actorDomain = kind == AllocationDomainKind.ACTOR_LOCAL
+                    || kind == AllocationDomainKind.ACTOR_PRIVATE
+                    || kind == AllocationDomainKind.UNTRUSTED_ISOLATE;
+            if (actorDomain) {
+                Objects.requireNonNull(actorId, "actorId");
+                Objects.requireNonNull(actorKind, "actorKind");
+            } else if (actorId != null || actorKind != null) {
+                throw new IllegalArgumentException(
+                        "process/runtime-shared allocation domains cannot carry actor identity");
+            }
+        }
+
+        public boolean actorOwned() {
+            return actorId != null;
+        }
+    }
 
     public static final class UntrustedActorQuotaExceededException extends SecurityException {
         public enum Resource { FUEL, WALL_TIME, CPU_TIME }
@@ -340,6 +394,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private final UUID runtimeId = UUID.randomUUID();
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
@@ -371,6 +426,36 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
+
+    public UUID runtimeId() { return runtimeId; }
+
+    public AllocationDomain processAllocationDomain() {
+        return new AllocationDomain(runtimeId, AllocationDomainKind.PROCESS, null, null);
+    }
+
+    public AllocationDomain sharedAllocationDomain() {
+        return new AllocationDomain(runtimeId, AllocationDomainKind.RUNTIME_SHARED, null, null);
+    }
+
+    /**
+     * Allocation destination for new ordinary guest-owned storage created by
+     * the current execution context. In particular, rt copy lowering should
+     * target this domain rather than inheriting the source value's domain.
+     */
+    public AllocationDomain currentAllocationDomain() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null || current.runtime() != this) return processAllocationDomain();
+        return allocationDomainFor(current);
+    }
+
+    private AllocationDomain allocationDomainFor(ActorExecutionContext current) {
+        AllocationDomainKind domainKind = switch (current.kind()) {
+            case SHARED -> AllocationDomainKind.ACTOR_LOCAL;
+            case PRIVATE -> AllocationDomainKind.ACTOR_PRIVATE;
+            case UNTRUSTED -> AllocationDomainKind.UNTRUSTED_ISOLATE;
+        };
+        return new AllocationDomain(runtimeId, domainKind, current.actorId(), current.kind());
+    }
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
