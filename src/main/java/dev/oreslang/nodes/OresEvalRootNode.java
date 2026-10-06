@@ -5587,6 +5587,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
                 return map.get(name);
             }
+            if (receiver instanceof List<?> || receiver instanceof Object[]) {
+                if (name.equals("isEqualsTo")) {
+                    return (Invokable) args -> {
+                        requireOne(args, "isEqualsTo");
+                        return valueEquals(receiver, args.getFirst());
+                    };
+                }
+            }
             InteropLibrary foreign = InteropLibrary.getUncached(receiver);
             if (foreign.hasMembers(receiver)) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
