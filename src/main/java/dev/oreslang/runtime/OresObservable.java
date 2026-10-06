@@ -18,6 +18,13 @@ import java.util.function.Predicate;
  * lowering can later bind the runtime subscription to scheduler turns.</p>
  */
 public abstract class OresObservable<T> {
+    /**
+     * Non-null only for the native channel adapter. Kept runtime-internal so
+     * merge/select can use native nb-select without exposing channel identity
+     * as part of the general Observable contract.
+     */
+    protected ChannelRuntime.Channel<T> nativeChannel() { return null; }
+
     public final OresSubscription<T> subscribe() {
         return Objects.requireNonNull(subscribeFromRuntime(),
                 "subscribeFromRuntime returned null Subscription");
@@ -118,6 +125,10 @@ public abstract class OresObservable<T> {
     public static <T> OresObservable<T> from(ChannelRuntime.Channel<T> channel) {
         Objects.requireNonNull(channel, "channel");
         return new OresObservable<>() {
+            @Override protected ChannelRuntime.Channel<T> nativeChannel() {
+                return channel;
+            }
+
             @Override protected OresSubscription<T> subscribeFromRuntime() {
                 return new OresSubscription<>() {
                     private OresFuture<T> pending;
@@ -282,69 +293,165 @@ public abstract class OresObservable<T> {
     }
 
     /**
-     * Select-aware merge. It is built directly on native nb-select machinery
-     * exposed by ChannelRuntime.SelectSet; no Rx scheduler is introduced.
+     * Merge channel-backed sources through the native nonblocking select
+     * substrate. A mixed/non-channel source falls back to its Future pulls.
      */
     @SafeVarargs
     public static <T> OresObservable<T> merge(OresObservable<? extends T>... sources) {
         Objects.requireNonNull(sources, "sources");
+        for (OresObservable<? extends T> source : sources) Objects.requireNonNull(source, "source");
         if (sources.length == 0) return empty();
+
+        boolean allChannels = true;
+        for (OresObservable<? extends T> source : sources) {
+            if (source.nativeChannel() == null) { allChannels = false; break; }
+        }
+
+        if (allChannels) {
+            return new OresObservable<>() {
+                @Override protected OresSubscription<T> subscribeFromRuntime() {
+                    return new OresSubscription<>() {
+                        private final boolean[] done = new boolean[sources.length];
+                        private int remaining = sources.length;
+
+                        @Override protected OresFuture<OresNotification<T>> nextFromRuntime() {
+                            if (remaining == 0) return OresFuture.completed(OresNotification.complete());
+
+                            List<ChannelRuntime.SelectCase> cases = new ArrayList<>();
+                            List<Integer> indices = new ArrayList<>();
+                            for (int i = 0; i < sources.length; i++) {
+                                if (!done[i]) {
+                                    cases.add(ChannelRuntime.read(sources[i].nativeChannel()));
+                                    indices.add(i);
+                                }
+                            }
+
+                            ChannelRuntime.SelectSet set = new ChannelRuntime.SelectSet(cases);
+                            OresFuture<ChannelRuntime.SelectResult> selected = set.selectAsync();
+                            OresFuture<OresNotification<T>> result =
+                                    new OresFuture<>(() -> selected.cancel(true));
+                            selected.whenCompleteRuntime((selection, failure) -> {
+                                if (failure != null) {
+                                    if (selected.isCancelled()) result.cancel(true);
+                                    else result.failFromRuntime(OresFuture.unwrap(failure));
+                                    return;
+                                }
+
+                                int sourceIndex = indices.get(selection.index());
+                                if (selection.operation() != ChannelRuntime.SelectOperation.READ) {
+                                    result.failFromRuntime(new IllegalStateException(
+                                            "rx-ores merge selected a non-read channel case"));
+                                    return;
+                                }
+
+                                Object value = selection.value();
+                                if (value == null) {
+                                    done[sourceIndex] = true;
+                                    remaining--;
+                                    if (remaining == 0) {
+                                        result.completeFromRuntime(OresNotification.complete());
+                                    } else {
+                                        // A closed channel is simply removed from
+                                        // the merge set; the next downstream pull
+                                        // performs the next native nb-select.
+                                        result.failFromRuntime(new IllegalStateException(
+                                                "rx-ores native select reported closed READ without terminal wake"));
+                                    }
+                                    return;
+                                }
+
+                                @SuppressWarnings("unchecked")
+                                T typed = (T) value;
+                                result.completeFromRuntime(OresNotification.next(typed));
+                            });
+                            return result;
+                        }
+
+                        @Override protected void cancelFromRuntime() {
+                            for (OresObservable<? extends T> source : sources) {
+                                // Do not close caller-owned channels. Cancellation
+                                // only cancels the observation.
+                            }
+                        }
+                    };
+                }
+            };
+        }
+
+        // Generic Observable fallback: race one pull from each source. The
+        // winning pull is retained; losing pulls are cancelled so the next
+        // demand establishes a fresh registration.
         return new OresObservable<>() {
             @Override protected OresSubscription<T> subscribeFromRuntime() {
-                List<OresSubscription<? extends T>> subs = new ArrayList<>();
-                for (OresObservable<? extends T> source : sources) {
-                    subs.add(source.subscribe());
-                }
+                List<OresSubscription<? extends T>> subscriptions = new ArrayList<>();
+                for (OresObservable<? extends T> source : sources) subscriptions.add(source.subscribe());
+
                 return new OresSubscription<>() {
-                    private boolean[] done = new boolean[sources.length];
+                    private final boolean[] done = new boolean[sources.length];
                     private int remaining = sources.length;
 
                     @Override protected OresFuture<OresNotification<T>> nextFromRuntime() {
+                        if (remaining == 0) return OresFuture.completed(OresNotification.complete());
+
+                        OresFuture<OresNotification<T>> result = new OresFuture<>();
                         List<OresFuture<OresNotification<? extends T>>> pulls = new ArrayList<>();
-                        List<Integer> indices = new ArrayList<>();
-                        for (int i = 0; i < subs.size(); i++) {
+                        for (int i = 0; i < subscriptions.size(); i++) {
                             if (!done[i]) {
                                 @SuppressWarnings("unchecked")
-                                OresFuture<OresNotification<? extends T>> p =
-                                        (OresFuture<OresNotification<? extends T>>) (OresFuture<?>) subs.get(i).next();
-                                pulls.add(p);
-                                indices.add(i);
+                                OresFuture<OresNotification<? extends T>> pull =
+                                        (OresFuture<OresNotification<? extends T>>) (OresFuture<?>) subscriptions.get(i).next();
+                                pulls.add(pull);
+                            } else {
+                                pulls.add(null);
                             }
                         }
-                        if (pulls.isEmpty()) return OresFuture.completed(OresNotification.complete());
 
-                        // SelectSet is the native nonblocking registration primitive.
-                        // Here we use channel-backed sources directly where possible;
-                        // arbitrary Observable pulls remain Future-based.
-                        OresFuture<OresNotification<T>> result = new OresFuture<>();
-                        final boolean[] settled = {false};
-                        for (int k = 0; k < pulls.size(); k++) {
-                            final int sourceIndex = indices.get(k);
-                            pulls.get(k).whenCompleteRuntime((n, failure) -> {
-                                if (settled[0]) return;
-                                synchronized (settled) {
-                                    if (settled[0]) return;
-                                    settled[0] = true;
-                                }
-                                if (failure != null) {
-                                    result.failFromRuntime(OresFuture.unwrap(failure));
-                                } else if (n.isComplete()) {
-                                    done[sourceIndex] = true;
-                                    remaining--;
-                                    if (remaining == 0) result.completeFromRuntime(OresNotification.complete());
-                                    else result.failFromRuntime(new IllegalStateException(
-                                            "rx-ores merge requires a new demand after a source completes"));
-                                } else {
-                                    @SuppressWarnings("unchecked") T value = (T) n.value();
+                        final Object gate = new Object();
+                        final boolean[] won = {false};
+                        for (int i = 0; i < pulls.size(); i++) {
+                            OresFuture<OresNotification<? extends T>> pull = pulls.get(i);
+                            if (pull == null) continue;
+                            final int index = i;
+                            pull.whenCompleteRuntime((notification, failure) -> {
+                                synchronized (gate) {
+                                    if (won[0]) return;
+                                    if (failure != null) {
+                                        won[0] = true;
+                                        result.failFromRuntime(OresFuture.unwrap(failure));
+                                        return;
+                                    }
+                                    if (notification.isComplete()) {
+                                        done[index] = true;
+                                        remaining--;
+                                        if (remaining == 0) {
+                                            won[0] = true;
+                                            result.completeFromRuntime(OresNotification.complete());
+                                        }
+                                        return;
+                                    }
+                                    won[0] = true;
+                                    @SuppressWarnings("unchecked")
+                                    T value = (T) notification.value();
                                     result.completeFromRuntime(OresNotification.next(value));
+                                    for (int j = 0; j < pulls.size(); j++) {
+                                        if (j != index && pulls.get(j) != null) pulls.get(j).cancel(true);
+                                    }
                                 }
                             });
                         }
+
+                        result.whenCompleteRuntime((ignored, ignoredFailure) -> {
+                            if (result.isCancelled()) {
+                                for (OresFuture<OresNotification<? extends T>> pull : pulls) {
+                                    if (pull != null) pull.cancel(true);
+                                }
+                            }
+                        });
                         return result;
                     }
 
                     @Override protected void cancelFromRuntime() {
-                        for (OresSubscription<? extends T> sub : subs) sub.cancel();
+                        for (OresSubscription<? extends T> subscription : subscriptions) subscription.cancel();
                     }
                 };
             }
