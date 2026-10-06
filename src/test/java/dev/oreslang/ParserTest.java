@@ -728,12 +728,12 @@ final class ParserTest {
     void routeGuardConditionalsAcceptDoElifElseifAndElseIfAliases() {
         String source = """
                 define module routes as
-                  fnc validate(int handler_id, Pattern pattern): int {
+                  fnc validate(int handler_id, bool pattern_valid, int segment_count): int {
                     if handler_id < 0; do
                       return -1;
-                    elif !pattern.is_valid(); then
+                    elif !pattern_valid; then
                       return -2;
-                    elseif pattern.size() > 10; do
+                    elseif segment_count > 10; do
                       return -3;
                     else if handler_id == 0; then
                       return 0;
