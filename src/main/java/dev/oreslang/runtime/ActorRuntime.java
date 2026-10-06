@@ -1430,7 +1430,28 @@ public final class ActorRuntime implements AutoCloseable {
             if (controlDispatcher.isShutdown()) {
                 throw new IllegalStateException("CONTROL dispatcher is shut down");
             }
-            controlDispatcher.prestartAllCoreThreads();
+
+            // CONTROL is the VM bootstrap pool. Its floor must remain a real
+            // resident carrier floor: guest startup, Future/await wakeups, and
+            // channel/select continuations cannot depend on a later submission
+            // to create the first worker.
+            controlDispatcher.allowCoreThreadTimeOut(false);
+            int required = controlDispatcher.getCorePoolSize();
+            int newlyStarted = controlDispatcher.prestartAllCoreThreads();
+            int live = controlDispatcher.getPoolSize();
+
+            // ThreadPoolExecutor permits a ThreadFactory to fail to create a
+            // worker (for example by returning null). Do not publish STARTED in
+            // that case; otherwise main could enter a runtime that cannot make
+            // progress. The return value is zero when all cores were already
+            // started, so the authoritative postcondition is the live count.
+            if (live != required) {
+                throw new IllegalStateException(
+                        "CONTROL dispatcher bootstrap incomplete: required="
+                                + required
+                                + ", live=" + live
+                                + ", newlyStarted=" + newlyStarted);
+            }
         }
 
         int controlCarrierCount() {
