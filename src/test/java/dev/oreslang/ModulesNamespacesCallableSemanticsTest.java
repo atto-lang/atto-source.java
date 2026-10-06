@@ -98,6 +98,70 @@ final class ModulesNamespacesCallableSemanticsTest {
         assertEquals("7|42", output);
     }
 
+    @Test
+    void modulesConformToDedicatedContracts() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define contract MathApi as
+                  fnc add(int a, int b) => int;
+                  String name;
+                end
+
+                define module math conforms MathApi as
+                  pub fnc add(int a, int b): int {
+                    return a + b;
+                  }
+                  pub val String name = "math";
+                end
+                """)));
+    }
+
+    @Test
+    void moduleContractsCannotBeUsedAsTypeInterfacesOrTraits() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define contract MathApi as
+                  fnc add(int a, int b) => int;
+                end
+
+                define class Bad implements MathApi as
+                  add(int a, int b): int {
+                    return a + b;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define contract MathApi as
+                  fnc add(int a, int b) => int;
+                end
+
+                define module math conforms MathApi as
+                  pub fnc add(int a, int b): int {
+                    return a + b;
+                  }
+                end
+
+                fnc bad(): MathApi {
+                  return math;
+                }
+                """)));
+    }
+
+    @Test
+    void legacyModuleAdheresToIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define contract MathApi as
+                  fnc add(int a, int b) => int;
+                end
+
+                @AdheresTo(MathApi)
+                define module math as
+                  pub fnc add(int a, int b): int {
+                    return a + b;
+                  }
+                end
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "modules-namespaces-callables.ores")
