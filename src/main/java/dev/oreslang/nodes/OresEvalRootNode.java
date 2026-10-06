@@ -3330,7 +3330,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "unknown field " + member.member());
                     }
-                    if (!targetField.field().mutable()) {
+                    if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
                         throw new IllegalArgumentException(
                                 "field '" + object.klass.name()
                                         + "." + member.member()
@@ -3620,6 +3620,19 @@ public final class OresEvalRootNode extends RootNode {
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
             }
+        }
+
+        private boolean methodContainsPotentialSuspension(
+                Ast.MethodDecl method) {
+            for (Ast.Stmt stmt : method.body()) {
+                if (statementContainsPotentialSuspension(
+                        stmt,
+                        java.util.Collections.newSetFromMap(
+                                new IdentityHashMap<>()))) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
