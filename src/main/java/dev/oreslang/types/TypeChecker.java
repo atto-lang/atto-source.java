@@ -1543,6 +1543,20 @@ public final class TypeChecker {
                         // original named owner.
                         yield new Shared(operand);
                     }
+                    case "proxy" -> {
+                        if (operand instanceof Borrow) {
+                            throw new IllegalArgumentException(
+                                    "rt proxy requires unique ownership; a borrow cannot be wrapped");
+                        }
+                        if (operand instanceof Shared) {
+                            throw new IllegalArgumentException(
+                                    "rt proxy requires unique ownership; read-only shared ownership cannot be upgraded to synchronized mutation");
+                        }
+                        requireProxyable(operand);
+                        // Proxy is transparent at the surface type layer.
+                        // OwnershipChecker carries the distinct PROXY capability state.
+                        yield operand;
+                    }
                     default -> throw new IllegalStateException("unknown rt operation " + operation);
                 };
             }
@@ -2437,11 +2451,41 @@ public final class TypeChecker {
         return operation.equals("borrow")
                 || operation.equals("take")
                 || operation.equals("copy")
-                || operation.equals("share");
+                || operation.equals("share")
+                || operation.equals("proxy");
     }
 
     private String ownershipIntrinsicOperation(String name) {
         return name.startsWith("$rt$") ? name.substring("$rt$".length()) : name;
+    }
+
+    private void requireProxyable(Type type) {
+        Type source = deref(type);
+        if (source instanceof Primitive || source instanceof StringLiteral) {
+            throw new IllegalArgumentException(
+                    "rt proxy requires a reference-backed class/record value; Copy scalars do not need synchronization");
+        }
+        if (source instanceof Function || source instanceof Generic
+                || source instanceof ClassNamespace || source instanceof SingletonProxy
+                || source == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(
+                    "rt proxy cannot prove synchronized proxy semantics for " + source);
+        }
+        if (source instanceof Named named) {
+            if (named.name().equals("Ptr")) {
+                throw new IllegalArgumentException(
+                        "rt proxy cannot wrap Ptr<T>; pointer capabilities have separate lifetime/alias rules");
+            }
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) {
+                throw new IllegalArgumentException(
+                        "rt proxy currently requires a linked Ores class or structural record, got " + named);
+            }
+            return;
+        }
+        if (source instanceof Record) return;
+        throw new IllegalArgumentException(
+                "rt proxy currently supports Ores classes and structural records, got " + source);
     }
 
     private void requireCopyable(Type type, Set<String> visiting) {
