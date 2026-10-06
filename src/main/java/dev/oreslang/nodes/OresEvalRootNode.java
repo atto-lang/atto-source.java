@@ -14,6 +14,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresProxy;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -3591,6 +3592,16 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof OresProxy<?> proxy) {
+                return invokableInvocation(
+                        ignored -> invokeProxyMethod(
+                                proxy,
+                                member.member(),
+                                args,
+                                env),
+                        List.of());
+            }
+
             if (receiver instanceof OresObject object) {
                 Ast.MethodDecl method =
                         object.owner.findMethod(
@@ -3725,6 +3736,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target instanceof Ast.MemberExpr member) {
                 Object receiver = eval(member.receiver(), env);
+                if (receiver instanceof OresProxy<?> proxy) {
+                    return proxy.write(raw ->
+                            proxyExportValue(assignProxyMember(raw, member.member(), value, env)));
+                }
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
                             object.owner.findField(
@@ -4810,6 +4825,16 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
+                if (receiver instanceof OresProxy<?> proxy) {
+                    return invokableInvocation(
+                            ignored -> invokeProxyMethod(
+                                    proxy,
+                                    methodCall.member(),
+                                    args,
+                                    env),
+                            List.of());
+                }
+
                 if (receiver instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
@@ -5042,6 +5067,14 @@ public final class OresEvalRootNode extends RootNode {
             return switch (operation) {
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
+                case "proxy" -> {
+                    context.requireCapability(IsolatePolicy.Capability.ACTOR_PROXY, "rt proxy");
+                    if (!(value instanceof OresObject || value instanceof DynamicStructValue)) {
+                        throw new IllegalArgumentException(
+                                "rt proxy requires a class/struct-like runtime value");
+                    }
+                    yield new OresProxy<>(context.actors(), value);
+                }
                 // Static ownership checking currently admits rt copy only for proven
                 // Copy values on this convergence branch, so returning the immutable
                 // scalar/value representation is an independent language-level copy.
@@ -5135,6 +5168,11 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
+                    if (receiver instanceof OresProxy<?> proxy) {
+                        return proxy.write(raw ->
+                                proxyExportValue(assignProxyMember(
+                                        raw, target.member(), value, env)));
+                    }
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
@@ -5674,6 +5712,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
+            if (receiver instanceof OresProxy<?> proxy) {
+                return proxy.read(raw -> proxyExportValue(member(raw, name, env)));
+            }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
@@ -5716,6 +5757,124 @@ public final class OresEvalRootNode extends RootNode {
                 return hostMember(receiver, "host object", name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object invokeProxyMethod(
+                OresProxy<?> proxy,
+                String name,
+                List<Object> args,
+                Env env) {
+            return proxy.write(raw -> {
+                if (!(raw instanceof OresObject object)) {
+                    throw new IllegalArgumentException(
+                            "rt proxy method calls require a class instance; "
+                                    + "struct-like proxies expose synchronized fields only");
+                }
+
+                Ast.MethodDecl method = object.owner.findMethod(
+                        object.klass,
+                        CallableSelector.instance(name, args.size()),
+                        new LinkedHashSet<>());
+                if (method == null) {
+                    throw new IllegalArgumentException(
+                            "no proxy method " + object.klass.name() + "." + name
+                                    + " with arity " + args.size());
+                }
+                object.owner.requireClassMemberVisible(
+                        method.visibility(),
+                        object.owner.declaringClass(method),
+                        env == null ? null : env.accessClass(),
+                        "method",
+                        method.name());
+
+                if (method.async() || object.owner.methodContainsPotentialSuspension(method)) {
+                    throw new IllegalStateException(
+                            "rt proxy method " + object.klass.name() + "." + method.name()
+                                    + " may suspend; proxy locks cannot cross await/channel/select/cooperate boundaries");
+                }
+
+                Object result = object.owner.invoke(
+                        object.owner.methodInvocation(object, method, args));
+                return proxyExportValue(result);
+            });
+        }
+
+        private Object assignProxyMember(
+                Object raw,
+                String member,
+                Object value,
+                Env env) {
+            if (raw instanceof OresObject object) {
+                OwnedField targetField = object.owner.findField(
+                        object.klass,
+                        member,
+                        new LinkedHashSet<>());
+                if (targetField == null) {
+                    throw new IllegalArgumentException("unknown proxy field " + member);
+                }
+                object.owner.requireClassMemberVisible(
+                        targetField.field().visibility(),
+                        targetField.owner(),
+                        env == null ? null : env.accessClass(),
+                        "field",
+                        targetField.field().name());
+                if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "proxy field '" + object.klass.name() + "." + member
+                                    + "' is immutable");
+                }
+                object.fields.put(member, value);
+                return value;
+            }
+            if (raw instanceof DynamicStructValue dynamic) {
+                dynamic.fields.put(member, value);
+                return value;
+            }
+            throw new IllegalArgumentException(
+                    "rt proxy assignment requires class/struct-like state");
+        }
+
+        private Object proxyExportValue(Object value) {
+            if (value == null
+                    || value instanceof String
+                    || value instanceof Boolean
+                    || value instanceof Byte
+                    || value instanceof Short
+                    || value instanceof Integer
+                    || value instanceof Long
+                    || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof Character
+                    || value instanceof Complex
+                    || value instanceof OptionUnwrapError) {
+                return value;
+            }
+            if (value instanceof OptionValue option) {
+                return new OptionValue(
+                        option.present(),
+                        option.present() ? proxyExportValue(option.value()) : null);
+            }
+            if (value instanceof ResultValue result) {
+                return new ResultValue(result.ok(), proxyExportValue(result.value()));
+            }
+            if (value instanceof List<?> list) {
+                ArrayList<Object> copy = new ArrayList<>(list.size());
+                for (Object item : list) copy.add(proxyExportValue(item));
+                return List.copyOf(copy);
+            }
+            if (value instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    copy.put(
+                            proxyExportValue(entry.getKey()),
+                            proxyExportValue(entry.getValue()));
+                }
+                return java.util.Collections.unmodifiableMap(copy);
+            }
+            throw new IllegalStateException(
+                    "mutable value of runtime type "
+                            + value.getClass().getSimpleName()
+                            + " cannot escape an rt proxy lock domain");
         }
 
         private Object hostMember(Object receiver, String ownerName, String name) {
