@@ -209,6 +209,12 @@ public final class OwnershipChecker {
                     }
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (returned.borrowSource != null && returned.borrowSource.origin == Origin.LOCAL) {
+                    throw error("cannot return a borrow of a local value through an expression");
+                }
+                if (returned.borrowSource != null && isActorConfinedBorrow(returned.borrowSource)) {
+                    throw error("actor self cannot escape its mailbox turn as a returned borrow");
+                }
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
@@ -500,10 +506,52 @@ public final class OwnershipChecker {
                 storedKind,
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
+        if (binding.initializer() instanceof Ast.MatchExpr && value.borrowSource != null
+                && (value.kind == ValueKind.IMM_BORROW || value.kind == ValueKind.MUT_BORROW)) {
+            beginPersistentBorrow(value.borrowSource, value.kind == ValueKind.MUT_BORROW);
+        }
         scope.define(binding.name(), state);
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.MatchExpr matched) {
+            ValueInfo subject = checkExpr(matched.match().subject(), scope, false);
+            VarState source = matched.match().subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            Ast.TypeRef resultType = null;
+            ValueKind resultKind = ValueKind.COPY;
+            VarState borrowSource = null;
+            for (Ast.MatchArm arm : matched.match().arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                definePatternAliases(arm.pattern(), subject.type, source, armScope);
+                if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                for (Ast.Stmt stmt : arm.statements()) checkStatement(stmt, armScope, Ast.TypeRef.inferred());
+                if (arm.yieldsValue()) {
+                    ValueInfo result = checkExpr(arm.result(), armScope, consuming);
+                    if ((result.kind == ValueKind.IMM_BORROW || result.kind == ValueKind.MUT_BORROW)
+                            && !result.type.isBorrow()) {
+                        throw error("match result cannot erase a pattern alias's borrow; return owned data or an explicit borrow");
+                    }
+                    resultType = joinConditionalType(resultType, result.type);
+                    if (result.kind != ValueKind.COPY) resultKind = result.kind;
+                    if (result.borrowSource != null) {
+                        if (!base.containsKey(result.borrowSource)) {
+                            throw error("match result cannot borrow a value local to its arm");
+                        }
+                        if (borrowSource != null && borrowSource != result.borrowSource) {
+                            throw error("match cannot combine results borrowing different ownership places");
+                        }
+                        borrowSource = result.borrowSource;
+                    }
+                }
+                armScope.close();
+                exits.add(stateSnapshot(scope));
+            }
+            mergeBranchState(base, exits);
+            return new ValueInfo(resultType == null ? Ast.TypeRef.inferred() : resultType, resultKind, borrowSource);
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -1351,6 +1399,8 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             scanExpr(assignment.target(), locals, outer, recursiveBinding, captures, true);
             scanExpr(assignment.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.MatchExpr matched) {
+            scanStatements(List.of(matched.match()), locals, outer, recursiveBinding, captures);
         } else if (expr instanceof Ast.TypeTestExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.PatternTestExpr e) {

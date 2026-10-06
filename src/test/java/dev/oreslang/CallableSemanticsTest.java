@@ -256,7 +256,7 @@ final class CallableSemanticsTest {
     }
 
     @Test
-    void moduleAliasesKeepFncsFirstClassAndRoutinesDirectOnlyAtRuntime() throws Exception {
+    void selectedModuleFncsAreFirstClassAndRoutinesAreDirectOnlyAtRuntime() throws Exception {
         String output = run("""
                 define module service
                   pub fnc transform(int value): int {
@@ -269,11 +269,10 @@ final class CallableSemanticsTest {
                 end
 
                 pub routine main(): void {
-                  val alias = service;
-                  val Fnc<int, int> callback = alias.transform;
+                  val Fnc<int, int> callback = service.transform;
                   stdio.stdout.write(callback(4));
                   stdio.stdout.write(":");
-                  stdio.stdout.write(alias.direct_only(4));
+                  stdio.stdout.write(service.direct_only(4));
                   return;
                 }
                 """);

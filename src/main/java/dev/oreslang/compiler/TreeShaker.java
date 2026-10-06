@@ -186,7 +186,7 @@ public final class TreeShaker {
 
         private boolean containsLambda(Ast.Expr expression) {
             if (expression == null) return false;
-            if (expression instanceof Ast.LambdaExpr) return true;
+            if (expression instanceof Ast.LambdaExpr || expression instanceof Ast.MatchExpr) return true;
             if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
@@ -696,7 +696,7 @@ public final class TreeShaker {
                     arms.add(new Ast.MatchArm(
                             arm.pattern(),
                             rewriteExpression(arm.guard(), module, armLocals),
-                            rewriteStatements(arm.body(), module, armLocals)));
+                            rewriteStatements(arm.body(), module, armLocals), arm.yieldsValue()));
                 }
                 return List.of(new Ast.MatchStmt(subject, matched.ordered(), arms));
             }
@@ -798,6 +798,11 @@ public final class TreeShaker {
             if (constant != UNKNOWN) return new Ast.LiteralExpr(constant);
 
             if (expression instanceof Ast.LiteralExpr || expression instanceof Ast.NameExpr) return expression;
+            if (expression instanceof Ast.MatchExpr matched) {
+                Ast.MatchStmt rewritten = (Ast.MatchStmt) rewriteStatement(
+                        matched.match(), module, new LinkedHashMap<>(locals)).getFirst();
+                return new Ast.MatchExpr(rewritten);
+            }
             if (expression instanceof Ast.TypeTestExpr test) {
                 return new Ast.TypeTestExpr(
                         rewriteExpression(test.value(), module, locals),
@@ -1225,7 +1230,9 @@ public final class TreeShaker {
                 scanExpression(module, member.receiver(), locals);
                 return;
             }
-            if (expression instanceof Ast.TypeTestExpr test) {
+            if (expression instanceof Ast.MatchExpr matched) {
+                scanStatements(module, List.of(matched.match()), new LinkedHashSet<>(locals));
+            } else if (expression instanceof Ast.TypeTestExpr test) {
                 scanExpression(module, test.value(), locals);
                 scanType(test.targetType());
             } else if (expression instanceof Ast.PatternTestExpr test) {

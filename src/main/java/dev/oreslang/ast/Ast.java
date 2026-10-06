@@ -502,8 +502,22 @@ public final class Ast {
         public ConstructorPattern { arguments = List.copyOf(arguments); }
     }
 
-    public record MatchArm(Pattern pattern, Expr guard, List<Stmt> body) {
-        public MatchArm { body = List.copyOf(body); }
+    public record MatchArm(Pattern pattern, Expr guard, List<Stmt> body, boolean yieldsValue) {
+        public MatchArm {
+            body = List.copyOf(body);
+            if (yieldsValue && (body.isEmpty() || !(body.getLast() instanceof ExprStmt))) {
+                throw new IllegalArgumentException("value-producing match arm requires a final expression");
+            }
+        }
+        public MatchArm(Pattern pattern, Expr guard, List<Stmt> body) {
+            this(pattern, guard, body, false);
+        }
+        public Expr result() {
+            return yieldsValue ? ((ExprStmt) body.getLast()).expression() : null;
+        }
+        public List<Stmt> statements() {
+            return yieldsValue ? body.subList(0, body.size() - 1) : body;
+        }
     }
 
     /**
@@ -649,9 +663,12 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+            TypeTestExpr, PatternTestExpr, CastExpr, MatchExpr, SpreadExpr,
             CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+
+    /** A match expression shares patterns and coverage rules with statement matches. */
+    public record MatchExpr(MatchStmt match) implements Expr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }

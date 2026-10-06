@@ -35,10 +35,14 @@ function types and interface callable signatures.
 ## Semantic separation
 
 - `x is y` is reference/handle identity.
-- `x is type T` is a nominal type predicate and flow refinement.
-- `x is type T name` additionally introduces a lexical refinement alias.
-- Prefix `is T [name]` remains the compact type-pattern form inside `match`
-  arms, where it is syntactically unambiguous.
+- `x is type T` is a type-conformance predicate; it never implicitly narrows `x`.
+- `x is type T as name` introduces a typed lexical alias on success; the older `x is type T name` spelling is accepted.
+- `is T` is a test-only type pattern inside `match`.
+- `T as name` and `is T as name` are equivalent checked-cast binding patterns.
+  The older `is T name` spelling is accepted. A failed pattern cast skips the
+  arm; it never throws the ordinary checked-expression cast error.
+- `is structural { name: String }` tests the public structural contract.
+  `structural { name: String } as named` also binds the successful view.
 - `x matches P` tests a complete pattern and exposes its bindings only on the
   successful control-flow edge.
 - `x as T` is a checked cast. A failed runtime cast raises `CastError`.
@@ -123,3 +127,40 @@ reflection, or arbitrary host `instanceof` relationships are not Oreslang
 type semantics.
 
 See `NATIVE_RUNTIME_ABI.md` for the native/JNI boundary.
+
+## Value-producing matches
+
+Both brace-delimited and `match ... end` forms accept value-producing arms:
+
+```ores
+val getter = match value {
+  structural { name: String } as named -> || -> { return named.name; }
+  _ -> || -> { return "unsupported"; }
+};
+val name = getter();
+```
+
+The scrutinee is evaluated once. Only the selected arm body executes; an
+explicit closure body executes when the resulting function is called.
+
+A plain expression supplies an arm's result. A block supplies its final
+expression without a semicolon. Block-local variables stay local; defers and
+lexical guard cleanup execute when the block exits, after evaluating the result.
+`return` in a block exits the enclosing callable. Braces never create an
+implicit closure. Explicit closures use Oreslang's existing `|| -> { ... }`
+or `|parameters| -> { ... }` syntax and explicit return statements.
+
+The checker enforces one result type across normally completing arms. It uses
+an expected contextual type or infers a common assignable type. It rejects
+incompatible results and missing final values. It does not invent a union or
+fall back to `Unknown`/`Any`. Explicit union annotations may admit heterogeneous
+values. Function results follow ordinary callable compatibility rules, including
+parameter authority, async mode, and result types. Exiting arms have no result
+value and do not constrain the type of normally completing arms.
+
+Expression matches retain the same exclusivity/exhaustiveness obligations,
+structural visibility rules, capability admission, and ownership alias rules as
+statement matches. Returned closures may capture an arm binding under the
+ordinary ownership rules. Borrowed results cannot outlive arm-local owners.
+A module namespace is not an ordinary value and cannot be a scrutinee/result;
+a qualified module path must select an exported non-module value.

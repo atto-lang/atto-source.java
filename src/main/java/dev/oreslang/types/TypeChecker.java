@@ -11,6 +11,7 @@ import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
+import dev.oreslang.types.Types.Never;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.SelfType;
@@ -56,12 +57,15 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> importedNamespaces = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private int loopDepth;
+    private Type currentReturnType = Primitive.VOID;
+    private List<Type> inferredLambdaReturns;
 
     public static Ast.Program check(Ast.Program program) {
         program = AnnotationExpander.expand(program);
@@ -71,6 +75,14 @@ public final class TypeChecker {
         checker.validate(program);
         OwnershipChecker.check(program);
         return program;
+    }
+
+    /** Structural checks use declared public member types, never a mutable field's current contents. */
+    public static boolean structuralClassMatches(Ast.Program program, Ast.ClassDecl klass, Ast.TypeRef target) {
+        TypeChecker checker = new TypeChecker();
+        checker.collect(program);
+        if (klass.actorKind() != Ast.ActorKind.NONE || !klass.genericParameters().isEmpty()) return false;
+        return checker.assignable(checker.nominalClassType(klass), checker.resolve(target, Set.of(), null));
     }
 
     private void validateImports(Ast.Program program) {
@@ -97,6 +109,7 @@ public final class TypeChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
+                if (imported.kind() == Ast.ImportKind.MODULE || imported.wildcard()) importedNamespaces.add(name);
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
@@ -290,10 +303,10 @@ public final class TypeChecker {
                         "module '" + module.name() + "' is missing required contract field '" + contract.name()
                                 + "." + required.name() + "'");
             }
-            if (actual.kind() != required.bindingKind()) {
+            if (actual.bindingKind() != required.bindingKind()) {
                 throw new IllegalArgumentException(
                         "module '" + module.name() + "." + actual.name() + "' has binding kind "
-                                + actual.kind() + " but contract '" + contract.name() + "' requires "
+                                + actual.bindingKind() + " but contract '" + contract.name() + "' requires "
                                 + required.bindingKind());
             }
         }
@@ -365,7 +378,11 @@ public final class TypeChecker {
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
             if (findInterface(parentRef.name()) == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            resolve(parentRef, generics, null);
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (iface.moduleContract()) {
+                validateGenericArity(parentRef, parent.genericParameters(), "contract " + parent.name());
+                for (Ast.TypeRef arg : parentRef.arguments()) resolve(arg, generics, null);
+            } else resolve(parentRef, generics, null);
         }
 
         for (Ast.InterfaceMember member : iface.members()) {
@@ -971,8 +988,9 @@ public final class TypeChecker {
 
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
-        Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
-        if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
+        Type expected = field.type() == null ? null : resolve(field.type(), Set.of(), null);
+        Type actual = typeOfAgainstExpected(field.initializer(), expected, new Env(null), Set.of(), null);
+        if (expected != null) requireAssignable(actual, expected, "initializer for " + field.name());
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
             throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
         }
@@ -980,7 +998,13 @@ public final class TypeChecker {
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         Env env = new Env(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        Type previousReturn = currentReturnType;
+        currentReturnType = expectedReturn;
+        try {
+            for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        } finally {
+            currentReturnType = previousReturn;
+        }
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -1080,6 +1104,7 @@ public final class TypeChecker {
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
+            if (inferredLambdaReturns != null && expectedReturn == Unknown.INSTANCE) inferredLambdaReturns.add(actual);
             return;
         }
         if (stmt instanceof Ast.YieldStmt yielded) {
@@ -1103,6 +1128,10 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.MatchStmt matched) {
+            if (matched.arms().stream().anyMatch(Ast.MatchArm::yieldsValue)) {
+                checkMatchValue(matched, null, env, generics, self);
+                return;
+            }
             Type subject = deref(typeOf(matched.subject(), env, generics, self));
             checkMatch(matched, subject, env, generics, expectedReturn, self);
             return;
@@ -1258,7 +1287,10 @@ public final class TypeChecker {
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
-            if (moduleNamespace != null) return moduleShape(moduleNamespace);
+            if (moduleNamespace != null || importedNamespaces.contains(name.name())) {
+                throw new IllegalArgumentException("module namespace '" + name.name()
+                        + "' cannot be used as a value; select an exported member");
+            }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
@@ -1311,7 +1343,7 @@ public final class TypeChecker {
                 }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
-            Type value = typeOf(assignment.value(), env, generics, self);
+            Type value = typeOfAgainstExpected(assignment.value(), targetType, env, generics, self);
             requireAssignable(value, targetType, "assignment to " + where);
             return targetType;
         }
@@ -1320,6 +1352,9 @@ public final class TypeChecker {
             Type left = typeOf(conditional.whenTrue(), env, generics, self);
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
             return commonType(left, right);
+        }
+        if (expr instanceof Ast.MatchExpr matched) {
+            return checkMatchValue(matched.match(), null, env, generics, self);
         }
         if (expr instanceof Ast.TypeTestExpr test) {
             requireRuntimeReifiableType(test.targetType(), "is");
@@ -1342,6 +1377,7 @@ public final class TypeChecker {
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
+            requireStableStructuralView(source, target);
             return cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Named("Option", List.of(target))
                     : target;
@@ -1648,7 +1684,7 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                Type receiver = deref(typeOfNamespaceReceiver(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
 
@@ -1959,7 +1995,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
-            Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type receiver = typeOfNamespaceReceiver(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
             Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
             if (iteratorMember != null) return iteratorMember;
@@ -2299,12 +2335,21 @@ public final class TypeChecker {
             }
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             if (nonLexical) currentClassOwner = null;
+            List<Type> previousReturns = inferredLambdaReturns;
+            List<Type> returns = new ArrayList<>();
+            inferredLambdaReturns = returns;
             try {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
             } finally {
+                inferredLambdaReturns = previousReturns;
                 currentClassOwner = previousClassOwner;
             }
-            return new Function(parameters, Unknown.INSTANCE);
+            Type result = Never.INSTANCE;
+            for (Type returned : returns) result = matchResultType(result, returned, "lambda return");
+            if (!definitelyReturns(lambda.blockBody())) {
+                result = matchResultType(result, Primitive.VOID, "lambda fallthrough");
+            }
+            return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
     }
@@ -2392,7 +2437,19 @@ public final class TypeChecker {
         return Primitive.BOOL;
     }
 
+    private Type typeOfNamespaceReceiver(Ast.Expr receiver, Env env, Set<String> generics, Type self) {
+        if (receiver instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+            Ast.ModuleDecl module = modules.get(name.name());
+            if (module != null) return moduleShape(module);
+            if (importedNamespaces.contains(name.name())) return Unknown.INSTANCE;
+        }
+        return typeOf(receiver, env, generics, self);
+    }
+
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.MatchExpr matched) {
+            return checkMatchValue(matched.match(), expected, env, generics, self);
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
@@ -2438,7 +2495,7 @@ public final class TypeChecker {
             Env env,
             Set<String> generics,
             Type self) {
-        Type receiver = typeOf(member.receiver(), env, generics, self);
+        Type receiver = typeOfNamespaceReceiver(member.receiver(), env, generics, self);
         Type receiverValueType = deref(unwrapMutexGuard(receiver));
         Type normalized = receiverDispatchType(receiverValueType);
         int arity = expected.parameters().size();
@@ -2753,7 +2810,7 @@ public final class TypeChecker {
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         Type receiver = receiverDispatchType(
-                unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self))));
+                unwrapMutexGuard(deref(typeOfNamespaceReceiver(member.receiver(), env, generics, self))));
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
@@ -2998,6 +3055,7 @@ public final class TypeChecker {
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type refinement: " + source + " cannot be " + target);
             }
+            requireStableStructuralView(source, target);
             destination.define(test.binding(), target, Ast.BindingKind.VAL);
             return;
         }
@@ -3058,6 +3116,94 @@ public final class TypeChecker {
         }
     }
 
+    private Type checkMatchValue(Ast.MatchStmt matched, Type expected, Env env, Set<String> generics, Type self) {
+        Type subject = deref(typeOf(matched.subject(), env, generics, self));
+        List<Ast.MatchArm> proofArms = matched.arms().stream()
+                .map(arm -> new Ast.MatchArm(arm.pattern(), arm.guard(), List.of())).toList();
+        checkMatch(new Ast.MatchStmt(matched.subject(), matched.ordered(), proofArms),
+                subject, env, generics, currentReturnType, self);
+        Type result = Never.INSTANCE;
+        for (int i = 0; i < matched.arms().size(); i++) {
+            Ast.MatchArm arm = matched.arms().get(i);
+            Env armEnv = new Env(env);
+            checkPattern(arm.pattern(), subject, armEnv, generics, self);
+            for (Ast.Stmt stmt : arm.statements()) {
+                checkStatement(stmt, armEnv, generics, currentReturnType, self);
+            }
+            if (definitelyReturns(arm.statements())) continue;
+            if (!arm.yieldsValue()) {
+                throw new IllegalArgumentException("match expression arm " + (i + 1)
+                        + " must produce a final expression or exit the enclosing function");
+            }
+            Type actual = typeOfAgainstExpected(arm.result(), expected, armEnv, generics, self);
+            if (expected != null && expected != Unknown.INSTANCE) {
+                requireAssignable(actual, expected, "match arm " + (i + 1) + " result");
+            }
+            result = expected != null && expected != Unknown.INSTANCE ? expected
+                    : matchResultType(result, actual, "match arm " + (i + 1));
+        }
+        if ((expected == null || expected == Unknown.INSTANCE) && containsUnknown(result)) {
+            throw new IllegalArgumentException("match result contains an unknown type; add a result type annotation");
+        }
+        return result == Never.INSTANCE ? result
+                : expected != null && expected != Unknown.INSTANCE ? expected : result;
+    }
+
+    private void requireStableStructuralView(Type source, Type target) {
+        if (!(target instanceof Record)) return;
+        if (source instanceof Union union) {
+            for (Type option : union.options()) requireStableStructuralView(option, target);
+        } else if (source instanceof Record && !assignable(source, target)) {
+            throw new IllegalArgumentException("structural binding/cast requires compatible declared record member types; "
+                    + "a mutable field's current value cannot establish a narrower member type");
+        } else if (source == Unknown.INSTANCE || source instanceof Generic) {
+            throw new IllegalArgumentException("structural binding/cast requires known member type metadata");
+        }
+    }
+
+    private Type matchResultType(Type left, Type right, String where) {
+        if (left == Never.INSTANCE) return right;
+        if (right == Never.INSTANCE) return left;
+        if (left == Unknown.INSTANCE || right == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(where + " has an unknown result type; add a result type annotation");
+        }
+        if (assignable(right, left)) return left;
+        if (assignable(left, right)) return right;
+        if (left instanceof Function a && right instanceof Function b
+                && a.parameters().equals(b.parameters()) && a.mutableParameters().equals(b.mutableParameters())
+                && a.async() == b.async()) {
+            return new Function(a.parameters(), a.mutableParameters(), a.async(),
+                    matchResultType(a.result(), b.result(), where + " function result"));
+        }
+        if (left instanceof Named a && right instanceof Named b) {
+            Set<Named> candidates = new LinkedHashSet<>();
+            collectMatchSupertypes(a, candidates);
+            candidates.removeIf(candidate -> !assignable(b, candidate));
+            List<Named> minimal = candidates.stream().filter(candidate -> candidates.stream()
+                    .noneMatch(other -> !other.equals(candidate) && assignable(other, candidate))).toList();
+            if (minimal.size() == 1) return minimal.getFirst();
+        }
+        Type common = commonType(left, right);
+        if (common != Unknown.INSTANCE) return common;
+        throw new IllegalArgumentException(where + " result type " + right
+                + " is incompatible with previous result type " + left);
+    }
+
+    private void collectMatchSupertypes(Named type, Set<Named> candidates) {
+        if (!candidates.add(type)) return;
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass != null) {
+            for (Ast.TypeRef parent : klass.parents()) {
+                if (resolveClassParent(parent, klass) != null) collectMatchSupertypes(concreteClassReference(parent, klass, type), candidates);
+            }
+            for (Ast.TypeRef iface : klass.interfaces()) collectMatchSupertypes(concreteClassReference(iface, klass, type), candidates);
+        }
+        Ast.InterfaceDecl iface = findInterface(type.name());
+        if (iface != null && !iface.moduleContract()) {
+            for (Ast.TypeRef parent : iface.parents()) collectMatchSupertypes(concreteInterfaceParentType(parent, iface, type), candidates);
+        }
+    }
+
     private void checkPattern(
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
@@ -3078,7 +3224,10 @@ public final class TypeChecker {
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
-            if (typed.binding() != null) bindings.define(typed.binding(), target, Ast.BindingKind.VAL);
+            if (typed.binding() != null) {
+                requireStableStructuralView(subject, target);
+                bindings.define(typed.binding(), target, Ast.BindingKind.VAL);
+            }
             return;
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
@@ -3251,16 +3400,37 @@ public final class TypeChecker {
             return true;
         }
         if (a instanceof Record && b instanceof Record) return true;
+        if (a instanceof Record && b instanceof Named named && findClass(named.name()) != null) {
+            return findClass(named.name()).actorKind() == Ast.ActorKind.NONE;
+        }
+        if (b instanceof Record && a instanceof Named named && findClass(named.name()) != null) {
+            return findClass(named.name()).actorKind() == Ast.ActorKind.NONE;
+        }
         return a.equals(b);
     }
 
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
+        requireRuntimeReifiableType(ref, operator, new LinkedHashSet<>());
+    }
+
+    private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator, Set<Ast.TypeAliasDecl> aliases) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
         if (ref.isUnion()) {
-            for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
+            for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator, aliases);
             return;
         }
-        if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
+        if (ref.isRecordType()) {
+            for (Ast.TypeRef member : ref.recordMembers().values()) requireRuntimeReifiableType(member, operator, aliases);
+            return;
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        if (alias != null && alias.genericParameters().isEmpty()) {
+            if (!aliases.add(alias)) throw new IllegalArgumentException("cyclic type alias in " + operator + ": " + alias.name());
+            try { requireRuntimeReifiableType(alias.target(), operator, aliases); }
+            finally { aliases.remove(alias); }
+            return;
+        }
+        if (ref.isBorrow() || ref.isTupleType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
@@ -3633,7 +3803,9 @@ public final class TypeChecker {
                                 + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
                                 + parent.name() + "' across the interface/contract boundary");
             }
-            Type resolvedParent = resolve(parentRef, generics, null);
+            Type resolvedParent = iface.moduleContract()
+                    ? new Named(qualifiedInterfaceName(parent), parentRef.arguments().stream().map(arg -> resolve(arg, generics, null)).toList())
+                    : resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
                 throw new IllegalArgumentException("parent interface must resolve to a named type");
             }
@@ -4320,6 +4492,8 @@ public final class TypeChecker {
         if (expression instanceof Ast.AssignExpr assignment) {
             rejectStaticClassGenericReferences(assignment.target(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(assignment.value(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.MatchExpr matched) {
+            rejectStaticClassGenericReferences(List.of(matched.match()), classGenerics, klass, method);
         } else if (expression instanceof Ast.TypeTestExpr test) {
             rejectStaticClassGenericReferences(test.value(), classGenerics, klass, method);
             rejectStaticClassGenericReference(test.targetType(), classGenerics, klass, method);
@@ -5120,6 +5294,8 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (actual == Never.INSTANCE) return true;
+        if (expected == Never.INSTANCE) return false;
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())

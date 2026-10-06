@@ -69,7 +69,7 @@ public final class Parser {
                     continue;
                 }
                 if (match(CONTRACT)) {
-                    if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "contracts do not accept class/callable modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
@@ -87,13 +87,8 @@ public final class Parser {
                             modifiers.isAbstract || afterDefineAbstract, true));
                     continue;
                 }
-                if (match(CONTRACT)) {
-                    if (modifiers.generator || modifiers.nonLexical || modifiers.structural || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) throw error(previous(), "contract declarations do not accept callable/class modifiers");
-                    rejectCallableStructuralAnnotation(annotations, "contract declarations");
-                    rootDeclarations.add(parseContract(modifiers.visibility));
-                    continue;
-                }
-                if (match(INTERFACE)) { throw error(previous(), "'generator' applies only to fnc or routine declarations");
+                if (match(INTERFACE)) {
+                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                     if (modifiers.structural) throw error(previous(), "'structural' applies to callable declarations, not interface declarations");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
@@ -507,6 +502,7 @@ public final class Parser {
         String name = consume(IDENT, "expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        match(AS);
         boolean braceStyle = match(LBRACE);
         Token.Type terminator = braceStyle ? RBRACE : END;
 
@@ -962,6 +958,10 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeAtom() {
+        if ((check(IDENT) || check(STRUCTURAL)) && peek().lexeme().equals("structural") && checkNext(LBRACE)) {
+            advance();
+            return parseTypeAtom();
+        }
         if (match(TYPE)) {
             Ast.TypeRef marked = parseTypeAtom();
             if (marked.name().startsWith("$")) {
@@ -1970,18 +1970,44 @@ public final class Parser {
         }
         match(SEMICOLON);
 
+        boolean armSuppression = suppressRefinementOperators;
+        suppressRefinementOperators = false;
+        try {
+            return parseMatchArms(subject, ordered);
+        } finally {
+            suppressRefinementOperators = armSuppression;
+        }
+    }
+
+    private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered) {
+        boolean braces = match(LBRACE);
         List<Ast.MatchArm> arms = new ArrayList<>();
-        while (!check(END) && !check(EOF)) {
+        while (!check(braces ? RBRACE : END) && !check(EOF)) {
             Ast.Pattern pattern = match(ELSE) ? new Ast.WildcardPattern() : parsePattern();
             Ast.Expr guard = match(WHEN) ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
             consume(ARROW, "match arms use the slim arrow '->'");
-            List<Ast.Stmt> body = parseBlock();
-            arms.add(new Ast.MatchArm(pattern, guard, body));
+            List<Ast.Stmt> body = new ArrayList<>();
+            boolean yieldsValue;
+            if (match(LBRACE)) {
+                boolean lastTerminated = true;
+                while (!check(RBRACE) && !check(EOF)) {
+                    body.add(parseStatement());
+                    lastTerminated = previous().type() == SEMICOLON;
+                }
+                consume(RBRACE, "expected '}' after match arm block");
+                yieldsValue = !body.isEmpty() && body.getLast() instanceof Ast.ExprStmt && !lastTerminated;
+            } else {
+                body.add(new Ast.ExprStmt(parseExpression()));
+                yieldsValue = true;
+            }
+            arms.add(new Ast.MatchArm(pattern, guard, body, yieldsValue));
+            match(SEMICOLON);
+            match(COMMA);
         }
-        consume(END, "expected 'end' to close match");
+        consume(braces ? RBRACE : END, "expected closing delimiter for match");
         if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
         return new Ast.MatchStmt(subject, ordered, arms);
     }
@@ -1989,9 +2015,21 @@ public final class Parser {
     private Ast.Pattern parsePattern() {
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();
-            String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
+            String binding = match(AS) ? consume(IDENT, "expected binding name after 'as'").lexeme()
+                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
         }
+        // A type followed by 'as name' is a checked-cast binding pattern.
+        // Speculative parsing does not change the interpretation of ordinary
+        // constructor or catch-all patterns when no 'as' follows the type.
+        int patternStart = current;
+        Ast.TypeRef castTarget = null;
+        try { castTarget = parseTypeRef(); } catch (IllegalArgumentException ignored) { }
+        if (castTarget != null && match(AS)) {
+            return new Ast.TypePattern(castTarget,
+                    consume(IDENT, "expected binding name after 'as'").lexeme());
+        }
+        current = patternStart;
         if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
@@ -2168,11 +2206,14 @@ public final class Parser {
                 expr = new Ast.BinaryExpr(op, expr, parseShift());
                 continue;
             }
-            if (!suppressRefinementOperators && check(IS) && checkNext(TYPE)) {
+            if (!suppressRefinementOperators && check(IS) && (checkNext(TYPE)
+                    || (current + 2 < tokens.size() && tokens.get(current + 1).lexeme().equals("structural")
+                        && tokens.get(current + 2).type() == LBRACE))) {
                 advance();
-                consume(TYPE, "expected 'type' after 'is' in a nominal type test");
+                match(TYPE);
                 Ast.TypeRef target = parseTypeRef();
-                String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
+                String binding = match(AS) ? consume(IDENT, "expected binding name after 'as'").lexeme()
+                        : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
                 expr = new Ast.TypeTestExpr(expr, target, binding);
                 continue;
             }
@@ -2180,7 +2221,7 @@ public final class Parser {
                 expr = new Ast.PatternTestExpr(expr, parsePattern());
                 continue;
             }
-            if (!suppressRefinementOperators && match(AS)) {
+            if (match(AS)) {
                 boolean optional = match(QUESTION);
                 expr = new Ast.CastExpr(expr, parseTypeRef(),
                         optional ? Ast.CastMode.OPTIONAL : Ast.CastMode.CHECKED);
@@ -2436,6 +2477,7 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) return new Ast.MatchExpr(parseMatch());
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {

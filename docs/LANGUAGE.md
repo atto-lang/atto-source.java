@@ -970,7 +970,7 @@ The distinction is **reifiability**:
 - a `routine` is direct-call-only. `run_app()` is valid, but evaluating `run_app` as a value is a compile-time error;
 - an instance/actor method is likewise direct-call-only. This also applies when the receiver is typed through a nominal interface or an `@Structural` contract: `worker.process(x)` is valid, but `worker.process` is not a bound-method value;
 - `static fnc` and lambdas are reifiable first-class callables;
-- module aliases preserve the same distinction: a public non-generic `fnc` remains a function-valued member, while a `routine` remains direct-call-only even after `val api = some_module`;
+- modules are namespaces and cannot be stored, passed, returned, cast, or matched as standalone values. Select an exported member: `val callback = some_module.transform` is valid for a public non-generic `fnc`; `val api = some_module` is an error. A `routine` remains direct-call-only;
 - a field whose declared value is `Fnc<...>` is callable data, not a method. `box.callback(x)` invokes that field when no method named `callback` exists, and `box.callback` may be reified normally.
 
 Field/binding names and instance-method names may not share the same base name on a class or interface, including through inheritance. Module runtime value members likewise share one base-name namespace across callables, classes, and bindings. These restrictions keep `x.name` and `x.name(...)` from silently selecting different semantic categories.
@@ -1722,8 +1722,10 @@ Structural parameters remain read-only views and therefore do not consume the su
 
 Oreslang keeps four related operations separate:
 
-- `is` performs a nominal type test and flow refinement. `x is Dog dog`
-  binds `dog` only on the successful edge.
+- `x is type T` tests type conformance without changing `x`'s static type.
+  `x is type T as name` binds a typed alias only on the successful edge.
+  `x is y` retains its existing reference/handle identity meaning.
+  `x is structural { field: Type }` tests an explicit structural contract.
 - `matches` tests a full pattern, for example
   `if value matches Some(inner) then ... fi`.
 - `as` is a checked cast; `as?` returns `Option<T>`.
@@ -1738,6 +1740,49 @@ explicit arms disjoint and proves coverage, or rejects the program. A final
 unguarded `else`, `_`, or catch-all binding represents the complement of
 the preceding explicit arms. `match first` is the explicit ordered escape
 hatch when priority is intended.
+
+`match` can also produce a value of any ordinary value type, including a function.
+Expression arms use `pattern -> expression`; block arms use their final expression
+without a semicolon. A `return` inside an arm block exits the enclosing function,
+and does not establish an implicit anonymous function boundary.
+
+```ores
+fnc getName({ name: String } value): String {
+  return match value {
+    structural { name: String } as named -> {
+      val name = named.name;
+      name
+    }
+    _ -> "unsupported"
+  };
+}
+
+fnc choose(bool flag): Fnc<String> {
+  return match flag {
+    true -> || -> { return "yes"; }
+    false -> || -> { return "no"; }
+  };
+}
+```
+
+`T as name` is the convenient checked-cast binding pattern; `is T as name`
+is equivalent. `is T` tests without a binding. The same forms accept explicit
+`structural { ... }` targets. Failed pattern casts try another arm rather than
+throwing a cast error. The alias exists only in its arm (including its guard).
+
+An expression match has one result type. Context supplies an expected type,
+or the checker infers a common assignable type, including a unique common
+nominal supertype. Incompatible arms require an explicit common interface,
+base type, or union annotation; no implicit `Any` or union is invented.
+Function-valued arms are checked by their signatures and return types.
+An arm that exits the enclosing function does not contribute a result type.
+Every normally completing expression arm must produce a value.
+
+Structural tests and casts use public declared member types for classes and
+accessible record fields. Private class state and actor identity cannot satisfy
+an ordinary structural contract. Structural record bindings/casts may not narrow
+a mutable member using only its current contents. Members must have runtime-reifiable
+types; parameterized targets and callable member contracts are not yet reifiable.
 
 Refinement and pattern bindings are ownership aliases, not copies. A move
 through a narrowed alias consumes the same underlying move-only place.

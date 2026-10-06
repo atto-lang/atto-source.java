@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Never, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -94,11 +94,16 @@ public final class Types {
 
     public record StringLiteral(String value) implements Type { }
 
+    /** Control flow that does not produce a value. */
+    public enum Never implements Type { INSTANCE }
+
     public enum Unknown implements Type { INSTANCE }
 
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        if (from == Never.INSTANCE) return true;
+        if (to == Never.INSTANCE) return from == Never.INSTANCE;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;

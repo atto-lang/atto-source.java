@@ -551,6 +551,10 @@ public final class OresEvalRootNode extends RootNode {
                 return new SourceFlow(SourceFlowKind.NORMAL, null, null);
             }
 
+            private static SourceFlow completed(Object value) {
+                return new SourceFlow(SourceFlowKind.NORMAL, value, null);
+            }
+
             private static SourceFlow returning(Object value) {
                 return new SourceFlow(SourceFlowKind.RETURN, value, null);
             }
@@ -564,6 +568,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
+                if (failure instanceof ReturnSignal returned) return returning(returned.value);
+                if (failure instanceof BreakSignal) return breaking();
+                if (failure instanceof ContinueSignal) return continuing();
                 return new SourceFlow(
                         SourceFlowKind.THROW,
                         null,
@@ -1027,6 +1034,9 @@ public final class OresEvalRootNode extends RootNode {
                         || expressionContainsPotentialSuspension(
                                 conditional.whenFalse(), seen);
             }
+            if (expr instanceof Ast.MatchExpr matched) {
+                return statementContainsPotentialSuspension(matched.match(), seen);
+            }
             if (expr instanceof Ast.TypeTestExpr test) {
                 return expressionContainsPotentialSuspension(
                         test.value(), seen);
@@ -1096,19 +1106,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void runStatements(
-                SourceTask task,
-                List<Ast.Stmt> statements,
-                Env env,
-                ArrayDeque<Ast.Expr> defers,
-                int index,
-                SourceFlowCont continuation) {
+                SourceTask task, List<Ast.Stmt> statements, Env env,
+                ArrayDeque<Ast.Expr> defers, int index, SourceFlowCont continuation) {
+            runStatements(task, statements, env, defers, index, continuation, null);
+        }
+
+        private void runStatements(
+                SourceTask task, List<Ast.Stmt> statements, Env env,
+                ArrayDeque<Ast.Expr> defers, int index, SourceFlowCont continuation, Ast.Expr result) {
             if (index >= statements.size()) {
-                finishBlock(
-                        task,
-                        env,
-                        defers,
-                        SourceFlow.normal(),
-                        continuation);
+                if (result == null) finishBlock(task, env, defers, SourceFlow.normal(), continuation);
+                else evalSuspendableExpr(task, result, env, (t, value, failure) ->
+                        finishBlock(t, env, defers, failure == null ? SourceFlow.completed(value)
+                                : SourceFlow.throwing(failure), continuation));
                 return;
             }
 
@@ -1125,7 +1135,7 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             defers,
                             index + 1,
-                            continuation);
+                            continuation, result);
                     return;
                 } catch (ReturnSignal returned) {
                     finishBlock(
@@ -1175,7 +1185,7 @@ public final class OresEvalRootNode extends RootNode {
                                     env,
                                     defers,
                                     index + 1,
-                                    continuation);
+                                    continuation, result);
                         } else {
                             finishBlock(
                                     task,
@@ -1267,6 +1277,11 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.MatchStmt matched) {
+                    evalSuspendableMatch(task, matched, env, (t, value, failure) ->
+                            continuation.accept(t, failure == null ? SourceFlow.normal() : SourceFlow.throwing(failure)));
+                    return;
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -2348,6 +2363,73 @@ public final class OresEvalRootNode extends RootNode {
                     Map.copyOf(bindings));
         }
 
+        private void selectMatchSuspendable(SourceTask task, Ast.MatchStmt matched, Object subject, Env env,
+                int index, SelectedMatch selected, Ast.MatchArm fallback, SourceValueCont continuation) {
+            if (index == matched.arms().size()) {
+                SelectedMatch result = selected != null ? selected
+                        : fallback != null ? matchCandidate(fallback, subject, env) : null;
+                continuation.accept(task, result, result == null
+                        ? new IllegalStateException("exhaustive match invariant violated: no arm matched") : null);
+                return;
+            }
+            Ast.MatchArm arm = matched.arms().get(index);
+            if (!matched.ordered() && matchFallback(arm)) {
+                selectMatchSuspendable(task, matched, subject, env, index + 1, selected, arm, continuation);
+                return;
+            }
+            SelectedMatch candidate = matchCandidate(arm, subject, env);
+            if (candidate == null) {
+                selectMatchSuspendable(task, matched, subject, env, index + 1, selected, fallback, continuation);
+                return;
+            }
+            SourceValueCont guarded = (t, accepted, failure) -> {
+                if (failure != null) { continuation.accept(t, null, failure); return; }
+                if (!truth(accepted)) {
+                    selectMatchSuspendable(t, matched, subject, env, index + 1, selected, fallback, continuation);
+                } else if (matched.ordered()) continuation.accept(t, candidate, null);
+                else if (selected != null) continuation.accept(t, null,
+                        new IllegalStateException("exclusive match invariant violated: multiple arms matched"));
+                else selectMatchSuspendable(t, matched, subject, env, index + 1, candidate, fallback, continuation);
+            };
+            if (arm.guard() == null) guarded.accept(task, true, null);
+            else evalSuspendableExpr(task, arm.guard(), candidate.env(), guarded);
+        }
+
+        private void evalSuspendableNamespaceReceiver(SourceTask task, Ast.Expr receiver, Env env, SourceValueCont continuation) {
+            try {
+                if (receiver instanceof Ast.NameExpr) {
+                    continuation.accept(task, evalRaw(receiver, env), null);
+                } else if (receiver instanceof Ast.MemberExpr member) {
+                    evalSuspendableNamespaceReceiver(task, member.receiver(), env, (t, value, failure) -> {
+                        if (failure != null) { continuation.accept(t, null, failure); return; }
+                        try { continuation.accept(t, member(value, member.member(), env), null); }
+                        catch (RuntimeException | Error failed) { continuation.accept(t, null, failed); }
+                    });
+                } else evalSuspendableExpr(task, receiver, env, continuation);
+            } catch (RuntimeException | Error failure) { continuation.accept(task, null, failure); }
+        }
+
+        private void evalSuspendableMatch(SourceTask task, Ast.MatchStmt matched, Env env, SourceValueCont continuation) {
+            evalSuspendableExpr(task, matched.subject(), env, (t, subject, failure) -> {
+                if (failure != null) { continuation.accept(t, null, failure); return; }
+                selectMatchSuspendable(t, matched, subject, env, 0, null, null, (t2, result, selectionFailure) -> {
+                    if (selectionFailure != null) { continuation.accept(t2, null, selectionFailure); return; }
+                    SelectedMatch selected = (SelectedMatch) result;
+                    Env armEnv = new Env(selected.env());
+                    runStatements(t2, selected.arm().statements(), armEnv, new ArrayDeque<>(), 0, (t3, flow) -> {
+                        Throwable control = switch (flow.kind()) {
+                            case NORMAL -> null;
+                            case RETURN -> new ReturnSignal(flow.value());
+                            case BREAK -> new BreakSignal();
+                            case CONTINUE -> new ContinueSignal();
+                            case THROW -> flow.failure();
+                        };
+                        continuation.accept(t3, flow.value(), control);
+                    }, selected.arm().result());
+                });
+            });
+        }
+
         private void evalSuspendableExpr(
                 SourceTask task,
                 Ast.Expr expr,
@@ -2590,6 +2672,11 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (expr instanceof Ast.MatchExpr matched) {
+                    evalSuspendableMatch(task, matched.match(), env, continuation);
+                    return;
+                }
+
                 if (expr instanceof Ast.TypeTestExpr test) {
                     evalSuspendableExpr(
                             task,
@@ -2671,7 +2758,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
-                    evalSuspendableExpr(
+                    evalSuspendableNamespaceReceiver(
                             task,
                             member.receiver(),
                             env,
@@ -2683,10 +2770,10 @@ public final class OresEvalRootNode extends RootNode {
                                 try {
                                     continuation.accept(
                                             t,
-                                            member(
+                                            requireRuntimeValue(member(
                                                     receiver,
                                                     member.member(),
-                                                    env),
+                                                    env)),
                                             null);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
@@ -3267,7 +3354,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (call.callee() instanceof Ast.MemberExpr member) {
-                evalSuspendableExpr(
+                evalSuspendableNamespaceReceiver(
                         task,
                         member.receiver(),
                         env,
@@ -3509,7 +3596,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (target instanceof Ast.MemberExpr member) {
-                Object receiver = eval(member.receiver(), env);
+                Object receiver = evalNamespaceReceiver(member.receiver(), env);
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
                             object.owner.findField(
@@ -3919,11 +4006,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
+            executeValueBlock(statements, parent, inheritedTailBarrier, null);
+        }
+
+        private Object executeValueBlock(List<Ast.Stmt> statements, Env parent,
+                boolean inheritedTailBarrier, Ast.Expr result) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
+                return result == null ? null : eval(result, env);
             } catch (TailCallSignal signal) {
                 throw signal;
             } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
@@ -4035,63 +4128,9 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.MatchStmt matched) {
-                Object subject = eval(matched.subject(), env);
-                Ast.MatchArm selected = null;
-                Map<String, Object> selectedBindings = Map.of();
-                Ast.MatchArm fallback = null;
-
-                for (Ast.MatchArm arm : matched.arms()) {
-                    boolean catchAll = arm.guard() == null
-                            && (arm.pattern() instanceof Ast.WildcardPattern
-                                || arm.pattern() instanceof Ast.BindingPattern);
-                    if (!matched.ordered() && catchAll) {
-                        fallback = arm;
-                        continue;
-                    }
-
-                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
-                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
-                    Env armEnv = new Env(env);
-                    bindings.forEach((name, value) ->
-                            armEnv.define(name, value, Ast.BindingKind.VAL));
-                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
-
-                    if (matched.ordered()) {
-                        executeBlock(
-                                arm.body(),
-                                armEnv,
-                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-                        return;
-                    }
-                    if (selected != null) {
-                        throw new IllegalStateException(
-                                "exclusive match invariant violated at runtime: more than one explicit arm matched; "
-                                        + "the static pattern proof and runtime type metadata disagree");
-                    }
-                    selected = arm;
-                    selectedBindings = Map.copyOf(bindings);
-                }
-
-                if (selected == null && fallback != null) {
-                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
-                    if (!patternMatches(fallback.pattern(), subject, bindings)) {
-                        throw new IllegalStateException("match fallback did not accept the unmatched subject");
-                    }
-                    selected = fallback;
-                    selectedBindings = Map.copyOf(bindings);
-                }
-
-                if (selected == null) {
-                    throw new IllegalStateException(
-                            "exhaustive match invariant violated at runtime: no arm matched");
-                }
-                Env selectedEnv = new Env(env);
-                selectedBindings.forEach((name, value) ->
-                        selectedEnv.define(name, value, Ast.BindingKind.VAL));
-                executeBlock(
-                        selected.body(),
-                        selectedEnv,
-                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                SelectedMatch selected = selectMatch(matched, eval(matched.subject(), env), env);
+                executeValueBlock(selected.arm().statements(), selected.env(),
+                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards(), selected.arm().result());
                 return;
             }
             if (stmt instanceof Ast.SwitchStmt switched) {
@@ -4553,7 +4592,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
-                Object receiver = eval(methodCall.receiver(), env);
+                Object receiver = evalNamespaceReceiver(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
@@ -4784,7 +4823,23 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException(name + " operands must be bool");
         }
 
+        private Object requireRuntimeValue(Object value) {
+            if (value instanceof ModuleFacade || value instanceof ImportedNamespace) {
+                throw new IllegalArgumentException("module namespace cannot be used as a value; select an exported member");
+            }
+            return value;
+        }
+
+        private Object evalNamespaceReceiver(Ast.Expr receiver, Env env) {
+            return receiver instanceof Ast.NameExpr || receiver instanceof Ast.MemberExpr
+                    ? evalRaw(receiver, env) : eval(receiver, env);
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
+            return requireRuntimeValue(evalRaw(expr, env));
+        }
+
+        private Object evalRaw(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -4867,7 +4922,7 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
-                    Object receiver = eval(target.receiver(), env);
+                    Object receiver = evalNamespaceReceiver(target.receiver(), env);
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
@@ -4904,7 +4959,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("member assignment requires a class instance, DynamicStruct, or mutex guard");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
-                    Object receiver = eval(target.receiver(), env);
+                    Object receiver = evalNamespaceReceiver(target.receiver(), env);
                     Object index = eval(target.index(), env);
                     if (receiver instanceof DynamicStructValue dynamic) {
                         if (!(index instanceof String key)) {
@@ -4959,6 +5014,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return binary(binary.operator(), left, right);
             }
+            if (expr instanceof Ast.MatchExpr matched) {
+                SelectedMatch selected = selectMatch(matched.match(), eval(matched.match().subject(), env), env);
+                return executeValueBlock(selected.arm().statements(), selected.env(), true, selected.arm().result());
+            }
             if (expr instanceof Ast.TypeTestExpr test) {
                 Object value = eval(test.value(), env);
                 return oresTypeMatches(value, test.targetType());
@@ -4986,7 +5045,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) return member(evalNamespaceReceiver(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
@@ -5786,7 +5845,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     yield new ClassFacade(this, klass);
                 }
-                case ACTOR, INTERFACE, TRAIT, STRUCT, TYPE, TYPES ->
+                case ACTOR, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES ->
                         throw new IllegalArgumentException(
                                 "import " + kind.name().toLowerCase()
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
@@ -6304,6 +6363,37 @@ public final class OresEvalRootNode extends RootNode {
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
         }
 
+        private record SelectedMatch(Ast.MatchArm arm, Env env) { }
+
+        private SelectedMatch matchCandidate(Ast.MatchArm arm, Object subject, Env env) {
+            LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+            if (!patternMatches(arm.pattern(), subject, bindings)) return null;
+            Env candidate = new Env(env);
+            bindings.forEach((name, value) -> candidate.define(name, value, Ast.BindingKind.VAL));
+            return new SelectedMatch(arm, candidate);
+        }
+
+        private boolean matchFallback(Ast.MatchArm arm) {
+            return arm.guard() == null && (arm.pattern() instanceof Ast.WildcardPattern
+                    || arm.pattern() instanceof Ast.BindingPattern);
+        }
+
+        private SelectedMatch selectMatch(Ast.MatchStmt matched, Object subject, Env env) {
+            SelectedMatch selected = null;
+            Ast.MatchArm fallback = null;
+            for (Ast.MatchArm arm : matched.arms()) {
+                if (!matched.ordered() && matchFallback(arm)) { fallback = arm; continue; }
+                SelectedMatch candidate = matchCandidate(arm, subject, env);
+                if (candidate == null || (arm.guard() != null && !truth(eval(arm.guard(), candidate.env())))) continue;
+                if (matched.ordered()) return candidate;
+                if (selected != null) throw new IllegalStateException("exclusive match invariant violated: multiple arms matched");
+                selected = candidate;
+            }
+            if (selected == null && fallback != null) selected = matchCandidate(fallback, subject, env);
+            if (selected == null) throw new IllegalStateException("exhaustive match invariant violated: no arm matched");
+            return selected;
+        }
+
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
@@ -6353,6 +6443,18 @@ public final class OresEvalRootNode extends RootNode {
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
+                }
+                return false;
+            }
+            if (target.isRecordType()) {
+                if (value instanceof OresObject object) {
+                    return dev.oreslang.types.TypeChecker.structuralClassMatches(object.owner.program, object.klass, target);
+                }
+                if (value instanceof Map<?, ?> map) {
+                    for (Map.Entry<String, Ast.TypeRef> field : target.recordMembers().entrySet()) {
+                        if (!map.containsKey(field.getKey()) || !oresTypeMatches(map.get(field.getKey()), field.getValue())) return false;
+                    }
+                    return true;
                 }
                 return false;
             }

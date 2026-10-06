@@ -106,7 +106,7 @@ final class TreeShakerTest {
     }
 
     @Test
-    void reifiedModuleAliasRetainsItsRuntimeVisibleCallableSurface() {
+    void selectedModuleMembersRetainTheirCallableDeclarations() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 define module service
                   pub fnc transform(int value): int {
@@ -123,16 +123,15 @@ final class TreeShakerTest {
                 end
 
                 pub routine main(): void {
-                  val alias = service;
-                  val Fnc<int, int> callback = alias.transform;
+                  val Fnc<int, int> callback = service.transform;
                   stdio.stdout.write(callback(4));
-                  stdio.stdout.write(alias.direct_only(4));
+                  stdio.stdout.write(service.direct_only(4));
                   return;
                 }
                 """, BuildOptions.executable(Map.of()));
 
         assertTrue(result.retained("service.transform"));
-        assertTrue(result.retained("service.direct_only"));
+        assertTrue(result.removed("service.direct_only")); // The selected pure routine call is inlined.
         assertTrue(result.removed("service.private_helper"));
     }
 

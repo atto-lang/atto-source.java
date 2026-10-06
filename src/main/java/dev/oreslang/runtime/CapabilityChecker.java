@@ -353,6 +353,13 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
+        if (expr instanceof Ast.MatchExpr matched) {
+            checkStatements(List.of(matched.match()), policy);
+            return;
+        }
+        if (expr instanceof Ast.TypeTestExpr test) { checkExpr(test.value(), policy); return; }
+        if (expr instanceof Ast.PatternTestExpr test) { checkExpr(test.value(), policy); return; }
+        if (expr instanceof Ast.CastExpr cast) { checkExpr(cast.value(), policy); return; }
         if (expr instanceof Ast.NameExpr javaName) {
             String javaClass = javaImports.get(javaName.name());
             if (javaClass != null) {

@@ -52,16 +52,15 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void modulesAreTypedNamespacesAndCanAdhereToInterfaces() {
+    void modulesAreTypedNamespacesAndConformToContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define interface MathApi
+                  define contract MathApi
                     fnc add(int a, int b) => int;
                   end
                 end
 
-                @AdheresTo(contracts.MathApi)
-                define module math
+                define module math conforms contracts.MathApi
                   pub fnc add(int a, int b): int { return a + b; }
                 end
 
@@ -79,13 +78,12 @@ final class LanguageHardeningTest {
     void directOnlyRoutineStillParticipatesInModuleCallableContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define interface Api
+                  define contract Api
                     fnc ping(int value) => int;
                   end
                 end
 
-                @AdheresTo(contracts.Api)
-                define module service
+                define module service conforms contracts.Api
                   pub routine ping(int value): int {
                     return value + 1;
                   }
@@ -362,40 +360,32 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void moduleAliasesPreserveFncReifiabilityButKeepRoutinesDirectOnly() {
+    void moduleAliasesAreRejectedButExportedFunctionsRemainReifiable() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module service
-                  pub fnc transform(int value): int {
-                    return value + 1;
-                  }
-
-                  pub routine direct_only(int value): int {
-                    return value + 2;
-                  }
+                  pub fnc transform(int value): int { return value + 1; }
+                  pub routine direct_only(int value): int { return value + 2; }
                 end
-
                 fnc good(): int {
-                  val alias = service;
-                  val Fnc<int, int> callback = alias.transform;
-                  return callback(40) + alias.direct_only(0);
+                  val Fnc<int, int> callback = service.transform;
+                  return callback(40) + service.direct_only(0);
                 }
                 """)));
-
-        IllegalArgumentException routineValue = assertThrows(
-                IllegalArgumentException.class,
+        IllegalArgumentException alias = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define module service
-                          pub routine direct_only(int value): int {
-                            return value + 1;
-                          }
-                        end
-
-                        fnc bad(): void {
-                          val alias = service;
-                          val Fnc<int, int> callback = alias.direct_only;
-                          return;
-                        }
-                        """)));
+                define module service
+                  pub fnc transform(int value): int { return value + 1; }
+                end
+                fnc bad(): void { val alias = service; return; }
+                """)));
+        assertTrue(alias.getMessage().contains("module namespace"));
+        IllegalArgumentException routineValue = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                define module service
+                  pub routine direct_only(int value): int { return value + 1; }
+                end
+                fnc bad(): void { val Fnc<int, int> callback = service.direct_only; return; }
+                """)));
         assertTrue(routineValue.getMessage().contains("direct-call-only"));
     }
 
@@ -433,17 +423,16 @@ final class LanguageHardeningTest {
     void moduleAdherenceRejectsMissingExports() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define interface Api
+                  define contract Api
                     fnc ping() => int;
                   end
                 end
 
-                @AdheresTo(contracts.Api)
-                define module broken
+                define module broken conforms contracts.Api
                   pub fnc pong(): int { return 1; }
                 end
                 """)));
-        assertTrue(error.getMessage().contains("does not adhere"));
+        assertTrue(error.getMessage().contains("does not conform"));
     }
 
     @Test

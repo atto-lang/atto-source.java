@@ -195,7 +195,7 @@ final class ModulesNamespacesCallableSemanticsTest {
                 end
 
                 define contract Derived extends Base as
-                  fnc size(): int;
+                  fnc size() => int;
                 end
 
                 define module good conforms Derived as
@@ -206,11 +206,11 @@ final class ModulesNamespacesCallableSemanticsTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define interface Base as
-                  fnc size(): int;
+                  fnc size() => int;
                 end
 
                 define contract Bad extends Base as
-                  fnc size(): int;
+                  fnc size() => int;
                 end
                 """)));
     }
@@ -219,7 +219,7 @@ final class ModulesNamespacesCallableSemanticsTest {
     void moduleContractsDoNotHaveSelfTypes() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define contract Bad as
-                  fnc clone(): self;
+                  fnc clone() => self;
                 end
                 """)));
     }
@@ -228,7 +228,7 @@ final class ModulesNamespacesCallableSemanticsTest {
     void publicModuleContractsAreLegalDeclarations() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub define contract PublicApi as
-                  fnc ping(): void;
+                  fnc ping() => void;
                 end
                 """)));
     }
@@ -237,7 +237,7 @@ final class ModulesNamespacesCallableSemanticsTest {
     void moduleContractsCannotLeakThroughNominalAssignability() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define contract Api as
-                  fnc ping(): void;
+                  fnc ping() => void;
                 end
 
                 define class User as
@@ -254,7 +254,7 @@ final class ModulesNamespacesCallableSemanticsTest {
     void duplicateModuleContractsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define contract Api as
-                  fnc ping(): void;
+                  fnc ping() => void;
                 end
 
                 define module m conforms Api, Api as
