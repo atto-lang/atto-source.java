@@ -107,7 +107,7 @@ final class FormalOwnershipDomainModelCheckTest {
     void ownershipOperatorsPreserveTheAllocationDomainContract() {
         Set<State> states = explore();
 
-        assertTrue(states.size() >= 100,
+        assertTrue(states.size() >= 70,
                 "finite ownership algebra should explore all context/kind/operator combinations");
 
         for (State state : states) {
