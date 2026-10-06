@@ -2153,12 +2153,26 @@ public final class OwnershipChecker {
             boolean async,
             boolean generator) {
         if (generator) {
+            Ast.TypeRef element = generatorYieldType(result, async);
             return new Ast.TypeRef(
                     async ? "AsyncIterator" : "Iterator",
-                    List.of(result),
+                    List.of(element),
                     false);
         }
         if (async) return new Ast.TypeRef("Future", List.of(result), false);
+        return result;
+    }
+
+    private Ast.TypeRef generatorYieldType(Ast.TypeRef result, boolean async) {
+        if (result != null && result.arguments().size() == 1) {
+            boolean syncProtocol =
+                    result.name().equals("Iterator") || result.name().equals("Generator");
+            boolean asyncProtocol =
+                    result.name().equals("AsyncIterator") || result.name().equals("AsyncGenerator");
+            if ((async && asyncProtocol) || (!async && syncProtocol)) {
+                return result.arguments().getFirst();
+            }
+        }
         return result;
     }
 
