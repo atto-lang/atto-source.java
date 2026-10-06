@@ -233,6 +233,36 @@ final class ModulesNamespacesCallableSemanticsTest {
                 """)));
     }
 
+    @Test
+    void moduleContractsCannotLeakThroughNominalAssignability() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define contract Api as
+                  fnc ping(): void;
+                end
+
+                define class User as
+                  pub fnc ping(): void { return; }
+                end
+
+                fnc bad(): Api {
+                  return User();
+                }
+                """)));
+    }
+
+    @Test
+    void duplicateModuleContractsAreRejected() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define contract Api as
+                  fnc ping(): void;
+                end
+
+                define module m conforms Api, Api as
+                  pub fnc ping(): void { return; }
+                end
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "modules-namespaces-callables.ores")
