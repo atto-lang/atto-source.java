@@ -4703,6 +4703,9 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!tailBarrier) {
                 if (value instanceof Ast.CallExpr call) {
+                    if (isRuntimeProxyIntrinsic(call)) {
+                        throw new ReturnSignal(eval(call, env));
+                    }
                     if (isBooleanIntrinsicCall(call, env)) {
                         throw new ReturnSignal(evalBooleanIntrinsic(call, env));
                     }
