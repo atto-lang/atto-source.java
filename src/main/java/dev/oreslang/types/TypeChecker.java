@@ -1141,7 +1141,19 @@ public final class TypeChecker {
                     requireInteger(right, "bitwise right operand");
                     yield Primitive.INT;
                 }
-                case "==", "!=" -> Primitive.BOOL;
+                case "eq", "neq", "==", "!=" -> {
+                    requireEqualityComparable(left, right);
+                    yield Primitive.BOOL;
+                }
+                case "is" -> {
+                    requireIdentityBearing(left, "left operand of 'is'");
+                    requireIdentityBearing(right, "right operand of 'is'");
+                    if (!typesMayOverlap(deref(left), deref(right))) {
+                        throw new IllegalArgumentException(
+                                "identity operands have disjoint runtime domains: " + left + " and " + right);
+                    }
+                    yield Primitive.BOOL;
+                }
                 case "<", "<=", ">", ">=" -> {
                     if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
                         throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
@@ -2805,6 +2817,42 @@ public final class TypeChecker {
 
     private boolean isStringLike(Type type) {
         return type == Primitive.STRING || type instanceof StringLiteral;
+    }
+
+    private void requireEqualityComparable(Type left, Type right) {
+        Type a = deref(left);
+        Type b = deref(right);
+        if (Types.isNumeric(a) && Types.isNumeric(b)) return;
+        if (isStringLike(a) && isStringLike(b)) return;
+        if (typesMayOverlap(a, b) || assignable(a, b) || assignable(b, a)) return;
+        throw new IllegalArgumentException(
+                "equality operands have disjoint value domains: " + left + " and " + right);
+    }
+
+    private void requireIdentityBearing(Type type, String where) {
+        Type value = deref(type);
+        if (value instanceof Union union) {
+            for (Type option : union.options()) requireIdentityBearing(option, where);
+            return;
+        }
+
+        boolean valueSemanticAggregate = value instanceof Record
+                || value instanceof Tuple
+                || value instanceof Function;
+        boolean valueSemanticNamed = value instanceof Named named
+                && (named.name().equals("Option")
+                    || named.name().equals("Result")
+                    || named.name().equals("DynamicStruct")
+                    || named.name().equals("IteratorResult"));
+
+        if (value instanceof Primitive || value instanceof StringLiteral
+                || value instanceof ClassNamespace || value instanceof Generic
+                || value == Unknown.INSTANCE
+                || valueSemanticAggregate
+                || valueSemanticNamed) {
+            throw new IllegalArgumentException(
+                    where + " must be an identity-bearing reference/handle value, but found " + value);
+        }
     }
 
     private Record classShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
