@@ -1098,6 +1098,17 @@ public final class ActorRuntime implements AutoCloseable {
                             new IllegalStateException("rt Proxy lock produced a null lease"));
                     return;
                 }
+                /*
+                 * Revocation can race between requireOpenTarget() above and the
+                 * logical lease grant. Never publish an Access after the proxy
+                 * has become closed; return the lease immediately so the RW
+                 * state machine can continue draining.
+                 */
+                if (proxyClosed.get() || closed.get()) {
+                    lease.close();
+                    result.failFromRuntime(new IllegalStateException("rt proxy is closed"));
+                    return;
+                }
                 Access access = new Access(lease, write);
                 if (!result.completeFromRuntime(access)) {
                     access.close();
@@ -1242,6 +1253,13 @@ public final class ActorRuntime implements AutoCloseable {
         private void closeUnderWriteLease() {
             if (!proxyClosed.compareAndSet(false, true)) return;
             sharedProxies.remove(this);
+            /*
+             * dispose() is a revocation boundary, not merely target cleanup.
+             * Any logical readers/writers already queued behind this write
+             * lease must settle now instead of being granted stale Access
+             * objects after the writer releases.
+             */
+            lock.failWaiters(new IllegalStateException("rt proxy was disposed while waiting"));
             retireTarget(true);
         }
 
