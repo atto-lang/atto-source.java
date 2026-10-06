@@ -909,6 +909,168 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        private Object proxyValue(Object value) {
+            if (value instanceof OresRwProxy proxy) return proxy;
+            if (value instanceof OresObject || value instanceof Map<?, ?>) {
+                return new OresRwProxy(value, new ReentrantReadWriteLock(true));
+            }
+            throw new IllegalArgumentException(
+                    "rt proxy currently supports Ores class instances and structural records; got "
+                            + (value == null ? "null" : value.getClass().getName()));
+        }
+
+        private Object proxyOutbound(OresRwProxy proxy, Object value) {
+            if (value == null
+                    || isKnownImmutableCopyScalar(value)
+                    || value instanceof ActorRuntime.ActorId
+                    || value instanceof ActorRuntime.ActorRef<?>) {
+                return value;
+            }
+            if (value instanceof OresRwProxy nested) {
+                if (nested.lock != proxy.lock) {
+                    throw new IllegalArgumentException(
+                            "rt proxy cannot expose a nested proxy from a different synchronization domain");
+                }
+                return nested;
+            }
+            if (value instanceof OresObject || value instanceof Map<?, ?>) {
+                return new OresRwProxy(value, proxy.lock);
+            }
+            throw new IllegalArgumentException(
+                    "rt proxy cannot expose mutable/opaque value of type "
+                            + value.getClass().getName()
+                            + " until that category has a proxy-aware synchronized wrapper");
+        }
+
+        private Object proxyInbound(OresRwProxy owner, Object value) {
+            if (value instanceof OresRwProxy nested) {
+                if (nested.lock != owner.lock) {
+                    throw new IllegalArgumentException(
+                            "cannot merge values from different rt proxy lock domains");
+                }
+                return nested.target;
+            }
+            return value;
+        }
+
+        private Object assignObjectField(
+                OresObject object,
+                String fieldName,
+                Object value,
+                SingletonState singletonState) {
+            Ast.FieldDecl field = runtimeField(object.klass, fieldName);
+            if (field == null || !object.fields.containsKey(fieldName)) {
+                throw new IllegalArgumentException("unknown field " + fieldName);
+            }
+            if (field.bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                        + fieldName + "' is immutable");
+            }
+            Object previous = object.fields.get(fieldName);
+            object.fields.put(fieldName, value);
+            try {
+                if (singletonState != null) singletonState.validateStorageGraph();
+            } catch (RuntimeException | Error failure) {
+                object.fields.put(fieldName, previous);
+                throw failure;
+            }
+            return value;
+        }
+
+        private Object assignProxyMember(
+                OresRwProxy proxy,
+                String fieldName,
+                Object value,
+                SingletonState singletonState) {
+            Lock write = proxy.lock.writeLock();
+            write.lock();
+            try {
+                if (!(proxy.target instanceof OresObject object)) {
+                    throw new IllegalArgumentException(
+                            "structural rt proxy records are read-only until mutable struct semantics are implemented");
+                }
+                Object stored = proxyInbound(proxy, value);
+                assignObjectField(object, fieldName, stored, singletonState);
+                return proxyOutbound(proxy, stored);
+            } finally {
+                write.unlock();
+            }
+        }
+
+        private Object readProxyMember(
+                OresRwProxy proxy,
+                String name,
+                SingletonState singletonState) {
+            Lock read = proxy.lock.readLock();
+            read.lock();
+            try {
+                Object value;
+                if (proxy.target instanceof OresObject object) {
+                    if (!object.fields.containsKey(name)) {
+                        throw new IllegalArgumentException(
+                                "rt proxy method values cannot be extracted; call '" + name
+                                        + "(...)' directly so the lock spans the whole method");
+                    }
+                    value = object.fields.get(name);
+                } else if (proxy.target instanceof Map<?, ?> map) {
+                    if (!map.containsKey(name)) {
+                        throw new IllegalArgumentException("unknown proxied record member " + name);
+                    }
+                    value = map.get(name);
+                } else {
+                    throw new IllegalStateException("unsupported rt proxy target " + proxy.target);
+                }
+                return proxyOutbound(proxy, value);
+            } finally {
+                read.unlock();
+            }
+        }
+
+        private Object invokeProxyMethod(
+                OresRwProxy proxy,
+                String name,
+                List<Object> args,
+                SingletonState singletonState) {
+            if (!(proxy.target instanceof OresObject object)) {
+                throw new IllegalArgumentException(
+                        "structural rt proxy records have fields but no class methods");
+            }
+
+            Ast.ClassDecl dispatchClass = runtimeDispatchClass(object, singletonState);
+            Ast.MethodDecl method =
+                    findMethod(dispatchClass, name, args.size(), new LinkedHashSet<>());
+            if (method == null) {
+                throw new IllegalArgumentException(
+                        "no method " + dispatchClass.name() + "." + name
+                                + " with arity " + args.size());
+            }
+            if (method.async()) {
+                throw new IllegalArgumentException(
+                        "async method '" + name
+                                + "' cannot execute through rt proxy; RW locks cannot span suspension");
+            }
+            Ast.TypeRef receiver = method.explicitReceiverType();
+            if (receiver != null && !receiver.isBorrow()) {
+                throw new IllegalArgumentException(
+                        "ownership-consuming method '" + name
+                                + "' cannot execute through rt proxy");
+            }
+
+            boolean writeAccess =
+                    receiver != null && receiver.isBorrow() && receiver.mutableBorrow();
+            Lock selected = writeAccess ? proxy.lock.writeLock() : proxy.lock.readLock();
+            selected.lock();
+            try {
+                ArrayList<Object> normalized = new ArrayList<>(args.size());
+                for (Object arg : args) normalized.add(proxyInbound(proxy, arg));
+                Object result =
+                        callMethod(object, dispatchClass, method, List.copyOf(normalized), singletonState);
+                return proxyOutbound(proxy, result);
+            } finally {
+                selected.unlock();
+            }
+        }
+
         private Object member(Object receiver, String name, SingletonState singletonState) {
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
@@ -1261,6 +1423,16 @@ public final class OresEvalRootNode extends RootNode {
                                     + "break the cycle explicitly in copy()");
                 }
                 return existing;
+            }
+
+            if (value instanceof OresRwProxy proxy) {
+                Lock read = proxy.lock.readLock();
+                read.lock();
+                try {
+                    return copyValue(proxy.target, singletonState, copies);
+                } finally {
+                    read.unlock();
+                }
             }
 
             if (value instanceof OptionValue option) {
