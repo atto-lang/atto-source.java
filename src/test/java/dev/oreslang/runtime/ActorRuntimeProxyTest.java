@@ -342,4 +342,34 @@ final class ActorRuntimeProxyTest {
         }
     }
 
+
+    @Test
+    void closedProxyCannotMintChildViewsAndClosedChildCanBeRecreatedWithoutQuotaLeak() {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            int[] nested = {8};
+            long before = runtime.sharedMemoryBytes();
+            ActorRuntime.Proxy<int[][]> parent = runtime.proxy(new int[][]{nested});
+            ActorRuntime.Proxy<int[]> first = parent.child(nested);
+            assertEquals(before + 192L, runtime.sharedMemoryBytes());
+
+            first.close();
+            assertEquals(before + 96L, runtime.sharedMemoryBytes(),
+                    "closing a child view must release its own handle quota");
+
+            ActorRuntime.Proxy<int[]> second = parent.child(nested);
+            assertNotSame(first, second);
+            assertEquals(before + 192L, runtime.sharedMemoryBytes(),
+                    "recreating a closed child must reserve exactly one replacement handle");
+
+            parent.close();
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> parent.child(nested),
+                    "a revoked parent capability must not mint fresh child capabilities");
+
+            second.close();
+            assertEquals(before, runtime.sharedMemoryBytes());
+        }
+    }
+
 }
