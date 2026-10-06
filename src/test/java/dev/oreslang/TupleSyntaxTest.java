@@ -175,6 +175,31 @@ final class TupleSyntaxTest {
     }
 
     @Test
+    void singletonTupleRequiresExplicitTupleSyntaxForNow() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc one(): Tuple[string] {
+                  return new Tuple("one");
+                }
+
+                pub fnc main(): void {
+                  const (value) = "grouped";
+                  val one: Tuple[string] = new Tuple("one");
+                  stdio.println(one[0]);
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException shorthand = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc bad(): (string,) {
+                          return new Tuple("one");
+                        }
+                        """));
+        assertTrue(shorthand.getMessage().contains("singleton tuple type shorthand"));
+    }
+
+    @Test
     void tupleBracketPseudoConstructionAndEmptyConstructorAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub fnc main(): void {
