@@ -186,6 +186,7 @@ public final class Ast {
             Visibility visibility,
             boolean async,
             boolean generator,
+            boolean structural,
             boolean nonLexical,
             ActorKind actorKind,
             List<String> genericParameters,
@@ -198,6 +199,14 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+        }
+
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean nonLexical, ActorKind actorKind,
+                            List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, generator, false, nonLexical, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
         }
 
         /** Compatibility constructor for non-generator callables. */
@@ -290,12 +299,22 @@ public final class Ast {
 
     public record InterfaceFunctionDecl(
             String name,
+            boolean structural,
             List<String> genericParameters,
             List<Param> parameters,
             TypeRef returnType) implements InterfaceMember {
         public InterfaceFunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+        }
+
+        /** Compatibility constructor for nominal interface callable contracts. */
+        public InterfaceFunctionDecl(
+                String name,
+                List<String> genericParameters,
+                List<Param> parameters,
+                TypeRef returnType) {
+            this(name, false, genericParameters, parameters, returnType);
         }
     }
 
@@ -336,6 +355,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            boolean structural,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
             List<Param> parameters,
@@ -348,6 +368,24 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+
+        /** Compatibility constructor for methods that do not use declaration-level structural matching. */
+        public MethodDecl(
+                String name,
+                Visibility visibility,
+                boolean isStatic,
+                boolean isAbstract,
+                boolean async,
+                TypeRef explicitReceiverType,
+                List<String> genericParameters,
+                List<Param> parameters,
+                TypeRef returnType,
+                List<Annotation> annotations,
+                List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, false, explicitReceiverType,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
+
         public int arity() { return parameters.size(); }
 
         /**

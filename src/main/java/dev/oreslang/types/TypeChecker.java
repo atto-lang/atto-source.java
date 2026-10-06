@@ -329,6 +329,7 @@ public final class TypeChecker {
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
                     || fn.generator()
+                    || fn.structural()
                     || fn.nonLexical()
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
@@ -338,7 +339,7 @@ public final class TypeChecker {
                     || !initReturn.arguments().isEmpty()
                     || initReturn.inferArguments()) {
                 throw new IllegalArgumentException(
-                        "init hook must be a private synchronous non-generator non-actor non-generic zero-arity "
+                        "init hook must be a private synchronous non-generator non-structural non-actor non-generic zero-arity "
                                 + "fnc/routine returning void");
             }
         }
@@ -365,6 +366,16 @@ public final class TypeChecker {
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
+                                + "pass an owned/sendable nominal value instead");
+            }
+            if (param.structural() && (fn.async() || fn.generator())) {
+                throw new IllegalArgumentException(
+                        "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
+                                + "pass an owned nominal value or copy the required fields");
+            }
             if (fn.actorKind() != Ast.ActorKind.NONE) {
                 validateActorCallableBoundaryType(
                         parameterType,
@@ -823,6 +834,16 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
+                                    + "actor APIs require owned/sendable nominal message values");
+                }
+                if (param.structural() && method.async()) {
+                    throw new IllegalArgumentException(
+                            "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
+                                    + "pass an owned nominal value or copy the required fields");
+                }
                 if (method.async()) {
                     validateAsyncBoundaryType(
                             parameterType,
@@ -2402,6 +2423,11 @@ public final class TypeChecker {
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
             Type expectedParam = expected.parameters().get(i);
+            boolean expectedMutable = expected.mutableParameters().get(i);
+            if (param.mutable() != expectedMutable) {
+                throw new IllegalArgumentException(
+                        "lambda parameter '" + param.name() + "' mutability does not match expected callable contract");
+            }
             Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
@@ -2443,6 +2469,7 @@ public final class TypeChecker {
                 named.name(), named.arguments().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> bindReceiverSelf(t, receiver)).toList(),
+                fn.mutableParameters(), fn.async(),
                 bindReceiverSelf(fn.result(), receiver));
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -2987,6 +3014,15 @@ public final class TypeChecker {
             return Types.unionOf(union.options().stream()
                     .map(option -> resolveSharedGeneric(option, bindings))
                     .toList());
+        }
+        if (type instanceof Function fn) {
+            return new Function(
+                    fn.parameters().stream()
+                            .map(parameter -> resolveSharedGeneric(parameter, bindings))
+                            .toList(),
+                    fn.mutableParameters(),
+                    fn.async(),
+                    resolveSharedGeneric(fn.result(), bindings));
         }
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -3848,6 +3884,8 @@ public final class TypeChecker {
             Type self) {
         return new Function(
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
+                params.stream().map(Ast.Param::mutable).toList(),
+                async,
                 callableResult(async, generator, resolve(returns, generics, self)));
     }
 
@@ -3880,20 +3918,40 @@ public final class TypeChecker {
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
         if (!param.structural()) return resolve(param.type(), generics, self);
+        if (param.mutable()) {
+            throw new IllegalArgumentException(
+                    "structural parameter '" + param.name()
+                            + "' is a read-only borrowed view and cannot be declared mut");
+        }
+
         Type concrete = resolve(param.type(), generics, self);
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
-            if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural interface must resolve to a named type");
+            if (!(concrete instanceof Named named)) {
+                throw new IllegalArgumentException("structural interface must resolve to a named type");
+            }
             Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-            return substituteGenerics(shape, genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+            return substituteGenerics(
+                    shape,
+                    genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
         }
+
         Ast.ClassDecl klass = findClass(param.type().name());
         if (klass != null) {
-            if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural class must resolve to a named type");
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "structural typing cannot erase actor identity/isolation for '" + klass.name()
+                                + "'; actor references remain nominal and mailbox-mediated");
+            }
+            if (!(concrete instanceof Named named)) {
+                throw new IllegalArgumentException("structural class must resolve to a named type");
+            }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
             return substituteGenerics(shape, classGenericBindings(klass, named));
         }
-        throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
+
+        throw new IllegalArgumentException(
+                "structural requires a known local class or interface contract, got '" + param.type().name() + "'");
     }
 
     private void rejectStaticClassGenericReferences(
@@ -4215,6 +4273,8 @@ public final class TypeChecker {
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
+                fn.mutableParameters(),
+                fn.async(),
                 substituteGenerics(fn.result(), bindings));
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -4732,15 +4792,52 @@ public final class TypeChecker {
         if (expected instanceof Union target) {
             return target.options().stream().anyMatch(option -> assignable(actual, option));
         }
+
+        // Function compatibility is contravariant in parameters and covariant
+        // in results. Leaf comparisons come back through this checker so
+        // nominal inheritance/interface relations remain valid inside
+        // structural method signatures.
+        if (actual instanceof Function source && expected instanceof Function target) {
+            if (source.parameters().size() != target.parameters().size()) return false;
+            if (source.async() != target.async()) return false;
+            if (!source.mutableParameters().equals(target.mutableParameters())) return false;
+            for (int i = 0; i < source.parameters().size(); i++) {
+                if (!assignable(target.parameters().get(i), source.parameters().get(i))) return false;
+            }
+            return assignable(source.result(), target.result());
+        }
+
+        if (actual instanceof Record sourceShape && expected instanceof Record targetShape) {
+            return structuralRecordAssignable(sourceShape, targetShape);
+        }
+
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
             Ast.ClassDecl klass = findClass(actualNamed.name());
-            if (klass == null) return false;
-            Type specializedShape = substituteGenerics(
-                    publicClassShape(klass, new LinkedHashSet<>()),
-                    classGenericBindings(klass, actualNamed));
-            return Types.isAssignable(specializedShape, targetShape);
+            if (klass != null) {
+                // Actors are mailbox/capability identities, not ordinary
+                // structural objects. Never erase that boundary by shape.
+                if (klass.actorKind() != Ast.ActorKind.NONE) return false;
+                Type specializedShape = substituteGenerics(
+                        publicClassShape(klass, new LinkedHashSet<>()),
+                        classGenericBindings(klass, actualNamed));
+                return specializedShape instanceof Record record
+                        && structuralRecordAssignable(record, targetShape);
+            }
+
+            Ast.InterfaceDecl iface = findInterface(actualNamed.name());
+            if (iface != null) {
+                Type specializedShape = substituteGenerics(
+                        interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>()),
+                        genericBindings(
+                                iface.genericParameters(),
+                                actualNamed.arguments(),
+                                "interface " + iface.name()));
+                return specializedShape instanceof Record record
+                        && structuralRecordAssignable(record, targetShape);
+            }
+            return false;
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
@@ -4761,6 +4858,14 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private boolean structuralRecordAssignable(Record actual, Record expected) {
+        for (Map.Entry<String, Type> required : expected.members().entrySet()) {
+            Type candidate = actual.members().get(required.getKey());
+            if (candidate == null || !assignable(candidate, required.getValue())) return false;
+        }
+        return true;
     }
 
     private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {
