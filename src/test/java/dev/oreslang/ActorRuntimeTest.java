@@ -508,6 +508,70 @@ final class ActorRuntimeTest {
 
 
     @Test
+    void slowActorSyncCellReaderDoesNotBlockSupervisorUpdate() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var cell = runtime.syncCell(1);
+            CountDownLatch readerEntered = new CountDownLatch(1);
+            CountDownLatch releaseReader = new CountDownLatch(1);
+            CountDownLatch actorDone = new CountDownLatch(1);
+            AtomicReference<Throwable> actorFailure = new AtomicReference<>();
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    int observed = cell.read(value -> {
+                        readerEntered.countDown();
+                        try {
+                            if (!releaseReader.await(2, TimeUnit.SECONDS)) {
+                                throw new AssertionError("reader release timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                        return value;
+                    });
+                    assertEquals(1, observed);
+                } catch (Throwable failure) {
+                    actorFailure.set(failure);
+                } finally {
+                    actorDone.countDown();
+                    context.self().stop();
+                }
+            });
+
+            actor.send("read");
+            assertTrue(readerEntered.await(2, TimeUnit.SECONDS));
+
+            CountDownLatch updateDone = new CountDownLatch(1);
+            AtomicReference<Throwable> updateFailure = new AtomicReference<>();
+            Thread updater = Thread.ofVirtual().start(() -> {
+                try {
+                    assertEquals(2, cell.update(value -> value + 1));
+                } catch (Throwable failure) {
+                    updateFailure.set(failure);
+                } finally {
+                    updateDone.countDown();
+                }
+            });
+
+            try {
+                assertTrue(
+                        updateDone.await(1, TimeUnit.SECONDS),
+                        "supervisor update was blocked by actor read callback");
+                assertNull(updateFailure.get());
+                assertEquals(2, cell.snapshot());
+            } finally {
+                releaseReader.countDown();
+            }
+
+            updater.join();
+            assertTrue(actorDone.await(2, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertNull(actorFailure.get());
+        }
+    }
+
+    @Test
     void syncCellMutationIsSupervisorOnly() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var cell = runtime.syncCell(1);
