@@ -1144,10 +1144,20 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorCell<?> cell = actors.get(target.actorId());
         if (cell == null || !ownFuture(cell, future)) return;
+        if (!cell.acquireContinuationLease()) return;
 
-        future.whenCompleteRuntime(
-                (value, failure) ->
-                        target.enqueue(() -> continuation.accept(value, failure)));
+        boolean registered = false;
+        try {
+            future.whenCompleteRuntime(
+                    (value, failure) ->
+                            enqueueContinuation(
+                                    target.actorId(),
+                                    () -> continuation.accept(value, failure),
+                                    cell::releaseContinuationLease));
+            registered = true;
+        } finally {
+            if (!registered) cell.releaseContinuationLease();
+        }
     }
 
     /**
@@ -1174,6 +1184,19 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private void completeActorCallableWhenQuiescent(
+            Runnable publication,
+            Runnable abandonment) {
+        Objects.requireNonNull(publication, "publication");
+        Objects.requireNonNull(abandonment, "abandonment");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor callable completion requires an executing actor turn");
+        }
+        cell.requestQuiescentStop(publication, abandonment);
+    }
+
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
         return enqueueContinuation(actorId, continuation, null);
     }
@@ -1190,9 +1213,9 @@ public final class ActorRuntime implements AutoCloseable {
             return false;
         }
         if (!cell.reserveContinuationSlot()) {
-            if (release != null) release.run();
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
+            if (release != null) release.run();
             return false;
         }
 
@@ -2953,13 +2976,15 @@ public final class ActorRuntime implements AutoCloseable {
                                             if (failure != null) {
                                                 completion.failFromRuntime(
                                                         OresFuture.unwrap(failure));
+                                                turnContext.self().stop();
                                             } else {
                                                 R frozen = (R) freeze(value);
-                                                completion.completeFromRuntime(frozen);
+                                                completeActorCallableWhenQuiescent(
+                                                        () -> completion.completeFromRuntime(frozen),
+                                                        () -> completion.cancel(false));
                                             }
                                         } catch (Throwable callbackFailure) {
                                             completion.failFromRuntime(callbackFailure);
-                                        } finally {
                                             turnContext.self().stop();
                                         }
                                     });
@@ -2967,8 +2992,9 @@ public final class ActorRuntime implements AutoCloseable {
                         }
 
                         R frozen = (R) freeze(result);
-                        completion.completeFromRuntime(frozen);
-                        turnContext.self().stop();
+                        completeActorCallableWhenQuiescent(
+                                () -> completion.completeFromRuntime(frozen),
+                                () -> completion.cancel(false));
                     } catch (VirtualMachineError fatal) {
                         completion.failFromRuntime(fatal);
                         throw fatal;
@@ -4927,6 +4953,16 @@ public final class ActorRuntime implements AutoCloseable {
          * Guest code must never be placed here.
          */
         private final ArrayDeque<Runnable> postTurnActions = new ArrayDeque<>();
+        /**
+         * Future completion registrations that have promised an actor-mailbox
+         * continuation but whose continuation envelope has not yet been consumed
+         * or dropped.
+         */
+        private int continuationLeases;
+        private boolean quiescentStopRequested;
+        private boolean quiescentStopScheduled;
+        private Runnable quiescentPublication;
+        private Runnable quiescentAbandonment;
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -4970,6 +5006,107 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        private boolean acquireContinuationLease() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get()) return false;
+                if (continuationLeases == Integer.MAX_VALUE) {
+                    fail(new IllegalStateException(
+                            "actor continuation lease overflow for " + ref.id()));
+                    return false;
+                }
+                continuationLeases++;
+                return true;
+            }
+        }
+
+        private void releaseContinuationLease() {
+            synchronized (lifecycleLock) {
+                if (continuationLeases <= 0) {
+                    throw new IllegalStateException(
+                            "actor continuation lease underflow for " + ref.id());
+                }
+                continuationLeases--;
+                maybeScheduleQuiescentStopLocked();
+            }
+        }
+
+        private void requestQuiescentStop(
+                Runnable publication,
+                Runnable abandonment) {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get()) {
+                    abandonment.run();
+                    return;
+                }
+                if (quiescentStopRequested) {
+                    throw new IllegalStateException(
+                            "actor " + ref.id()
+                                    + " already has a pending quiescent completion");
+                }
+                quiescentStopRequested = true;
+                quiescentPublication =
+                        Objects.requireNonNull(publication, "publication");
+                quiescentAbandonment =
+                        Objects.requireNonNull(abandonment, "abandonment");
+                maybeScheduleQuiescentStopLocked();
+            }
+        }
+
+        private void maybeScheduleQuiescentStopLocked() {
+            if (!quiescentStopRequested
+                    || quiescentStopScheduled
+                    || continuationLeases != 0
+                    || stopped.get()
+                    || finalized
+                    || closed.get()) {
+                return;
+            }
+            quiescentStopScheduled = true;
+            postTurnActions.addLast(this::finishQuiescentStop);
+        }
+
+        private void finishQuiescentStop() {
+            Runnable publication = null;
+            Runnable abandonment = null;
+            synchronized (lifecycleLock) {
+                quiescentStopScheduled = false;
+                if (!quiescentStopRequested) return;
+                if (continuationLeases != 0) {
+                    maybeScheduleQuiescentStopLocked();
+                    return;
+                }
+                if (stopped.get() || finalized || closed.get()) {
+                    abandonment = quiescentAbandonment;
+                } else {
+                    publication = quiescentPublication;
+                }
+                quiescentStopRequested = false;
+                quiescentPublication = null;
+                quiescentAbandonment = null;
+            }
+
+            if (abandonment != null) {
+                abandonment.run();
+                return;
+            }
+            if (publication != null) {
+                // Stop accepting guest work before the successful result is
+                // externally visible. We are already outside TurnExecutor here.
+                stop();
+                publication.run();
+            }
+        }
+
+        private Runnable abandonQuiescentStopLocked() {
+            if (!quiescentStopRequested) return null;
+            Runnable abandonment = quiescentAbandonment;
+            quiescentStopRequested = false;
+            quiescentStopScheduled = false;
+            quiescentPublication = null;
+            quiescentAbandonment = null;
+            return abandonment;
         }
 
         private int mailboxCapacityWithControlHeadroom() {
@@ -5408,6 +5545,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            Runnable abandonedQuiescentCompletion;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -5420,6 +5558,7 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                abandonedQuiescentCompletion = abandonQuiescentStopLocked();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
@@ -5427,6 +5566,9 @@ public final class ActorRuntime implements AutoCloseable {
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
             for (OresFuture<?> future : pending) future.cancel(false);
+            if (abandonedQuiescentCompletion != null) {
+                abandonedQuiescentCompletion.run();
+            }
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
