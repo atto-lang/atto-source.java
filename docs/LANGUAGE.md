@@ -649,6 +649,9 @@ control-flow IR as the operators.
 The one-argument list overload has ordinary eager argument evaluation, then
 reduces the already-created list. Empty lists are valid: `And([])` is
 `true`, `Or([])` is `false`, and `Xor([])` is `false`.
+The intrinsic reads its list without consuming ownership, so the same array
+can be reused in subsequent calls. User-defined functions that shadow these
+names retain their declared parameter ownership rules.
 
 Module/top-level `fnc` and `routine` overload identity is also name + exact
 arity. Same-name/different-arity declarations are valid; same-name/same-arity
