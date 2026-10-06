@@ -1662,17 +1662,30 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
-        requireWithinCeiling(policy);
-        IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
-                ? policy.withoutCapabilities(
-                        IsolatePolicy.Capability.SHARED_MEMORY,
-                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
-                        IsolatePolicy.Capability.JAVA_INTEROP)
-                : policy;
+        IsolatePolicy effectivePolicy;
+        if (kind == ActorKind.UNTRUSTED) {
+            IsolatePolicy baseline = IsolatePolicy.untrustedActor();
+            long heap = Math.min(policy.maxHeapBytes(), baseline.maxHeapBytes());
+            int mailbox = Math.min(policy.maxMailboxMessages(), baseline.maxMailboxMessages());
+            java.time.Duration wall =
+                    policy.maxWallTime().compareTo(baseline.maxWallTime()) < 0
+                            ? policy.maxWallTime()
+                            : baseline.maxWallTime();
+            effectivePolicy = new IsolatePolicy(Set.of(), heap, mailbox, wall, true);
+        } else if (kind == ActorKind.PRIVATE) {
+            effectivePolicy = policy.withoutCapabilities(
+                    IsolatePolicy.Capability.SHARED_MEMORY,
+                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                    IsolatePolicy.Capability.JAVA_INTEROP);
+        } else {
+            effectivePolicy = policy;
+        }
+        requireWithinCeiling(effectivePolicy);
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
         }
+        policy = effectivePolicy;
         if (!trustedFactory) {
             requireStatelessActorFactory(behaviorFactory);
         }
