@@ -50,6 +50,10 @@ public final class OresContext implements AutoCloseable {
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.vm = OresVM.contextOwner(env.getApplicationArguments());
+        if (!vm.started()) {
+            throw new IllegalStateException(
+                    "Oreslang VM startup barrier was not established before context creation");
+        }
         ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory =
                 vm.generationLeaseFactory(env.getApplicationArguments());
         ActorRuntime.RuntimePlacement runtimePlacement =
@@ -269,6 +273,8 @@ public final class OresContext implements AutoCloseable {
                 "scheduler_domains", vm.schedulerTopology().domains().stream()
                         .map(Enum::name)
                         .toList(),
+                "scheduler_started", vm.started(),
+                "control_carriers_started", vm.controlCarrierCount(),
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
                 "scheduler_safepoints", schedulerSafepoints.get());
