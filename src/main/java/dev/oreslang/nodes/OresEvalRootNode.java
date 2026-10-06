@@ -77,7 +77,7 @@ public final class OresEvalRootNode extends RootNode {
      * Copy contracts are only verifiable for guest values whose mutable graph
      * the runtime can traverse, plus explicitly recognized immutable
      * capabilities. Opaque host/FFI references fail closed: otherwise a class
-     * copy() could mutate or retain foreign storage without the verifier being
+     * [Symbol.rtCopy]() could mutate or retain foreign storage without the verifier being
      * able to observe the alias.
      */
     static void requireInspectableCopyGraph(Object value) {
