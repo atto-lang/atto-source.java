@@ -312,6 +312,7 @@ public final class TypeChecker {
     }
 
     private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract, Set<String> generics) {
+        rejectShapeMetadataOnNominalType(ref, "contract " + contract.name());
         validateGenericArity(ref, contract.genericParameters(), "contract " + contract.name());
         return new Named(qualifiedInterfaceName(contract),
                 ref.arguments().stream().map(arg -> resolve(arg, generics, null)).toList());
@@ -4483,6 +4484,23 @@ public final class TypeChecker {
         }
     }
 
+    private void rejectShapeMetadataOnNominalType(Ast.TypeRef ref, String label) {
+        boolean namedMetadata = ref.arguments().stream().anyMatch(Ast.TypeRef::isNamedParameter);
+        boolean sequenceShape = ref.arguments().stream().anyMatch(Ast.TypeRef::isSequenceShape);
+        if (namedMetadata) {
+            throw new IllegalArgumentException(
+                    label + " is a nominal generic type: '<...>' contains type arguments, not collection instance metadata; "
+                            + "keep the element/type argument (for example ArrayList<T>) and pass runtime size/capacity at construction "
+                            + "(for example new ArrayList<T>(capacity: 5))");
+        }
+        if (sequenceShape) {
+            throw new IllegalArgumentException(
+                    label + " is a nominal generic type and does not accept '[...]' sequence-shape suffixes; "
+                            + "use its ordinary generic arguments (for example ArrayList<T>) or use an intrinsic shape-aware type "
+                            + "such as Array[T], Vector[T], FixedArray[4 of T], or Tuple[T1, T2]");
+        }
+    }
+
     private void validateGenericArity(Ast.TypeRef ref, List<String> parameters, String owner) {
         if (ref.inferArguments()) {
             throw new IllegalArgumentException(owner + " does not permit unresolved <> here; provide explicit type arguments");
@@ -5201,6 +5219,7 @@ public final class TypeChecker {
             default -> {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
+                    rejectShapeMetadataOnNominalType(ref, "class " + knownClass.name());
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
                     yield new Named(qualifiedClassName(knownClass),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
@@ -5208,12 +5227,19 @@ public final class TypeChecker {
                 Ast.InterfaceDecl knownInterface = findInterface(ref.name());
                 if (knownInterface != null) {
                     if (knownInterface.moduleContract()) throw new IllegalArgumentException("module contract '" + knownInterface.name() + "' is only valid in module 'conforms' clauses");
+                    rejectShapeMetadataOnNominalType(ref, "interface " + knownInterface.name());
                     validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
                     yield new Named(qualifiedInterfaceName(knownInterface),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 if (ref.inferArguments()) {
                     throw new IllegalArgumentException("cannot infer type arguments for unknown type '" + ref.name() + "<>'");
+                }
+                if (ref.arguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)
+                        || ref.arguments().stream().anyMatch(Ast.TypeRef::isSequenceShape)) {
+                    throw new IllegalArgumentException(
+                            "collection metadata/sequence-shape syntax is reserved for intrinsic shape-aware collection types; "
+                                    + "unknown/nominal type '" + ref.name() + "' must use ordinary generic type arguments");
                 }
                 yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
