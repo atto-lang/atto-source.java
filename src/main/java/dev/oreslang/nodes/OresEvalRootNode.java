@@ -1003,13 +1003,8 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                     // Imported receiver bodies are not in the local index.
-                    // Builtin namespaces can never call imported source methods.
-                    Ast.Expr root = member.receiver();
-                    while (root instanceof Ast.MemberExpr parent) root = parent.receiver();
-                    if (root instanceof Ast.NameExpr name
-                            && Set.of("stdio", "BooleanOps", "Future", "Channel", "SelectCase",
-                                    "SelectSet", "Math", "math", "rt", "fs", "env", "http",
-                                    "network", "process", "actor").contains(name.name())) return false;
+                    // A local receiver may shadow a builtin namespace spelling,
+                    // so names alone cannot prove a member call non-suspending.
                     return !namedImports.isEmpty() || !namespaceImports.isEmpty();
                 }
                 if (call.callee() instanceof Ast.NameExpr name

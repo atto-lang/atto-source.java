@@ -50,6 +50,41 @@ final class MemberSuspensionLanguageTest {
     }
 
     @Test
+    void importedReceiverNamedLikeBuiltinNamespaceStillSuspends() throws Exception {
+        Files.writeString(temp.resolve("library.ores"), """
+                define module library
+                  pub define class Pull as
+                    pub next(): int { return self.pull(); }
+                    pub pull(): int { return 0; }
+                  end
+                  pub define class ChannelPull extends Pull as
+                    val Channel<int> input;
+                    pub constructor(Channel<int> input) { self.input = input; }
+                    pub pull(): int { return await (nb readch self.input); }
+                  end
+                end
+                """);
+        assertEquals("43", run("""
+                import class Pull, ChannelPull from './library.ores';
+                define module app
+                  fnc consume(ChannelPull Math): int {
+                    val int value = Math.next();
+                    return value + 1;
+                  }
+                  pub async fnc main(): void {
+                    val Channel<int> input = Channel.new<int>(0);
+                    val producing = nb writech input, 42;
+                    val ChannelPull reader = new ChannelPull(input);
+                    val int value = consume(reader);
+                    stdio.println(value);
+                    await producing;
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
     void declaredFutureMethodsAndFunctionsRemainRegisterAndReturn() throws Exception {
         assertEquals("42\n43", run("""
                 define module app
