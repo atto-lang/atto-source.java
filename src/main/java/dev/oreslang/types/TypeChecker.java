@@ -13,6 +13,7 @@ import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.SelfType;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.Union;
@@ -284,6 +285,7 @@ public final class TypeChecker {
 
     private void checkInterface(Ast.InterfaceDecl iface) {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
+        Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
 
         Set<String> interfaceFieldNames = new LinkedHashSet<>();
         collectInterfaceFieldNames(iface, interfaceFieldNames, new LinkedHashSet<>());
@@ -312,7 +314,7 @@ public final class TypeChecker {
                 for (String generic : fn.genericParameters()) {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
-                functionType(fn.parameters(), fn.returnType(), false, false, all, null);
+                functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
@@ -812,9 +814,13 @@ public final class TypeChecker {
                 }
             }
 
-            Type callableSelf = method.isStatic() ? null : self;
+            // The value binding and the type-level spelling `self` carry the
+            // receiver-polymorphic type, not merely the enclosing nominal class.
+            // This rejects `return new Foo()` because the runtime receiver may
+            // be a subtype, while allowing values already typed as `self`.
+            Type callableSelf = method.isStatic() ? null : new SelfType(self);
             Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
+            if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 if (method.async()) {
@@ -1436,6 +1442,8 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                Type receiverValueType = receiver;
+                receiver = receiverDispatchType(receiver);
 
                 if (receiver instanceof Named guard
                         && guard.name().equals("MutexGuard")
@@ -1461,6 +1469,7 @@ public final class TypeChecker {
                     // Unwrap only for call resolution; plain guard.method remains
                     // non-reifiable through the ordinary MemberExpr path.
                     receiver = unwrapMutexGuard(receiver);
+                    receiverValueType = receiver;
                 }
 
                 if (receiver instanceof Record record) {
@@ -1476,10 +1485,11 @@ public final class TypeChecker {
                     if (candidates.size() == 1) {
                         Map.Entry<String, Type> candidate = candidates.getFirst();
                         int genericArity = Integer.parseInt(candidate.getKey().substring(prefix.length()));
-                        if (!(candidate.getValue() instanceof Function fn)) {
+                        if (!(candidate.getValue() instanceof Function rawFunction)) {
                             throw new IllegalArgumentException(
                                     "structural method contract for '" + member.member() + "' is not callable");
                         }
+                        Function fn = (Function) bindReceiverSelf(rawFunction, receiverValueType);
 
                         String label = "structural method " + member.member();
                         Set<String> canonicalGenerics = new LinkedHashSet<>();
@@ -1644,13 +1654,16 @@ public final class TypeChecker {
                         String label = "method " + owner.name() + "." + method.name();
                         Map<String, Type> bindings = new HashMap<>(classGenericBindings(owner, ownerType));
                         bindings.putAll(explicitGenericBindings(method.genericParameters(), call.typeArguments(), generics, self, label));
+                        Type callableReceiver = receiverValueType instanceof SelfType
+                                ? receiverValueType
+                                : named;
                         return checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
                                 call.arguments(),
                                 env, generics, self,
-                                ownerType,
+                                callableReceiver,
                                 bindings,
                                 label);
                     }
@@ -1677,13 +1690,16 @@ public final class TypeChecker {
                         bindings.putAll(explicitGenericBindings(
                                 method.genericParameters(), call.typeArguments(), generics, self, label));
 
+                        Type callableReceiver = receiverValueType instanceof SelfType
+                                ? receiverValueType
+                                : named;
                         return checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
                                 call.arguments(),
                                 env, generics, self,
-                                null,
+                                callableReceiver,
                                 bindings,
                                 label);
                     }
@@ -1737,7 +1753,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
-            Type sumReceiver = deref(receiver);
+            Type sumReceiver = receiverDispatchType(deref(receiver));
             Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
             if (iteratorMember != null) return iteratorMember;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
@@ -1749,7 +1765,7 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
-            receiver = unwrapMutexGuard(deref(receiver));
+            receiver = receiverDispatchType(unwrapMutexGuard(deref(receiver)));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
                 if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -2130,7 +2146,8 @@ public final class TypeChecker {
             Set<String> generics,
             Type self) {
         Type receiver = typeOf(member.receiver(), env, generics, self);
-        Type normalized = deref(unwrapMutexGuard(receiver));
+        Type receiverValueType = deref(unwrapMutexGuard(receiver));
+        Type normalized = receiverDispatchType(receiverValueType);
         int arity = expected.parameters().size();
 
         if (normalized instanceof ClassNamespace classNamespace) {
@@ -2185,13 +2202,16 @@ public final class TypeChecker {
 
             Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
             memberGenerics.addAll(method.genericParameters());
+            Type callableReceiver = receiverValueType instanceof SelfType
+                    ? receiverValueType
+                    : named;
             Type signature = functionType(
                     method.parameters(),
                     method.returnType(),
                     method.async(),
                     false,
                     memberGenerics,
-                    target.ownerType());
+                    callableReceiver);
             return substituteGenerics(
                     signature,
                     classGenericBindings(target.owner(), target.ownerType()));
@@ -2403,8 +2423,38 @@ public final class TypeChecker {
         return type instanceof Borrow borrow ? borrow.target() : type;
     }
 
+    /** Nominal/structural view used only to resolve members on a polymorphic receiver. */
+    private Type receiverDispatchType(Type type) {
+        return type instanceof SelfType receiverSelf ? receiverSelf.bound() : type;
+    }
+
+    /**
+     * Replace receiver-polymorphic markers in a signature/result with the
+     * actual static receiver type.  This also supports nested forms such as
+     * Option<self> without turning an arbitrary nominal value into SelfType.
+     */
+    private Type bindReceiverSelf(Type type, Type receiver) {
+        if (type instanceof SelfType) return receiver;
+        if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
+        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
+        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Named named) return new Named(
+                named.name(), named.arguments().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Function fn) return new Function(
+                fn.parameters().stream().map(t -> bindReceiverSelf(t, receiver)).toList(),
+                bindReceiverSelf(fn.result(), receiver));
+        if (type instanceof Record record) {
+            Map<String, Type> members = new LinkedHashMap<>();
+            record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
+            return new Record(members);
+        }
+        return type;
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
-        Type receiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
+        Type receiver = receiverDispatchType(
+                unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self))));
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
@@ -2452,8 +2502,8 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof Borrow
-                || type instanceof Function || type instanceof ClassNamespace) {
+        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+                || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
@@ -2543,7 +2593,8 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) return false;
+        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
         if (type instanceof Generic generic) {
@@ -3041,6 +3092,7 @@ public final class TypeChecker {
     }
 
     private Type iterableElementType(Type iterable) {
+        iterable = receiverDispatchType(iterable);
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
@@ -3091,6 +3143,7 @@ public final class TypeChecker {
     }
 
     private Type asyncIterableElementType(Type iterable) {
+        iterable = receiverDispatchType(iterable);
         if (iterable instanceof Named named) {
             if (named.name().equals("AsyncIterator") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
@@ -3211,7 +3264,7 @@ public final class TypeChecker {
             }
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
+        Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
@@ -3240,7 +3293,7 @@ public final class TypeChecker {
             }
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
+        Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         }
@@ -3273,11 +3326,12 @@ public final class TypeChecker {
                         "interface inheritance of " + iface.name());
             }
         }
+        Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
-                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, null),
+                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, interfaceSelf),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
@@ -3384,13 +3438,17 @@ public final class TypeChecker {
 
     private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
         Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
-        if (field.type() != null) return resolve(field.type(), generics, self);
+        if (field.type() != null) {
+            // A field declaration has no receiver-polymorphic type variable at
+            // the declaration site. Keep `self` as a receiver-bearing method type rather than
+            // silently degrading it into the enclosing nominal class.
+            return resolve(field.type(), generics, null);
+        }
         if (field.initializer() == null) {
             throw new IllegalArgumentException("inferred field '" + klass.name() + "." + field.name()
                     + "' requires an initializer");
         }
-        return typeOf(field.initializer(), new Env(null), generics, self);
+        return typeOf(field.initializer(), new Env(null), generics, null);
     }
 
     private void validateFieldLayout(Ast.ClassDecl klass) {
@@ -3804,6 +3862,13 @@ public final class TypeChecker {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
         Function raw = functionType(params, returns, async, generator, all, self);
+        // Contract comparison must preserve the fact that a slot is
+        // receiver-polymorphic without baking in the declaring class. Parent,
+        // child, and interface declarations of (...): self therefore compare
+        // as the same slot shape while concrete (...): Foo remains distinct.
+        if (self instanceof SelfType) {
+            raw = (Function) bindReceiverSelf(raw, new SelfType(Unknown.INSTANCE));
+        }
         if (callableGenerics.isEmpty()) return raw;
 
         Map<String, Type> canonical = new HashMap<>();
@@ -4112,6 +4177,10 @@ public final class TypeChecker {
             }
             return;
         }
+        if (pattern instanceof SelfType p && actual instanceof SelfType a) {
+            inferGenericBindings(p.bound(), a.bound(), bindings, fixedBindings, label);
+            return;
+        }
         if (pattern instanceof Borrow p && actual instanceof Borrow a) {
             inferGenericBindings(p.target(), a.target(), bindings, fixedBindings, label);
             return;
@@ -4138,6 +4207,7 @@ public final class TypeChecker {
 
     private Type substituteGenerics(Type type, Map<String, Type> bindings) {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
+        if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList());
@@ -4156,6 +4226,7 @@ public final class TypeChecker {
 
     private boolean containsUnknown(Type type) {
         if (type == Unknown.INSTANCE) return true;
+        if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
@@ -4170,6 +4241,7 @@ public final class TypeChecker {
     private boolean containsGenericNamed(Type type, Set<String> names) {
         if (names.isEmpty()) return false;
         if (type instanceof Generic generic) return names.contains(generic.name());
+        if (type instanceof SelfType receiverSelf) return containsGenericNamed(receiverSelf.bound(), names);
         if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
         if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
@@ -4460,7 +4532,13 @@ public final class TypeChecker {
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
-        if (ref.name().equals("self")) return self == null ? Unknown.INSTANCE : self;
+        if (ref.name().equals("self")) {
+            if (self == null) {
+                throw new IllegalArgumentException(
+                        "'self' type is only available in an instance receiver context");
+            }
+            return self;
+        }
         if (ref.name().equals("null")) {
             if (!allowNullMarker) throw new IllegalArgumentException("null is not a standalone type; it is only legal as Option<null>");
             return Primitive.NULL;
@@ -4617,6 +4695,10 @@ public final class TypeChecker {
         return new Named(qualifiedClassName(klass), klass.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
     }
 
+    private Named nominalInterfaceType(Ast.InterfaceDecl iface) {
+        return new Named(qualifiedInterfaceName(iface), iface.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
+    }
+
     private String qualifiedClassName(Ast.ClassDecl klass) {
         String owner = classOwners.get(klass);
         return owner == null || owner.equals("__root__") ? klass.name() : owner + "." + klass.name();
@@ -4628,6 +4710,14 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (expected instanceof SelfType expectedSelf) {
+            if (!(actual instanceof SelfType actualSelf)) return false;
+            return assignable(actualSelf.bound(), expectedSelf.bound())
+                    && assignable(expectedSelf.bound(), actualSelf.bound());
+        }
+        if (actual instanceof SelfType actualSelf) {
+            return assignable(actualSelf.bound(), expected);
+        }
         if (expected instanceof Generic expectedGeneric) {
             return actual instanceof Generic actualGeneric
                     && actualGeneric.name().equals(expectedGeneric.name());
