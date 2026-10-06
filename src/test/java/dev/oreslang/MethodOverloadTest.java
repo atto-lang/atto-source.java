@@ -169,7 +169,7 @@ final class MethodOverloadTest {
     void staticClassFunctionsUseTheSameArityOnlyRule() throws Exception {
         String output = run("""
                 define module m
-                  define class C as
+                  pub define class C as
                     pub static fnc pick(): int { return 2; }
                     pub static fnc pick(int value): int { return value; }
                   end
@@ -186,7 +186,7 @@ final class MethodOverloadTest {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         define module m
-                          define class C as
+                          pub define class C as
                             pub static fnc find(int value): int { return value; }
                             pub static fnc find(String value): int { return 1; }
                           end
@@ -424,7 +424,7 @@ final class MethodOverloadTest {
     void staticFunctionMayUseItsOwnGenericWithoutChangingArityIdentity() throws Exception {
         String output = run("""
                 define module m
-                  define class Box<T> as
+                  pub define class Box<T> as
                     pub static fnc identity<U>(U value): U { return value; }
                   end
                 end
@@ -441,7 +441,7 @@ final class MethodOverloadTest {
     void staticAndInstanceNamespacesRemainDistinct() throws Exception {
         String output = run("""
                 define module m
-                  define class C as
+                  pub define class C as
                     pub pick(int value): int { return value + 1; }
                     pub static fnc pick(int value): int { return value + 2; }
                   end

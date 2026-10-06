@@ -1,3 +1,4 @@
+define module testing
 // Oreslang-native test framework.
 //
 // The framework intentionally contains no Java implementation code.
@@ -7,24 +8,24 @@
 type TestBody = () => TestOutcome;
 type IntProperty = (int) => TestOutcome;
 
-define class TestOutcome as
+pub define class TestOutcome as
   pub val bool passed;
   pub val String message;
 end
 
-define class TestCase as
+pub define class TestCase as
   pub val String name;
   pub val TestBody body;
   pub val bool skipped;
   pub val String skip_reason;
 end
 
-define class TestSuite as
+pub define class TestSuite as
   pub val String name;
   pub val List<TestCase> tests;
 end
 
-define class TestOptions as
+pub define class TestOptions as
   // Empty means run all. Names are exact hierarchical names:
   // "suite/test" (and property/table cases should use slash-separated names).
   pub val String only;
@@ -32,7 +33,7 @@ define class TestOptions as
   pub val bool machine;
 end
 
-define class RunSummary as
+pub define class RunSummary as
   pub val int total;
   pub val int passed;
   pub val int failed;
@@ -267,3 +268,5 @@ pub fnc check_int_cases(
 
   return pass();
 }
+
+end

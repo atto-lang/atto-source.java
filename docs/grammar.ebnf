@@ -61,14 +61,19 @@ actor_method_decl
                 = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
                   method_head return_spec block ;
 
-class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
+class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   "as" { class_member } "end" ;
 
 class_member    = field_decl
+                | constructor_decl
                 | method_decl
                 | static_function_decl ;
+
+constructor_decl
+                = { annotation } visibility "constructor"
+                  "(" [ param_list ] ")" block ;
 
 field_decl      = { annotation } visibility
                   ( binding_kind type_ref IDENT [ "=" expression ]
@@ -395,6 +400,25 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Source namespaces are flat: namespace a.b; is illegal.
    - Modules are flat: module names are single identifiers and modules may not
      contain modules.
+   - Classes are also non-nesting declarations: a class body may contain fields,
+     exactly zero or one constructor, instance methods, and static fnc members,
+     but never another class/module/interface/actor declaration.
+   - Top-level classes are file-private and cannot be declared pub. Classes
+     declared inside a module are private by default and may be pub.
+   - Constructors use the contextual spelling constructor(...), never the Java
+     class-name spelling. A class may declare at most one explicit constructor,
+     constructors have no return type, and they accept only private/pub
+     visibility.
+   - A top-level constructor is file-private. A module-class constructor is
+     private by default and may be pub only when its containing class is pub.
+     Cross-file construction requires both the class and constructor to be pub.
+   - If a class omits an explicit constructor, the implementation currently
+     retains the legacy synthesized positional-field constructor for source
+     compatibility; its visibility follows the class.
+   - Explicit constructors may initialize val/const storage exactly once and
+     must leave every field initialized before the instance escapes. A class
+     with an explicit constructor cannot currently be used as a parent until
+     explicit super-constructor chaining is added.
    - fnc and routine declarations may recurse. Eligible tail-position calls
      in fnc, routine, instance/static methods, and lambdas are proper tail
      calls and must not grow the Oreslang/host call stack in JIT, AOT, or

@@ -549,6 +549,19 @@ public final class TreeShaker {
                 for (Ast.FieldDecl field : klass.fields()) {
                     fields.add((Ast.FieldDecl) rewriteDeclaration(module, field));
                 }
+                Ast.ConstructorDecl constructor = klass.constructor();
+                if (constructor != null) {
+                    LinkedHashMap<String, Object> locals = new LinkedHashMap<>();
+                    locals.put("self", UNKNOWN);
+                    for (Ast.Param parameter : constructor.parameters()) {
+                        locals.put(parameter.name(), UNKNOWN);
+                    }
+                    constructor = new Ast.ConstructorDecl(
+                            constructor.visibility(),
+                            constructor.parameters(),
+                            constructor.annotations(),
+                            rewriteStatements(constructor.body(), module, locals));
+                }
                 List<Ast.MethodDecl> methods = new ArrayList<>();
                 for (Ast.MethodDecl method : klass.methods()) {
                     LinkedHashMap<String, Object> locals = new LinkedHashMap<>();
@@ -569,12 +582,14 @@ public final class TreeShaker {
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
+                        klass.visibility(),
                         klass.isAbstract(),
                         klass.actorKind(),
                         klass.genericParameters(),
                         klass.parents(),
                         klass.interfaces(),
                         fields,
+                        constructor,
                         methods);
             }
             return declaration;
@@ -936,8 +951,10 @@ public final class TreeShaker {
             if (declaration instanceof Ast.InterfaceDecl iface) {
                 return iface.visibility() == Ast.Visibility.PUBLIC;
             }
-            // Classes and aliases currently have no declaration-level visibility.
-            return declaration instanceof Ast.ClassDecl || declaration instanceof Ast.TypeAliasDecl;
+            if (declaration instanceof Ast.ClassDecl klass) {
+                return klass.visibility() == Ast.Visibility.PUBLIC;
+            }
+            return declaration instanceof Ast.TypeAliasDecl;
         }
 
         private void mark(String id) {
@@ -948,7 +965,8 @@ public final class TreeShaker {
             for (Ast.ModuleDecl module : input.modules()) {
                 if (!module.name().equals(moduleName)) continue;
                 for (Ast.Decl declaration : module.declarations()) {
-                    boolean exposed = declaration instanceof Ast.ClassDecl
+                    boolean exposed = declaration instanceof Ast.ClassDecl klass
+                                    && klass.visibility() == Ast.Visibility.PUBLIC
                             || declaration instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                             || declaration instanceof Ast.FieldDecl field
@@ -998,6 +1016,15 @@ public final class TreeShaker {
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));
+                }
+                if (klass.constructor() != null) {
+                    Ast.ConstructorDecl constructor = klass.constructor();
+                    for (Ast.Param parameter : constructor.parameters()) scanType(parameter.type());
+                    for (Ast.Annotation annotation : constructor.annotations()) scanAnnotation(annotation);
+                    LinkedHashSet<String> locals = new LinkedHashSet<>();
+                    locals.add("self");
+                    for (Ast.Param parameter : constructor.parameters()) locals.add(parameter.name());
+                    scanStatements(module, constructor.body(), locals);
                 }
                 for (Ast.MethodDecl method : klass.methods()) {
                     scanType(method.explicitReceiverType());

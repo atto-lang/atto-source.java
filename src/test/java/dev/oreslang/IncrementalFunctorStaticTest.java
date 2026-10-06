@@ -152,9 +152,11 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> first = new LinkedHashMap<>();
         first.put("methods.ores", """
-                define class C as
+                define module exported
+                  pub define class C as
                   pub pick(): int { return 1; }
                   pub pick(int value): int { return value; }
+                end
                 end
                 """);
         first.put("consumer.ores", """
@@ -168,9 +170,11 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> reordered = new LinkedHashMap<>(first);
         reordered.put("methods.ores", """
-                define class C as
+                define module exported
+                  pub define class C as
                   pub pick(int value): int { return value; }
                   pub pick(): int { return 1; }
+                end
                 end
                 """);
         var afterReorder = compiler.compile(reordered);
@@ -180,9 +184,11 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> typeChanged = new LinkedHashMap<>(reordered);
         typeChanged.put("methods.ores", """
-                define class C as
+                define module exported
+                  pub define class C as
                   pub pick(String value): int { return 1; }
                   pub pick(): int { return 1; }
+                end
                 end
                 """);
         var afterTypeChange = compiler.compile(typeChanged);
@@ -192,10 +198,12 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> arityAdded = new LinkedHashMap<>(typeChanged);
         arityAdded.put("methods.ores", """
-                define class C as
+                define module exported
+                  pub define class C as
                   pub pick(String value): int { return 1; }
                   pub pick(): int { return 1; }
                   pub pick(int left, int right): int { return left + right; }
+                end
                 end
                 """);
         var afterArityAdded = compiler.compile(arityAdded);
@@ -260,7 +268,7 @@ final class IncrementalFunctorStaticTest {
     void staticClassFunctionsUseStaticFncAndDoNotReceiveSelf() throws Exception {
         String output = run("""
                 define module model
-                  define class Counter as
+                  pub define class Counter as
                     pub val int value = 9;
 
                     pub static fnc twice(int x): int {
@@ -400,9 +408,11 @@ final class IncrementalFunctorStaticTest {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> first = Map.of(
                 "model.ores", """
-                        define class Payload as
+                        define module exported
+                          pub define class Payload as
                           @FromJson("foo")
                           foo: String;
+                        end
                         end
                         """,
                 "consumer.ores", """
@@ -414,9 +424,11 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> changed = Map.of(
                 "model.ores", """
-                        define class Payload as
+                        define module exported
+                          pub define class Payload as
                           @FromJson("external_foo")
                           foo: String;
+                        end
                         end
                         """,
                 "consumer.ores", first.get("consumer.ores"));

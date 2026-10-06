@@ -685,6 +685,12 @@ public final class TypeChecker {
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
             }
+            if (resolvedParent != null && resolvedParent.constructor() != null) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name() + "' cannot extend '" + resolvedParent.name()
+                                + "' while the parent declares an explicit constructor; "
+                                + "explicit super-constructor chaining is not implemented yet");
+            }
         }
 
         validateFieldLayout(klass);
@@ -728,6 +734,41 @@ public final class TypeChecker {
             }
             if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
                 throw new IllegalArgumentException("const field '" + field.name() + "' needs a compile-time constant initializer");
+            }
+        }
+
+        Ast.ConstructorDecl constructor = klass.constructor();
+        if (constructor != null) {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' cannot declare a class constructor");
+            }
+            if (constructor.visibility() == Ast.Visibility.PUBLIC
+                    && klass.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "public constructor on private class '" + klass.name()
+                                + "' is unreachable; make the module class public or keep the constructor private");
+            }
+
+            Env constructorEnv = new Env(null);
+            constructorEnv.define("self", self, Ast.BindingKind.VAL);
+            for (Ast.Param param : constructor.parameters()) {
+                Type parameterType = resolveParam(param, classGenerics, self);
+                constructorEnv.define(
+                        param.name(),
+                        parameterType,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+
+            Ast.ActorKind previousActorKind = currentActorKind;
+            Ast.ClassDecl previousClassOwner = currentClassOwner;
+            currentActorKind = Ast.ActorKind.NONE;
+            currentClassOwner = klass;
+            try {
+                checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
+            } finally {
+                currentActorKind = previousActorKind;
+                currentClassOwner = previousClassOwner;
             }
         }
 
@@ -1867,6 +1908,32 @@ public final class TypeChecker {
                 nominal = named;
             }
 
+            Ast.ConstructorDecl constructor = klass.constructor();
+            if (constructor != null) {
+                if (created.arguments().size() != constructor.arity()) {
+                    throw new IllegalArgumentException(
+                            "constructor for " + klass.name() + " expects "
+                                    + constructor.arity() + " argument(s), got "
+                                    + created.arguments().size());
+                }
+                Map<String, Type> classBindings = classGenericBindings(klass, nominal);
+                Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+                Type constructorSelf = nominalClassType(klass);
+                for (int i = 0; i < constructor.parameters().size(); i++) {
+                    Ast.Param param = constructor.parameters().get(i);
+                    Type expectedPattern = resolveParam(param, classGenerics, constructorSelf);
+                    Type expected = substituteGenerics(expectedPattern, classBindings);
+                    requireAssignable(
+                            typeOf(created.arguments().get(i), env, generics, self),
+                            expected,
+                            "constructor parameter " + param.name());
+                }
+                return nominal;
+            }
+
+            // Backward-compatible synthesized constructor: when no explicit
+            // constructor exists, positional arguments still initialize fields
+            // in effective storage order and remaining fields use initializers.
             List<ResolvedField> fields = effectiveFieldTargets(klass, nominal, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
             for (int i = 0; i < fields.size(); i++) {
@@ -3231,29 +3298,53 @@ public final class TypeChecker {
         }
 
         Named patternType = nominalClassType(klass);
-        List<ResolvedField> fields = effectiveFieldTargets(klass, patternType, new LinkedHashSet<>());
-        if (arguments.size() > fields.size()) {
-            throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
-        }
-
         Map<String, Type> bindings = new HashMap<>();
         Set<String> classGenericNames = Set.copyOf(klass.genericParameters());
-        for (int i = 0; i < arguments.size(); i++) {
-            ResolvedField resolvedField = fields.get(i);
-            Type fieldPattern = resolve(
-                    resolvedField.field().type(),
-                    Set.copyOf(resolvedField.owner().genericParameters()),
-                    resolvedField.ownerType());
-            fieldPattern = substituteGenerics(
-                    fieldPattern,
-                    classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
-            Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
-            inferGenericBindings(
-                    fieldPattern,
-                    actual,
-                    bindings,
-                    Set.of(),
-                    "constructor " + klass.name());
+
+        Ast.ConstructorDecl constructor = klass.constructor();
+        if (constructor != null) {
+            if (arguments.size() != constructor.arity()) {
+                throw new IllegalArgumentException(
+                        "constructor for " + klass.name() + " expects "
+                                + constructor.arity() + " argument(s), got " + arguments.size());
+            }
+            for (int i = 0; i < arguments.size(); i++) {
+                Type parameterPattern = resolveParam(
+                        constructor.parameters().get(i),
+                        classGenericNames,
+                        patternType);
+                Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
+                inferGenericBindings(
+                        parameterPattern,
+                        actual,
+                        bindings,
+                        Set.of(),
+                        "constructor " + klass.name());
+            }
+        } else {
+            List<ResolvedField> fields =
+                    effectiveFieldTargets(klass, patternType, new LinkedHashSet<>());
+            if (arguments.size() > fields.size()) {
+                throw new IllegalArgumentException(
+                        "constructor for " + klass.name() + " received too many positional fields");
+            }
+            for (int i = 0; i < arguments.size(); i++) {
+                ResolvedField resolvedField = fields.get(i);
+                Type fieldPattern = resolve(
+                        resolvedField.field().type(),
+                        Set.copyOf(resolvedField.owner().genericParameters()),
+                        resolvedField.ownerType());
+                fieldPattern = substituteGenerics(
+                        fieldPattern,
+                        classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
+                Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
+                inferGenericBindings(
+                        fieldPattern,
+                        actual,
+                        bindings,
+                        Set.of(),
+                        "constructor " + klass.name());
+            }
         }
 
         List<Type> inferred = new ArrayList<>(klass.genericParameters().size());

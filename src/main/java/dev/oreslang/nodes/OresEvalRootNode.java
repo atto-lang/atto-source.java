@@ -138,6 +138,7 @@ public final class OresEvalRootNode extends RootNode {
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
+        private static final Object UNINITIALIZED_FIELD = new Object();
 
         private enum InvocationKind {
             FUNCTION,
@@ -1142,6 +1143,11 @@ public final class OresEvalRootNode extends RootNode {
                                 ownedField.field().name());
                     }
                     Object fieldValue = object.fields.get(methodCall.member());
+                    if (fieldValue == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException(
+                                "field '" + object.klass.name() + "." + methodCall.member()
+                                        + "' is read before constructor initialization");
+                    }
                     if (fieldValue instanceof Invokable invokable) {
                         return object.owner.invokableInvocation(invokable, args);
                     }
@@ -1439,7 +1445,12 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "field",
                                 field.name());
-                        if (field.bindingKind() != Ast.BindingKind.LET) {
+                        Object currentValue = object.fields.get(target.member());
+                        boolean constructorInitialization =
+                                env.canInitialize(object)
+                                        && currentValue == UNINITIALIZED_FIELD;
+                        if (field.bindingKind() != Ast.BindingKind.LET
+                                && !constructorInitialization) {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
                         }
@@ -1584,16 +1595,18 @@ public final class OresEvalRootNode extends RootNode {
 
                 Ast.ClassDecl klass = findClass(created.type().name());
                 Evaluator owner = this;
+                boolean externalConstruction = false;
                 if (klass == null) {
                     Object imported = importedValue(created.type().name());
                     if (imported instanceof ClassFacade externalClass) {
                         owner = externalClass.owner();
                         klass = externalClass.klass();
+                        externalConstruction = true;
                     }
                 }
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                return owner.instantiate(klass, args);
+                return owner.instantiate(klass, args, externalConstruction);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -1853,7 +1866,13 @@ public final class OresEvalRootNode extends RootNode {
                                 "field",
                                 ownedField.field().name());
                     }
-                    return object.fields.get(name);
+                    Object value = object.fields.get(name);
+                    if (value == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException(
+                                "field '" + object.klass.name() + "." + name
+                                        + "' is read before constructor initialization");
+                    }
+                    return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
@@ -2248,8 +2267,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
-                    if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export ordinary class '" + name + "'");
+                    if (klass == null
+                            || klass.actorKind() != Ast.ActorKind.NONE
+                            || klass.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId
+                                        + "' does not export public ordinary class '" + name + "'");
                     }
                     yield new ClassFacade(this, klass);
                 }
@@ -2270,7 +2293,9 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ModuleDecl module = modules.get(name);
             if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
             Ast.ClassDecl klass = findClass(name);
-            if (klass != null) return new ClassFacade(this, klass);
+            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
+                return new ClassFacade(this, klass);
+            }
             Ast.FunctionDecl fn = findSingleFunction(name);
             if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
                 if (fn.kind() == Ast.CallableKind.ROUTINE) {
@@ -2304,24 +2329,108 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export '" + name + "'");
         }
 
-        private OresObject instantiate(Ast.ClassDecl klass, List<Object> args) {
+        private OresObject instantiate(
+                Ast.ClassDecl klass,
+                List<Object> args,
+                boolean externalConstruction) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalStateException("actor '" + klass.name()
                         + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
             }
-            List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
-            if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
-            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-            Env env = new Env(null, false, klass);
-            for (int i = 0; i < classFields.size(); i++) {
-                Ast.FieldDecl field = classFields.get(i);
-                Object value;
-                if (i < args.size()) value = args.get(i);
-                else if (field.initializer() != null) value = eval(field.initializer(), env);
-                else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
-                fields.put(field.name(), value);
+            if (externalConstruction && klass.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name() + "' is private and cannot be constructed outside its file/module");
             }
-            return new OresObject(this, klass, fields);
+
+            Ast.ConstructorDecl constructor = klass.constructor();
+            if (constructor == null) {
+                // Compatibility path for classes authored before explicit
+                // constructor syntax: positional fields form a synthesized
+                // constructor whose visibility follows the class.
+                List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+                if (args.size() > classFields.size()) {
+                    throw new IllegalArgumentException(
+                            "too many constructor arguments for " + klass.name());
+                }
+                LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                OresObject object = new OresObject(this, klass, fields);
+                for (int i = 0; i < classFields.size(); i++) {
+                    Ast.FieldDecl field = classFields.get(i);
+                    Object value;
+                    if (i < args.size()) value = args.get(i);
+                    else if (field.initializer() != null) {
+                        OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                        Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                        Env initializerEnv = new Env(null, false, fieldOwner);
+                        initializerEnv.define("self", object, Ast.BindingKind.VAL);
+                        value = eval(field.initializer(), initializerEnv);
+                    } else {
+                        throw new IllegalArgumentException(
+                                "missing constructor field " + klass.name() + "." + field.name());
+                    }
+                    fields.put(field.name(), value);
+                }
+                return object;
+            }
+
+            if (externalConstruction && constructor.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "constructor for class '" + klass.name()
+                                + "' is private to its declaring module");
+            }
+            if (args.size() != constructor.arity()) {
+                throw new IllegalArgumentException(
+                        "constructor for " + klass.name() + " expects "
+                                + constructor.arity() + " argument(s), got " + args.size());
+            }
+
+            List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : classFields) {
+                fields.put(field.name(), UNINITIALIZED_FIELD);
+            }
+            OresObject object = new OresObject(this, klass, fields);
+
+            // Field initializers run before the constructor body and with the
+            // declaring class's private-member authority.
+            for (Ast.FieldDecl field : classFields) {
+                if (field.initializer() == null) continue;
+                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                Env initializerEnv = new Env(null, false, fieldOwner);
+                initializerEnv.define("self", object, Ast.BindingKind.VAL);
+                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+            }
+
+            Env constructorEnv = new Env(null, false, klass, object);
+            constructorEnv.define("self", object, Ast.BindingKind.VAL);
+            for (int i = 0; i < constructor.parameters().size(); i++) {
+                Ast.Param param = constructor.parameters().get(i);
+                constructorEnv.define(
+                        param.name(),
+                        args.get(i),
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            try {
+                executeBlock(constructor.body(), constructorEnv);
+            } catch (ReturnSignal signal) {
+                if (signal.value != null) {
+                    throw new IllegalArgumentException(
+                            "constructor for " + klass.name() + " cannot return a value");
+                }
+            } catch (BreakSignal | ContinueSignal signal) {
+                throw new IllegalStateException(
+                        "loop control cannot cross a constructor boundary", signal);
+            }
+
+            for (Map.Entry<String, Object> field : fields.entrySet()) {
+                if (field.getValue() == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "constructor for " + klass.name()
+                                    + " did not initialize field '" + field.getKey() + "'");
+                }
+            }
+            return object;
         }
 
         private static String normalizeUnitId(String id) {
@@ -2356,7 +2465,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
+                if (decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals(name)
+                        && klass.visibility() == Ast.Visibility.PUBLIC) {
                     return new ClassFacade(this, klass);
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
@@ -3284,7 +3395,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof OresObject object) {
                 if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
-                return object.fields.get(name);
+                Object field = object.fields.get(name);
+                if (field == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "field '" + object.klass.name() + "." + name
+                                    + "' is read before constructor initialization");
+                }
+                return field;
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
@@ -3305,26 +3422,38 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
+        private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
         private Env(Env parent) {
             this(
                     parent,
                     parent != null && parent.descendantsNonLexical,
-                    parent == null ? null : parent.accessClass);
+                    parent == null ? null : parent.accessClass,
+                    parent == null ? null : parent.constructingObject);
         }
         private Env(Env parent, boolean descendantsNonLexical) {
             this(
                     parent,
                     descendantsNonLexical,
-                    parent == null || descendantsNonLexical ? null : parent.accessClass);
+                    parent == null || descendantsNonLexical ? null : parent.accessClass,
+                    parent == null || descendantsNonLexical ? null : parent.constructingObject);
         }
         private Env(Env parent, boolean descendantsNonLexical, Ast.ClassDecl accessClass) {
+            this(parent, descendantsNonLexical, accessClass, null);
+        }
+        private Env(
+                Env parent,
+                boolean descendantsNonLexical,
+                Ast.ClassDecl accessClass,
+                OresObject constructingObject) {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
+            this.constructingObject = constructingObject;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
+        private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
@@ -3351,7 +3480,8 @@ public final class OresEvalRootNode extends RootNode {
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
                     descendantsNonLexical,
-                    accessClass);
+                    accessClass,
+                    null);
             cp.slots.putAll(slots);
             return cp;
         }
@@ -3543,7 +3673,12 @@ public final class OresEvalRootNode extends RootNode {
             this.fields = fields;
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
-        @Override public String toString(){return klass.name()+fields;}
+        @Override public String toString(){
+            LinkedHashMap<String,Object> display = new LinkedHashMap<>();
+            fields.forEach((name, value) ->
+                    display.put(name, value == Evaluator.UNINITIALIZED_FIELD ? "<uninitialized>" : value));
+            return klass.name()+display;
+        }
     }
 
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }

@@ -243,7 +243,8 @@ final class PrivateVisibilityTest {
     void wildcardLinkedCodeCannotBypassPrivateRuntimeVisibility() throws Exception {
         Path child = temp.resolve("vault.ores");
         Files.writeString(child, """
-                define class Vault as
+                define module exported
+                pub define class Vault as
                   private val int secret = 11;
 
                   private reveal(): int {
@@ -257,6 +258,7 @@ final class PrivateVisibilityTest {
                   private [Symbol.iterator](): Array<int> {
                     return arr[1, 2, 3];
                   }
+                end
                 end
 
                 pub fnc make_vault(): Vault {
