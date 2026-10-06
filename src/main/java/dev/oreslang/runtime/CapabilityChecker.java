@@ -289,6 +289,27 @@ public final class CapabilityChecker {
                     checkStatements(b.body(), policy);
                 }
                 checkStatements(s.elseBody(), policy);
+            } else if (stmt instanceof Ast.MatchStmt s) {
+                checkExpr(s.subject(), policy);
+                for (Ast.MatchArm arm : s.arms()) {
+                    if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                    checkStatements(arm.body(), policy);
+                }
+            } else if (stmt instanceof Ast.SwitchStmt s) {
+                checkExpr(s.subject(), policy);
+                for (Ast.SwitchCase arm : s.cases()) {
+                    for (Ast.Expr constant : arm.constants()) {
+                        checkExpr(constant, policy);
+                    }
+                    checkStatements(arm.body(), policy);
+                }
+                checkStatements(s.defaultBody(), policy);
+            } else if (stmt instanceof Ast.SelectStmt s) {
+                for (Ast.SelectArm arm : s.arms()) {
+                    if (arm.channel() != null) checkExpr(arm.channel(), policy);
+                    if (arm.value() != null) checkExpr(arm.value(), policy);
+                    checkStatements(arm.body(), policy);
+                }
             } else if (stmt instanceof Ast.TryStmt s) {
                 checkStatements(s.body(), policy);
                 checkStatements(s.catchBody(), policy);
@@ -394,6 +415,11 @@ public final class CapabilityChecker {
             for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
         }
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
+        else if (expr instanceof Ast.ChannelOpExpr e) {
+            checkExpr(e.channel(), policy);
+            if (e.value() != null) checkExpr(e.value(), policy);
+        }
+        else if (expr instanceof Ast.DynamicSelectExpr e) checkExpr(e.cases(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) {
