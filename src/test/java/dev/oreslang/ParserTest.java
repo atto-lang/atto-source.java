@@ -185,6 +185,32 @@ final class ParserTest {
     }
 
     @Test
+    void parsesLegacyDoRouteGuardsAsIfBlocks() {
+        Ast.Program program = Parser.parse("""
+                define class Router as
+                  max_segments_value: int;
+
+                  validate(int handler_id, Pattern pattern): Result {
+                    if handler_id < 0; do
+                      return Err("handler_id must be non-negative");
+                    fi
+                    if !pattern.is_valid(); do
+                      return Err("invalid route pattern");
+                    fi
+                    if pattern.size() > self.max_segments_value; do
+                      return Err("route pattern exceeds max_segments");
+                    fi
+                  }
+                end
+                """);
+
+        Ast.ClassDecl router = program.classes().getFirst();
+        Ast.MethodDecl validate = router.methods().getFirst();
+        assertEquals(3, validate.body().size());
+        assertTrue(validate.body().stream().allMatch(statement -> statement instanceof Ast.IfStmt));
+    }
+
+    @Test
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
                 define module model
