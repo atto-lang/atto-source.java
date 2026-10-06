@@ -232,11 +232,24 @@ The important notation boundary is:
 
 Thus `ArrayList<T>[]` is not the Oreslang spelling for a nominal
 `ArrayList`, and `ArrayList<size=5>[]` is doubly wrong: it loses the
-element type and treats runtime sizing as type metadata. An `ArrayList<T>`
-implementation supplied by the Oreslang standard library is an ordinary
-generic class and therefore follows ordinary generic syntax. Importing
-`java.util.ArrayList` remains explicit Java interop and does not change these
-language rules.
+element type and treats runtime sizing as type metadata. Oreslang deliberately
+does not use Java/C suffix-array syntax `T[]`; arrays are prefix/container
+types. If the intended type is an array whose elements are array lists, write:
+
+```ores
+Array[ArrayList<T>]
+```
+
+If the intended type is simply a growable list of `T`, write:
+
+```ores
+ArrayList<T>
+```
+
+An `ArrayList<T>` implementation supplied by the Oreslang standard library
+is an ordinary generic class and therefore follows ordinary generic syntax.
+Importing `java.util.ArrayList` remains explicit Java interop and does not
+change these language rules.
 
 For exact finite storage, counted repetition is part of the shape:
 
