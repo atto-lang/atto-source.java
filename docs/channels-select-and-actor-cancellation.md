@@ -386,13 +386,18 @@ Implemented:
 - deterministic FAIR / explicit PRIORITY / opt-in RANDOM selection;
 - dynamic SelectSet from iterable/map;
 - mailbox transport backed by Channel<MessageEnvelope>;
-- static/dynamic parser + AST + type/ownership rules;
+- static/dynamic parser + AST + type/ownership rules, including complete
+  closure-capture scanning for channel/select syntax and explicit deferred
+  `nb select` capture transfer;
 - `nb select` serialized actor continuation re-entry;
-- actor-owned cleanup of pending nonblocking select registrations;
+- actor-owned cleanup of pending `nb readch`, `nb writech`, dynamic
+  `nb select from ...`, and deferred static-select registrations;
 - structured parent/child cancellation;
 - uncatchable actor cancellation safepoints;
 - force-cancel isolation-revocation contract;
-- bounded internal continuation headroom.
+- bounded internal continuation headroom that is accounted separately from
+  the configured user-message quota, so runtime control traffic cannot silently
+  shrink `maxMailboxMessages`.
 
 Current compiler/runtime integration:
 
