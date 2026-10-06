@@ -14,6 +14,7 @@
 #include <time.h>
 #include <sched.h>
 #include <stdatomic.h>
+#include <unistd.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/thread_info.h>
@@ -318,31 +319,56 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeBindCurrentThreadToCarrier
     if (slot < 0) return -1;
 
 #if defined(__linux__)
-    cpu_set_t allowed;
-    CPU_ZERO(&allowed);
-    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) return -1;
+    long configured_cpus = sysconf(_SC_NPROCESSORS_CONF);
+    int cpu_capacity = configured_cpus > 0 && configured_cpus <= INT32_MAX
+            ? (int)configured_cpus
+            : CPU_SETSIZE;
+    size_t set_size = CPU_ALLOC_SIZE(cpu_capacity);
 
-    int allowed_count = CPU_COUNT(&allowed);
-    if (allowed_count <= 0) return -1;
+    cpu_set_t *allowed = CPU_ALLOC(cpu_capacity);
+    cpu_set_t *target = CPU_ALLOC(cpu_capacity);
+    if (allowed == NULL || target == NULL) {
+        if (allowed != NULL) CPU_FREE(allowed);
+        if (target != NULL) CPU_FREE(target);
+        return -1;
+    }
+
+    CPU_ZERO_S(set_size, allowed);
+    if (sched_getaffinity(0, set_size, allowed) != 0) {
+        CPU_FREE(allowed);
+        CPU_FREE(target);
+        return -1;
+    }
+
+    int allowed_count = CPU_COUNT_S(set_size, allowed);
+    if (allowed_count <= 0) {
+        CPU_FREE(allowed);
+        CPU_FREE(target);
+        return -1;
+    }
 
     int ordinal = slot % allowed_count;
     int selected = -1;
-    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-        if (!CPU_ISSET(cpu, &allowed)) continue;
+    for (int cpu = 0; cpu < cpu_capacity; cpu++) {
+        if (!CPU_ISSET_S(cpu, set_size, allowed)) continue;
         if (ordinal-- == 0) {
             selected = cpu;
             break;
         }
     }
-    if (selected < 0) return -1;
-
-    cpu_set_t target;
-    CPU_ZERO(&target);
-    CPU_SET(selected, &target);
-    if (pthread_setaffinity_np(pthread_self(), sizeof(target), &target) != 0) {
+    if (selected < 0) {
+        CPU_FREE(allowed);
+        CPU_FREE(target);
         return -1;
     }
-    return (jint)selected;
+
+    CPU_ZERO_S(set_size, target);
+    CPU_SET_S(selected, set_size, target);
+    int bind_status = pthread_setaffinity_np(
+            pthread_self(), set_size, target);
+    CPU_FREE(allowed);
+    CPU_FREE(target);
+    return bind_status == 0 ? (jint)selected : -1;
 #elif defined(__APPLE__)
     /*
      * Darwin does not expose Linux-style strict CPU pinning. An affinity tag
@@ -390,6 +416,19 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
      * Leave this retired pool rooted until process teardown. Actor admission is
      * already closed and every parked/cooperative carrier has been woken.
      */
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentCpu(
+        JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+#if defined(__linux__)
+    int cpu = sched_getcpu();
+    return cpu >= 0 ? (jint)cpu : -1;
+#else
+    return -1;
+#endif
 }
 
 JNIEXPORT jlong JNICALL
