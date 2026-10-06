@@ -314,6 +314,63 @@ The compiler canonicalizes both to nested rank-2 collection semantics. This is
 distinct from an exact fixed multidimensional layout, whose extents belong in
 finite sequence shapes.
 
+### Tuple vs array/vector/list family
+
+Tuples are fixed-arity heterogeneous product values. The compact tuple type
+spelling remains:
+
+```ores
+val pair: [int, string] = (7, "x");
+```
+
+The explicit collection-family spelling is equivalent and is preferred when
+layout metadata matters:
+
+```ores
+val pair: Tuple<
+    growth_policy=Fixed,
+    allocator=Arena,
+    align=64,
+    size=2,
+    inline_capacity=2,
+    max_capacity=2,
+    storage=Inline,
+    rank=1
+>[int, string] = (7, "x");
+```
+
+Tuple metadata is deliberately stricter than resizable collection metadata:
+
+- `size=N` is a compile-time arity assertion and must equal the number of tuple
+  positions. Unlike `Vector` size, it is not mutable runtime state.
+- `inline_capacity=N` and `max_capacity=N`, when written for a tuple, must
+  also equal its arity. They describe/verify a fixed layout; they do not reserve
+  future growth.
+- `growth_policy` is accepted only as `Fixed` (or a qualified `*.Fixed`
+  policy). Any geometric/amortized/custom growing policy is rejected.
+- `align`, `allocator`, and `storage` are compile-time layout policy.
+- tuple `rank` is always `1`.
+- `capacity=...` is invalid for a tuple because capacity cannot differ from
+  arity.
+
+The intended collection distinctions are:
+
+| Type | Element typing | Extent | Growth | Typical role |
+| --- | --- | --- | --- | --- |
+| `Tuple[T1, T2, ...]` / `[T1, T2, ...]` | heterogeneous by position | compile-time fixed | never | product values, ABI records without names, multi-value returns |
+| `FixedArray[...]` | homogeneous or exact positional shape | compile-time fixed | never | contiguous fixed storage |
+| `Array[T]` | homogeneous | runtime extent | not a growth-policy container | ordinary indexed contiguous storage |
+| `Vector[T]` | homogeneous/repeating pattern | runtime extent | yes | amortized growable contiguous sequence |
+| `List[T]` | homogeneous | runtime extent | implementation-defined | general sequence abstraction |
+| `Slice[T]` | homogeneous view | runtime extent | never owns growth | borrowed/view-style window |
+| `ArrayList<T>` | not a core Oreslang collection | host/interop-defined | host-defined | explicit Java/foreign interop only |
+
+A tuple and a `FixedArray` may have the same values and arity but are not the
+same semantic abstraction: tuple positions have independent static types,
+whereas fixed-array identity includes the collection/storage contract. Likewise,
+`Array`, `Vector`, `List`, and `Slice` must remain distinguishable to
+later compiler/lowering phases even when their element types are identical.
+
 ## Bindings
 
 Every local binding is declared as exactly one of:
