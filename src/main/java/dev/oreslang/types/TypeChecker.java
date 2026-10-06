@@ -1919,7 +1919,7 @@ public final class TypeChecker {
             return;
         }
         if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE) {
+            if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
             }
