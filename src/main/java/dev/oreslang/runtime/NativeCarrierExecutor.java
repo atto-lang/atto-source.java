@@ -191,7 +191,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         CURRENT_EXECUTOR.set(this);
         CURRENT_SLOT.set(slot);
         long affinityOrdinal = affinityBase + slot;
-        int affinityTarget = nativeBindCurrentThreadToCarrierSlot(affinityOrdinal);
+        int affinityTarget = nativeBindCurrentThreadToAffinityOrdinal(affinityOrdinal);
         CURRENT_AFFINITY_TARGET.set(affinityTarget);
         if (affinityTarget < 0) affinityBindingFailures.incrementAndGet();
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
@@ -700,7 +700,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static native void nativeStart(long handle);
     private static native void nativeSetDesired(long handle, int desiredThreads);
     private static native void nativeAwaitEnabled(long handle, int slot);
-    private static native int nativeBindCurrentThreadToCarrierSlot(long affinityOrdinal);
+    private static native int nativeBindCurrentThreadToAffinityOrdinal(long affinityOrdinal);
     private static native void nativeShutdown(long handle);
     private static native int nativeCurrentCpu();
     private static native long nativeCurrentThreadId();
