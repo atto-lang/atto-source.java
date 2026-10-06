@@ -914,10 +914,18 @@ public final class OresEvalRootNode extends RootNode {
                                 || (!target.async()
                                         && functionContainsPotentialSuspension(
                                                 target,
-                                                seen));
+                                                seen))
+                                || call.arguments().stream().anyMatch(
+                                        argument -> expressionContainsPotentialSuspension(argument, seen));
                     }
                 }
-                return false;
+                // Calls may suspend while evaluating their arguments or receiver,
+                // even when the callee itself is a synchronous builtin/member.
+                // Missing this path lets an internal source-task Future escape
+                // through e.g. stdio.stdout.write(actor_callable()).
+                return call.arguments().stream().anyMatch(
+                                argument -> expressionContainsPotentialSuspension(argument, seen))
+                        || expressionContainsPotentialSuspension(call.callee(), seen);
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 return expressionContainsPotentialSuspension(
