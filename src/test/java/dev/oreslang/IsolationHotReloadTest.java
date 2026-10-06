@@ -480,7 +480,7 @@ final class IsolationHotReloadTest {
     }
 
     @Test
-    void extractedMethodValueKeepsReceiverAndSelfCannotBeRebound() throws Exception {
+    void explicitClosureKeepsReceiverAndSelfCannotBeRebound() throws Exception {
         String output = run("""
                 define class Box as
                   val int value;
@@ -492,11 +492,24 @@ final class IsolationHotReloadTest {
 
                 pub routine main() => void {
                   val box = new Box(17);
-                  val Fnc<int> callback = box.get;
+                  val Fnc<int> callback = || -> { return box.get(); };
                   stdio.stdout.write(callback())
                 }
                 """);
         assertEquals("17", output);
+
+        IllegalArgumentException extracted = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub get() => int { return 17; }
+                        end
+                        pub routine main() => void {
+                          val box = new Box();
+                          val Fnc<int> callback = box.get;
+                          return;
+                        }
+                        """)));
+        assertTrue(extracted.getMessage().contains("not a first-class value"));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class Box as

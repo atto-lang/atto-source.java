@@ -162,7 +162,9 @@ public final class HotReloadManager implements AutoCloseable {
                 executionDomain);
         this.sharedTrustedEngine = (executionDomain == ExecutionDomain.TRUSTED_JIT
                 || executionDomain == ExecutionDomain.TRUSTED_ISOACTOR_JIT)
-                ? Engine.newBuilder().build()
+                ? Engine.newBuilder()
+                        .allowExperimentalOptions(System.getProperty("polyglot.engine.IsolateLibrary") != null)
+                        .build()
                 : null;
         vm.registerHotReloadManager(this);
     }
