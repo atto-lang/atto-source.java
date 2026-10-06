@@ -1477,7 +1477,7 @@ public final class Parser {
             return new Ast.LoopStmt(parseLoopBody());
         }
         if (match(FOR)) {
-            if (check(LBRACE) || check(DO)) {
+            if (check(LBRACE)) {
                 return new Ast.LoopStmt(parseLoopBody());
             }
             boolean asyncIteration = match(AWAIT);
