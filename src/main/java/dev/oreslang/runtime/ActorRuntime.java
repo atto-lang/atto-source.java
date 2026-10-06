@@ -949,6 +949,22 @@ public final class ActorRuntime implements AutoCloseable {
         return future;
     }
 
+    /**
+     * Start one stackless source continuation in the current actor's logical
+     * scheduler. The scheduler's executor is mailbox-backed, so every resume
+     * is serialized with ordinary actor messages and uses no second concurrency
+     * identity or carrier pool.
+     */
+    public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
+        Objects.requireNonNull(task, "task");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "source actor task requires an executing actor turn");
+        }
+        return cell.sourceScheduler().start(task);
+    }
+
     private boolean ownFuture(
             ActorCell<?> cell,
             OresFuture<?> future) {
@@ -4015,6 +4031,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
+        private OresScheduler sourceScheduler;
         private boolean finalized;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -4074,6 +4091,27 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private OresScheduler sourceScheduler() {
+            synchronized (lifecycleLock) {
+                if (sourceScheduler != null) return sourceScheduler;
+
+                java.util.concurrent.Executor mailboxExecutor = command -> {
+                    if (!enqueueContinuation(ref.id(), command)) {
+                        throw new RejectedExecutionException(
+                                "actor " + ref.id()
+                                        + " cannot accept a source continuation");
+                    }
+                };
+
+                sourceScheduler = OresScheduler.runtimeOwned(
+                        "ores-actor-" + ref.id(),
+                        1,
+                        mailboxExecutor,
+                        Runnable::run);
+                return sourceScheduler;
+            }
+        }
+
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || forceKillFenced || finalized) return false;
@@ -4103,6 +4141,16 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
+            OresScheduler scheduler = sourceScheduler;
+            sourceScheduler = null;
+            if (scheduler != null) {
+                try {
+                    scheduler.close();
+                } catch (RuntimeException ignored) {
+                    // Actor teardown remains authoritative; source scheduler
+                    // cancellation is best-effort after the actor has finalized.
+                }
+            }
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
             try {
