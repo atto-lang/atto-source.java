@@ -2127,6 +2127,35 @@ public final class TypeChecker {
             if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
             throw new IllegalArgumentException("indexing requires an array/list, tuple, or DynamicStruct");
         }
+        if (expr instanceof Ast.SpawnExpr spawned) {
+            Ast.CallExpr call = spawned.call();
+            if (!(call.callee() instanceof Ast.NameExpr name)) {
+                throw new IllegalArgumentException(
+                        "spawn currently requires a direct actor-class name such as spawn Worker()");
+            }
+            Ast.ClassDecl klass = findClass(name.name());
+            if (klass == null) {
+                throw new IllegalArgumentException(
+                        "spawn target '" + name.name() + "' is not a known actor class");
+            }
+            if (klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "spawn target '" + klass.name() + "' is a normal class; use new for ordinary class construction");
+            }
+            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        "untrusted actors cannot create child actors with spawn");
+            }
+            if (!klass.genericParameters().isEmpty() || call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(
+                        "generic actor-class spawn is not enabled yet; actor construction must remain ABI-stable");
+            }
+            if (!call.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "actor-class spawn arguments are not enabled until actor initializer semantics are converged");
+            }
+            return new Named("ActorRef", List.of(nominalClassType(klass)));
+        }
         if (expr instanceof Ast.NewExpr created) {
             if (created.type().name().equals("DynamicStruct")) {
                 Type dynamic = resolve(created.type(), generics, self);
@@ -4373,6 +4402,8 @@ public final class TypeChecker {
             for (Ast.Expr argument : created.arguments()) {
                 rejectStaticClassGenericReferences(argument, classGenerics, klass, method);
             }
+        } else if (expression instanceof Ast.SpawnExpr spawned) {
+            rejectStaticClassGenericReferences(spawned.call(), classGenerics, klass, method);
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ChannelOpExpr operation) {
