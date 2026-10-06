@@ -9,6 +9,7 @@ import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
+import dev.oreslang.types.Types.Proxy;
 import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.SingletonProxy;
 import dev.oreslang.types.Types.Shared;
@@ -1497,11 +1498,32 @@ public final class TypeChecker {
                             throw new IllegalArgumentException(
                                     "rt take requires unique ownership, not a shared owner");
                         }
+                        if (operand instanceof Proxy) {
+                            throw new IllegalArgumentException(
+                                    "rt take cannot recover raw unique ownership from a synchronized proxy");
+                        }
                         yield operand;
                     }
                     case "borrow" -> {
                         Type source = deref(operand);
                         yield new Borrow(source, false);
+                    }
+                    case "proxy" -> {
+                        if (operand instanceof Borrow) {
+                            throw new IllegalArgumentException(
+                                    "rt proxy requires unique ownership; a borrow cannot be proxied");
+                        }
+                        if (operand instanceof Shared) {
+                            throw new IllegalArgumentException(
+                                    "rt proxy requires unique ownership; a shared read-only owner cannot be proxied");
+                        }
+                        if (operand instanceof Proxy) {
+                            throw new IllegalArgumentException(
+                                    "rt proxy requires the raw unique owner, not an existing proxy");
+                        }
+                        Type source = deref(operand);
+                        requireProxyable(source);
+                        yield new Proxy(source);
                     }
                     case "ptr" -> {
                         Type source = deref(operand);
@@ -1530,6 +1552,10 @@ public final class TypeChecker {
                         if (operand instanceof Borrow) {
                             throw new IllegalArgumentException(
                                     "rt share requires ownership; a borrow cannot be upgraded into a shared owner");
+                        }
+                        if (operand instanceof Proxy) {
+                            throw new IllegalArgumentException(
+                                    "rt share cannot downgrade a synchronized proxy into an unsynchronized shared owner");
                         }
                         Type source = operand instanceof Shared shared ? shared.target() : operand;
                         requireShareable(source, new LinkedHashSet<>());
@@ -2006,6 +2032,10 @@ public final class TypeChecker {
                 type = shared.target();
                 continue;
             }
+            if (type instanceof Proxy proxy) {
+                type = proxy.target();
+                continue;
+            }
             return type;
         }
     }
@@ -2437,7 +2467,8 @@ public final class TypeChecker {
         return operation.equals("borrow")
                 || operation.equals("take")
                 || operation.equals("copy")
-                || operation.equals("share");
+                || operation.equals("share")
+                || operation.equals("proxy");
     }
 
     private String ownershipIntrinsicOperation(String name) {
@@ -2461,6 +2492,10 @@ public final class TypeChecker {
         }
         if (type instanceof Shared shared) {
             requireCopyable(shared.target(), visiting);
+            return;
+        }
+        if (type instanceof Proxy proxy) {
+            requireCopyable(proxy.target(), visiting);
             return;
         }
         if (type instanceof Tuple tuple) {
@@ -2645,6 +2680,10 @@ public final class TypeChecker {
             requireShareable(shared.target(), visiting);
             return;
         }
+        if (type instanceof Proxy) {
+            throw new IllegalArgumentException(
+                    "rt share cannot downgrade a synchronized proxy into unsynchronized shared ownership");
+        }
         if (type instanceof Function) {
             throw new IllegalArgumentException(
                     "rt share cannot share first-class Fnc/callable values until callable types encode "
@@ -2702,6 +2741,29 @@ public final class TypeChecker {
 
         throw new IllegalArgumentException(
                 "rt share cannot prove type " + type + " share-safe");
+    }
+
+
+    private void requireProxyable(Type type) {
+        if (type instanceof Record) return;
+        if (type instanceof Named named) {
+            if (named.name().equals("Ptr")) {
+                throw new IllegalArgumentException(
+                        "rt proxy cannot wrap Ptr<T>; pointer capabilities require an explicit adapter");
+            }
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) {
+                throw new IllegalArgumentException(
+                        "rt proxy requires a linked Ores class or structural record, got " + named.name());
+            }
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "rt proxy cannot wrap actor instances; communicate with actors through their mailbox");
+            }
+            return;
+        }
+        throw new IllegalArgumentException(
+                "rt proxy requires a uniquely owned class/struct value, got " + type);
     }
 
     private void requireNotOwnershipIntrinsicBinding(String name, String where) {
