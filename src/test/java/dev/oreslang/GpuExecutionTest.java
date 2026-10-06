@@ -817,6 +817,25 @@ final class GpuExecutionTest {
     void generatedGpuProgramsPassARealOpenClFrontendWhenValidationIsEnabled() throws Exception {
         if (!"1".equals(System.getenv("ORES_GPU_VALIDATE_OPENCL"))) return;
 
+        for (String type : java.util.List.of("f32", "f64", "complex64", "complex128")) {
+            var program = OresCompiler.compile("""
+                    gpu fnc matmul(
+                      GpuMatrix<%1$s> a,
+                      GpuMatrix<%1$s> b,
+                      GpuMatrix<%1$s> mut out
+                    ) => void {
+                      out = a @ b;
+                      return;
+                    }
+                    """.formatted(type)).gpuProgram();
+            var kernel = program.kernels().getFirst();
+            assertEquals("__ores_len_out", kernel.launchPlan().errorSlotsExpression());
+            assertEquals("0", kernel.launchPlan().resultSlotsExpression());
+            assertTrue(kernel.launchPlan().skipLaunchWhenGlobalWorkItemsZero());
+            assertTrue(kernel.launchPlan().enforceNoAliasBuffers());
+            validateOpenCl(program);
+        }
+
         validateOpenCl(OresCompiler.compile("""
                 gpu fnc add(i32 a, i32 b) => i32 {
                   return a + b;
@@ -878,8 +897,10 @@ final class GpuExecutionTest {
         Path source = Files.createTempFile("ores-gpu-", ".cl");
         try {
             Files.writeString(source, program.source(), StandardCharsets.UTF_8);
+            // Validate a portable device ABI rather than the host CPU's extension set.
             Process process = new ProcessBuilder(
                     "clang",
+                    "-target", "spir64-unknown-unknown",
                     "-x", "cl",
                     "-cl-std=CL1.2",
                     "-fsyntax-only",
