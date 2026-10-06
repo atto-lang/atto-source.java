@@ -250,7 +250,51 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("module '" + module.name() + "' does not conform to contract '" + ref.name()
                         + "': expected " + expected + " but got " + actual);
             }
+            validateModuleContractFields(module, contract, new LinkedHashSet<>());
         }
+    }
+
+    private void validateModuleContractFields(
+            Ast.ModuleDecl module,
+            Ast.InterfaceDecl contract,
+            Set<Ast.InterfaceDecl> stack) {
+        if (!stack.add(contract)) {
+            throw new IllegalArgumentException("module contract inheritance cycle involving '" + contract.name() + "'");
+        }
+
+        for (Ast.TypeRef parentRef : contract.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null || !parent.moduleContract()) {
+                throw new IllegalArgumentException(
+                        "module contract '" + contract.name() + "' has invalid parent '" + parentRef.name() + "'");
+            }
+            validateModuleContractFields(module, parent, stack);
+        }
+
+        Map<String, Ast.FieldDecl> actualFields = new LinkedHashMap<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
+                actualFields.put(field.name(), field);
+            }
+        }
+
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
+            Ast.FieldDecl actual = actualFields.get(required.name());
+            if (actual == null) {
+                throw new IllegalArgumentException(
+                        "module '" + module.name() + "' is missing required contract field '" + contract.name()
+                                + "." + required.name() + "'");
+            }
+            if (actual.kind() != required.bindingKind()) {
+                throw new IllegalArgumentException(
+                        "module '" + module.name() + "." + actual.name() + "' has binding kind "
+                                + actual.kind() + " but contract '" + contract.name() + "' requires "
+                                + required.bindingKind());
+            }
+        }
+
+        stack.remove(contract);
     }
 
     private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract) {
