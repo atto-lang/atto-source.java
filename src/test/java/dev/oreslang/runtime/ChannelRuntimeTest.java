@@ -12,6 +12,19 @@ import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
     @Test
+    void shutdownDrainReleasesBufferedValuesAndStopsAtClosedEmptyChannel() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(2);
+        assertTrue(channel.tryWrite("one"));
+        assertTrue(channel.tryWrite("two"));
+        channel.close();
+        java.util.List<String> drained = new java.util.ArrayList<>();
+        assertTrue(channel.drainOne(drained::add));
+        assertTrue(channel.drainOne(drained::add));
+        assertFalse(channel.drainOne(drained::add));
+        assertEquals(java.util.List.of("one", "two"), drained);
+    }
+
+    @Test
     void bufferedChannelIsFifo() {
         ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(2);
 

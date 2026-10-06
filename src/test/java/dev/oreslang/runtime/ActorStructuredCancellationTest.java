@@ -16,6 +16,19 @@ import org.junit.jupiter.api.Test;
 
 final class ActorStructuredCancellationTest {
     @Test
+    void gracefulStopRacingMailboxPollingDoesNotRecordClosedChannelFailure() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            for (int attempt = 0; attempt < 100; attempt++) {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+                actor.send("work");
+                actor.stop();
+                assertTrue(actor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS));
+                assertTrue(actor.failure().isEmpty(), () -> actor.failure().toString());
+            }
+        }
+    }
+
+    @Test
     void actorSpawnedFromActorTurnIsAChildAndParentStopCancelsIt() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch childCreated = new CountDownLatch(1);

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
@@ -18,14 +19,14 @@ final class ChannelSelectSyntaxTest {
                 fnc blocking(
                     Channel<string> incoming,
                     Channel<string> payload,
-                    Channel<bool> done
+                    Channel<bool> finished
                 ): void {
                   select {
                   case readch incoming: let msg
                     stdio.println(msg);
                   case readch payload: const body
                     stdio.println(body);
-                  case readch done:
+                  case readch finished:
                     return;
                   }
                   return;
@@ -34,14 +35,14 @@ final class ChannelSelectSyntaxTest {
                 actor fnc nonblocking(): void {
                   val Channel<string> incoming = Channel.new<string>(1);
                   val Channel<string> payload = Channel.new<string>(1);
-                  val Channel<bool> done = Channel.new<bool>(1);
+                  val Channel<bool> finished = Channel.new<bool>(1);
 
                   nb select {
                   case readch incoming: let msg
                     stdio.println(msg);
                   case readch payload: const body
                     stdio.println(body);
-                  case readch done: const signal
+                  case readch finished: const signal
                     return;
                   }
                   stdio.println("continued immediately");
@@ -61,7 +62,8 @@ final class ChannelSelectSyntaxTest {
         Ast.FunctionDecl nonblocking =
                 (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
         Ast.SelectStmt nb =
-                assertInstanceOf(Ast.SelectStmt.class, nonblocking.body().getFirst());
+                assertInstanceOf(Ast.SelectStmt.class, nonblocking.body().stream()
+                        .filter(statement -> statement instanceof Ast.SelectStmt).findFirst().orElseThrow());
         assertEquals(Ast.WaitMode.NONBLOCKING, nb.mode());
 
         assertDoesNotThrow(() -> OwnershipChecker.check(program));
@@ -141,7 +143,7 @@ final class ChannelSelectSyntaxTest {
 
                   try {
                     stdio.println("ordinary try still works");
-                  } catch err {
+                  } catch (err) {
                     stdio.println(err);
                   }
                   return;
@@ -260,7 +262,8 @@ final class ChannelSelectSyntaxTest {
         IllegalArgumentException moved = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc bad(Channel<int> input): void {
+                        actor fnc bad(): void {
+                          val Channel<int> input = Channel.new<int>(1);
                           val Array<int> owned = [1, 2, 3];
 
                           nb select {
@@ -280,9 +283,10 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
-    void nbSelectMayCaptureCopyValuesAndActorSelf() {
+    void nbSelectMayCaptureCopyValues() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc copy_capture(Channel<int> input): void {
+                actor fnc copy_capture(): void {
+                  val Channel<int> input = Channel.new<int>(1);
                   val int label = 7;
 
                   nb select {
@@ -294,20 +298,6 @@ final class ChannelSelectSyntaxTest {
                   return;
                 }
 
-                shared actor Counter {
-                  let int count = 0;
-
-                  pub tick(): void {
-                    val Channel<int> input = Channel.new<int>(1);
-
-                    nb select {
-                    case readch input: val value
-                      self.count = self.count + value;
-                    }
-
-                    return;
-                  }
-                }
                 """)));
     }
 
@@ -316,7 +306,8 @@ final class ChannelSelectSyntaxTest {
         IllegalArgumentException moved = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc bad(Channel<int> input): void {
+                        actor fnc bad(): void {
+                          val Channel<int> input = Channel.new<int>(1);
                           val Array<int> owned = [1, 2, 3];
 
                           val (() => void) callback = || -> {

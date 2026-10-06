@@ -130,6 +130,21 @@ public final class ChannelRuntime {
             return Optional.of(value);
         }
 
+        /** Runtime-only drain of committed mailbox values, including after close. */
+        boolean drainOne(java.util.function.Consumer<? super T> consumer) {
+            Objects.requireNonNull(consumer, "consumer");
+            T value;
+            COORDINATOR.lock();
+            try {
+                if (buffer.isEmpty()) return false;
+                value = buffer.removeFirst();
+            } finally {
+                COORDINATOR.unlock();
+            }
+            consumer.accept(value);
+            return true;
+        }
+
         /**
          * Immediate send probe. No waiter remains registered when this returns
          * false.

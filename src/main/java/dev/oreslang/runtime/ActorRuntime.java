@@ -1312,7 +1312,8 @@ public final class ActorRuntime implements AutoCloseable {
                 ? policy.withoutCapabilities(
                         IsolatePolicy.Capability.SHARED_MEMORY,
                         IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
-                        IsolatePolicy.Capability.JAVA_INTEROP)
+                        IsolatePolicy.Capability.JAVA_INTEROP,
+                        IsolatePolicy.Capability.JAVA_SOURCE_INTEROP)
                 : policy;
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
@@ -3235,7 +3236,13 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
-                    MessageEnvelope envelope = mailbox.tryRead().orElse(null);
+                    MessageEnvelope envelope;
+                    synchronized (lifecycleLock) {
+                        // Stop closes the mailbox under this same lock. Do not
+                        // turn a graceful stop racing the next read into a failure.
+                        if (stopped.get() || finalized) break;
+                        envelope = mailbox.tryRead().orElse(null);
+                    }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
                     try (envelope) {
@@ -3289,10 +3296,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
-            MessageEnvelope envelope;
-            while ((envelope = mailbox.tryRead().orElse(null)) != null) {
+            while (mailbox.drainOne(envelope -> {
                 releaseMailboxSlot(envelope.isContinuation());
                 envelope.close();
+            })) {
+                // Drain committed reservations without probing an empty closed channel.
             }
         }
 
