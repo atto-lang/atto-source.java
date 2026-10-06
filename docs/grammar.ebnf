@@ -220,10 +220,10 @@ expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;
-equality        = comparison { ( "==" | "!=" ) comparison } ;
+equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
                   { ( "<" | "<=" | ">" | ">=" ) additive
-                  | "is" type_ref [ IDENT ]
+                  | "is" "type" type_ref [ IDENT ]
                   | "matches" pattern
                   | "as" [ "?" ] type_ref
                   } ;
@@ -237,7 +237,7 @@ call_argument_list = call_argument { "," call_argument } ;
 call_argument   = [ "..." ] expression ;
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
-                | "match" | "matches" | "is" | "when"
+                | "match" | "matches" | "eq" | "neq" | "is" | "when"
                 | "case" | "default" | "first" | "switch" ;
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
@@ -435,8 +435,18 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - match/switch arm implementations use "->". "=>" is rejected in executable
      arms so the slim-arrow/execution versus fat-arrow/type distinction remains
      syntactically enforceable.
-   - "is" performs nominal type testing/refinement; "matches" evaluates a full
-     pattern predicate; "as" is a checked cast and "as?" returns Option<T>.
+   - eq is canonical value equality and neq is canonical value inequality.
+     Adjacent !eq is an equivalent inequality spelling. == and != remain
+     accepted compatibility aliases but are non-canonical.
+   - Plain infix is is identity for identity-bearing reference/handle values.
+     Nominal expression type tests are explicit as value is type T or
+     value is type T binding. Prefix is T [binding] remains the compact
+     type-pattern form inside match arms.
+   - eq, neq, and is are reserved operator keywords. They are not ordinary
+     binding or callable names, though keyword spellings remain legal after
+     '.' in the member-name namespace.
+   - "matches" evaluates a full pattern predicate; "as" is a checked cast and
+     "as?" returns Option<T>.
    - Plain match is exclusive and exhaustive: the static checker must prove
      non-fallback arms disjoint and coverage complete. A final else/"_"/bare
      binding is the complement fallback. "match first" explicitly requests
