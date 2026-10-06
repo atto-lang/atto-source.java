@@ -18,7 +18,7 @@ final class TupleSyntaxTest {
     void explicitAndParenthesizedTupleReturnTypesInteroperate() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc explicit(): Tuple[string, int] {
-                  return ("foo", 5);
+                  return tuple ("foo", 5);
                 }
 
                 fnc shorthand(): (string, int) {
@@ -42,7 +42,7 @@ final class TupleSyntaxTest {
     void parenthesizedDestructureSupportsInferenceAndPerSlotTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc foo(): Tuple[string, int] {
-                  return ("foo", 5);
+                  return tuple ("foo", 5);
                 }
 
                 pub fnc main(): void {
@@ -66,7 +66,7 @@ final class TupleSyntaxTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         fnc foo(): Tuple[string, int] {
-                          return ("foo", 5);
+                          return tuple ("foo", 5);
                         }
 
                         pub fnc main(): void {
@@ -81,7 +81,7 @@ final class TupleSyntaxTest {
     void countedOfGroupingIsEquivalentInsideTupleShape() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc grouped(): Tuple[(1 of string, 1 of int)] {
-                  return ("foo", 5);
+                  return tuple ("foo", 5);
                 }
 
                 fnc flat(): Tuple[1 of string, 1 of int] {
@@ -105,7 +105,7 @@ final class TupleSyntaxTest {
     void parenthesizedTupleElementInsideTupleShapeRemainsNested() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc nested(): Tuple[(string, int), bool] {
-                  return (("foo", 5), true);
+                  return tuple (tuple ("foo", 5), true);
                 }
 
                 pub fnc main(): void {
@@ -134,7 +134,7 @@ final class TupleSyntaxTest {
                 }
 
                 pub fnc main(): void {
-                  val a: int = consume(("inline", 7));
+                  val a: int = consume(tuple ("inline", 7));
                   val b: int = consume(new Tuple("explicit", 8));
                   stdio.println(a);
                   stdio.println(b);
@@ -147,7 +147,7 @@ final class TupleSyntaxTest {
     void tupleConstantIndexingPreservesNestedSlotTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc nested(): Tuple[Tuple[string, int], Tuple[bool, string]] {
-                  return (("foo", 5), (true, "ok"));
+                  return tuple (tuple ("foo", 5), tuple (true, "ok"));
                 }
 
                 pub fnc main(): void {
@@ -163,7 +163,7 @@ final class TupleSyntaxTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         fnc pair(): Tuple[string, int] {
-                          return ("foo", 5);
+                          return tuple ("foo", 5);
                         }
 
                         pub fnc main(): void {
@@ -202,7 +202,7 @@ final class TupleSyntaxTest {
                 }
 
                 fnc nested(): (Tuple[string, int], Tuple[bool, string]) {
-                  return (foo(), new Tuple(true, "ok"));
+                  return tuple (foo(), new Tuple(true, "ok"));
                 }
 
                 pub fnc main(): void {
@@ -235,4 +235,108 @@ final class TupleSyntaxTest {
         assertTrue(text.contains("5"));
         assertTrue(text.contains("ok"));
     }
+    @Test
+    void tupleKeywordIsRequiredForTupleValues() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc pair(): Tuple[string, int] {
+                  return tuple ("foo", 5);
+                }
+
+                pub fnc main(): void {
+                  val x = tuple ("bar", 6);
+                  const (k, v) = pair();
+                  stdio.println(x[0]);
+                  stdio.println(k);
+                  stdio.println(v);
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException bare = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub fnc main(): void {
+                          val bad = ("foo", 5);
+                          return;
+                        }
+                        """));
+        assertTrue(bare.getMessage().contains("use tuple"));
+    }
+
+    @Test
+    void parenthesizedTypeAliasIsATupleType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type X = (int, string, bool);
+
+                fnc echo(X value): X {
+                  return value;
+                }
+
+                pub fnc main(): void {
+                  val x: X = tuple (5, "ok", true);
+                  const (n, s, b) = echo(x);
+                  stdio.println(n);
+                  stdio.println(s);
+                  stdio.println(b);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void tupleIsAFinalBuiltinValueClass() {
+        IllegalArgumentException inheritance = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class BadTuple extends Tuple[int, string] as
+                        end
+                        """)));
+        assertTrue(inheritance.getMessage().contains("final built-in class 'Tuple'"));
+
+        IllegalArgumentException redefine = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Tuple as
+                        end
+                        """)));
+        assertTrue(redefine.getMessage().contains("final built-in value class"));
+    }
+
+    @Test
+    void sequenceIsEqualsToSharesRecursiveValueEquality() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val a = tuple ("x", tuple (1, true));
+                  val b = tuple ("x", tuple (1, true));
+                  val c = tuple ("x", tuple (2, true));
+                  val xs = arr [1, 2, 3];
+                  val ys = arr [1, 2, 3];
+                  val zs = arr [1, 2, 4];
+
+                  stdio.println(a.isEqualsTo(b));
+                  stdio.println(a.isEqualsTo(c));
+                  stdio.println(a eq b);
+                  stdio.println(xs.isEqualsTo(ys));
+                  stdio.println(xs.isEqualsTo(zs));
+                  return;
+                }
+                """;
+
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "tuple-equality.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertTrue(text.contains("true\nfalse\ntrue\ntrue\nfalse"));
+    }
+
 }
