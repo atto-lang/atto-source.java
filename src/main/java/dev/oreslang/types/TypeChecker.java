@@ -1982,6 +1982,13 @@ public final class TypeChecker {
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
 
+            if (deref(receiver) instanceof Named future && future.name().equals("Future")) {
+                return switch (member.member()) {
+                    case "with_timeout", "wait_timeout" -> new Function(List.of(Primitive.INT), future);
+                    default -> throw new IllegalArgumentException("unknown Future member '" + member.member() + "'");
+                };
+            }
+
             Type selectedReceiver = deref(receiver);
             if (selectedReceiver instanceof Named selected
                     && selected.name().equals("SelectResult")) {

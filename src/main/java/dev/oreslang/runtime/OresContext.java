@@ -169,6 +169,7 @@ public final class OresContext implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         schedulerSafepoints.incrementAndGet();
+        OresScheduler.checkpoint();
         actors.schedulerSafepoint();
     }
 
@@ -290,7 +291,7 @@ public final class OresContext implements AutoCloseable {
                 throw new IllegalStateException(
                         "root main scheduler task resumed after terminal state");
             }
-        });
+        }, isolatePolicy.maxWallTime());
         if (isolatedRootTurns != null) {
             while (!task.isDone()) {
                 Runnable turn = isolatedRootTurns.poll();

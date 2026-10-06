@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.time.Duration;
+import java.util.concurrent.CancellationException;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 
 /**
  * Scheduler affinity for ordinary Oreslang tasks.
@@ -35,6 +38,8 @@ import java.util.function.BiConsumer;
  * {@link Done} completes it.</p>
  */
 public final class OresScheduler implements AutoCloseable {
+    private static final AtomicLong NEXT_TASK_ID = new AtomicLong();
+    private static final ThreadLocal<Runnable> CURRENT_CHECKPOINT = new ThreadLocal<>();
     private static final AtomicLong NEXT_ID = new AtomicLong();
     private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
     private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
@@ -275,17 +280,35 @@ public final class OresScheduler implements AutoCloseable {
      * scheduler does not move the waiter onto this scheduler.</p>
      */
     public <T> OresFuture<T> start(Task<T> task) {
+        return startInScope(task, OresDeadlineScope.current(), false);
+    }
+
+    /** Start a structured scope; descendants share its remaining deadline. */
+    public <T> OresFuture<T> start(Task<T> task, Duration timeout) {
         Objects.requireNonNull(task, "task");
         ensureOpen();
+        return startInScope(task, new OresDeadlineScope(timeout, name), true);
+    }
 
-        TaskRunner<T> runner = new TaskRunner<>(task);
+    private <T> OresFuture<T> startInScope(Task<T> task, OresDeadlineScope scope, boolean ownsScope) {
+        Objects.requireNonNull(task, "task");
+        ensureOpen();
+        TaskRunner<T> runner = new TaskRunner<>(task, scope, ownsScope);
         tasks.add(runner);
+        runner.armDeadline();
         try {
             runner.scheduleInitial();
         } catch (RuntimeException | Error failure) {
             runner.failBeforeStart(failure);
         }
         return runner.completion;
+    }
+
+    /** Compiler loop checkpoints also observe cooperative task cancellation. */
+    public static void checkpoint() {
+        Runnable checkpoint = CURRENT_CHECKPOINT.get();
+        if (checkpoint != null) checkpoint.run();
+        else if (OresDeadlineScope.current() != null) OresDeadlineScope.current().checkpoint();
     }
 
     /**
@@ -333,11 +356,12 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure, BooleanSupplier admit) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
         executor.execute(() -> {
+            if (!admit.getAsBoolean()) return;
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             SCHEDULER_CARRIER.set(Boolean.TRUE);
             try {
@@ -398,16 +422,21 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> implements BiConsumer<Object, Throwable>, OresFuture.RuntimeAbort {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
         private static final int WAITING = 3;
         private static final int TERMINAL = 4;
 
+        private final long taskId = NEXT_TASK_ID.incrementAndGet();
+        private final OresDeadlineScope scope;
+        private final boolean ownsScope;
+        private Runnable detachDeadline = () -> { };
         private final Task<T> task;
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
+        private final Object executionLock = new Object();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
@@ -418,13 +447,33 @@ public final class OresScheduler implements AutoCloseable {
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
 
-        private TaskRunner(Task<T> task) {
+        private TaskRunner(Task<T> task, OresDeadlineScope scope, boolean ownsScope) {
             this.task = task;
+            this.scope = scope;
+            this.ownsScope = ownsScope;
             this.completion = new OresFuture<>(this::cancelFromFuture);
+            this.completion.taskProducer(this);
+        }
+
+        @Override public void abort(Throwable failure) { failTerminal(failure); }
+
+        @Override public String toString() { return name + "/task-" + taskId; }
+
+        private void armDeadline() {
+            if (scope == null) return;
+            detachDeadline = scope.register(this::failTerminal);
+            if (phase.get() == TERMINAL) detachDeadline.run();
+        }
+
+        private void checkpoint() {
+            if (scope != null) scope.checkpoint();
+            if (phase.get() == TERMINAL) throw new CancellationException("task cancelled: " + this);
         }
 
         private void scheduleInitial() {
             if (!phase.compareAndSet(NEW, QUEUED)) {
+                tasks.remove(this);
+                if (phase.get() == TERMINAL) return;
                 throw new IllegalStateException("scheduler task was already started");
             }
             enqueueTurn();
@@ -436,23 +485,30 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, this::afterCarrierTurn, this::failTerminal, this::admitCarrierTurn);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
         }
 
-        private void runTurn() {
-            if (!phase.compareAndSet(QUEUED, RUNNING)) return;
-            if (!executing.compareAndSet(false, true)) {
-                failTerminal(new IllegalStateException(
-                        "OresScheduler task execution lease violation"));
-                return;
+        // Acquire the lease BEFORE entering the Truffle/context boundary.
+        // Expired queued work must never re-enter a context after publication.
+        private boolean admitCarrierTurn() {
+            synchronized (executionLock) {
+                if (!phase.compareAndSet(QUEUED, RUNNING)) return false;
+                executing.set(true);
+                if (scope != null) scope.acquireTurn();
+                return true;
             }
+        }
 
+        private void runTurn() {
             Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
             CURRENT_TASK_DOMAIN.set(this);
+            Runnable priorCheckpoint = CURRENT_CHECKPOINT.get();
+            OresDeadlineScope priorScope = OresDeadlineScope.enter(scope);
+            CURRENT_CHECKPOINT.set(this::checkpoint);
             try {
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
@@ -464,6 +520,7 @@ public final class OresScheduler implements AutoCloseable {
 
                 final Step<T> step;
                 try {
+                    checkpoint();
                     step = Objects.requireNonNull(
                             task.resume(resume),
                             "OresScheduler task returned null Step");
@@ -490,6 +547,9 @@ public final class OresScheduler implements AutoCloseable {
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
+                OresDeadlineScope.enter(priorScope);
+                if (priorCheckpoint == null) CURRENT_CHECKPOINT.remove();
+                else CURRENT_CHECKPOINT.set(priorCheckpoint);
                 if (priorTaskDomain == null) {
                     CURRENT_TASK_DOMAIN.remove();
                 } else {
@@ -506,6 +566,7 @@ public final class OresScheduler implements AutoCloseable {
          */
         private void afterCarrierTurn() {
             executing.set(false);
+            if (scope != null) scope.releaseTurn();
             publishTerminalIfReady();
             scheduleReadyResume();
         }
@@ -530,6 +591,12 @@ public final class OresScheduler implements AutoCloseable {
                     deliverAwaitCompletion(
                             OresFuture.runtimeTerminalValue(terminal),
                             OresFuture.runtimeTerminalFailure(terminal));
+                    return;
+                }
+
+                OresWaitGraph.await(this, awaited);
+                if (phase.get() != WAITING) {
+                    OresWaitGraph.detach(this);
                     return;
                 }
 
@@ -562,6 +629,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
+            OresWaitGraph.detach(this);
             if (phase.get() == TERMINAL) return;
 
             Resume resume = Resume.completed(
@@ -598,6 +666,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void detachActiveAwaitRegistration() {
+            OresWaitGraph.detach(this);
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
             if (registration != null) registration.detach();
@@ -610,6 +679,7 @@ public final class OresScheduler implements AutoCloseable {
             }
             terminalOutcome.set(new TerminalSuccess<>(value));
             tasks.remove(this);
+            detachDeadline.run();
             // afterCarrierTurn() publishes only after the carrier has fully
             // unwound runBound(...).
         }
@@ -617,14 +687,17 @@ public final class OresScheduler implements AutoCloseable {
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
             detachActiveAwaitRegistration();
-            int observed;
-            do {
-                observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
+            synchronized (executionLock) {
+                int observed;
+                do {
+                    observed = phase.get();
+                    if (observed == TERMINAL) return;
+                } while (!phase.compareAndSet(observed, TERMINAL));
+                terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
+            }
 
-            terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             tasks.remove(this);
+            detachDeadline.run();
             if (!executing.get()) {
                 publishTerminalIfReady();
             }
@@ -633,12 +706,17 @@ public final class OresScheduler implements AutoCloseable {
         private void publishTerminalIfReady() {
             if (phase.get() != TERMINAL || completion.isDone()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
+            if (ownsScope && scope != null) {
+                scope.close();
+                if (!scope.whenQuiescent(this::publishTerminalIfReady)) return;
+            }
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
                 T value = (T) success.value();
                 completion.completeFromRuntime(value);
             } else if (outcome instanceof TerminalFailure<?> failure) {
-                completion.failFromRuntime(failure.failure());
+                if (failure.failure() instanceof CancellationException) completion.cancel(false);
+                else completion.failFromRuntime(failure.failure());
             }
         }
 
@@ -648,12 +726,17 @@ public final class OresScheduler implements AutoCloseable {
 
         private void cancelFromFuture() {
             detachActiveAwaitRegistration();
-            int observed;
-            do {
-                observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
+            synchronized (executionLock) {
+                int observed;
+                do {
+                    observed = phase.get();
+                    if (observed == TERMINAL) return;
+                } while (!phase.compareAndSet(observed, TERMINAL));
+            }
+
             tasks.remove(this);
+            detachDeadline.run();
+            if (ownsScope && scope != null) scope.close();
             pendingResume.set(null);
         }
 

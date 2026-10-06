@@ -5238,6 +5238,20 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
+            if (receiver instanceof OresFuture<?> future) {
+                return switch (name) {
+                    case "with_timeout", "wait_timeout" -> (Invokable) args -> {
+                        requireOne(args, "Future." + name);
+                        if (!(args.getFirst() instanceof Number millis))
+                            throw new IllegalArgumentException("Future timeout must be integer milliseconds");
+                        java.time.Duration timeout = java.time.Duration.ofMillis(millis.longValue());
+                        return name.equals("with_timeout")
+                                ? OresFutures.withTimeout(future, timeout)
+                                : OresFutures.waitTimeout(future, timeout);
+                    };
+                    default -> throw new IllegalArgumentException("unknown Future member " + name);
+                };
+            }
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
                     throw new IllegalArgumentException("unknown Channel factory member " + name);

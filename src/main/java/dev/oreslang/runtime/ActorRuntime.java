@@ -2036,9 +2036,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireBlockingHostContext(String operation) {
-        if (inActorExecution()
-                || inActorGroupMailmanExecution()
-                || OresScheduler.current() != null) {
+        if (inActorExecution() || inActorGroupMailmanExecution()
+                || isActorCarrierThread() || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()) {
             throw new SecurityException(
                     operation
                             + " is a host/embedder blocking operation; actor, Mailman CONTROL, "
@@ -2534,6 +2534,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     actors.put(id, cell);
                 }
+                cell.armDeadline();
                 return ref;
             } catch (RuntimeException | Error failure) {
                 if (linkedToParent && cell != null) parent.children.remove(cell);
@@ -3225,6 +3226,7 @@ public final class ActorRuntime implements AutoCloseable {
      * Carrier threads remain an implementation detail.
      */
     public void schedulerSafepoint() {
+        OresScheduler.checkpoint();
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
         if (cell != null && cell.stopped.get()) {
@@ -4557,6 +4559,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final class ActorCell<M> {
+        private final OresDeadlineScope deadlineScope = OresDeadlineScope.current();
         private final ActorRef<M> ref;
         private final ActorKind kind;
         private final IsolatePolicy policy;
@@ -4608,6 +4611,12 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        private void armDeadline() {
+            if (deadlineScope == null) return;
+            Runnable detach = deadlineScope.register(this::fail);
+            ref.finalizedFuture.whenCompleteRuntime((value, failure) -> detach.run());
         }
 
         private int mailboxCapacityWithControlHeadroom() {
@@ -4833,6 +4842,7 @@ public final class ActorRuntime implements AutoCloseable {
 
                     carrierActive = true;
                     carrierEntered = true;
+                    if (deadlineScope != null) deadlineScope.acquireTurn();
                 }
 
                 turnExecutor.execute(this::runBatchEntered);
@@ -4859,18 +4869,21 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                 }
                 ACTOR_CARRIER.remove();
+                if (carrierEntered && deadlineScope != null) deadlineScope.releaseTurn();
                 if (reschedule) schedule();
             }
         }
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
+            OresDeadlineScope priorScope = OresDeadlineScope.enter(deadlineScope);
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
             boolean turnActive = beginTurn();
             try {
                 if (!turnActive) return;
+                if (deadlineScope != null) deadlineScope.checkpoint();
 
                 if (kind == ActorKind.UNTRUSTED) {
                     turnStartedWallNanos = System.nanoTime();
@@ -4955,6 +4968,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (turnActive) endTurn();
                 CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
+                OresDeadlineScope.enter(priorScope);
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
             }
