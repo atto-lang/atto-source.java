@@ -81,7 +81,7 @@ final class GpuKeywordTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define module m
-                          define class Box
+                          define class Box as
                           end
 
                           gpu fnc bad(Box value) => int {
@@ -89,7 +89,8 @@ final class GpuKeywordTest {
                           }
                         end
                         """)));
-        assertTrue(failure.getMessage().contains("non-transferable named type 'Box'"));
+        assertTrue(failure.getMessage().contains("non-transferable named type"));
+        assertTrue(failure.getMessage().contains("Box"));
     }
 
     @Test
@@ -207,7 +208,7 @@ final class GpuKeywordTest {
     void gpuCoreNamesCannotBeShadowedByDeclarations() {
         IllegalArgumentException classFailure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define class GpuArray
+                        define class GpuArray as
                         end
                         """)));
         assertTrue(classFailure.getMessage().contains("reserved by the Oreslang GPU core prelude"));
