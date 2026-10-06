@@ -54,6 +54,99 @@ final class ParserTest {
     }
 
     @Test
+    void canonicalIfThenSupportsElifAndSingleFiElseIf() {
+        Ast.Program elifProgram = Parser.parse("""
+                define module app as
+                  fnc choose(int value): int {
+                    if value < 0; then
+                      return -1;
+                    elif value == 0; then
+                      return 0;
+                    else
+                      return 1;
+                    fi
+                  }
+                end
+                """);
+
+        Ast.FunctionDecl elifFunction = (Ast.FunctionDecl) elifProgram.modules().getFirst().declarations().getFirst();
+        Ast.IfStmt elif = (Ast.IfStmt) elifFunction.body().getFirst();
+        assertEquals(2, elif.branches().size());
+        assertFalse(elif.elseBody().isEmpty());
+
+        Ast.Program elseIfProgram = Parser.parse("""
+                define module app as
+                  fnc choose(int value): int {
+                    if value < 0; then
+                      return -1;
+                    else if value == 0; then
+                      return 0;
+                    else
+                      return 1;
+                    fi
+                  }
+                end
+                """);
+
+        Ast.FunctionDecl elseIfFunction = (Ast.FunctionDecl) elseIfProgram.modules().getFirst().declarations().getFirst();
+        Ast.IfStmt elseIf = (Ast.IfStmt) elseIfFunction.body().getFirst();
+        assertEquals(2, elseIf.branches().size());
+        assertFalse(elseIf.elseBody().isEmpty());
+    }
+
+    @Test
+    void legacyIfDoAndElseifRemainAcceptedForMigration() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define module app as
+                  fnc choose(int value): int {
+                    if value < 0; do
+                      return -1;
+                    elseif value == 0; do
+                      return 0;
+                    else
+                      return 1;
+                    fi
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void conditionalDoProducesDeprecationWarningsButThenDoesNot() {
+        Parser.ParseResult legacy = Parser.parseWithWarnings("""
+                define module app as
+                  fnc choose(bool first, bool second): int {
+                    if first; do
+                      return 1;
+                    elseif second; do
+                      return 2;
+                    else
+                      return 3;
+                    fi
+                  }
+                end
+                """);
+        assertEquals(2, legacy.warnings().size());
+        assertTrue(legacy.warnings().stream()
+                .allMatch(warning -> warning.message().contains("use 'then'")));
+
+        Parser.ParseResult canonical = Parser.parseWithWarnings("""
+                define module app as
+                  fnc choose(bool first, bool second): int {
+                    if first; then
+                      return 1;
+                    elif second; then
+                      return 2;
+                    else
+                      return 3;
+                    fi
+                  }
+                end
+                """);
+        assertTrue(canonical.warnings().isEmpty());
+    }
+
+    @Test
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
                 define module model
