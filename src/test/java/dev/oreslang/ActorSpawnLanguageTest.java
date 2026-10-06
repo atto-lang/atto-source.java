@@ -299,4 +299,39 @@ final class ActorSpawnLanguageTest {
                 """)));
     }
 
+    @Test
+    void persistentActorKeepsStateAcrossAwaitedProtocolCalls() throws Exception {
+        String program = """
+                define actor Counter as
+                  let int value = 0;
+                  constructor(initial: int) { self.value = initial; }
+                  pub add(delta: int): void {
+                    self.value = self.value + delta;
+                    return;
+                  }
+                  pub get(): int { return self.value; }
+                end
+                pub routine main() => void {
+                  val counter = spawn Counter(40);
+                  await counter.add(2);
+                  stdio.println(await counter.get());
+                  await counter.add(8);
+                  stdio.println(await counter.get());
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build();
+        try {
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "persistent-counter.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        } finally {
+            // Persistent actors outlive main; host teardown explicitly cancels
+            // them and waits for carrier/context exit.
+            context.close(true);
+        }
+        assertEquals("42\n50\n", output.toString(StandardCharsets.UTF_8));
+    }
+
 }
