@@ -70,10 +70,19 @@ final class HostImportTest {
     }
 
     @Test
-    void javaSourceInteropRequiresJavaInterop() {
+    void revokingHostAuthorityCannotLeaveJavaSourceAuthorityBehind() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
         assertThrows(IllegalArgumentException.class, () ->
-                IsolatePolicy.developer().withCapabilities(
-                        IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
+                policy.withoutCapabilities(IsolatePolicy.Capability.JAVA_INTEROP));
+        IsolatePolicy revoked = policy.withoutCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
+        assertFalse(revoked.allows(IsolatePolicy.Capability.JAVA_INTEROP));
+        assertFalse(revoked.allows(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
+        assertTrue(policy.allows(IsolatePolicy.Capability.JAVA_INTEROP));
+        assertTrue(policy.allows(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
     }
 
     @Test
