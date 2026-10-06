@@ -3659,7 +3659,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "DynamicStruct<T> constructor takes no positional arguments");
                 }
-                return new DynamicStructValue();
+                return new DynamicStructValue(this);
             }
             HostClassFacade hostClass =
                     hostClasses.get(created.type().name());
@@ -3843,7 +3843,7 @@ public final class OresEvalRootNode extends RootNode {
                     for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
-                    return new DynamicStructValue(fields);
+                    return new DynamicStructValue(this, fields);
                 }
                 if (value instanceof OptionValue option) {
                     return option.present()
@@ -5108,7 +5108,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
                     }
-                    return new DynamicStructValue();
+                    return new DynamicStructValue(this);
                 }
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
@@ -5192,7 +5192,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("duplicate obj field " + key);
                     }
                 }
-                return dynamicKeys ? new DynamicStructValue(result) : Map.copyOf(result);
+                return dynamicKeys ? new DynamicStructValue(this, result) : Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -5952,7 +5952,8 @@ public final class OresEvalRootNode extends RootNode {
                             "too many constructor arguments for " + klass.name());
                 }
                 LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                OresObject object = new OresObject(this, klass, fields);
+                OresObject object =
+                        new OresObject(this, klass, fields, classFields.size());
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
                     Object value;
@@ -5988,7 +5989,8 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
-            OresObject object = new OresObject(this, klass, fields);
+            OresObject object =
+                    new OresObject(this, klass, fields, classFields.size());
 
             // Field initializers run before the constructor body and with the
             // declaring class's private-member authority.
@@ -7255,9 +7257,21 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class DynamicStructValue implements OresMutex.SharedState {
+        private final Evaluator owner;
+        private final ActorRuntime.AllocationDomain allocationDomain;
         private final LinkedHashMap<String, Object> fields;
-        private DynamicStructValue() { this.fields = new LinkedHashMap<>(); }
-        private DynamicStructValue(Map<String, Object> initial) { this.fields = new LinkedHashMap<>(initial); }
+
+        private DynamicStructValue(Evaluator owner) {
+            this(owner, Map.of());
+        }
+
+        private DynamicStructValue(Evaluator owner, Map<String, Object> initial) {
+            this.owner = Objects.requireNonNull(owner);
+            this.allocationDomain =
+                    owner.accountGuestMapAllocation(initial.size());
+            this.fields = new LinkedHashMap<>(initial);
+        }
+
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
         @Override public String toString() { return "DynamicStruct" + fields; }
     }
@@ -7266,11 +7280,28 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
-        private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
-            this.owner = owner;
-            this.klass = klass;
-            this.fields = fields;
+        private final ActorRuntime.AllocationDomain allocationDomain;
+
+        private OresObject(
+                Evaluator owner,
+                Ast.ClassDecl klass,
+                Map<String,Object> fields) {
+            this(owner, klass, fields, fields.size());
         }
+
+        private OresObject(
+                Evaluator owner,
+                Ast.ClassDecl klass,
+                Map<String,Object> fields,
+                int expectedFieldCount) {
+            this.owner = Objects.requireNonNull(owner);
+            this.klass = Objects.requireNonNull(klass);
+            this.fields = Objects.requireNonNull(fields);
+            this.allocationDomain =
+                    owner.accountGuestObjectAllocation(
+                            Math.max(fields.size(), expectedFieldCount));
+        }
+
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public String toString(){
             LinkedHashMap<String,Object> display = new LinkedHashMap<>();
