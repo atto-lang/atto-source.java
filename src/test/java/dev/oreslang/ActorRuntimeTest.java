@@ -266,7 +266,11 @@ final class ActorRuntimeTest {
                     result.isCancelled(),
                     "explicit shutdown must abandon/cancel a quiescent normal completion");
         } finally {
-            if (!runtime.isClosed()) runtime.close();
+            try {
+                runtime.close();
+            } catch (IllegalStateException ignored) {
+                // Preserve the primary assertion if shutdown already reported it.
+            }
         }
     }
 
