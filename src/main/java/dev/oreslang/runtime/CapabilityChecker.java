@@ -197,13 +197,30 @@ public final class CapabilityChecker {
         }
     }
 
-    private static IsolatePolicy actorPolicy(Ast.ActorKind kind, IsolatePolicy parent) {
-        if (kind != Ast.ActorKind.PRIVATE) return parent;
-        return parent.withoutCapabilities(
-                IsolatePolicy.Capability.SHARED_MEMORY,
-                IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
-                IsolatePolicy.Capability.JAVA_INTEROP,
-                IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
+    private static IsolatePolicy actorPolicy(
+            Ast.ActorKind kind,
+            IsolatePolicy parent) {
+        return switch (kind) {
+            case NONE, SHARED -> parent;
+            case PRIVATE -> parent.withoutCapabilities(
+                    IsolatePolicy.Capability.SHARED_MEMORY,
+                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                    IsolatePolicy.Capability.JAVA_INTEROP,
+                    IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
+            case UNTRUSTED -> {
+                IsolatePolicy baseline = IsolatePolicy.untrustedActor();
+                long heap = Math.min(
+                        parent.maxHeapBytes(), baseline.maxHeapBytes());
+                int mailbox = Math.min(
+                        parent.maxMailboxMessages(), baseline.maxMailboxMessages());
+                java.time.Duration wall =
+                        parent.maxWallTime().compareTo(baseline.maxWallTime()) < 0
+                                ? parent.maxWallTime()
+                                : baseline.maxWallTime();
+                yield new IsolatePolicy(
+                        Set.of(), heap, mailbox, wall, true);
+            }
+        };
     }
 
     private void checkCallableTypes(
@@ -309,6 +326,14 @@ public final class CapabilityChecker {
             }
         }
 
+        if (expr instanceof Ast.NameExpr n
+                && isZeroAuthorityAdversarial(policy)
+                && isRestrictedFacadeRoot(n.name())) {
+            throw new SecurityException(
+                    "untrusted actor cannot extract restricted capability facade '"
+                            + n.name() + "'");
+        }
+
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
             require(policy, IsolatePolicy.Capability.STDOUT, "print");
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("SharedMutex")) {
@@ -384,6 +409,19 @@ public final class CapabilityChecker {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
         }
+    }
+
+    private static boolean isZeroAuthorityAdversarial(IsolatePolicy policy) {
+        return policy.adversarial() && policy.capabilities().isEmpty();
+    }
+
+    private static boolean isRestrictedFacadeRoot(String name) {
+        return switch (name) {
+            case "stdio", "process", "actor", "network", "ipc", "gpu",
+                    "fs", "env", "ffi", "polyglot", "thread",
+                    "SharedMutex", "print" -> true;
+            default -> false;
+        };
     }
 
     private static String memberPath(Ast.Expr expr) {
