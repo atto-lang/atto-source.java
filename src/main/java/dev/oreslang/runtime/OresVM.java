@@ -77,6 +77,7 @@ final class OresVM {
             String, ActorRuntime.ActorGenerationLeaseFactory> generationBindings =
             new ConcurrentHashMap<>();
     private final AtomicBoolean shutdown = new AtomicBoolean();
+    private final AtomicBoolean started = new AtomicBoolean();
 
     private OresVM(
             ActorRuntime.DispatcherConfig config,
@@ -91,6 +92,11 @@ final class OresVM {
         this.blockingIo = new BlockingIoExecutor(prefix);
         this.processVm = processVm;
         VM_BINDINGS.put(contextBindingToken, this);
+
+        // VM construction is the runtime bootstrap boundary. The physical
+        // CONTROL carrier pool must already be live before any Oreslang root
+        // task (including pub routine main) can be admitted to the scheduler.
+        startup();
     }
 
     /** The one physical Oreslang VM for the current OS process. */
@@ -186,6 +192,35 @@ final class OresVM {
         return processVm;
     }
 
+    boolean started() {
+        return started.get();
+    }
+
+    /**
+     * Start the VM-owned root/control event-loop carriers exactly once.
+     *
+     * <p>ROOT_TASK continuations, await completions, and future scheduler
+     * dispatches are admitted onto the VM CONTROL pool. Starting the pool here
+     * makes runtime readiness an invariant rather than an accident of the first
+     * submitted task. Channel/select/timer completions may subsequently enqueue
+     * work onto the same scheduler without ever executing guest code on their
+     * producer thread.</p>
+     */
+    void startup() {
+        ensureRunning();
+        if (!started.compareAndSet(false, true)) return;
+        try {
+            dispatchers.startRuntime();
+        } catch (RuntimeException | Error failure) {
+            started.set(false);
+            throw failure;
+        }
+    }
+
+    int controlCarrierCount() {
+        return dispatchers.controlCarrierCount();
+    }
+
     boolean shutdown() {
         return shutdown.get();
     }
@@ -211,7 +246,7 @@ final class OresVM {
     ActorRuntime newActorRuntime(
             IsolatePolicy policyCeiling,
             ActorRuntime.TurnExecutor turnExecutor) {
-        ensureRunning();
+        startup();
         return ActorRuntime.attachToVm(this, policyCeiling, turnExecutor);
     }
 
@@ -231,7 +266,7 @@ final class OresVM {
             ActorRuntime.TurnExecutor turnExecutor,
             ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory,
             ActorRuntime.RuntimePlacement runtimePlacement) {
-        ensureRunning();
+        startup();
         ActorRuntime.ActorGenerationLeaseFactory effectiveFactory =
                 generationLeaseFactory == null
                         ? () -> () -> { }
