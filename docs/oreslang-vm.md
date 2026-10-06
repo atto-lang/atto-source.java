@@ -96,6 +96,11 @@ race between the first guest `main` turn and the runtime's async scheduling
 infrastructure while preserving the existing CONTROL reservation for
 supervision and ActorGroup mailmen.
 
+Startup is a hard barrier, not a best-effort hint. OresVM publishes its opaque
+context binding only after the CONTROL pool reports the complete configured
+carrier floor as live. If the host cannot create that floor, VM construction
+fails closed and no guest context or `main` routine is admitted.
+
 Timers remain independently lazy where appropriate: creating a timer driver is
 allowed to allocate a host service thread only when actual timer work exists,
 which keeps native-image build-time state free of live runtime threads.
