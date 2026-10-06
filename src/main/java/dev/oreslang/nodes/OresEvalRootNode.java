@@ -3262,6 +3262,36 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (isRuntimeProxyIntrinsic(call)) {
+                if (call.arguments().size() != 1) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new IllegalArgumentException(
+                                    "rt proxy requires exactly one value operand"));
+                    return;
+                }
+                evalSuspendableExpr(
+                        task,
+                        call.arguments().getFirst(),
+                        env,
+                        (t, value, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        createRuntimeProxy(value),
+                                        null);
+                            } catch (RuntimeException | Error proxyFailure) {
+                                continuation.accept(t, null, proxyFailure);
+                            }
+                        });
+                return;
+            }
+
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -4781,6 +4811,21 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(values);
         }
 
+        private boolean isRuntimeProxyIntrinsic(Ast.CallExpr call) {
+            return call.callee() instanceof Ast.NameExpr name
+                    && name.name().equals("$rt$proxy")
+                    && !call.typeArgumentsPresent();
+        }
+
+        private ActorRuntime.Proxy<?> createRuntimeProxy(Object value) {
+            if (!(value instanceof OresObject)
+                    && !(value instanceof DynamicStructValue)) {
+                throw new IllegalArgumentException(
+                        "rt proxy currently accepts class instances or DynamicStruct values");
+            }
+            return context.actors().proxy(value);
+        }
+
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
             return booleanIntrinsicName(call, env) != null;
         }
@@ -5083,6 +5128,13 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (isRuntimeProxyIntrinsic(call)) {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "rt proxy requires exactly one value operand");
+                    }
+                    return createRuntimeProxy(eval(call.arguments().getFirst(), env));
+                }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
