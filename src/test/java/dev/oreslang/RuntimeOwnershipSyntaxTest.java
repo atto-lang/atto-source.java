@@ -753,6 +753,227 @@ final class RuntimeOwnershipSyntaxTest {
                 """)));
     }
 
+
+    @Test
+    void rtProxyConsumesRawOwnerAndAllowsSynchronizedMutation() throws Exception {
+        String output = run("""
+                define class Counter as
+                  pub let int value = 1;
+
+                  pub bump(mut self)() => int {
+                    self.value = self.value + 1;
+                    return self.value;
+                  }
+                end
+
+                pub routine main() => void {
+                  let Counter raw = new Counter();
+                  val guarded = rt proxy raw;
+                  stdio.stdout.write(guarded.bump());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(guarded.value);
+                  return;
+                }
+                """);
+
+        assertTrue(output.equals("2:2"), output);
+    }
+
+    @Test
+    void rtProxyMakesOriginalRawBindingUnavailable() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub let int value = 1;
+                        end
+
+                        fnc bad() => int {
+                          let Counter raw = new Counter();
+                          val guarded = rt proxy raw;
+                          return raw.value;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("moved")
+                        || error.getMessage().toLowerCase().contains("proxy"),
+                error.getMessage());
+    }
+
+    @Test
+    void rtProxyRejectsScalarsBorrowsAndReadonlySharedOwners() {
+        IllegalArgumentException scalar = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          let int value = 1;
+                          val guarded = rt proxy value;
+                          return;
+                        }
+                        """)));
+        assertTrue(scalar.getMessage().toLowerCase().contains("proxy")
+                        && scalar.getMessage().toLowerCase().contains("reference"),
+                scalar.getMessage());
+
+        IllegalArgumentException borrow = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        fnc bad() => void {
+                          let Box box = new Box();
+                          val view = rt borrow box;
+                          val guarded = rt proxy view;
+                          return;
+                        }
+                        """)));
+        assertTrue(borrow.getMessage().toLowerCase().contains("proxy")
+                        && borrow.getMessage().toLowerCase().contains("borrow"),
+                borrow.getMessage());
+
+        IllegalArgumentException shared = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        fnc bad() => void {
+                          let Box box = new Box();
+                          val shared = rt share box;
+                          val guarded = rt proxy shared;
+                          return;
+                        }
+                        """)));
+        assertTrue(shared.getMessage().toLowerCase().contains("proxy")
+                        && shared.getMessage().toLowerCase().contains("shared"),
+                shared.getMessage());
+    }
+
+    @Test
+    void rtTakeCannotRecoverRawOwnershipFromProxy() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        fnc bad() => void {
+                          let Box raw = new Box();
+                          val guarded = rt proxy raw;
+                          val escaped = rt take guarded;
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("proxy")
+                        || error.getMessage().toLowerCase().contains("raw exclusive"),
+                error.getMessage());
+    }
+
+    @Test
+    void rtShareOfProxyIsIdempotentAndRetainsSynchronizedMutation() throws Exception {
+        String output = run("""
+                define class Box as
+                  pub let int value = 1;
+
+                  pub bump(mut self)() => void {
+                    self.value = self.value + 1;
+                    return;
+                  }
+                end
+
+                pub routine main() => void {
+                  let Box raw = new Box();
+                  val guarded = rt proxy raw;
+                  val alsoGuarded = rt share guarded;
+                  alsoGuarded.bump();
+                  stdio.stdout.write(guarded.value);
+                  return;
+                }
+                """);
+
+        assertTrue(output.equals("2"), output);
+    }
+
+    @Test
+    void nestedClassValuesRemainBehindSameProxyLockDomain() throws Exception {
+        String output = run("""
+                define class Child as
+                  pub let int value = 1;
+                end
+
+                define class Parent as
+                  pub let Child child = new Child();
+                end
+
+                pub routine main() => void {
+                  let Parent raw = new Parent();
+                  val guarded = rt proxy raw;
+                  guarded.child.value = 9;
+                  stdio.stdout.write(guarded.child.value);
+                  return;
+                }
+                """);
+
+        assertTrue(output.equals("9"), output);
+    }
+
+    @Test
+    void proxyRejectsOwnershipConsumingMethods() {
+        IllegalArgumentException consuming = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+
+                          pub consume(take self)() => int {
+                            return self.value;
+                          }
+                        end
+
+                        fnc bad() => int {
+                          let Box raw = new Box();
+                          val guarded = rt proxy raw;
+                          return guarded.consume();
+                        }
+                        """)));
+
+        assertTrue(consuming.getMessage().toLowerCase().contains("proxy")
+                        || consuming.getMessage().toLowerCase().contains("ownership"),
+                consuming.getMessage());
+    }
+
+    @Test
+    void proxyCannotBePassedAsGenericMutParameter() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        fnc mutate(Box mut box) => void {
+                          box.value = 2;
+                          return;
+                        }
+
+                        fnc bad() => void {
+                          let Box raw = new Box();
+                          val guarded = rt proxy raw;
+                          mutate(guarded);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("proxy")
+                        && error.getMessage().toLowerCase().contains("mut"),
+                error.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "rt-ownership.ores")
