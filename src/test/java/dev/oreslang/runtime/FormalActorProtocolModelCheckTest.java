@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -57,6 +56,7 @@ final class FormalActorProtocolModelCheckTest {
             Phase phase,
             boolean stopped,
             boolean runtimeClosed,
+            boolean futureCreated,
             boolean futureCompleted,
             int mailboxReservations,
             int guestEntries,
@@ -64,11 +64,14 @@ final class FormalActorProtocolModelCheckTest {
             int replyCancellations) {
 
         static State initial() {
-            return new State(Phase.EMPTY, false, false, false, 0, 0, 0, 0);
+            return new State(Phase.EMPTY, false, false, false, false, 0, 0, 0, 0);
         }
 
         boolean terminal() {
-            return phase == Phase.REPLIED || phase == Phase.CANCELLED;
+            return stopped
+                    || runtimeClosed
+                    || phase == Phase.REPLIED
+                    || phase == Phase.CANCELLED;
         }
 
         State withPhase(Phase next) {
@@ -76,6 +79,7 @@ final class FormalActorProtocolModelCheckTest {
                     next,
                     stopped,
                     runtimeClosed,
+                    futureCreated,
                     futureCompleted,
                     mailboxReservations,
                     guestEntries,
@@ -156,6 +160,7 @@ final class FormalActorProtocolModelCheckTest {
                         false,
                         false,
                         false,
+                        false,
                         1,
                         s.guestEntries(),
                         0,
@@ -169,6 +174,7 @@ final class FormalActorProtocolModelCheckTest {
                         Phase.REQUEST_RUNNING,
                         false,
                         false,
+                        s.futureCreated(),
                         s.futureCompleted(),
                         0,
                         s.guestEntries() + 1,
@@ -183,6 +189,7 @@ final class FormalActorProtocolModelCheckTest {
                         Phase.REPLIED,
                         false,
                         false,
+                        s.futureCreated(),
                         s.futureCompleted(),
                         0,
                         s.guestEntries(),
@@ -193,7 +200,16 @@ final class FormalActorProtocolModelCheckTest {
                 if (s.phase() != Phase.REQUEST_RUNNING || s.stopped() || s.runtimeClosed()) {
                     yield Optional.empty();
                 }
-                yield Optional.of(s.withPhase(Phase.FUTURE_PENDING));
+                yield Optional.of(new State(
+                        Phase.FUTURE_PENDING,
+                        false,
+                        false,
+                        true,
+                        false,
+                        0,
+                        s.guestEntries(),
+                        s.replyCompletions(),
+                        s.replyCancellations()));
             }
             case COMPLETE_FUTURE -> {
                 if (s.phase() != Phase.FUTURE_PENDING || s.futureCompleted()) {
@@ -203,6 +219,7 @@ final class FormalActorProtocolModelCheckTest {
                         s.phase(),
                         s.stopped(),
                         s.runtimeClosed(),
+                        s.futureCreated(),
                         true,
                         s.mailboxReservations(),
                         s.guestEntries(),
@@ -221,6 +238,7 @@ final class FormalActorProtocolModelCheckTest {
                         false,
                         false,
                         true,
+                        true,
                         1,
                         s.guestEntries(),
                         s.replyCompletions(),
@@ -237,6 +255,7 @@ final class FormalActorProtocolModelCheckTest {
                         false,
                         false,
                         true,
+                        true,
                         0,
                         s.guestEntries() + 1,
                         s.replyCompletions() + 1,
@@ -244,11 +263,24 @@ final class FormalActorProtocolModelCheckTest {
             }
             case STOP_ACTOR -> {
                 if (s.stopped()) yield Optional.empty();
+                if (s.phase() == Phase.EMPTY) {
+                    yield Optional.of(new State(
+                            Phase.EMPTY,
+                            true,
+                            s.runtimeClosed(),
+                            s.futureCreated(),
+                            s.futureCompleted(),
+                            0,
+                            s.guestEntries(),
+                            s.replyCompletions(),
+                            s.replyCancellations()));
+                }
                 if (s.phase() == Phase.REPLIED) {
                     yield Optional.of(new State(
                             Phase.REPLIED,
                             true,
                             s.runtimeClosed(),
+                            s.futureCreated(),
                             s.futureCompleted(),
                             0,
                             s.guestEntries(),
@@ -260,6 +292,7 @@ final class FormalActorProtocolModelCheckTest {
                             Phase.CANCELLED,
                             true,
                             s.runtimeClosed(),
+                            s.futureCreated(),
                             s.futureCompleted(),
                             0,
                             s.guestEntries(),
@@ -270,6 +303,7 @@ final class FormalActorProtocolModelCheckTest {
                         Phase.CANCELLED,
                         true,
                         s.runtimeClosed(),
+                        s.futureCreated(),
                         s.futureCompleted(),
                         0,
                         s.guestEntries(),
@@ -278,11 +312,24 @@ final class FormalActorProtocolModelCheckTest {
             }
             case CLOSE_RUNTIME -> {
                 if (s.runtimeClosed()) yield Optional.empty();
+                if (s.phase() == Phase.EMPTY) {
+                    yield Optional.of(new State(
+                            Phase.EMPTY,
+                            true,
+                            true,
+                            s.futureCreated(),
+                            s.futureCompleted(),
+                            0,
+                            s.guestEntries(),
+                            s.replyCompletions(),
+                            s.replyCancellations()));
+                }
                 if (s.phase() == Phase.REPLIED) {
                     yield Optional.of(new State(
                             Phase.REPLIED,
                             true,
                             true,
+                            s.futureCreated(),
                             s.futureCompleted(),
                             0,
                             s.guestEntries(),
@@ -294,6 +341,7 @@ final class FormalActorProtocolModelCheckTest {
                             Phase.CANCELLED,
                             true,
                             true,
+                            s.futureCreated(),
                             s.futureCompleted(),
                             0,
                             s.guestEntries(),
@@ -304,6 +352,7 @@ final class FormalActorProtocolModelCheckTest {
                         Phase.CANCELLED,
                         true,
                         true,
+                        s.futureCreated(),
                         s.futureCompleted(),
                         0,
                         s.guestEntries(),
@@ -311,11 +360,14 @@ final class FormalActorProtocolModelCheckTest {
                         s.replyCancellations() + 1));
             }
             case LATE_COMPLETE -> {
-                if (!s.terminal() || s.futureCompleted()) yield Optional.empty();
+                if (!s.terminal() || !s.futureCreated() || s.futureCompleted()) {
+                    yield Optional.empty();
+                }
                 yield Optional.of(new State(
                         s.phase(),
                         s.stopped(),
                         s.runtimeClosed(),
+                        true,
                         true,
                         s.mailboxReservations(),
                         s.guestEntries(),
@@ -336,6 +388,9 @@ final class FormalActorProtocolModelCheckTest {
                 queued ? 1 : 0,
                 state.mailboxReservations(),
                 "mailbox reservation must exactly match a queued request/continuation");
+
+        assertFalse(state.futureCompleted() && !state.futureCreated(),
+                "a Future cannot complete before it exists");
 
         assertTrue(
                 state.replyCompletions() + state.replyCancellations() <= 1,
@@ -366,6 +421,10 @@ final class FormalActorProtocolModelCheckTest {
     private static boolean canReachTerminal(State start, List<Edge> edges) {
         Map<State, List<State>> adjacency = new HashMap<>();
         for (Edge edge : edges) {
+            if (edge.action() == Action.STOP_ACTOR
+                    || edge.action() == Action.CLOSE_RUNTIME) {
+                continue;
+            }
             adjacency.computeIfAbsent(edge.from(), ignored -> new ArrayList<>()).add(edge.to());
         }
 
