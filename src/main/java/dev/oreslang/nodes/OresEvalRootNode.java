@@ -4875,6 +4875,18 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.Proxy<?> proxy,
                 List<Object> args,
                 Env env) {
+            Ast.MemberExpr member = (Ast.MemberExpr) call.callee();
+            if (member.member().equals("dispose")) {
+                if (call.typeArgumentsPresent() || !args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Proxy<T>.dispose() takes no arguments or type arguments");
+                }
+                return invokableInvocation(ignored -> {
+                    proxy.close();
+                    return null;
+                }, List.of());
+            }
+
             Invocation inner = proxy.read(raw ->
                     prepareInvocationEvaluated(call, raw, args, env));
 
