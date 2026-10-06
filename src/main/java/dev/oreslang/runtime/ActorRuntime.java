@@ -2204,7 +2204,50 @@ public final class ActorRuntime implements AutoCloseable {
         if (Thread.currentThread().isInterrupted()) {
             throw new ActorCancellationSignal("actor execution interrupted");
         }
+        if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
+            if (--cell.untrustedFuelRemaining < 0) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.FUEL,
+                        "untrusted actor exhausted its execution fuel");
+            }
+            long wallBudget = cell.policy.maxWallTime().toNanos();
+            if (System.nanoTime() - cell.turnStartedWallNanos > wallBudget) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                        "untrusted actor exceeded its wall-time budget");
+            }
+            long cpuNow = currentThreadCpuNanos();
+            if (cpuNow >= 0 && cell.turnStartedCpuNanos >= 0
+                    && cpuNow - cell.turnStartedCpuNanos > wallBudget) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                        "untrusted actor exceeded its CPU-time budget");
+            }
+            if (++cell.untrustedSafepoints % UNTRUSTED_YIELD_QUANTUM == 0) {
+                Thread.yield();
+            }
+            return;
+        }
         Thread.yield();
+    }
+
+    private static long currentThreadCpuNanos() {
+        if (!THREAD_MX_BEAN.isCurrentThreadCpuTimeSupported()
+                || !THREAD_MX_BEAN.isThreadCpuTimeEnabled()) {
+            return -1L;
+        }
+        return THREAD_MX_BEAN.getCurrentThreadCpuTime();
+    }
+
+    private static long untrustedFuelBudget(IsolatePolicy policy) {
+        long millis = Math.max(1L, policy.maxWallTime().toMillis());
+        try {
+            return Math.max(
+                    UNTRUSTED_MIN_FUEL,
+                    Math.multiplyExact(millis, UNTRUSTED_FUEL_PER_MILLI));
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 
     static final class ActorGroupEventReservation implements AutoCloseable {
@@ -2652,6 +2695,50 @@ public final class ActorRuntime implements AutoCloseable {
     private void abortSharedMutexBindings(List<OresMutex.Shared<?>> reservations) {
         for (int i = reservations.size() - 1; i >= 0; i--) {
             reservations.get(i).abortRuntimePublication(this);
+        }
+    }
+
+    private static void rejectUntrustedInboundCapabilities(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value)) return;
+        if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof Shared<?>
+                || value instanceof SyncCell<?>
+                || value instanceof OresMutex.Lock<?>
+                || value instanceof OresMutex.Guard<?>) {
+            throw new SecurityException(
+                    "untrusted actors accept data-only messages; live capabilities are forbidden");
+        }
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException(
+                    "cyclic values cannot cross an untrusted actor boundary");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) {
+                    rejectUntrustedInboundCapabilities(item, visiting, depth + 1);
+                }
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) {
+                    rejectUntrustedInboundCapabilities(item, visiting, depth + 1);
+                }
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectUntrustedInboundCapabilities(entry.getKey(), visiting, depth + 1);
+                    rejectUntrustedInboundCapabilities(entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = java.lang.reflect.Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    rejectUntrustedInboundCapabilities(
+                            java.lang.reflect.Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
         }
     }
 
