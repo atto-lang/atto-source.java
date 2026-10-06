@@ -1000,6 +1000,10 @@ public final class OwnershipChecker {
 
                 boolean mutableReceiver = requiresMutableReceiver(method);
                 ValueInfo receiver = checkExpr(member.receiver(), scope, false);
+                if (receiver.kind == ValueKind.PROXY && method.async()) {
+                    throw error("async method '" + method.name()
+                            + "' cannot execute through rt proxy; a thread RW-lock cannot safely span suspension");
+                }
                 VarState receiverOwner = receiver.borrowSource != null
                         ? receiver.borrowSource
                         : projectionOwner(member.receiver(), scope);
