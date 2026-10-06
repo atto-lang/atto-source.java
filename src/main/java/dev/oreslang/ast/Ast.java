@@ -395,7 +395,10 @@ public final class Ast {
             Expr iterable,
             boolean asyncIteration,
             List<Stmt> body) implements Stmt {
-        public ForOfStmt { body = List.copyOf(body); }
+        public ForOfStmt {
+            body = List.copyOf(body);
+            requireForOfBindingKind(bindingKind);
+        }
         public ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) {
             this(bindingKind, bindingName, iterable, false, body);
         }
@@ -409,12 +412,23 @@ public final class Ast {
         public ForOfDestructureStmt {
             bindings = List.copyOf(bindings);
             body = List.copyOf(body);
-            if (bindings.isEmpty()) {
-                throw new IllegalArgumentException("for-of destructure pattern cannot be empty");
+            if (bindings.isEmpty()) throw new IllegalArgumentException("for-of destructure pattern cannot be empty");
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (DestructureBinding binding : bindings) {
+                if (binding.isDiscard()) continue;
+                requireForOfBindingKind(binding.kind());
+                if (!names.add(binding.name())) throw new IllegalArgumentException(
+                        "duplicate binding '" + binding.name() + "' in for-of destructure pattern");
             }
         }
         public ForOfDestructureStmt(List<DestructureBinding> bindings, Expr iterable, List<Stmt> body) {
             this(bindings, iterable, false, body);
+        }
+    }
+
+    private static void requireForOfBindingKind(BindingKind kind) {
+        if (kind != BindingKind.CONST && kind != BindingKind.LET) {
+            throw new IllegalArgumentException("for-of bindings require const or let");
         }
     }
 

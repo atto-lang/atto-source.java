@@ -937,9 +937,13 @@ public final class Parser {
     private Ast.Stmt parseFor(boolean asyncIteration) {
         if (!match(LPAREN)) {
             if (looksLikeUnparenthesizedForOf()) {
-                Ast.BindingKind kind = isBindingKind(peek().type())
-                        ? parseBindingKind()
-                        : Ast.BindingKind.VAL;
+                if (!isBindingKind(peek().type())) {
+                    throw forOfUndeclaredBindingError();
+                }
+                Ast.BindingKind kind = parseForOfBindingKind();
+                if (looksLikeTypedForOfBinding()) {
+                    throw typedForOfBindingError();
+                }
                 if (looksLikeForOfDestructurePattern()) {
                     List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
                     consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
@@ -955,6 +959,10 @@ public final class Parser {
             if (asyncIteration) {
                 throw error(peek(), "'for await' requires iterator syntax: for await x of asyncIterable");
             }
+            if (looksLikeTypedForOfBinding()) {
+                throw typedForOfUndeclaredBindingError();
+            }
+
             Ast.Stmt initializer = parseUnparenthesizedForInitializer();
             consume(SEMICOLON, "expected ';' after for initializer");
             Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
@@ -965,7 +973,12 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
+            if (looksLikeTypedForOfBinding()) {
+                requireForOfBindingKind(kind);
+                throw typedForOfBindingError();
+            }
             if (check(LBRACKET)) {
+                requireForOfBindingKind(kind);
                 List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
                 consume(OF, "expected 'of' after for-of destructure pattern");
                 Ast.Expr iterable = parseExpression();
@@ -973,6 +986,7 @@ public final class Parser {
                 return new Ast.ForOfDestructureStmt(bindings, iterable, asyncIteration, parseLoopBody());
             }
             if (check(IDENT) && checkNext(OF)) {
+                requireForOfBindingKind(kind);
                 String name = advance().lexeme();
                 consume(OF, "expected 'of' in for-of loop");
                 Ast.Expr iterable = parseExpression();
@@ -1001,24 +1015,15 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
-        if (looksLikeForOfDestructurePattern()) {
-            List<Ast.DestructureBinding> bindings = parseForSequenceBindings(Ast.BindingKind.VAL);
-            consume(OF, "expected 'of' after for-of destructure pattern");
-            Ast.Expr iterable = parseExpression();
-            consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfDestructureStmt(bindings, iterable, asyncIteration, parseLoopBody());
-        }
-
-        if (check(IDENT) && checkNext(OF)) {
-            String name = advance().lexeme();
-            consume(OF, "expected 'of' in for-of loop");
-            Ast.Expr iterable = parseExpression();
-            consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, asyncIteration, parseLoopBody());
+        if (looksLikeTypedForOfBinding()) {
+            throw typedForOfUndeclaredBindingError();
         }
 
         if (asyncIteration) {
-            throw error(peek(), "'for await' requires iterator syntax: for await (x of asyncIterable)");
+            if (looksLikeForOfDestructurePattern() || (check(IDENT) && checkNext(OF))) {
+                throw forOfUndeclaredBindingError();
+            }
+            throw error(peek(), "'for await' requires iterator syntax: for await (const x of asyncIterable)");
         }
 
         if (looksLikeTypedForInitializer()) {
@@ -1038,6 +1043,14 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
+        if (looksLikeForOfDestructurePattern()) {
+            throw forOfUndeclaredBindingError();
+        }
+
+        if (check(IDENT) && checkNext(OF)) {
+            throw forOfUndeclaredBindingError();
+        }
+
         Ast.Stmt initializer = null;
         if (!check(SEMICOLON)) initializer = new Ast.ExprStmt(parseExpression());
         consume(SEMICOLON, "expected ';' after for initializer");
@@ -1051,12 +1064,47 @@ public final class Parser {
     private boolean looksLikeUnparenthesizedForOf() {
         int mark = current;
         try {
-            if (isBindingKind(peek().type())) parseBindingKind();
+            if (isBindingKind(peek().type())) {
+                parseBindingKind();
+                if (looksLikeTypedForOfBinding()) return true;
+            }
             if (looksLikeForOfDestructurePattern()) return true;
             return check(IDENT) && checkNext(OF);
         } finally {
             current = mark;
         }
+    }
+
+    private boolean looksLikeTypedForOfBinding() {
+        int mark = current;
+        try {
+            parseTypeRef();
+            return check(IDENT) && checkNext(OF);
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private IllegalArgumentException typedForOfBindingError() {
+        return error(peek(),
+                "for-of element types are inferred; use 'for const name of iterable' or "
+                        + "'for let name of iterable' and constrain/cast the iterable instead");
+    }
+
+    private IllegalArgumentException typedForOfUndeclaredBindingError() {
+        int mark = current;
+        Token name;
+        try {
+            parseTypeRef();
+            name = consume(IDENT, "expected iterator binding name after type");
+        } finally {
+            current = mark;
+        }
+        return error(name,
+                "variable used before declared '" + name.lexeme()
+                        + "'; for-of bindings require 'const' or 'let'");
     }
 
     private boolean looksLikeForOfDestructurePattern() {
@@ -1139,15 +1187,23 @@ public final class Parser {
         consume(LBRACKET, "expected '[' to start for-of destructure pattern");
         if (check(RBRACKET)) throw error(peek(), "for-of destructure pattern cannot be empty");
 
+        if (inheritedKind == null) {
+            throw forOfUndeclaredBindingError();
+        }
+
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
-        Ast.BindingKind currentKind = inheritedKind == null ? Ast.BindingKind.VAL : inheritedKind;
+        java.util.Set<String> names = new java.util.HashSet<>();
+        Ast.BindingKind currentKind = inheritedKind;
         do {
-            if (isBindingKind(peek().type())) currentKind = parseBindingKind();
+            if (isBindingKind(peek().type())) currentKind = parseForOfBindingKind();
             if (isDiscardToken(peek())) {
                 advance();
                 bindings.add(Ast.DestructureBinding.discard());
             } else {
                 String name = consume(IDENT, "expected binding name in for-of destructure pattern").lexeme();
+                if (!names.add(name)) {
+                    throw error(previous(), "duplicate binding '" + name + "' in for-of destructure pattern");
+                }
                 bindings.add(new Ast.DestructureBinding(currentKind, name));
             }
         } while (match(COMMA));
@@ -1929,6 +1985,25 @@ public final class Parser {
         if (match(VAL)) return Ast.BindingKind.VAL;
         if (match(LET)) return Ast.BindingKind.LET;
         throw error(peek(), "expected const, val, or let");
+    }
+
+    private Ast.BindingKind parseForOfBindingKind() {
+        Ast.BindingKind kind = parseBindingKind();
+        requireForOfBindingKind(kind);
+        return kind;
+    }
+
+    private void requireForOfBindingKind(Ast.BindingKind kind) {
+        if (kind == Ast.BindingKind.VAL) {
+            throw error(previous(), "for-of bindings require 'const' or 'let'; 'val' is not permitted");
+        }
+    }
+
+    private IllegalArgumentException forOfUndeclaredBindingError() {
+        String subject = check(IDENT) ? " '" + peek().lexeme() + "'" : "";
+        return error(peek(),
+                "variable used before declared" + subject
+                        + "; for-of bindings require 'const' or 'let'");
     }
 
     private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }

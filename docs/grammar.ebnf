@@ -191,11 +191,12 @@ for_init        = binding_kind [ type_ref ] IDENT "=" expression
                 | expression ;
 for_update      = IDENT ( "++" | "--" ) | expression ;
 
-for_of_head     = [ binding_kind ] for_of_pattern "of" expression ;
+for_of_head     = for_of_binding for_of_pattern "of" expression ;
+for_of_binding  = "const" | "let" ;
 for_of_pattern  = IDENT
                 | "[" for_of_destructure_item { "," for_of_destructure_item } "]" ;
 for_of_destructure_item
-                = "_" | [ binding_kind ] IDENT ;
+                = "_" | [ for_of_binding ] IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
@@ -308,14 +309,23 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      Postfix ++/-- are currently update-clause syntax and lower to +=/-= one
      for that simple local binding; they are not general field/index postfix
      expressions.
-   - for-of sequence patterns default bindings to val. An outer binding kind
-     (for example "for let [k, v] of entries") seeds the pattern; an explicit
-     binding kind inside the pattern propagates to subsequent names exactly as
-     in ordinary sequence destructuring. "_" discards one sequence position.
+   - for-of bindings are always declarations and must explicitly use const or
+     let. "for const x of iterable" is canonical for read-only iteration;
+     "for let x of iterable" permits rebinding the per-iteration local. Sequence
+     patterns require the same outer binder, for example
+     "for const [k, v] of entries". An explicit const/let inside the pattern may
+     change the binding kind for subsequent names. "_" discards one sequence
+     position. Bare forms such as "for x of iterable" are compile errors with
+     "variable used before declared"; val is not a for-of binding kind.
+     const is compiler-initialized once per iteration and makes that iteration
+     slot immutable; it does not require the produced element to be a
+     compile-time constant. Parentheses may fence the complete for-of header
+     but do not relax the declaration rule. Element types are inferred; typed
+     for-of binders are intentionally not part of the current grammar.
    - "loop" accepts either "{ ... }" or "do ... done". Iterator and
      conventional for-loops accept the same body forms. The canonical iterator
-     shorthand is "for x of iterable do ... done"; parenthesized headers remain
-     valid for compatibility. A bare done closes a do-body, while done(...)
+     shorthand is "for const x of iterable do ... done"; parenthesized headers
+     remain valid. A bare done closes a do-body, while done(...)
      remains a callable invocation.
      break exits and continue advances the nearest enclosing loop/for; return
      still exits the enclosing callable. Loop control never crosses a callable

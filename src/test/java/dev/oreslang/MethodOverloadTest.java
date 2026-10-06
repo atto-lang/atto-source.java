@@ -998,7 +998,7 @@ final class MethodOverloadTest {
 
                 pub routine main(): void {
                   val bag = new m.Bag();
-                  for (val item of bag) {
+                  for (const item of bag) {
                     stdio.stdout.write(item);
                   }
                 }
