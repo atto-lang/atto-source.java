@@ -1186,7 +1186,9 @@ public final class ActorRuntime implements AutoCloseable {
                 sharedProxies.add(child);
                 if (proxyClosed.get() || closed.get()) {
                     unregisterProxyView(child);
-                    child.closeFromRuntime();
+                    sharedProxies.remove(child);
+                    child.proxyClosed.set(true);
+                    child.retireTarget(true);
                     throw new IllegalStateException("rt proxy is closed");
                 }
                 return child;
