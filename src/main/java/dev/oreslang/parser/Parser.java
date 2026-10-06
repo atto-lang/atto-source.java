@@ -1043,25 +1043,106 @@ public final class Parser {
                 while (match(COMMA)) args.add(parseTypeRef());
                 consume(GT, "expected '>' after type arguments");
             } else {
+                boolean intrinsicSequence = isIntrinsicSequenceTypeName(name);
+                boolean namedSeen = false;
                 do {
                     if (check(IDENT) && checkNext(EQUAL)) {
+                        namedSeen = true;
                         String parameterName = advance().lexeme();
                         consume(EQUAL, "expected '=' after named type parameter");
                         args.add(Ast.TypeRef.namedParameter(parameterName, parseMetaValue()));
                     } else {
-                        args.add(parseTypeRef());
+                        if (intrinsicSequence && namedSeen) {
+                            throw error(peek(),
+                                    "positional type parameters cannot follow named type parameters");
+                        }
+                        args.add(intrinsicSequence ? parseMetaValue() : parseTypeRef());
                     }
                 } while (match(COMMA));
                 consume(GT, "expected '>' after type arguments / named parameters");
             }
         }
 
-        args = canonicalizeNamedParameters(args);
+        args = isIntrinsicSequenceTypeName(name)
+                ? canonicalizeIntrinsicSequenceTypeParameters(name, args)
+                : canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
             args.add(parseSequenceShapeDimension());
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private boolean isIntrinsicSequenceTypeName(String name) {
+        return java.util.Set.of(
+                "Array", "List", "Vector", "Slice",
+                "Tuple", "FixedArray", "FixedList").contains(name);
+    }
+
+    /**
+     * Intrinsic collection angle parameters are a real parameter list, not a
+     * bag of unrelated generic values. Positional parameters bind to the same
+     * schema as named parameters, just like call-site named arguments.
+     *
+     * Current common schema:
+     *   type, size, align, allocator, growth_policy,
+     *   inline_capacity, max_capacity, storage, rank
+     */
+    private List<Ast.TypeRef> canonicalizeIntrinsicSequenceTypeParameters(
+            String typeName,
+            List<Ast.TypeRef> args) {
+        List<String> schema = List.of(
+                "type",
+                "size",
+                "align",
+                "allocator",
+                "growth_policy",
+                "inline_capacity",
+                "max_capacity",
+                "storage",
+                "rank");
+
+        List<Ast.TypeRef> normalized = new ArrayList<>();
+        java.util.Set<String> supplied = new java.util.HashSet<>();
+        int positionalIndex = 0;
+
+        for (Ast.TypeRef arg : args) {
+            if (arg.isNamedParameter()) {
+                String name = arg.namedParameterName();
+                if (!schema.contains(name)) {
+                    // Preserve the existing checker-level diagnostic for
+                    // unsupported named metadata, but still catch duplicates
+                    // and positional/name collisions here.
+                    if (!supplied.add(name)) {
+                        throw error(previous(), "duplicate named type parameter '" + name + "'");
+                    }
+                    normalized.add(arg);
+                    continue;
+                }
+                if (!supplied.add(name)) {
+                    throw error(previous(), "type parameter '" + name + "' is supplied more than once");
+                }
+                normalized.add(arg);
+                continue;
+            }
+
+            while (positionalIndex < schema.size()
+                    && supplied.contains(schema.get(positionalIndex))) {
+                positionalIndex++;
+            }
+            if (positionalIndex >= schema.size()) {
+                throw error(previous(),
+                        typeName + " received too many positional type parameters");
+            }
+            String parameterName = schema.get(positionalIndex++);
+            if (!supplied.add(parameterName)) {
+                throw error(previous(),
+                        "type parameter '" + parameterName + "' is supplied more than once");
+            }
+            normalized.add(Ast.TypeRef.namedParameter(parameterName, arg));
+        }
+
+        return canonicalizeNamedParameters(normalized);
     }
 
     private Ast.TypeRef parseMetaValue() {
