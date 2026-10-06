@@ -340,11 +340,13 @@ no precedence rule.
 
 For runtime-extent collections, current `size` and `capacity` are not
 properties of the type. They belong to runtime construction. Fixed-extent
-sequences are different: the extent is encoded structurally in the sequence
-shape, and `size=N` is also allowed as a redundant compile-time assertion.
-When both are present, the compiler must prove they agree. This redundancy is
-intentional because it can make layout-heavy APIs and generated types more
-self-describing.
+sequences are different: `size=N` is compile-time extent metadata.
+
+When the bracketed shape is already finite, `size=N` is a checked redundant
+assertion and must equal the expanded arity. When the bracketed shape contains
+an unbounded `...` repetition, `size=N` closes that repetition into a
+finite fixed layout and is therefore semantically required rather than
+redundant.
 
 ```ores
 // runtime-extent policy: size/capacity are constructor state
@@ -363,14 +365,21 @@ val pair: Tuple<
 >[int, string] = (7, "seven");
 
 val fixed: FixedArray<size=4, align=32>[4 of int] = [1, 2, 3, 4];
+
+// size closes an otherwise unbounded repeating shape.
+// The six-slot unit repeats cyclically and is truncated at exactly 21 slots.
+val patterned: FixedArray<size=21>[
+    ...(3 of int, 3 of string)
+];
 ```
 
 `capacity=N` remains runtime state and is not accepted as type metadata.
-Fixed-only `size=N` is a first-class redundant compile-time assertion. The
-bracketed shape defines the concrete positional structure, and `size=N`
-must equal its expanded arity. `growth_policy` on a tuple/fixed sequence
-describes backing-storage or construction policy only; it never makes the
-logical arity resizable.
+Fixed-only `size=N` is first-class compile-time extent metadata. With a
+finite bracket shape it acts as a consistency assertion; with an unbounded
+`...` shape it supplies the terminating extent. Repeating groups are expanded
+cyclically until exactly `size` slots exist, so the final cycle may be
+truncated. `growth_policy` on a tuple/fixed sequence describes backing-storage
+or construction policy only; it never makes the logical arity resizable.
 `inline_capacity` and `max_capacity`, when present on a fixed sequence,
 must be at least its exact arity.
 
