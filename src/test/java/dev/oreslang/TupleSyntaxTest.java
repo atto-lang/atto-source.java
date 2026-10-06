@@ -181,10 +181,15 @@ final class TupleSyntaxTest {
                   return new Tuple("one");
                 }
 
+                fnc oneKeyword(): Tuple[string] {
+                  return tuple ("keyword");
+                }
+
                 pub fnc main(): void {
-                  const (value) = "grouped";
                   val one: Tuple[string] = new Tuple("one");
+                  val two: Tuple[string] = oneKeyword();
                   stdio.println(one[0]);
+                  stdio.println(two[0]);
                   return;
                 }
                 """)));
@@ -197,6 +202,16 @@ final class TupleSyntaxTest {
                         }
                         """));
         assertTrue(shorthand.getMessage().contains("singleton tuple type shorthand"));
+
+        IllegalArgumentException destructure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub fnc bad(): void {
+                          const (value) = new Tuple("one");
+                          return;
+                        }
+                        """));
+        assertTrue(destructure.getMessage().contains("singleton parenthesized destructuring"));
     }
 
     @Test
