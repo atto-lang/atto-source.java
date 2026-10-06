@@ -1600,10 +1600,28 @@ public final class Parser {
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
 
         if (match(NB)) {
+            if (match(CB)) {
+                if (!match(WRITECH)) {
+                    throw error(previous(), "'nb cb' must prefix writech");
+                }
+                Ast.ChannelOpExpr operation =
+                        (Ast.ChannelOpExpr) parseChannelOperation(
+                                Ast.ChannelOperation.WRITE,
+                                Ast.WaitMode.NONBLOCKING);
+                consume(PIPE, "channel callback requires '|| -> { ... }'");
+                consume(PIPE, "channel callback requires '|| -> { ... }'");
+                consume(ARROW, "channel callback requires '|| -> { ... }'");
+                return new Ast.ChannelOpExpr(
+                        operation.operation(),
+                        operation.mode(),
+                        operation.channel(),
+                        operation.value(),
+                        parseBlock());
+            }
             if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.NONBLOCKING);
             if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.NONBLOCKING);
             if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
-            throw error(previous(), "'nb' must prefix readch, writech, or select");
+            throw error(previous(), "'nb' must prefix readch, writech, select, or cb writech");
         }
 
         if (check(TRY) && current + 1 < tokens.size()) {
