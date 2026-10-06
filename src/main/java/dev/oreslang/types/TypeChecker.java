@@ -127,6 +127,10 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Tuple")) {
+                        throw new IllegalArgumentException(
+                                "Tuple is a final built-in value class and cannot be redefined");
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
@@ -756,6 +760,10 @@ public final class TypeChecker {
 
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
+            if (parent.name().equals("Tuple")) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name() + "' cannot extend final built-in class 'Tuple'");
+            }
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
             if (parent.name().equals("Object") || parent.name().equals("List")) {
                 if (parent.inferArguments() || !parent.arguments().isEmpty()) {
@@ -1463,6 +1471,25 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "spread arguments require a variadic callable; fixed-arity Oreslang callables do not accept dynamic spread");
             }
+            if (call.callee() instanceof Ast.MemberExpr equalityCall
+                    && equalityCall.member().equals("isEqualsTo")) {
+                Type receiverType = receiverDispatchType(
+                        deref(typeOf(equalityCall.receiver(), env, generics, self)));
+                if (receiverType instanceof ListType || receiverType instanceof Tuple) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "isEqualsTo does not accept call-site type arguments");
+                    }
+                    if (call.arguments().size() != 1
+                            || call.arguments().getFirst() instanceof Ast.NamedArgExpr) {
+                        throw new IllegalArgumentException(
+                                "isEqualsTo expects exactly one positional argument");
+                    }
+                    Type otherType = typeOf(call.arguments().getFirst(), env, generics, self);
+                    requireEqualityComparable(receiverType, otherType);
+                    return Primitive.BOOL;
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -2011,6 +2038,10 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if ((sumReceiver instanceof ListType || sumReceiver instanceof Tuple)
+                    && member.member().equals("isEqualsTo")) {
+                return new Function(List.of(Unknown.INSTANCE), Primitive.BOOL);
+            }
             Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
             if (iteratorMember != null) return iteratorMember;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
@@ -4286,6 +4317,10 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {
+        if (parentRef.name().equals("Tuple")) {
+            throw new IllegalArgumentException(
+                    "class '" + child.name() + "' cannot extend final built-in class 'Tuple'");
+        }
         if (parentRef.name().equals("Object") || parentRef.name().equals("List")) return null;
         if (parentRef.name().equals("obj") || parentRef.name().equals("arr")) throw new IllegalArgumentException("inline obj/arr values cannot be subclassed; extend Object or List instead");
         Ast.ClassDecl parent = findClass(parentRef.name());
