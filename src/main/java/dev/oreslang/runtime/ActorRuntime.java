@@ -3371,7 +3371,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         boolean dispatchersTerminated = true;
-        for (ExecutorService dispatcher : List.of(privateDispatcher, sharedDispatcher)) {
+        for (ExecutorService dispatcher : List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0) {
                 dispatchersTerminated = false;
