@@ -1461,8 +1461,13 @@ public final class Parser {
 
     private Ast.Expr parseEquality() {
         Ast.Expr expr = parseComparison();
-        while (match(EQUAL_EQUAL, BANG_EQUAL)) {
-            String op = previous().lexeme();
+        while (true) {
+            String op;
+            if (match(EQ, EQUAL_EQUAL)) op = "eq";
+            else if (match(NEQ, BANG_EQUAL)) op = "neq";
+            else if (matchAdjacentBangEqKeyword()) op = "neq";
+            else if (!suppressRefinementOperators && match(IS)) op = "is";
+            else break;
             expr = new Ast.BinaryExpr(op, expr, parseComparison());
         }
         return expr;
@@ -1476,7 +1481,9 @@ public final class Parser {
                 expr = new Ast.BinaryExpr(op, expr, parseShift());
                 continue;
             }
-            if (!suppressRefinementOperators && match(IS)) {
+            if (!suppressRefinementOperators && check(IS) && checkNext(TYPE)) {
+                advance();
+                consume(TYPE, "expected 'type' after 'is' in a nominal type test");
                 Ast.TypeRef target = parseTypeRef();
                 String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
                 expr = new Ast.TypeTestExpr(expr, target, binding);
@@ -1657,7 +1664,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, FIRST, TYPE, TYPES, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, TYPE, TYPES, TYPEOF,
                     INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -1862,6 +1869,16 @@ public final class Parser {
             if (check(type)) { advance(); return true; }
         }
         return false;
+    }
+
+    private boolean matchAdjacentBangEqKeyword() {
+        if (current + 1 >= tokens.size()) return false;
+        Token bang = tokens.get(current);
+        Token eq = tokens.get(current + 1);
+        if (bang.type() != BANG || eq.type() != EQ || !adjacent(bang, eq)) return false;
+        advance();
+        advance();
+        return true;
     }
 
     private Token consume(Token.Type type, String message) {
