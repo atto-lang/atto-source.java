@@ -3417,6 +3417,10 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeTurns;
         private boolean carrierActive;
         private boolean finalized;
+        private long turnStartedWallNanos;
+        private long turnStartedCpuNanos = -1L;
+        private long untrustedFuelRemaining;
+        private long untrustedSafepoints;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -3437,7 +3441,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ? Integer.MAX_VALUE
                     : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
             this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
-            this.memorySlice = kind == ActorKind.PRIVATE
+            this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
         }
@@ -3651,6 +3655,13 @@ public final class ActorRuntime implements AutoCloseable {
             boolean turnActive = beginTurn();
             try {
                 if (!turnActive) return;
+
+                if (kind == ActorKind.UNTRUSTED) {
+                    turnStartedWallNanos = System.nanoTime();
+                    turnStartedCpuNanos = currentThreadCpuNanos();
+                    untrustedFuelRemaining = untrustedFuelBudget(policy);
+                    untrustedSafepoints = 0L;
+                }
 
                 ActorContext<M> context = new ActorContext<>() {
                     @Override public ActorRef<M> self() { return ref; }
