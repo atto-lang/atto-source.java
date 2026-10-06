@@ -2194,6 +2194,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private GeneratorRuntime.AsyncGenerator<?> sourceAsyncGenerator(Object value, Env env) {
             if (value instanceof GeneratorRuntime.AsyncGenerator<?> generator) return generator;
+            if (value instanceof ChannelRuntime.Channel<?> channel) {
+                return channelAsyncIterator(channel);
+            }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass,
                         CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
