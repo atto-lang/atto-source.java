@@ -640,14 +640,23 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            checkExpr(member.receiver(), scope, false);
+            ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            boolean proxyReceiver = isProxyType(receiverValue.type)
+                    || isProxyReceiver(member.receiver(), scope);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+            if (concreteReceiver == null) {
+                concreteReceiver = receiverValue.type.isBorrow()
+                        ? receiverValue.type.borrowedTarget() : receiverValue.type;
+                if (isProxyType(concreteReceiver)) {
+                    concreteReceiver = concreteReceiver.arguments().getFirst();
+                }
+            }
             if (concreteReceiver != null
                     && concreteReceiver.name().equals("DynamicStruct")
                     && concreteReceiver.arguments().size() == 1) {
                 Ast.TypeRef valueType = concreteReceiver.arguments().getFirst();
                 ValueKind valueKind = kindOfType(valueType);
-                if (isProxyReceiver(member.receiver(), scope) && valueKind != ValueKind.COPY) {
+                if (proxyReceiver && valueKind != ValueKind.COPY) {
                     throw error("cannot extract move-only DynamicStruct value through rt Proxy<T>; "
                             + "return a copy/immutable snapshot or keep mutation behind the proxy");
                 }
@@ -661,7 +670,7 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
-                    if (isProxyReceiver(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
+                    if (proxyReceiver && fieldKind != ValueKind.COPY) {
                         throw error("cannot extract move-only field '" + target.owner().name() + "."
                                 + member.member()
                                 + "' through rt Proxy<T>; expose a copy/immutable snapshot or keep mutation behind proxy methods");
@@ -685,7 +694,9 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = collectionElementType(receiver.type);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (isProxyReceiver(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
+            boolean proxyReceiver = isProxyType(receiver.type)
+                    || isProxyReceiver(indexed.receiver(), scope);
+            if (proxyReceiver && elementKind != ValueKind.COPY) {
                 throw error("cannot extract move-only indexed state through rt Proxy<T>; "
                         + "return a copy/immutable snapshot or keep mutation behind the proxy");
             }
@@ -1000,13 +1011,19 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            boolean semanticProxyReceiver = isProxyType(receiverValue.type)
+                    || isProxyReceiver(member.receiver(), scope);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
             }
-            if (concreteReceiver != null
-                    && concreteReceiver.name().equals("Proxy")
+            Ast.TypeRef proxySurfaceType = concreteReceiver;
+            if (semanticProxyReceiver && isProxyType(concreteReceiver)) {
+                concreteReceiver = concreteReceiver.arguments().getFirst();
+            }
+            if (proxySurfaceType != null
+                    && proxySurfaceType.name().equals("Proxy")
                     && concreteReceiver.arguments().size() == 1
                     && member.member().equals("dispose")) {
                 if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
@@ -1022,7 +1039,7 @@ public final class OwnershipChecker {
                 if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
                     ensureMutableReceiver(member.receiver(), scope, "generated JSON setter '" + method.name() + "'");
                 }
-                boolean proxyReceiver = isProxyReceiver(member.receiver(), scope);
+                boolean proxyReceiver = semanticProxyReceiver;
                 boolean protectedReceiver = proxyReceiver;
                 if (member.receiver() instanceof Ast.NameExpr receiverName) {
                     VarState receiverState = scope.lookup(receiverName.name());
