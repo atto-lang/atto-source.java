@@ -592,6 +592,7 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private final boolean proxyAware;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -605,6 +606,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.receiver = null;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                this.proxyAware = functionUsesProxyCapability(function);
             }
 
             private SourceTask(
@@ -616,6 +618,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                this.proxyAware = methodUsesProxyCapability(method);
             }
 
             private SourceTask(List<Ast.Stmt> blockBody) {
@@ -625,6 +628,11 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.arguments = List.of();
+                // Detached callback blocks can capture a Proxy<T> through their
+                // environment snapshot even when no declaration appears in the
+                // block itself. Conservatively keep their member/index accesses
+                // on the suspendable path.
+                this.proxyAware = true;
             }
 
             @Override
@@ -847,9 +855,268 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl function,
                 Set<Object> seen) {
             if (!seen.add(function)) return false;
+            if (functionUsesProxyCapability(function)) return true;
             for (Ast.Stmt stmt : function.body()) {
                 if (statementContainsPotentialSuspension(stmt, seen)) {
                     return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean functionUsesProxyCapability(Ast.FunctionDecl function) {
+            if (typeContainsProxy(function.returnType())) return true;
+            for (Ast.Param param : function.parameters()) {
+                if (typeContainsProxy(param.type())) return true;
+            }
+            return statementsContainProxyCapability(function.body());
+        }
+
+        private boolean methodUsesProxyCapability(Ast.MethodDecl method) {
+            if (typeContainsProxy(method.returnType())
+                    || typeContainsProxy(method.explicitReceiverType())) {
+                return true;
+            }
+            for (Ast.Param param : method.parameters()) {
+                if (typeContainsProxy(param.type())) return true;
+            }
+            Ast.ClassDecl owner = declaringClass(method);
+            if (owner != null) {
+                for (Ast.FieldDecl field : owner.fields()) {
+                    if (typeContainsProxy(field.type())) return true;
+                }
+            }
+            return statementsContainProxyCapability(method.body());
+        }
+
+        private boolean typeContainsProxy(Ast.TypeRef type) {
+            if (type == null) return false;
+            if (type.name().equals("Proxy")) return true;
+            for (Ast.TypeRef argument : type.arguments()) {
+                if (typeContainsProxy(argument)) return true;
+            }
+            return false;
+        }
+
+        private boolean statementsContainProxyCapability(List<Ast.Stmt> statements) {
+            for (Ast.Stmt statement : statements) {
+                if (statementContainsProxyCapability(statement)) return true;
+            }
+            return false;
+        }
+
+        private boolean statementContainsProxyCapability(Ast.Stmt stmt) {
+            if (stmt instanceof Ast.BindingStmt binding) {
+                return typeContainsProxy(binding.declaredType())
+                        || expressionContainsProxyCapability(binding.initializer());
+            }
+            if (stmt instanceof Ast.DestructureStmt destructure) {
+                return expressionContainsProxyCapability(destructure.initializer());
+            }
+            if (stmt instanceof Ast.ReturnStmt ret) {
+                return expressionContainsProxyCapability(ret.value());
+            }
+            if (stmt instanceof Ast.YieldStmt yield) {
+                return expressionContainsProxyCapability(yield.value());
+            }
+            if (stmt instanceof Ast.ExprStmt expr) {
+                return expressionContainsProxyCapability(expr.expression());
+            }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                return expressionContainsProxyCapability(defer.expression());
+            }
+            if (stmt instanceof Ast.BlockStmt block) {
+                return statementsContainProxyCapability(block.body());
+            }
+            if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (expressionContainsProxyCapability(branch.condition())
+                            || statementsContainProxyCapability(branch.body())) return true;
+                }
+                return statementsContainProxyCapability(conditional.elseBody());
+            }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                if (expressionContainsProxyCapability(matched.subject())) return true;
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (expressionContainsProxyCapability(arm.guard())
+                            || statementsContainProxyCapability(arm.body())) return true;
+                }
+                return false;
+            }
+            if (stmt instanceof Ast.SwitchStmt switched) {
+                if (expressionContainsProxyCapability(switched.subject())) return true;
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (statementsContainProxyCapability(arm.body())) return true;
+                }
+                return statementsContainProxyCapability(switched.defaultBody());
+            }
+            if (stmt instanceof Ast.TryStmt attempted) {
+                return statementsContainProxyCapability(attempted.body())
+                        || statementsContainProxyCapability(attempted.catchBody())
+                        || statementsContainProxyCapability(attempted.finallyBody());
+            }
+            if (stmt instanceof Ast.ForOfStmt loop) {
+                return expressionContainsProxyCapability(loop.iterable())
+                        || statementsContainProxyCapability(loop.body());
+            }
+            if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+                return expressionContainsProxyCapability(loop.iterable())
+                        || statementsContainProxyCapability(loop.body());
+            }
+            if (stmt instanceof Ast.ForStmt loop) {
+                return (loop.initializer() != null && statementContainsProxyCapability(loop.initializer()))
+                        || expressionContainsProxyCapability(loop.condition())
+                        || expressionContainsProxyCapability(loop.update())
+                        || statementsContainProxyCapability(loop.body());
+            }
+            if (stmt instanceof Ast.LoopStmt loop) {
+                return statementsContainProxyCapability(loop.body());
+            }
+            return false;
+        }
+
+        private boolean expressionContainsProxyCapability(Ast.Expr expr) {
+            if (expr == null) return false;
+            if (expr instanceof Ast.CallExpr call) {
+                if (isRuntimeProxyIntrinsic(call)) return true;
+                if (call.callee() instanceof Ast.NameExpr name) {
+                    Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
+                    if (target != null && typeContainsProxy(target.returnType())) return true;
+                    if (namedImports.containsKey(name.name())) return true;
+                }
+                if (call.callee() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr namespace
+                        && namespaceImports.containsKey(namespace.name())) {
+                    return true;
+                }
+                if (expressionContainsProxyCapability(call.callee())) return true;
+                for (Ast.Expr argument : call.arguments()) {
+                    if (expressionContainsProxyCapability(argument)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.UnaryExpr unary) {
+                return expressionContainsProxyCapability(unary.operand());
+            }
+            if (expr instanceof Ast.BinaryExpr binary) {
+                return expressionContainsProxyCapability(binary.left())
+                        || expressionContainsProxyCapability(binary.right());
+            }
+            if (expr instanceof Ast.AssignExpr assignment) {
+                return expressionContainsProxyCapability(assignment.target())
+                        || expressionContainsProxyCapability(assignment.value());
+            }
+            if (expr instanceof Ast.ConditionalExpr conditional) {
+                return expressionContainsProxyCapability(conditional.condition())
+                        || expressionContainsProxyCapability(conditional.whenTrue())
+                        || expressionContainsProxyCapability(conditional.whenFalse());
+            }
+            if (expr instanceof Ast.TypeTestExpr test) {
+                return typeContainsProxy(test.targetType())
+                        || expressionContainsProxyCapability(test.value());
+            }
+            if (expr instanceof Ast.PatternTestExpr test) {
+                return expressionContainsProxyCapability(test.value());
+            }
+            if (expr instanceof Ast.CastExpr cast) {
+                return typeContainsProxy(cast.targetType())
+                        || expressionContainsProxyCapability(cast.value());
+            }
+            if (expr instanceof Ast.MemberExpr member) {
+                return expressionContainsProxyCapability(member.receiver());
+            }
+            if (expr instanceof Ast.IndexExpr index) {
+                return expressionContainsProxyCapability(index.receiver())
+                        || expressionContainsProxyCapability(index.index());
+            }
+            if (expr instanceof Ast.NewExpr created) {
+                if (typeContainsProxy(created.type())) return true;
+                for (Ast.Expr argument : created.arguments()) {
+                    if (expressionContainsProxyCapability(argument)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.ListExpr list) {
+                for (Ast.Expr item : list.elements()) {
+                    if (expressionContainsProxyCapability(item)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.TupleExpr tuple) {
+                for (Ast.Expr item : tuple.elements()) {
+                    if (expressionContainsProxyCapability(item)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField field : object.fields()) {
+                    if ((field.isDynamic()
+                                    && expressionContainsProxyCapability(field.dynamicName()))
+                            || expressionContainsProxyCapability(field.value())) return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean expressionContainsProxyLeaseCandidate(Ast.Expr expr) {
+            if (expr == null) return false;
+            if (expr instanceof Ast.MemberExpr || expr instanceof Ast.IndexExpr) return true;
+            if (expr instanceof Ast.AssignExpr assignment) {
+                return expressionContainsProxyLeaseCandidate(assignment.target())
+                        || expressionContainsProxyLeaseCandidate(assignment.value());
+            }
+            if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr) return true;
+                if (expressionContainsProxyLeaseCandidate(call.callee())) return true;
+                for (Ast.Expr argument : call.arguments()) {
+                    if (expressionContainsProxyLeaseCandidate(argument)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.UnaryExpr unary) {
+                return expressionContainsProxyLeaseCandidate(unary.operand());
+            }
+            if (expr instanceof Ast.BinaryExpr binary) {
+                return expressionContainsProxyLeaseCandidate(binary.left())
+                        || expressionContainsProxyLeaseCandidate(binary.right());
+            }
+            if (expr instanceof Ast.ConditionalExpr conditional) {
+                return expressionContainsProxyLeaseCandidate(conditional.condition())
+                        || expressionContainsProxyLeaseCandidate(conditional.whenTrue())
+                        || expressionContainsProxyLeaseCandidate(conditional.whenFalse());
+            }
+            if (expr instanceof Ast.TypeTestExpr test) {
+                return expressionContainsProxyLeaseCandidate(test.value());
+            }
+            if (expr instanceof Ast.PatternTestExpr test) {
+                return expressionContainsProxyLeaseCandidate(test.value());
+            }
+            if (expr instanceof Ast.CastExpr cast) {
+                return expressionContainsProxyLeaseCandidate(cast.value());
+            }
+            if (expr instanceof Ast.NewExpr created) {
+                for (Ast.Expr argument : created.arguments()) {
+                    if (expressionContainsProxyLeaseCandidate(argument)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.ListExpr list) {
+                for (Ast.Expr item : list.elements()) {
+                    if (expressionContainsProxyLeaseCandidate(item)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.TupleExpr tuple) {
+                for (Ast.Expr item : tuple.elements()) {
+                    if (expressionContainsProxyLeaseCandidate(item)) return true;
+                }
+                return false;
+            }
+            if (expr instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField field : object.fields()) {
+                    if ((field.isDynamic()
+                                    && expressionContainsProxyLeaseCandidate(field.dynamicName()))
+                            || expressionContainsProxyLeaseCandidate(field.value())) return true;
                 }
             }
             return false;
@@ -2386,7 +2653,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (!expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
+                                new IdentityHashMap<>()))
+                        && !(task.proxyAware
+                                && expressionContainsProxyLeaseCandidate(expr))) {
                     continuation.accept(
                             task,
                             eval(expr, env),
@@ -4037,6 +4306,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean methodContainsPotentialSuspension(
                 Ast.MethodDecl method) {
+            if (methodUsesProxyCapability(method)) return true;
             for (Ast.Stmt stmt : method.body()) {
                 if (statementContainsPotentialSuspension(
                         stmt,
