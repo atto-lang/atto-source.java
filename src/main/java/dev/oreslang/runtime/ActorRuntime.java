@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
@@ -350,6 +351,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    private final Set<Proxy<?>> sharedProxies = ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
@@ -370,6 +372,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
+    private final ThreadLocal<ReentrantReadWriteLock> currentProxyLock = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
     public ActorRuntime() {
@@ -822,6 +825,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public T snapshot() {
+            requireSharedMemoryAuthority("SyncCell.snapshot");
             rejectPrivateActorSharedMemoryAccess("SyncCell.snapshot");
             boolean entered = enterSyncCell(this);
             lock.lock();
@@ -836,6 +840,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public <R> R read(Function<? super T, ? extends R> reader) {
             Objects.requireNonNull(reader);
+            requireSharedMemoryAuthority("SyncCell.read");
             requireSharedActorTurn();
             boolean entered = enterSyncCell(this);
             lock.lock();
@@ -855,6 +860,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         public T update(UnaryOperator<T> updater) {
             Objects.requireNonNull(updater);
+            requireSharedMemoryAuthority("SyncCell.update");
             requireSharedActorTurn();
             boolean entered = enterSyncCell(this);
             lock.lock();
@@ -883,6 +889,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
+            requireSharedMemoryAuthority("SyncCell.close");
             rejectPrivateActorSharedMemoryAccess("SyncCell.close");
             boolean entered = enterSyncCell(this);
             try {
@@ -909,6 +916,268 @@ public final class ActorRuntime implements AutoCloseable {
         private void invalidateFromRuntime() {
             cellClosed.set(true);
             syncCells.remove(this);
+        }
+    }
+
+    /**
+     * Explicit synchronized shared-mutable capability created by source-level
+     * {@code rt proxy}. This is an escape hatch, not the ordinary actor memory
+     * model: normal actor state remains single-owner and mailbox-serialized.
+     *
+     * <p>The fair read/write lock belongs to the proxy, never to a carrier
+     * thread. Source code cannot unwrap the target. The compiler/evaluator uses
+     * read() for proven read-only access and write() for mutation or methods
+     * whose receiver effects are not proven read-only.</p>
+     */
+    public final class Proxy<T> implements AutoCloseable {
+        private static final long HANDLE_BYTES = 96L;
+
+        /**
+         * Semantic allocation provenance for the synchronized target.
+         *
+         * <p>Once rt proxy consumes an actor-owned value, its lifetime is no
+         * longer tied to that actor's local heap retirement. The current JVM
+         * backend realizes this as a strong ActorRuntime root. Native/arena
+         * lowering MUST promote/move the target into a proxy/runtime-owned
+         * region before publishing this capability.</p>
+         */
+        public enum TargetProvenance {
+            HOST_RUNTIME,
+            PROMOTED_FROM_SHARED_ACTOR
+        }
+
+        private final UUID id = UUID.randomUUID();
+        private final ReentrantReadWriteLock lock;
+        private final TargetProvenance targetProvenance;
+        private final ActorId sourceActorId;
+        private final Object sourceExecutionDomain;
+        private final AtomicBoolean proxyClosed = new AtomicBoolean();
+        private final AtomicLong readAcquisitions = new AtomicLong();
+        private final AtomicLong writeAcquisitions = new AtomicLong();
+        private volatile T target;
+        private long reservedBytes = HANDLE_BYTES;
+
+        private Proxy(
+                T target,
+                ReentrantReadWriteLock lock,
+                TargetProvenance targetProvenance,
+                ActorId sourceActorId,
+                Object sourceExecutionDomain) {
+            this.target = Objects.requireNonNull(target, "proxy target");
+            this.lock = Objects.requireNonNull(lock, "proxy lock");
+            this.targetProvenance =
+                    Objects.requireNonNull(targetProvenance, "targetProvenance");
+            this.sourceActorId = sourceActorId;
+            this.sourceExecutionDomain = sourceExecutionDomain;
+        }
+
+        public UUID id() { return id; }
+        public TargetProvenance targetProvenance() { return targetProvenance; }
+        public Optional<ActorId> sourceActorId() {
+            return Optional.ofNullable(sourceActorId);
+        }
+        public boolean promotedFromActorDomain() {
+            return targetProvenance == TargetProvenance.PROMOTED_FROM_SHARED_ACTOR;
+        }
+        public boolean closed() { return proxyClosed.get(); }
+        public long readAcquisitions() { return readAcquisitions.get(); }
+        public long writeAcquisitions() { return writeAcquisitions.get(); }
+        /** Approximate number of reader/writer threads waiting for this fair lock. */
+        public int queuedWaiters() { return lock.getQueueLength(); }
+
+        public <R> R read(Function<? super T, ? extends R> reader) {
+            Objects.requireNonNull(reader, "reader");
+            requireProxyAccess("read rt proxy");
+            boolean entered = enterProxyLock(lock, false);
+            var readLock = lock.readLock();
+            readLock.lock();
+            try {
+                T live = requireOpenTarget();
+                readAcquisitions.incrementAndGet();
+                return reader.apply(live);
+            } finally {
+                readLock.unlock();
+                exitProxyLock(entered);
+            }
+        }
+
+        public <R> R write(Function<? super T, ? extends R> writer) {
+            Objects.requireNonNull(writer, "writer");
+            requireProxyAccess("write rt proxy");
+            boolean entered = enterProxyLock(lock, true);
+            var writeLock = lock.writeLock();
+            writeLock.lock();
+            try {
+                T live = requireOpenTarget();
+                writeAcquisitions.incrementAndGet();
+                return writer.apply(live);
+            } finally {
+                writeLock.unlock();
+                exitProxyLock(entered);
+            }
+        }
+
+        /**
+         * Create a nested facade sharing the same lock domain. Evaluator code
+         * uses this only when a protected class/struct member itself is mutable;
+         * the raw nested reference never escapes to source code.
+         */
+        @SuppressWarnings("unchecked")
+        public <R> Proxy<R> child(R nested) {
+            requireProxyAccess("derive rt proxy view");
+            if (nested == null) throw new IllegalArgumentException("cannot proxy a null nested value");
+
+            /*
+             * Nested views are interned by target identity inside one lock
+             * domain. Without this, repeated reads such as proxy.inner.value
+             * would allocate/root a fresh handle and charge HANDLE_BYTES every
+             * time. The monitor is held only for the tiny lookup/create
+             * critical section; protected guest state still uses the fair RW
+             * lock.
+             */
+            synchronized (lock) {
+                for (Proxy<?> existing : sharedProxies) {
+                    if (existing.lock == lock
+                            && existing.target == nested
+                            && !existing.proxyClosed.get()) {
+                        return (Proxy<R>) existing;
+                    }
+                }
+
+                reserveSharedRuntimeBytes(HANDLE_BYTES, "shared proxy child handle");
+                Proxy<R> child = new Proxy<>(
+                        nested,
+                        lock,
+                        targetProvenance,
+                        sourceActorId,
+                        sourceExecutionDomain);
+                sharedProxies.add(child);
+                if (closed.get()) {
+                    child.closeFromRuntime();
+                    throw new IllegalStateException("actor runtime is closed");
+                }
+                return child;
+            }
+        }
+
+        private T requireOpenTarget() {
+            T live = target;
+            if (proxyClosed.get() || live == null || closed.get()) {
+                throw new IllegalStateException("rt proxy is closed");
+            }
+            return live;
+        }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
+        @Override
+        public void close() {
+            requireProxyAccess("close rt proxy");
+            closeWithWriteLock();
+        }
+
+        private void closeFromRuntime() {
+            closeWithWriteLock();
+        }
+
+        private void closeWithWriteLock() {
+            boolean entered = enterProxyLock(lock, true);
+            var writeLock = lock.writeLock();
+            writeLock.lock();
+            try {
+                if (!proxyClosed.compareAndSet(false, true)) return;
+                target = null;
+                long bytes = reservedBytes;
+                reservedBytes = 0L;
+                if (bytes != 0L) releaseSharedRuntimeBytes(bytes);
+                sharedProxies.remove(this);
+            } finally {
+                writeLock.unlock();
+                exitProxyLock(entered);
+            }
+        }
+
+        @Override
+        public String toString() {
+            return "Proxy[" + id + ",closed=" + proxyClosed.get() + "]";
+        }
+    }
+
+    public <T> Proxy<T> proxy(T value) {
+        requireProxyAccess("create rt proxy");
+        if (value instanceof Proxy<?>) {
+            throw new IllegalArgumentException("rt proxy cannot wrap an existing proxy");
+        }
+
+        ActorId sourceActorId = currentActorId().orElse(null);
+        Object sourceExecutionDomain = currentActorExecutionDomain();
+        Proxy.TargetProvenance provenance = sourceActorId == null
+                ? Proxy.TargetProvenance.HOST_RUNTIME
+                : Proxy.TargetProvenance.PROMOTED_FROM_SHARED_ACTOR;
+
+        /*
+         * The language ownership checker consumes the original source binding
+         * before this call. On the JVM backend this strong runtime root is the
+         * semantic promotion boundary. #289/native allocator lowering must
+         * replace this with a real move/promotion out of the actor-local arena
+         * before the proxy becomes transportable.
+         */
+        reserveSharedRuntimeBytes(Proxy.HANDLE_BYTES, "shared proxy handle");
+        Proxy<T> proxy = new Proxy<>(
+                value,
+                new ReentrantReadWriteLock(true),
+                provenance,
+                sourceActorId,
+                sourceExecutionDomain);
+        sharedProxies.add(proxy);
+        if (closed.get()) {
+            proxy.closeFromRuntime();
+            throw new IllegalStateException("actor runtime is closed");
+        }
+        return proxy;
+    }
+
+    private boolean enterProxyLock(
+            ReentrantReadWriteLock lock,
+            boolean write) {
+        ReentrantReadWriteLock held = currentProxyLock.get();
+        if (held == null) {
+            currentProxyLock.set(lock);
+            return true;
+        }
+        if (held != lock) {
+            throw new IllegalStateException(
+                    "nested synchronization across different rt Proxy values is forbidden; "
+                            + "snapshot one proxy first or route mutation through an owner actor");
+        }
+        if (write
+                && held.getReadHoldCount() > 0
+                && !held.isWriteLockedByCurrentThread()) {
+            throw new IllegalStateException(
+                    "cannot upgrade an rt Proxy read lock to a write lock; "
+                            + "finish the read section before mutating");
+        }
+        return false;
+    }
+
+    private void exitProxyLock(boolean entered) {
+        if (entered) currentProxyLock.remove();
+    }
+
+    private void requireProxyAccess(String operation) {
+        requireCallerRuntimeAffinity(operation);
+        ActorKind kind = currentActorKind();
+        if (kind != null && kind != ActorKind.SHARED) {
+            throw new SecurityException(
+                    operation + " requires a SHARED actor; private/untrusted actors cannot hold synchronized shared proxies");
+        }
+        IsolatePolicy callerPolicy = currentActorPolicy();
+        if (callerPolicy != null) {
+            callerPolicy.require(IsolatePolicy.Capability.ACTOR_SHARED_PROXY, operation);
+        } else {
+            policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARED_PROXY, operation);
         }
     }
 
@@ -2508,16 +2777,24 @@ public final class ActorRuntime implements AutoCloseable {
             effectivePolicy = policy.withoutCapabilities(
                     IsolatePolicy.Capability.SHARED_MEMORY,
                     IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                    IsolatePolicy.Capability.ACTOR_SHARED_PROXY,
                     IsolatePolicy.Capability.JAVA_INTEROP,
                     IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
+        } else if (kind == ActorKind.SHARED && !trustedFactory) {
+            /*
+             * Source/compiler-facing shared actors own their mutable state.
+             * They may read published immutable data and use an explicit
+             * synchronized Proxy<T> capability, but broad SHARED_MEMORY is a
+             * host/runtime-internal legacy escape hatch, not ambient actor
+             * authority. spawnSharedTrusted(...) remains explicit opt-in.
+             */
+            effectivePolicy = policy.withoutCapabilities(
+                    IsolatePolicy.Capability.SHARED_MEMORY);
         } else {
             effectivePolicy = policy;
         }
         requireWithinCeiling(effectivePolicy);
         requireWithinCallerPolicy(effectivePolicy);
-        if (kind == ActorKind.SHARED) {
-            effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
-        }
         policy = effectivePolicy;
         if (!trustedFactory) {
             requireStatelessActorFactory(behaviorFactory);
@@ -2574,6 +2851,17 @@ public final class ActorRuntime implements AutoCloseable {
      * is rejected so a bounded dispatcher cannot be starved by callers waiting
      * on actors scheduled onto the same runtime.
      */
+
+    private IsolatePolicy sourceActorPolicy(
+            ActorKind kind,
+            IsolatePolicy requested) {
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(requested, "requested");
+        return kind == ActorKind.SHARED
+                ? requested.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
+                : requested;
+    }
+
     public <M, R> R invoke(
             ActorKind kind,
             M message,
@@ -2592,7 +2880,7 @@ public final class ActorRuntime implements AutoCloseable {
                             + "use mailbox-oriented actor composition");
         }
 
-        IsolatePolicy policy = defaultSpawnPolicy();
+        IsolatePolicy policy = sourceActorPolicy(kind, defaultSpawnPolicy());
         CompletableFuture<R> completion = new CompletableFuture<>();
         ActorRef<M> ref = spawnInternal(
                 kind,
@@ -2703,7 +2991,7 @@ public final class ActorRuntime implements AutoCloseable {
                             + "use mailbox-oriented actor composition");
         }
 
-        IsolatePolicy policy = defaultSpawnPolicy();
+        IsolatePolicy policy = sourceActorPolicy(kind, defaultSpawnPolicy());
         OresFuture<R> completion = new OresFuture<>();
 
         ActorRef<M> ref = spawnInternal(
@@ -2836,6 +3124,15 @@ public final class ActorRuntime implements AutoCloseable {
         if (entered) currentSyncCell.remove();
     }
 
+    private void requireSharedMemoryAuthority(String operation) {
+        IsolatePolicy callerPolicy = currentActorPolicy();
+        if (callerPolicy != null) {
+            callerPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, operation);
+        } else {
+            policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, operation);
+        }
+    }
+
     private void rejectPrivateActorSharedMemoryAccess(String operation) {
         ActorCell<?> current = currentActor.get();
         if (current != null && isPrivateKind(current.kind)) {
@@ -2846,8 +3143,12 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireSharedActorTurn() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null || cell.kind != ActorKind.SHARED) {
-            throw new IllegalStateException("shared state mutation requires a shared actor mailbox turn");
+            throw new IllegalStateException(
+                    "legacy synchronized shared-memory mutation requires a SHARED actor mailbox turn");
         }
+        cell.policy.require(
+                IsolatePolicy.Capability.SHARED_MEMORY,
+                "legacy synchronized shared-memory mutation");
     }
 
     private void reservePrivateRuntimeBytes(long bytes, ActorId owner, String purpose) {
@@ -3425,6 +3726,34 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("MutexGuard<T> is lexical and cannot cross actor mailboxes");
         }
+        if (value instanceof Proxy<?> proxy) {
+            if (target.kind != ActorKind.SHARED) {
+                throw new SecurityException("rt Proxy<T> may only be delivered to SHARED actors");
+            }
+            if (!proxy.ownedBy(this) || proxy.closed()) {
+                throw new IllegalArgumentException(
+                        "rt Proxy<T> belongs to a different/closed ActorRuntime");
+            }
+            ActorKind senderKind = currentActorKind();
+            if (senderKind != null && senderKind != ActorKind.SHARED) {
+                throw new SecurityException(
+                        "private/untrusted actors cannot send rt Proxy<T>");
+            }
+            IsolatePolicy senderPolicy = currentActorPolicy();
+            if (senderPolicy != null) {
+                senderPolicy.require(
+                        IsolatePolicy.Capability.ACTOR_SHARED_PROXY,
+                        "rt Proxy actor send");
+            } else {
+                policyCeiling.require(
+                        IsolatePolicy.Capability.ACTOR_SHARED_PROXY,
+                        "rt Proxy host send");
+            }
+            target.policy.require(
+                    IsolatePolicy.Capability.ACTOR_SHARED_PROXY,
+                    "rt Proxy actor receive");
+            return;
+        }
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
             if (target.kind != ActorKind.SHARED) {
                 throw new SecurityException("private actors cannot receive SharedMutex<T>");
@@ -3451,7 +3780,30 @@ public final class ActorRuntime implements AutoCloseable {
             requireMutexTransport(target, shared.value(), visiting, depth + 1);
             return;
         }
-        if (value instanceof SyncCell<?>) return;
+        if (value instanceof SyncCell<?> cell) {
+            if (!cell.ownedBy(this) || cell.closed()) {
+                throw new IllegalArgumentException(
+                        "SyncCell belongs to a different/closed ActorRuntime");
+            }
+            if (target.kind != ActorKind.SHARED) {
+                throw new SecurityException(
+                        "private/untrusted actors cannot receive SyncCell<T>");
+            }
+            IsolatePolicy senderPolicy = currentActorPolicy();
+            if (senderPolicy != null) {
+                senderPolicy.require(
+                        IsolatePolicy.Capability.SHARED_MEMORY,
+                        "SyncCell actor send");
+            } else {
+                policyCeiling.require(
+                        IsolatePolicy.Capability.SHARED_MEMORY,
+                        "SyncCell host send");
+            }
+            target.policy.require(
+                    IsolatePolicy.Capability.SHARED_MEMORY,
+                    "SyncCell actor receive");
+            return;
+        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
@@ -3647,6 +3999,14 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.closed()) throw new IllegalArgumentException("SyncCell is closed");
             return;
         }
+        if (value instanceof Proxy<?> proxy) {
+            if (!proxy.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "rt Proxy<T> belongs to a different ActorRuntime");
+            }
+            if (proxy.closed()) throw new IllegalArgumentException("rt Proxy<T> is closed");
+            return;
+        }
         if (value instanceof OresMutex.Shared<?>) {
             // Runtime affinity is reserved atomically immediately before mailbox admission.
             return;
@@ -3771,6 +4131,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof Proxy<?>
                 || value instanceof OresMutex.Lock<?>
                 || value instanceof OresMutex.Guard<?>) {
             throw new SecurityException(
@@ -3821,6 +4182,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
+        }
+        if (value instanceof Proxy<?>) {
+            throw new IllegalArgumentException(
+                    "rt Proxy<T> is synchronized shared mutable state and cannot be wrapped as Shared");
         }
         if (value instanceof OresMutex.Shared<?>) {
             throw new IllegalArgumentException("SharedMutex is mutable shared state and cannot be wrapped as Shared");
@@ -3895,6 +4260,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof Proxy<?>
                 || value instanceof OresMutex.Shared<?>) {
             return;
         }
@@ -3969,6 +4335,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof Proxy<?>
                 || value instanceof OresMutex.Lock<?>
                 || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException(
@@ -4011,6 +4378,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
+        if (value instanceof ActorRuntime.Proxy<?> proxy) return proxy;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
@@ -4127,6 +4495,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof ActorRuntime.Proxy<?>) return requireWithinLimit(96L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4195,6 +4564,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return scalar;
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
+        if (value instanceof ActorRuntime.Proxy<?>) return 96L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4419,6 +4789,11 @@ public final class ActorRuntime implements AutoCloseable {
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
+        if (currentProxyLock.get() != null) {
+            throw new IllegalStateException(
+                    "ActorRuntime cannot close from inside an rt Proxy critical section; "
+                            + "finish the proxy access before closing the runtime");
+        }
 
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
@@ -4486,6 +4861,8 @@ public final class ActorRuntime implements AutoCloseable {
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
+        for (Proxy<?> proxy : List.copyOf(sharedProxies)) proxy.closeFromRuntime();
+        sharedProxies.clear();
         sharedMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
