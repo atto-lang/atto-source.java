@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
@@ -350,6 +351,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    private final Set<Proxy<?>> sharedProxies = ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
@@ -909,6 +911,157 @@ public final class ActorRuntime implements AutoCloseable {
         private void invalidateFromRuntime() {
             cellClosed.set(true);
             syncCells.remove(this);
+        }
+    }
+
+    /**
+     * Explicit synchronized shared-mutable capability created by source-level
+     * {@code rt proxy}. This is an escape hatch, not the ordinary actor memory
+     * model: normal actor state remains single-owner and mailbox-serialized.
+     *
+     * <p>The fair read/write lock belongs to the proxy, never to a carrier
+     * thread. Source code cannot unwrap the target. The compiler/evaluator uses
+     * read() for proven read-only access and write() for mutation or methods
+     * whose receiver effects are not proven read-only.</p>
+     */
+    public final class Proxy<T> implements AutoCloseable {
+        private static final long HANDLE_BYTES = 96L;
+
+        private final UUID id = UUID.randomUUID();
+        private final ReentrantReadWriteLock lock;
+        private final AtomicBoolean proxyClosed = new AtomicBoolean();
+        private final AtomicLong readAcquisitions = new AtomicLong();
+        private final AtomicLong writeAcquisitions = new AtomicLong();
+        private volatile T target;
+        private long reservedBytes = HANDLE_BYTES;
+
+        private Proxy(T target) {
+            this(target, new ReentrantReadWriteLock(true));
+        }
+
+        private Proxy(T target, ReentrantReadWriteLock lock) {
+            this.target = Objects.requireNonNull(target, "proxy target");
+            this.lock = Objects.requireNonNull(lock, "proxy lock");
+        }
+
+        public UUID id() { return id; }
+        public boolean closed() { return proxyClosed.get(); }
+        public long readAcquisitions() { return readAcquisitions.get(); }
+        public long writeAcquisitions() { return writeAcquisitions.get(); }
+        public int queuedWriters() { return lock.getQueueLength(); }
+
+        public <R> R read(Function<? super T, ? extends R> reader) {
+            Objects.requireNonNull(reader, "reader");
+            requireProxyAccess("read rt proxy");
+            var readLock = lock.readLock();
+            readLock.lock();
+            try {
+                T live = requireOpenTarget();
+                readAcquisitions.incrementAndGet();
+                return reader.apply(live);
+            } finally {
+                readLock.unlock();
+            }
+        }
+
+        public <R> R write(Function<? super T, ? extends R> writer) {
+            Objects.requireNonNull(writer, "writer");
+            requireProxyAccess("write rt proxy");
+            var writeLock = lock.writeLock();
+            writeLock.lock();
+            try {
+                T live = requireOpenTarget();
+                writeAcquisitions.incrementAndGet();
+                return writer.apply(live);
+            } finally {
+                writeLock.unlock();
+            }
+        }
+
+        /**
+         * Create a nested facade sharing the same lock domain. Evaluator code
+         * uses this only when a protected class/struct member itself is mutable;
+         * the raw nested reference never escapes to source code.
+         */
+        public <R> Proxy<R> child(R nested) {
+            requireProxyAccess("derive rt proxy view");
+            if (nested == null) throw new IllegalArgumentException("cannot proxy a null nested value");
+            reserveSharedRuntimeBytes(HANDLE_BYTES, "shared proxy child handle");
+            Proxy<R> child = new Proxy<>(nested, lock);
+            sharedProxies.add(child);
+            if (closed.get()) {
+                child.closeFromRuntime();
+                throw new IllegalStateException("actor runtime is closed");
+            }
+            return child;
+        }
+
+        private T requireOpenTarget() {
+            T live = target;
+            if (proxyClosed.get() || live == null || closed.get()) {
+                throw new IllegalStateException("rt proxy is closed");
+            }
+            return live;
+        }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
+        @Override
+        public void close() {
+            requireProxyAccess("close rt proxy");
+            closeFromRuntime();
+        }
+
+        private void closeFromRuntime() {
+            var writeLock = lock.writeLock();
+            writeLock.lock();
+            try {
+                if (!proxyClosed.compareAndSet(false, true)) return;
+                target = null;
+                long bytes = reservedBytes;
+                reservedBytes = 0L;
+                if (bytes != 0L) releaseSharedRuntimeBytes(bytes);
+                sharedProxies.remove(this);
+            } finally {
+                writeLock.unlock();
+            }
+        }
+
+        @Override
+        public String toString() {
+            return "Proxy[" + id + ",closed=" + proxyClosed.get() + "]";
+        }
+    }
+
+    public <T> Proxy<T> proxy(T value) {
+        requireProxyAccess("create rt proxy");
+        if (value instanceof Proxy<?>) {
+            throw new IllegalArgumentException("rt proxy cannot wrap an existing proxy");
+        }
+        reserveSharedRuntimeBytes(Proxy.HANDLE_BYTES, "shared proxy handle");
+        Proxy<T> proxy = new Proxy<>(value);
+        sharedProxies.add(proxy);
+        if (closed.get()) {
+            proxy.closeFromRuntime();
+            throw new IllegalStateException("actor runtime is closed");
+        }
+        return proxy;
+    }
+
+    private void requireProxyAccess(String operation) {
+        requireCallerRuntimeAffinity(operation);
+        ActorKind kind = currentActorKind();
+        if (kind != null && kind != ActorKind.SHARED) {
+            throw new SecurityException(
+                    operation + " requires a SHARED actor; private/untrusted actors cannot hold synchronized shared proxies");
+        }
+        IsolatePolicy callerPolicy = currentActorPolicy();
+        if (callerPolicy != null) {
+            callerPolicy.require(IsolatePolicy.Capability.ACTOR_SHARED_PROXY, operation);
+        } else {
+            policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARED_PROXY, operation);
         }
     }
 
@@ -4486,6 +4639,8 @@ public final class ActorRuntime implements AutoCloseable {
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
+        for (Proxy<?> proxy : List.copyOf(sharedProxies)) proxy.closeFromRuntime();
+        sharedProxies.clear();
         sharedMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
