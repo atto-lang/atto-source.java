@@ -437,6 +437,40 @@ final class ActorRuntimeTest {
         }
     }
 
+
+    @Test
+    void sharedActorLocalHeapAndMailboxShareOnePerActorLimit() throws Exception {
+        IsolatePolicy ceiling = IsolatePolicy.developer();
+        IsolatePolicy small = new IsolatePolicy(
+                ceiling.capabilities(),
+                16L * 1024 * 1024,
+                ceiling.maxMailboxMessages(),
+                ceiling.maxWallTime(),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(ceiling)) {
+            CountDownLatch constructed = new CountDownLatch(1);
+            var ref = runtime.<String>spawnSharedTrusted(small, factoryContext -> {
+                factoryContext.localMemory().reserveHeap(10L * 1024 * 1024);
+                constructed.countDown();
+                return (message, context) -> { };
+            });
+
+            ref.send("initialize");
+            assertTrue(constructed.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.sharedActorLocalMemoryBytes() >= 10L * 1024 * 1024);
+
+            // Frozen string accounting is roughly two bytes/character, so this
+            // mailbox payload is individually below 16 MiB but pushes the same
+            // actor above its combined local-heap + mailbox ceiling.
+            String tooLargeTogether = "x".repeat(4 * 1024 * 1024);
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> ref.send(tooLargeTogether));
+            assertTrue(failure.getMessage().contains("shared actor heap limit exceeded"));
+        }
+    }
+
     @Test
     void privateActorRejectsMessageThatExceedsItsMemorySlice() {
         IsolatePolicy ceiling = IsolatePolicy.developer();
