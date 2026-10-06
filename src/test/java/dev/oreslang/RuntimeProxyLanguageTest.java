@@ -22,7 +22,7 @@ final class RuntimeProxyLanguageTest {
                 define class Counter as
                   pub let int value = 1;
 
-                  pub inc(mut self)(): int {
+                  pub inc(self &mut Counter)(): int {
                     self.value = self.value + 1;
                     return self.value;
                   }
