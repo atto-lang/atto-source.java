@@ -213,7 +213,7 @@ public final class Parser {
             }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CONTRACT)) {
-                if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                if (modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                     throw error(previous(), "contracts do not accept class/callable modifiers");
                 }
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
