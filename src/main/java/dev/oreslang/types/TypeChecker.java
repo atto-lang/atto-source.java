@@ -1468,6 +1468,21 @@ public final class TypeChecker {
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
+                case "proxy" -> {
+                    if (currentActorKind == Ast.ActorKind.PRIVATE
+                            || currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                        throw new IllegalArgumentException(
+                                "rt proxy is unavailable to private/untrusted actors");
+                    }
+                    Type target = deref(operand);
+                    if (!isProxyableTarget(target, new LinkedHashSet<>())) {
+                        throw new IllegalArgumentException(
+                                "rt proxy requires a non-actor class/struct-like value whose stored state "
+                                        + "contains no borrows, futures, mutexes, channels, actor instances, "
+                                        + "functions, or unresolved host/runtime capabilities");
+                    }
+                    yield new Named("Proxy", List.of(target));
+                }
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
             };
@@ -2971,6 +2986,124 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " contains state that is not safe to transport across an actor boundary");
         }
+    }
+
+    private boolean isProxyableTarget(Type type, Set<Ast.ClassDecl> seen) {
+        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+                || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace
+                || type instanceof Primitive || type instanceof StringLiteral) {
+            return false;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) {
+                if (!isProxyStorageSafe(member, seen)) return false;
+            }
+            return true;
+        }
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("DynamicStruct")) {
+            return named.arguments().size() == 1
+                    && isProxyStorageSafe(named.arguments().getFirst(), seen);
+        }
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) return false;
+        if (!seen.add(klass)) return true;
+        try {
+            for (ResolvedField field : effectiveFieldTargets(
+                    klass, named, new LinkedHashSet<>())) {
+                Type fieldType = substituteGenerics(
+                        classFieldType(field.owner(), field.field()),
+                        classGenericBindings(field.owner(), field.ownerType()));
+                if (!isProxyStorageSafe(fieldType, seen)) return false;
+            }
+            return true;
+        } finally {
+            seen.remove(klass);
+        }
+    }
+
+    private boolean isProxyStorageSafe(Type type, Set<Ast.ClassDecl> seen) {
+        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+                || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
+            return false;
+        }
+        if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+        if (type instanceof StringLiteral) return true;
+        if (type instanceof ListType list) return isProxyStorageSafe(list.element(), seen);
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                if (!isProxyStorageSafe(element, seen)) return false;
+            }
+            return true;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                if (!isProxyStorageSafe(option, seen)) return false;
+            }
+            return true;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) {
+                if (!isProxyStorageSafe(member, seen)) return false;
+            }
+            return true;
+        }
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("Future") || named.name().equals("Mutex")
+                || named.name().equals("SharedMutex") || named.name().equals("Proxy")
+                || named.name().equals("Channel") || named.name().equals("SelectCase")
+                || named.name().equals("SelectSet") || named.name().equals("ActorRef")
+                || named.name().equals("ActorHandle") || named.name().equals("ActorControlHandle")) {
+            return false;
+        }
+        if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
+            return named.arguments().size() == 1
+                    && isProxyStorageSafe(named.arguments().getFirst(), seen);
+        }
+        if (named.name().equals("Result")) {
+            return named.arguments().size() == 2
+                    && isProxyStorageSafe(named.arguments().get(0), seen)
+                    && isProxyStorageSafe(named.arguments().get(1), seen);
+        }
+        if (named.name().equals("DynamicStruct")) {
+            return named.arguments().size() == 1
+                    && isProxyStorageSafe(named.arguments().getFirst(), seen);
+        }
+        Ast.ClassDecl nested = findClass(named.name());
+        if (nested == null || nested.actorKind() != Ast.ActorKind.NONE) return false;
+        return isProxyableTarget(named, seen);
+    }
+
+    private boolean isProxyExportSafe(Type type) {
+        if (type == Primitive.VOID) return true;
+        if (type instanceof Primitive || type instanceof StringLiteral) return true;
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) if (!isProxyExportSafe(element)) return false;
+            return true;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) if (!isProxyExportSafe(option)) return false;
+            return true;
+        }
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
+            return named.arguments().size() == 1 && isProxyExportSafe(named.arguments().getFirst());
+        }
+        if (named.name().equals("Result")) {
+            return named.arguments().size() == 2
+                    && isProxyExportSafe(named.arguments().get(0))
+                    && isProxyExportSafe(named.arguments().get(1));
+        }
+        return named.name().equals("OptionUnwrapError") && named.arguments().isEmpty();
+    }
+
+    private Type unwrapProxy(Type type) {
+        if (type instanceof Named named
+                && named.name().equals("Proxy")
+                && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        return type;
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
