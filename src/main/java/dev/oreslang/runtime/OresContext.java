@@ -65,6 +65,9 @@ public final class OresContext implements AutoCloseable {
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
     public ActorRuntime actors() { return actors; }
+    public <T> T executeEnteredRootFromKernel(java.util.function.Supplier<T> task) {
+        return actors.executeEnteredRootFromKernel(task);
+    }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }

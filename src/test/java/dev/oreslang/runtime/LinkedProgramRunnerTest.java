@@ -13,6 +13,14 @@ import static org.junit.jupiter.api.Assertions.*;
 final class LinkedProgramRunnerTest {
 
     @Test
+    void launcherRunsActorOwnedStreamThroughTheEnteredContextRuntime() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(java.nio.file.Path.of("examples/actors/owned-stream.ores"),
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(), output, new ByteArrayOutputStream());
+        assertEquals("10\n20\n30\n", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void sandboxSafeOutputForwardsWithoutClosingCallerOwnedStream()
             throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();

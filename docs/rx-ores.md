@@ -2,6 +2,13 @@
 
 Status: first runtime substrate, stacked on the Ores-owned Future/suspension work.
 
+The reference interpreter now supports actor-owned Stream/Observable results
+and `from_values` factories. See [actor-owned-results.md](actor-owned-results.md)
+for executable syntax, mailbox ownership, cancellation, and current limits.
+These direct factories are a first interpreter bridge; the explicit RX import
+linker and AOT removal described below remain design requirements, not proven
+properties of this bridge.
+
 ## Why rx-ores exists
 
 rx-ores is intended to be the Oreslang-native peer of RxDart, RxRust, RxJava,
