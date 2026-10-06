@@ -497,11 +497,13 @@ public final class Parser {
     }
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
-        Ast.InterfaceDecl iface = parseInterface(visibility);
+        Ast.InterfaceDecl iface = parseInterface(visibility, true);
         return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
-    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
+
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
         String name = consume(IDENT, "expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -548,24 +550,27 @@ public final class Parser {
                 throw error(peek(), "'structural' callable metadata is only valid on interface fnc signatures");
             }
 
+            Ast.BindingKind fieldBindingKind = Ast.BindingKind.VAL;
+            if (moduleContract && isBindingKind(peek().type())) fieldBindingKind = parseBindingKind();
+
             if (check(IDENT) && checkNext(COLON)) {
                 String fieldName = advance().lexeme();
                 consume(COLON, "expected ':' after interface field name");
                 Ast.TypeRef type = parseTypeRef();
                 consumeMemberTerminator(terminator, "interface field signature should end with ';'");
-                members.add(new Ast.InterfaceFieldDecl(fieldName, type));
+                members.add(new Ast.InterfaceFieldDecl(fieldName, type, fieldBindingKind));
                 continue;
             }
 
-            if (isBindingKind(peek().type())) advance();
+            if (!moduleContract && isBindingKind(peek().type())) advance();
             Ast.TypeRef type = parseTypeRef();
             String fieldName = consume(IDENT, "expected interface field name").lexeme();
             consumeMemberTerminator(terminator, "interface field signature should end with ';'");
-            members.add(new Ast.InterfaceFieldDecl(fieldName, type));
+            members.add(new Ast.InterfaceFieldDecl(fieldName, type, fieldBindingKind));
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
-        return new Ast.InterfaceDecl(name, visibility, generics, parents, members);
+        return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
