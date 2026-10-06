@@ -228,22 +228,35 @@ public final class TypeChecker {
 
     private void checkModuleAdherence(Ast.ModuleDecl module) {
         for (Ast.Annotation annotation : module.annotations()) {
-            if (!annotation.name().equals("AdheresTo")) continue;
-            if (annotation.arguments().isEmpty()) throw new IllegalArgumentException("@AdheresTo requires at least one interface");
-            Record actual = moduleShape(module);
-            for (Ast.TypeRef ref : annotation.arguments()) {
-                Ast.InterfaceDecl iface = findInterface(ref.name());
-                if (iface == null) throw new IllegalArgumentException("unknown module interface '" + ref.name() + "'");
-                Type resolvedRef = resolve(ref, Set.of(), null);
-                if (!(resolvedRef instanceof Named namedRef)) throw new IllegalArgumentException("@AdheresTo target must be a named interface type");
-                Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-                Record expected = (Record) substituteGenerics(expectedTemplate,
-                        genericBindings(iface.genericParameters(), namedRef.arguments(), "interface " + iface.name()));
-                if (!assignable(actual, expected)) {
-                    throw new IllegalArgumentException("module '" + module.name() + "' does not adhere to interface '" + ref.name() + "': expected " + expected + " but got " + actual);
-                }
+            if (annotation.name().equals("AdheresTo")) {
+                throw new IllegalArgumentException("@AdheresTo is no longer valid for modules; use 'conforms <Contract>'");
             }
         }
+        if (module.contracts().isEmpty()) return;
+        Record actual = moduleShape(module);
+        for (Ast.TypeRef ref : module.contracts()) {
+            Ast.InterfaceDecl contract = findInterface(ref.name());
+            if (contract == null || !contract.moduleContract()) {
+                throw new IllegalArgumentException("unknown module contract '" + ref.name() + "'");
+            }
+            Type resolvedRef = resolveModuleContractRef(ref, contract);
+            if (!(resolvedRef instanceof Named namedRef)) {
+                throw new IllegalArgumentException("module contract target must be a named contract type");
+            }
+            Record expectedTemplate = interfaceShape(contract, Set.copyOf(contract.genericParameters()), new LinkedHashSet<>());
+            Record expected = (Record) substituteGenerics(expectedTemplate,
+                    genericBindings(contract.genericParameters(), namedRef.arguments(), "contract " + contract.name()));
+            if (!assignable(actual, expected)) {
+                throw new IllegalArgumentException("module '" + module.name() + "' does not conform to contract '" + ref.name()
+                        + "': expected " + expected + " but got " + actual);
+            }
+        }
+    }
+
+    private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract) {
+        validateGenericArity(ref, contract.genericParameters(), "contract " + contract.name());
+        return new Named(qualifiedInterfaceName(contract),
+                ref.arguments().stream().map(arg -> resolve(arg, Set.of(), null)).toList());
     }
 
     private Record moduleShape(Ast.ModuleDecl module) {
@@ -881,6 +894,7 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
+            if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
@@ -5011,6 +5025,7 @@ public final class TypeChecker {
                 }
                 Ast.InterfaceDecl knownInterface = findInterface(ref.name());
                 if (knownInterface != null) {
+                    if (knownInterface.moduleContract()) throw new IllegalArgumentException("module contract '" + knownInterface.name() + "' is only valid in module 'conforms' clauses");
                     validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
                     yield new Named(qualifiedInterfaceName(knownInterface),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
