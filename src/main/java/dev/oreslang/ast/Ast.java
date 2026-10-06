@@ -14,7 +14,7 @@ public final class Ast {
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
-    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, TRAIT, STRUCT, TYPE, TYPES, ALL }
+    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
 
     public record ImportDecl(
             ImportKind kind,
@@ -25,12 +25,14 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
+            contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
+        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
@@ -325,14 +327,18 @@ public final class Ast {
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
-            List<InterfaceMember> members) implements Decl {
+            List<InterfaceMember> members,
+            boolean moduleContract) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members);
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
+        }
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters, List<TypeRef> parents, List<InterfaceMember> members) {
+            this(name, visibility, genericParameters, parents, members, false);
         }
     }
 
