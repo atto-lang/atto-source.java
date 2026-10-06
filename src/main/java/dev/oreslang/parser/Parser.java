@@ -10,7 +10,16 @@ import static dev.oreslang.parser.Token.Type.*;
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
 
+    public record SyntaxWarning(int line, int column, String message) { }
+
+    public record ParseResult(Ast.Program program, List<SyntaxWarning> warnings) {
+        public ParseResult {
+            warnings = List.copyOf(warnings);
+        }
+    }
+
     private final List<Token> tokens;
+    private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
 
@@ -20,6 +29,12 @@ public final class Parser {
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    public static ParseResult parseWithWarnings(String source) {
+        Parser parser = new Parser(new Lexer(source).scan());
+        Ast.Program program = parser.parseProgram();
+        return new ParseResult(program, parser.warnings);
     }
 
     public Ast.Program parseProgram() {
@@ -156,6 +171,9 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
+        // Canonical module syntax is "define module Name as ... end".
+        // Keep the pre-"as" spelling accepted while existing source migrates.
+        match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
@@ -761,8 +779,28 @@ public final class Parser {
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
         if (match(LT)) {
-            if (match(GT)) infer = true;
-            else {
+            if (match(GT)) {
+                infer = true;
+            } else if (name.equals("Fnc") || name.equals("Function")) {
+                /*
+                 * Callable types support both:
+                 *   Fnc<Arg1, Arg2, Result>       (legacy comma form)
+                 *   Fnc<Result(Arg1, Arg2)>       (signature-in-generics form)
+                 *
+                 * The signature form is normalized immediately to the same
+                 * TypeRef representation used by "(Args...) => Result".
+                 */
+                Ast.TypeRef first = parseTypeRef();
+                if (match(LPAREN)) {
+                    List<Ast.TypeRef> params = parseFunctionTypeParametersAfterOpen();
+                    consume(GT, "expected '>' after callable signature type");
+                    return Ast.TypeRef.functionType(params, first);
+                }
+
+                args.add(first);
+                while (match(COMMA)) args.add(parseTypeRef());
+                consume(GT, "expected '>' after type arguments");
+            } else {
                 do args.add(parseTypeRef()); while (match(COMMA));
                 consume(GT, "expected '>' after type arguments");
             }
@@ -772,6 +810,13 @@ public final class Parser {
 
     private Ast.TypeRef parseFunctionTypeSignature() {
         consume(LPAREN, "expected '(' in function type");
+        List<Ast.TypeRef> params = parseFunctionTypeParametersAfterOpen();
+        consume(FAT_ARROW, "function types use the fat arrow '=>'");
+        Ast.TypeRef result = parseTypeRef();
+        return Ast.TypeRef.functionType(params, result);
+    }
+
+    private List<Ast.TypeRef> parseFunctionTypeParametersAfterOpen() {
         List<Ast.TypeRef> params = new ArrayList<>();
         if (!check(RPAREN)) {
             do {
@@ -781,9 +826,7 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RPAREN, "expected ')' after function type parameters");
-        consume(FAT_ARROW, "function types use the fat arrow '=>'");
-        Ast.TypeRef result = parseTypeRef();
-        return Ast.TypeRef.functionType(params, result);
+        return params;
     }
 
     private boolean looksLikeFunctionType() {
@@ -1226,7 +1269,7 @@ public final class Parser {
         // Braces delimit branch bodies; they never replace the structural terminator.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseBlock()));
-            while (match(ELSEIF)) {
+            while (matchConditionalBranch()) {
                 condition = parseCondition();
                 branches.add(new Ast.IfBranch(condition, parseBlock()));
             }
@@ -1237,17 +1280,25 @@ public final class Parser {
             return new Ast.IfStmt(branches, elseBody);
         }
 
-        // Keyword-delimited form: if condition then ... elseif condition then ... else ... fi.
-        // 'do' remains accepted as a compatibility spelling for existing source.
+        // Canonical keyword-delimited form:
+        //   if condition; then
+        //   elif condition; then
+        //   else
+        //   fi
+        //
+        // Compatibility forms remain accepted while source migrates:
+        // - 'if ... do' / 'elseif ... do' are deprecated spellings.
+        // - 'elseif' aliases canonical 'elif'.
+        // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
-        if (!match(THEN, DO)) throw error(peek(), "expected 'then' after if condition");
+        consumeConditionalThen("if");
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
-        while (match(ELSEIF)) {
+        while (matchConditionalBranch()) {
             condition = parseCondition();
             match(SEMICOLON);
-            if (!match(THEN, DO)) throw error(peek(), "expected 'then' after elseif condition");
+            consumeConditionalThen("elif");
             body = parseUntil(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
@@ -1256,6 +1307,29 @@ public final class Parser {
         if (match(ELSE)) elseBody = parseUntil(FI);
         consume(FI, "expected 'fi' to close if");
         return new Ast.IfStmt(branches, elseBody);
+    }
+
+    private void consumeConditionalThen(String branch) {
+        if (match(THEN)) return;
+        if (match(DO)) {
+            Token deprecated = previous();
+            warnings.add(new SyntaxWarning(
+                    deprecated.line(),
+                    deprecated.column(),
+                    "conditional 'do' is deprecated; use 'then'"));
+            return;
+        }
+        throw error(peek(), "expected 'then' after " + branch + " condition");
+    }
+
+    private boolean matchConditionalBranch() {
+        if (match(ELSEIF)) return true; // Lexer maps both 'elif' and legacy 'elseif' here.
+        if (check(ELSE) && checkNext(IF)) {
+            advance();
+            advance();
+            return true;
+        }
+        return false;
     }
 
     private Ast.Expr parseCondition() {
@@ -1544,11 +1618,11 @@ public final class Parser {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
-                List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
@@ -1797,6 +1871,17 @@ public final class Parser {
             }
         }
         return false;
+    }
+
+    private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do {
+            boolean spread = match(ELLIPSIS);
+            Ast.Expr argument = parseExpression();
+            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+        } while (match(COMMA));
+        return args;
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {

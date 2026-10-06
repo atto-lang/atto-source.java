@@ -427,7 +427,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            TypeTestExpr, PatternTestExpr, CastExpr,
+            TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -448,6 +448,9 @@ public final class Ast {
 
     /** "value as Type" or "value as? Type". */
     public record CastExpr(Expr value, TypeRef targetType, CastMode mode) implements Expr { }
+
+    /** Argument-list spread. The parser only constructs this inside call argument lists. */
+    public record SpreadExpr(Expr expression) implements Expr { }
 
     public record CallExpr(
             Expr callee,

@@ -342,6 +342,65 @@ end
 
 Class interface satisfaction uses public members, including inherited public members.
 
+## Boolean combinator intrinsics
+
+`And`, `Or`, and `Xor` are compiler-provided overload families in the
+built-in `BooleanOps` namespace and are also available as globals, like
+`Some`, `None`, `Ok`, and `Err`.
+
+Conceptually, each family has these two arity-selected overloads:
+
+```ores
+define module BooleanOps as
+  pub fnc Or(bool first, bool second, ...bool rest): bool { /* intrinsic */ }
+  pub fnc Or(List<bool> values): bool { /* intrinsic */ }
+
+  pub fnc And(bool first, bool second, ...bool rest): bool { /* intrinsic */ }
+  pub fnc And(List<bool> values): bool { /* intrinsic */ }
+
+  pub fnc Xor(bool first, bool second, ...bool rest): bool { /* intrinsic */ }
+  pub fnc Xor(List<bool> values): bool { /* intrinsic */ }
+end
+```
+
+The overload decision is **name + caller-visible arity only**:
+
+- arity `1` selects the `List<bool>` overload;
+- arity `>= 2` selects the variadic scalar-bool overload;
+- arity `0` is invalid;
+- parameter types do not participate in overload selection.
+
+Therefore both global and qualified forms are equivalent:
+
+```ores
+if And(foo, bar) then
+  // ...
+fi
+
+if Or(foo, bar, And(x, y)) then
+  // ...
+fi
+
+val bool a = BooleanOps.And([foo, bar]);
+val bool b = BooleanOps.Or(foo, bar, x);
+```
+
+For the scalar overload, `And` and `Or` short-circuit left-to-right exactly
+like `&&` and `||`; `Xor` evaluates all scalar operands and returns true
+when an odd number are true. These calls are compiler intrinsics and bypass
+ordinary callable dispatch, so scalar forms can lower to the same boolean
+control-flow IR as the operators.
+
+The one-argument list overload has ordinary eager argument evaluation, then
+reduces the already-created list. Empty lists are valid: `And([])` is
+`true`, `Or([])` is `false`, and `Xor([])` is `false`.
+
+Module/top-level `fnc` and `routine` overload identity is also name + exact
+arity. Same-name/different-arity declarations are valid; same-name/same-arity
+declarations are rejected even when their parameter types differ. An overloaded
+callable family cannot be extracted as an untyped first-class function value;
+a direct call supplies the arity needed to select a slot.
+
 ## Option, Result, and null
 
 Oreslang does **not** have ambient nullable references. A bare `null` value is a compile-time error, and `null` is not a standalone variable/parameter/return type.
@@ -695,6 +754,35 @@ let Fnc<int, int> fact = |int n| -> {
 };
 ```
 
+Callable types also support a signature-inside-generics spelling:
+
+```ores
+val Fnc<int(int)> doubler = |int value| -> {
+  return value * 2;
+};
+
+val Fnc<String(int, bool)> describe = |int value, bool enabled| -> {
+  return enabled ? "enabled" : "disabled";
+};
+```
+
+The type before the inner parentheses is the result type, and the types inside
+the parentheses are the parameter types. Optional documentation-only parameter
+names are accepted, so `Fnc<String(int value, bool enabled)>` is equivalent.
+
+The existing comma form remains supported for compatibility, with parameter
+types first and the result type last:
+
+```ores
+Fnc<String(int, bool)>   // signature form: returns String
+Fnc<int, bool, String>   // comma form: exactly the same type
+(int, bool) => String    // ordinary function-type form: exactly the same type
+```
+
+`Function<...>` is an alias of `Fnc<...>` and accepts both generic spellings.
+All of these forms normalize to the same callable type; they do not create
+distinct overload, ABI, runtime, or closure representations.
+
 ## Semicolons
 
 Semicolons are strongly recommended. They remain the canonical formatter output.
@@ -762,7 +850,7 @@ Abstract methods use the same slot identity. Every caller-visible arity of an ab
 
 Special symbol methods such as `[Symbol.iterator]` are not exempt: they use the same name + arity identity, inheritance ambiguity checks, and override-contract rules as ordinary methods.
 
-Top-level/module `fnc` and `routine` declarations never overload.
+Top-level/module callables use the same **name + exact arity** overload rule. Same-name/different-arity `fnc` declarations are valid, and same-name/different-arity `routine` declarations are valid. A single name may not mix `fnc` and `routine` declarations, because those kinds have different reifiability/recursion semantics but occupy the same module value namespace.
 
 ## Ternary expressions
 
@@ -930,8 +1018,16 @@ In addition to `stdio.print` and `stdio.println`, the stream-shaped form is avai
 ```ores
 stdio.stdout.write(value);
 stdio.stdout.println(value);
+stdio.stdout.log("ORES_TEST|", status, "|", full_name, "|", detail);
+
+val parts = arr["ORES_TEST|", status, "|", full_name, "|", detail];
+stdio.stdout.log(...parts);
+stdio.stdout.logList(parts);
 ```
 
+`stdout.log(...)` stringifies each argument, concatenates the values with no inserted separator, and appends one newline. This makes it a compact replacement for a run of `write(...)` calls followed by `println(...)`. `stdout.logList(sequence)` is exactly the sequence form of the same operation and is equivalent to `stdout.log(...sequence)`.
+
+The `...expression` syntax is an argument-list spread operator. In this initial variadic surface the spread value must be an Array/List/tuple. Oreslang keeps fixed-arity calls statically sound: dynamic spread is rejected for ordinary fixed-arity functions and methods until the language has an explicit variadic callable type.
 
 ## Execution profiles: JIT, AOT, and hybrid
 
