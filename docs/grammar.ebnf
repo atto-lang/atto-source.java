@@ -353,8 +353,14 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      so Vector[int][int] is the two-dimensional shorthand. The rank=N named
      parameter is an equivalent explicit rank declaration when one bracketed
      element shape is present.
-   - Runtime size/capacity are constructor state, not type metadata; size= and
-     capacity= are rejected inside '<...>'.
+   - Runtime size/capacity are constructor state for runtime-extent collections;
+     size= and capacity= are rejected inside their '<...>' metadata.
+   - Tuple is the fixed-arity exception: Tuple<size=N>[T1, ...] treats size as a
+     compile-time arity assertion. Tuple inline_capacity/max_capacity must equal
+     the same arity, rank must be 1, capacity= is rejected, and growth_policy
+     must be Fixed (or a qualified *.Fixed policy).
+   - Tuple[T1, T2, ...] is the explicit spelling of finite tuple type
+     [T1, T2, ...] when tuple layout metadata is needed.
    - "block" followed by "{" is a standalone lexical scope. It has no implicit
      scheduling behavior and declarations inside it do not escape the scope.
    - Unparenthesized C-style headers are distinguished by their semicolon
