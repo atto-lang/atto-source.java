@@ -145,6 +145,7 @@ public final class OresEvalRootNode extends RootNode {
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
+        private static final Object MISSING_ARGUMENT = new Object();
 
         private enum InvocationKind {
             FUNCTION,
@@ -1068,6 +1069,9 @@ public final class OresEvalRootNode extends RootNode {
                                 index.receiver(), seen)
                         || expressionContainsPotentialSuspension(
                                 index.index(), seen);
+            }
+            if (expr instanceof Ast.NamedArgExpr named) {
+                return expressionContainsPotentialSuspension(named.value(), seen);
             }
             if (expr instanceof Ast.NewExpr created) {
                 return created.arguments().stream().anyMatch(
@@ -4579,9 +4583,17 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
+                if (directName.name().equals("Channel")) {
+                    List<Object> args = evaluateArguments(call.arguments(), env);
+                    args = bindEvaluatedArgumentsByNames(
+                            call.arguments(), args, List.of("capacity"), "Channel<T>", true);
+                    return invokableInvocation(new ChannelFactory()::create, args);
+                }
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     List<Object> args = evaluateArguments(call.arguments(), env);
+                    args = bindEvaluatedArguments(
+                            call.arguments(), args, direct.parameters(), "function " + direct.name());
                     return functionInvocation(direct, args);
                 }
             }
@@ -4600,7 +4612,10 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "method",
                                 method.name());
-                        return object.owner.methodInvocation(object, method, args);
+                        List<Object> bound = object.owner.bindEvaluatedArguments(
+                                call.arguments(), args, method.parameters(),
+                                "method " + object.klass.name() + "." + method.name());
+                        return object.owner.methodInvocation(object, method, bound);
                     }
 
                     OwnedField ownedField = object.owner.findField(
@@ -4646,12 +4661,15 @@ public final class OresEvalRootNode extends RootNode {
                             env.accessClass(),
                             "static function",
                             fn.name());
-                    return klass.owner().staticFunctionInvocation(fn, args);
+                    List<Object> bound = klass.owner().bindEvaluatedArguments(
+                            call.arguments(), args, fn.parameters(),
+                            "static function " + klass.klass().name() + "." + fn.name());
+                    return klass.owner().staticFunctionInvocation(fn, bound);
                 }
 
                 if (receiver instanceof ModuleFacade module) {
                     return module.owner().prepareModuleInvocation(
-                            module.module(), methodCall.member(), args);
+                            module.module(), methodCall.member(), call.arguments(), args);
                 }
 
                 if (receiver instanceof OresMutex.Guard<?> guard
@@ -4673,12 +4691,19 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ImportedNamespace namespace) {
                     return namespace.owner().prepareImportedInvocation(
-                            namespace.kind(), methodCall.member(), args);
+                            namespace.kind(), methodCall.member(), call.arguments(), args);
                 }
 
                 Object callee = member(receiver, methodCall.member(), env);
                 if (!(callee instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("value is not callable: " + callee);
+                }
+                if (receiver instanceof ChannelFactory && methodCall.member().equals("new")) {
+                    args = bindEvaluatedArgumentsByNames(
+                            call.arguments(), args, List.of("capacity"), "Channel.new<T>", true);
+                } else if (hasNamedArguments(call.arguments())) {
+                    throw new IllegalArgumentException(
+                            "named arguments require a declared Ores callable with parameter names");
                 }
                 return invokableInvocation(invokable, args);
             }
@@ -4691,12 +4716,17 @@ public final class OresEvalRootNode extends RootNode {
                     return importedTarget(directImport.declaration()).prepareImportedInvocation(
                             Ast.ImportKind.FUNCTION,
                             directImport.sourceName(),
+                            call.arguments(),
                             args);
                 }
             }
 
             Object callee = eval(call.callee(), env);
             List<Object> args = evaluateArguments(call.arguments(), env);
+            if (hasNamedArguments(call.arguments())) {
+                throw new IllegalArgumentException(
+                        "named arguments require a direct declared callable; function values do not retain parameter names");
+            }
             if (!(callee instanceof Invokable invokable)) {
                 throw new IllegalArgumentException("value is not callable: " + callee);
             }
@@ -4708,11 +4738,92 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
                     values.addAll(expandArgumentSequence(eval(spread.expression(), env), "argument spread"));
+                } else if (argument instanceof Ast.NamedArgExpr named) {
+                    values.add(eval(named.value(), env));
                 } else {
                     values.add(eval(argument, env));
                 }
             }
             return List.copyOf(values);
+        }
+
+        private List<Object> bindEvaluatedArguments(
+                List<Ast.Expr> sourceArguments,
+                List<Object> values,
+                List<Ast.Param> parameters,
+                String label) {
+            return bindEvaluatedArgumentsByNames(
+                    sourceArguments,
+                    values,
+                    parameters.stream().map(Ast.Param::name).toList(),
+                    label,
+                    true);
+        }
+
+        private List<Object> bindEvaluatedArgumentsByNames(
+                List<Ast.Expr> sourceArguments,
+                List<Object> values,
+                List<String> parameterNames,
+                String label,
+                boolean requireAll) {
+            boolean hasNamed = sourceArguments.stream()
+                    .anyMatch(Ast.NamedArgExpr.class::isInstance);
+            if (!hasNamed) return values;
+            if (sourceArguments.stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+                throw new IllegalArgumentException(
+                        label + " cannot mix named arguments with spread arguments");
+            }
+            if (sourceArguments.size() != values.size()) {
+                throw new IllegalStateException(
+                        label + " named argument evaluation lost source/value correspondence");
+            }
+            if (sourceArguments.size() > parameterNames.size()) {
+                throw new IllegalArgumentException(label + " received too many arguments");
+            }
+
+            ArrayList<Object> ordered = new ArrayList<>(
+                    java.util.Collections.nCopies(parameterNames.size(), MISSING_ARGUMENT));
+            int positional = 0;
+            for (int sourceIndex = 0; sourceIndex < sourceArguments.size(); sourceIndex++) {
+                Ast.Expr source = sourceArguments.get(sourceIndex);
+                Object value = values.get(sourceIndex);
+                if (source instanceof Ast.NamedArgExpr named) {
+                    int index = parameterNames.indexOf(named.name());
+                    if (index < 0) {
+                        throw new IllegalArgumentException(
+                                label + " has no parameter named '" + named.name() + "'");
+                    }
+                    if (ordered.get(index) != MISSING_ARGUMENT) {
+                        throw new IllegalArgumentException(
+                                label + " parameter '" + named.name() + "' is supplied more than once");
+                    }
+                    ordered.set(index, value);
+                    continue;
+                }
+                while (positional < ordered.size()
+                        && ordered.get(positional) != MISSING_ARGUMENT) {
+                    positional++;
+                }
+                if (positional >= ordered.size()) {
+                    throw new IllegalArgumentException(
+                            label + " received too many positional arguments");
+                }
+                ordered.set(positional++, value);
+            }
+
+            if (requireAll) {
+                for (int i = 0; i < ordered.size(); i++) {
+                    if (ordered.get(i) == MISSING_ARGUMENT) {
+                        throw new IllegalArgumentException(
+                                label + " is missing required parameter '" + parameterNames.get(i) + "'");
+                    }
+                }
+            }
+            return java.util.Collections.unmodifiableList(ordered);
+        }
+
+        private boolean hasNamedArguments(List<Ast.Expr> arguments) {
+            return arguments.stream().anyMatch(Ast.NamedArgExpr.class::isInstance);
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
@@ -5015,6 +5126,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
+            }
+            if (expr instanceof Ast.NamedArgExpr) {
+                throw new IllegalArgumentException("named arguments are only valid inside call/constructor argument lists");
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
