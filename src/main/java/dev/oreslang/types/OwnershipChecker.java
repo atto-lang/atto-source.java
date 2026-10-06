@@ -817,8 +817,8 @@ public final class OwnershipChecker {
                 requireIntrinsicArity(call, "take", 1);
                 ValueInfo taken = checkExpr(call.arguments().getFirst(), scope, true);
                 if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
-                        || taken.kind == ValueKind.SHARED) {
-                    throw error("rt take requires an exclusively owned value, not a borrow/shared owner");
+                        || taken.kind == ValueKind.SHARED || taken.kind == ValueKind.PROXY) {
+                    throw error("rt take requires raw exclusive ownership, not a borrow/shared/proxy capability");
                 }
                 return taken;
             }
@@ -850,6 +850,12 @@ public final class OwnershipChecker {
                 Ast.TypeRef target = source.type != null && source.type.isBorrow()
                         ? source.type.borrowedTarget()
                         : source.type;
+
+                // A proxy is already the explicit synchronized capability.
+                // Never downgrade it into an unsynchronized SHARED owner.
+                if (source.kind == ValueKind.PROXY) {
+                    return new ValueInfo(target, ValueKind.PROXY, null);
+                }
 
                 // Scalars are already independent Copy values; "sharing" them
                 // does not create an ownership transition.
@@ -885,6 +891,47 @@ public final class OwnershipChecker {
                 }
 
                 return new ValueInfo(Ast.TypeRef.borrowed(target, false), ValueKind.SHARED, null);
+            }
+            if (ownershipOperation.equals("proxy")) {
+                requireIntrinsicArity(call, "proxy", 1);
+                Ast.Expr argument = call.arguments().getFirst();
+                ValueInfo source = checkExpr(argument, scope, false);
+                Ast.TypeRef target = source.type != null && source.type.isBorrow()
+                        ? source.type.borrowedTarget()
+                        : source.type;
+
+                if (source.kind == ValueKind.COPY) {
+                    throw error("rt proxy requires a reference-backed non-Copy value");
+                }
+                if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW) {
+                    throw error("rt proxy requires unique ownership; a borrow cannot be wrapped");
+                }
+                if (source.kind == ValueKind.SHARED) {
+                    throw error("rt proxy cannot upgrade read-only shared ownership into synchronized mutation");
+                }
+                if (source.kind == ValueKind.PROXY) {
+                    return new ValueInfo(target, ValueKind.PROXY, null);
+                }
+                if (source.kind != ValueKind.MOVE_ONLY) {
+                    throw error("rt proxy requires a uniquely owned class/record value");
+                }
+
+                if (argument instanceof Ast.NameExpr name) {
+                    VarState owner = requireState(scope, name.name());
+                    requireUsable(owner, name.name(), false);
+                    if (owner.origin == Origin.MODULE) {
+                        throw error("rt proxy cannot consume persistent module-owned state '" + name.name()
+                                + "'; expose an explicit capability/service boundary");
+                    }
+                    if (owner.kind != ValueKind.MOVE_ONLY) {
+                        throw error("rt proxy requires unique ownership before wrapping");
+                    }
+                    move(owner, name.name());
+                } else if (source.borrowSource != null) {
+                    throw error("rt proxy cannot wrap a projected/borrowed value");
+                }
+
+                return new ValueInfo(target, ValueKind.PROXY, null);
             }
 
             Ast.FunctionDecl fn = findFunction(intrinsic.name());
@@ -942,12 +989,17 @@ public final class OwnershipChecker {
                     ValueInfo receiver = checkExpr(member.receiver(), scope, true);
                     if (receiver.kind == ValueKind.IMM_BORROW
                             || receiver.kind == ValueKind.MUT_BORROW
-                            || receiver.kind == ValueKind.SHARED) {
+                            || receiver.kind == ValueKind.SHARED
+                            || receiver.kind == ValueKind.PROXY) {
                         throw error("method '" + method.name()
-                                + "' takes self ownership but receiver is borrowed/shared");
+                                + "' takes self ownership but receiver is borrowed/shared/proxy");
                     }
                     checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
-                    return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                    ValueKind resultKind = kindOfType(method.returnType());
+                if (receiver.kind == ValueKind.PROXY && resultKind == ValueKind.MOVE_ONLY) {
+                    resultKind = ValueKind.PROXY;
+                }
+                return new ValueInfo(method.returnType(), resultKind, null);
                 }
 
                 boolean mutableReceiver = requiresMutableReceiver(method);
@@ -957,10 +1009,13 @@ public final class OwnershipChecker {
                         : projectionOwner(member.receiver(), scope);
 
                 if (mutableReceiver) {
-                    if (receiverOwner != null) {
+                    if (receiver.kind == ValueKind.PROXY) {
+                        // The runtime holds the proxy write lock for the whole
+                        // mutable-receiver method call.
+                    } else if (receiverOwner != null) {
                         ensureMutableReceiver(member.receiver(), scope, "method '" + method.name() + "' receiver");
                     } else if (receiver.kind != ValueKind.MOVE_ONLY) {
-                        throw error("mutable method '" + method.name() + "' requires a unique owned temporary or mutable owner");
+                        throw error("mutable method '" + method.name() + "' requires a unique owned temporary, mutable owner, or proxy");
                     }
                 }
 
@@ -1080,6 +1135,11 @@ public final class OwnershipChecker {
                     if (state.kind == ValueKind.SHARED) {
                         throw error(callable + " argument " + (i + 1)
                                 + " cannot mutably access shared read-only owner '" + name.name() + "'");
+                    }
+                    if (state.kind == ValueKind.PROXY) {
+                        throw error(callable + " argument " + (i + 1)
+                                + " cannot pass proxy '" + name.name()
+                                + "' as a generic mut parameter; call a mutable receiver method on the proxy so the write lock spans the whole operation");
                     }
                     beginTemporaryBorrow(state, true, callable, i + 1, name.name());
                     temporaryBorrows.add(new TemporaryBorrow(state, true));
@@ -1278,6 +1338,12 @@ public final class OwnershipChecker {
             boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW;
             if (state.kind == ValueKind.SHARED) {
                 throw error("cannot mutate " + what + " through shared read-only owner '" + name.name() + "'");
+            }
+            if (state.kind == ValueKind.PROXY) {
+                if (state.immutableBorrows > 0 || state.mutableBorrowed) {
+                    throw error("cannot mutate proxy '" + name.name() + "' while borrowed");
+                }
+                return;
             }
             if (!state.mutable && !mutableBorrow) {
                 throw error("cannot mutate " + what + " through immutable binding/read borrow '"
@@ -2213,7 +2279,7 @@ public final class OwnershipChecker {
         return new IllegalArgumentException("Oreslang ownership error: " + message);
     }
 
-    private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW, SHARED }
+    private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW, SHARED, PROXY }
     private enum Origin { PARAM, LOCAL, CAPTURE, MODULE }
 
     private static final class ValueInfo {
