@@ -249,7 +249,19 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     private void clearLaneAgeIfEmpty(int slot, ArrayBlockingQueue<Runnable> lane) {
-        if (lane.isEmpty()) affinityLaneOldestEnqueueNanos.set(slot, 0L);
+        if (!lane.isEmpty()) return;
+
+        affinityLaneOldestEnqueueNanos.set(slot, 0L);
+
+        /*
+         * Close the empty-check-vs-enqueue race. Producers also CAS from zero,
+         * so either side that observes the lane becoming non-empty republishes
+         * a steal age without resetting the age of an already-live queue.
+         */
+        if (!lane.isEmpty()) {
+            affinityLaneOldestEnqueueNanos.compareAndSet(
+                    slot, 0L, System.nanoTime());
+        }
     }
 
     private Runnable pollStealableTask(int thiefSlot) {
@@ -348,14 +360,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 slot = preferredSlot(affinityKey);
                 ArrayBlockingQueue<Runnable> lane = affinityQueues.get(slot);
                 if (lane.size() < localBacklogEscapeThreshold()) {
-                    boolean wasEmpty = lane.isEmpty();
                     offered = lane.offer(task);
                     if (offered) {
                         destination = lane;
-                        if (wasEmpty || lane.size() == 1) {
-                            affinityLaneOldestEnqueueNanos.compareAndSet(
-                                    slot, 0L, System.nanoTime());
-                        }
+                        affinityLaneOldestEnqueueNanos.compareAndSet(
+                                slot, 0L, System.nanoTime());
                     }
                 }
             }
