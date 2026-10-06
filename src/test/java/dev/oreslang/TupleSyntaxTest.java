@@ -102,6 +102,23 @@ final class TupleSyntaxTest {
     }
 
     @Test
+    void parenthesizedTupleElementInsideTupleShapeRemainsNested() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc nested(): Tuple[(string, int), bool] {
+                  return (("foo", 5), true);
+                }
+
+                pub fnc main(): void {
+                  val n: int = nested()[0][1];
+                  val b: bool = nested()[1];
+                  stdio.println(n);
+                  stdio.println(b);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void explicitTupleConstructorCanInferOrUseAnExplicitShape() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc inferred(): Tuple[string, int] {
