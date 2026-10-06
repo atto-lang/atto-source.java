@@ -505,7 +505,7 @@ public final class OresEvalRootNode extends RootNode {
                     List<?> arguments) {
                 this.function = null;
                 this.method = Objects.requireNonNull(method, "method");
-                this.receiver = Objects.requireNonNull(receiver, "receiver");
+                this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
             }
@@ -3393,20 +3393,26 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "init is a lifecycle hook and cannot be invoked directly; startup runs it exactly once");
             }
+
             List<Object> normalized = normalizeFunctionArguments(fn, args);
+
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                if (!fn.async()) return callFunctionBodyRaw(fn, normalized);
+                if (fn.async() || functionContainsPotentialSuspension(fn)) {
+                    OresFuture<Object> future =
+                            startSourceFunctionTask(
+                                    fn,
+                                    fn.async()
+                                            ? detachAsyncArguments(normalized)
+                                            : normalized);
 
-                List<?> detached = detachAsyncArguments(normalized);
-                return context.asyncRuntime().submit(() ->
-                        detachAsyncValue(
-                                invoke(functionBodyInvocation(fn, detached)),
-                                new IdentityHashMap<>()));
-            }
+                    if (fn.async()) {
+                        return future;
+                    }
 
-            if (fn.async()) {
-                throw new IllegalStateException(
-                        "async actor callables require mailbox continuation lowering and are not executed synchronously");
+                    return returnSourceTaskResult(future, false);
+                }
+
+                return callFunctionBodyRaw(fn, normalized);
             }
 
             if (ActorRuntime.inActorExecution()) {
@@ -3423,11 +3429,38 @@ public final class OresEvalRootNode extends RootNode {
                 case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
             };
 
+            if (fn.async() || functionContainsPotentialSuspension(fn)) {
+                OresFuture<Object> completion =
+                        context.actors().invokeAsync(
+                                runtimeKind,
+                                normalized,
+                                (delivered, actorContext) ->
+                                        invoke(
+                                                functionBodyInvocation(
+                                                        fn,
+                                                        delivered)));
+
+                return fn.async()
+                        ? completion
+                        : returnSourceTaskResult(completion, false);
+            }
+
             return context.actors().invoke(
                     runtimeKind,
                     normalized,
                     (delivered, actorContext) ->
                             invoke(functionBodyInvocation(fn, delivered)));
+        }
+
+        private Object returnSourceTaskResult(
+                OresFuture<?> future,
+                boolean declaredFuture) {
+            if (declaredFuture
+                    || ActorRuntime.inActorExecution()
+                    || OresScheduler.current() != null) {
+                return future;
+            }
+            return future.join();
         }
 
         private List<Object> normalizeFunctionArguments(Ast.FunctionDecl fn, List<?> args) {
@@ -3541,6 +3574,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
+            if (fn.async() || functionContainsPotentialSuspension(fn)) {
+                OresFuture<Object> future =
+                        startSourceFunctionTask(
+                                fn,
+                                fn.async()
+                                        ? detachAsyncArguments(args)
+                                        : args);
+                return returnSourceTaskResult(future, fn.async());
+            }
+
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -3566,11 +3609,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethodRaw(OresObject receiver, Ast.MethodDecl method, List<?> args) {
-            if (method.async()) {
-                throw new IllegalStateException(
-                        "async instance methods are not admitted until receiver ownership can be moved into the task");
+            if (args.size() != method.parameters().size()) {
+                throw new IllegalArgumentException(
+                        "method " + method.name() + " arity mismatch");
             }
-            if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            if (method.async() || methodContainsPotentialSuspension(method)) {
+                OresFuture<Object> future =
+                        startSourceMethodTask(method, receiver, args);
+                return returnSourceTaskResult(future, method.async());
+            }
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
@@ -4999,15 +5046,25 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callStaticFunctionRaw(Ast.MethodDecl fn, List<?> args) {
-            if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + fn.name());
-            if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
-            if (!fn.async()) return callStaticFunctionBodyRaw(fn, args);
-
-            List<?> detached = detachAsyncArguments(args);
-            return context.asyncRuntime().submit(() ->
-                    detachAsyncValue(
-                            invoke(staticFunctionBodyInvocation(fn, detached)),
-                            new IdentityHashMap<>()));
+            if (!fn.isStatic()) {
+                throw new IllegalArgumentException(
+                        "not a static class function: " + fn.name());
+            }
+            if (args.size() != fn.parameters().size()) {
+                throw new IllegalArgumentException(
+                        "static function " + fn.name() + " arity mismatch");
+            }
+            if (fn.async() || methodContainsPotentialSuspension(fn)) {
+                OresFuture<Object> future =
+                        startSourceMethodTask(
+                                fn,
+                                null,
+                                fn.async()
+                                        ? detachAsyncArguments(args)
+                                        : args);
+                return returnSourceTaskResult(future, fn.async());
+            }
+            return callStaticFunctionBodyRaw(fn, args);
         }
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
