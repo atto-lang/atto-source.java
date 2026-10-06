@@ -165,8 +165,6 @@ final class ActorRuntimeTest {
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
             assertEquals(2, deliveries.get());
             assertEquals(1, firstSideEffects.get());
-        } finally {
-            // Ensure a failing assertion cannot strand the first actor turn.
         }
     }
 
