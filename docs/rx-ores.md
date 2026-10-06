@@ -30,6 +30,8 @@ The mapping is:
 
 Cancellation does not close the caller-owned channel.
 
+For a cold stream, use Observable.from_ch_provider(provider) (Java runtime name: fromChProvider). The provider is lazy and runs once per subscription, creating/connecting a fresh native channel for that subscriber. The provider-created channel is owned by that subscription and is closed on cancellation or terminal completion. This keeps “coldness” in the factory/lifecycle rather than adding a second kind of channel.
+
 The implementation uses ChannelRuntime.Channel.readAsync(), the native registration boundary corresponding to nb readch. No Rx thread is created.
 
 ## Observable -> Channel
