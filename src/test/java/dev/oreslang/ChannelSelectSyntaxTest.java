@@ -267,7 +267,8 @@ final class ChannelSelectSyntaxTest {
     @Test
     void nonblockingWriteCallbackUsesTheSameChannelOperationSurface() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                actor fnc write(Channel<int> output): void {
+                actor fnc write(): void {
+                  val Channel<int> output = Channel.new<int>(1);
                   nb cb writech output, 42 || -> {
                     stdio.println("write complete");
                   };
@@ -278,7 +279,7 @@ final class ChannelSelectSyntaxTest {
         Ast.FunctionDecl fn =
                 (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
         Ast.ExprStmt statement =
-                assertInstanceOf(Ast.ExprStmt.class, fn.body().getFirst());
+                assertInstanceOf(Ast.ExprStmt.class, fn.body().get(1));
         Ast.ChannelOpExpr write =
                 assertInstanceOf(Ast.ChannelOpExpr.class, statement.expression());
         assertEquals(Ast.WaitMode.NONBLOCKING, write.mode());

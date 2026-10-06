@@ -937,13 +937,13 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
-                return expressionContainsPotentialSuspension(loop.iterable(), seen)
+                return loop.asyncIteration() || expressionContainsPotentialSuspension(loop.iterable(), seen)
                         || loop.body().stream().anyMatch(
                                 nested ->
                                         statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
-                return expressionContainsPotentialSuspension(loop.iterable(), seen)
+                return loop.asyncIteration() || expressionContainsPotentialSuspension(loop.iterable(), seen)
                         || loop.body().stream().anyMatch(
                                 nested ->
                                         statementContainsPotentialSuspension(nested, seen));
@@ -983,10 +983,16 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (expr instanceof Ast.CallExpr call) {
+                for (Ast.Expr argument : call.arguments()) {
+                    if (expressionContainsPotentialSuspension(argument, seen)) return true;
+                }
+                if (expressionContainsPotentialSuspension(call.callee(), seen)) return true;
                 if (call.callee() instanceof Ast.NameExpr name
                         && !functionNameBoundLocally(name.name())) {
                     Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
                     if (target != null) {
+                        // Creating a generator activation does not pull or await it.
+                        if (target.generator()) return false;
                         return target.async()
                                 || target.actorKind() != Ast.ActorKind.NONE
                                 || (!target.async()
@@ -1550,6 +1556,13 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
+                                if (loop.asyncIteration()) {
+                                    runAsyncForOf(t, iterable, env, loop.body(),
+                                            (iteration, item) -> iteration.define(
+                                                    loop.bindingName(), item, loop.bindingKind()),
+                                            continuation);
+                                    return;
+                                }
                                 runForOfIteration(
                                         t,
                                         loop,
@@ -1571,6 +1584,21 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             SourceFlow.throwing(failure));
+                                    return;
+                                }
+                                if (loop.asyncIteration()) {
+                                    runAsyncForOf(t, iterable, env, loop.body(),
+                                            (iteration, item) -> {
+                                                List<?> parts = asSequence(item);
+                                                if (parts.size() != loop.bindings().size()) {
+                                                    throw new IllegalArgumentException("for-of destructure arity mismatch");
+                                                }
+                                                for (int i = 0; i < parts.size(); i++) {
+                                                    Ast.DestructureBinding binding = loop.bindings().get(i);
+                                                    if (!binding.isDiscard()) iteration.define(
+                                                            binding.name(), parts.get(i), binding.kind());
+                                                }
+                                            }, continuation);
                                     return;
                                 }
                                 runForOfDestructureIteration(
@@ -2018,6 +2046,75 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation);
                         }
                     });
+        }
+
+        private GeneratorRuntime.AsyncGenerator<?> sourceAsyncGenerator(Object value, Env env) {
+            if (value instanceof GeneratorRuntime.AsyncGenerator<?> generator) return generator;
+            if (value instanceof OresObject object) {
+                Ast.MethodDecl iterator = findMethod(object.klass,
+                        CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
+                if (iterator != null) {
+                    object.owner.requireClassMemberVisible(iterator.visibility(),
+                            object.owner.declaringClass(iterator), env.accessClass(), "method", iterator.name());
+                    return sourceAsyncGenerator(callMethod(object, iterator, List.of()), env);
+                }
+            }
+            Iterable<?> synchronous = iterableValues(value, env);
+            return GeneratorRuntime.asyncGenerator(context.asyncRuntime(), emitter -> {
+                try {
+                    for (Object item : synchronous) emitter.emit(item);
+                } finally {
+                    closeIterable(synchronous);
+                }
+            });
+        }
+
+        private void runAsyncForOf(SourceTask task, Object value, Env env,
+                List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
+                SourceFlowCont continuation) {
+            runAsyncForOfIteration(task, sourceAsyncGenerator(value, env), env, body, bind, continuation);
+        }
+
+        private void finishAsyncForOf(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
+                SourceFlow flow, SourceFlowCont continuation) {
+            // Closing waits for producer cleanup, so it also runs off the bounded carrier.
+            task.suspend(context.asyncRuntime().submit(() -> {
+                generator.close();
+                return null;
+            }), (t, ignored, failure) -> continuation.accept(t,
+                    failure == null ? flow : SourceFlow.throwing(failure)));
+        }
+
+        private void runAsyncForOfIteration(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
+                Env env, List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
+                SourceFlowCont continuation) {
+            task.suspend(generator.nextStep(), (t, value, failure) -> {
+                if (failure != null) {
+                    finishAsyncForOf(t, generator, SourceFlow.throwing(failure), continuation);
+                    return;
+                }
+                GeneratorRuntime.Step<?> step = (GeneratorRuntime.Step<?>) value;
+                if (step.done()) {
+                    finishAsyncForOf(t, generator, SourceFlow.normal(), continuation);
+                    return;
+                }
+                Env iteration = new Env(env);
+                try {
+                    bind.accept(iteration, step.value());
+                } catch (RuntimeException | Error bindingFailure) {
+                    finishAsyncForOf(t, generator, SourceFlow.throwing(bindingFailure), continuation);
+                    return;
+                }
+                runBlock(t, body, iteration, (t2, flow) -> {
+                    if (flow.kind() == SourceFlowKind.BREAK) {
+                        finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
+                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
+                        finishAsyncForOf(t2, generator, flow, continuation);
+                    } else {
+                        runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
+                    }
+                });
+            });
         }
 
         private void runForOfIteration(
