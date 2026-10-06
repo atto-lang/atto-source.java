@@ -1183,9 +1183,6 @@ public final class OresNet {
                     ? request.timeoutMillis
                     : connectTimeoutMillis;
             long fd = io(() -> NativeSocketBridge.connect(uri.host, uri.port, connectTimeout));
-            if (request.timeoutMillis > 0) {
-                ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, request.timeoutMillis));
-            }
             try {
                 if (request.timeoutMillis > 0) {
                     ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, request.timeoutMillis));
@@ -1627,10 +1624,13 @@ public final class OresNet {
             offset = lineEnd + 2;
             if (size == 0) {
                 int trailerEnd = indexOf(body, new byte[] {'\r','\n','\r','\n'}, offset);
-                if (trailerEnd < 0) {
-                    if (offset + 2 == body.length && body[offset] == '\r' && body[offset + 1] == '\n') {
-                        return out.toByteArray();
+                if (offset + 2 <= body.length && body[offset] == '\r' && body[offset + 1] == '\n') {
+                    if (offset + 2 != body.length) {
+                        throw new IllegalStateException("unexpected bytes after chunked response");
                     }
+                    return out.toByteArray();
+                }
+                if (trailerEnd < 0) {
                     throw new IllegalStateException("malformed chunk trailer terminator");
                 }
 
