@@ -1009,7 +1009,9 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        return cell.sourceScheduler().start(task);
+        OresFuture<T> completion = cell.sourceScheduler().start(task);
+        ownFuture(cell, completion);
+        return completion;
     }
 
     private boolean ownFuture(
@@ -1083,6 +1085,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final OresFuture<Void> finalizedFuture = new OresFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -2629,6 +2632,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         IsolatePolicy policy = defaultSpawnPolicy();
         OresFuture<R> completion = new OresFuture<>();
+        OresFuture<R> published = new OresFuture<>();
 
         ActorRef<M> ref = spawnInternal(
                 kind,
@@ -2682,6 +2686,20 @@ public final class ActorRuntime implements AutoCloseable {
                 },
                 true);
 
+        // Publish source-call completion only after the one-shot actor has
+        // left the TurnExecutor/context boundary and finalized its children.
+        ref.finalizedFuture.whenCompleteRuntime((ignored, terminalFailure) -> {
+            if (!completion.isDone()) {
+                Throwable failure = ref.terminationCause.get();
+                completion.failFromRuntime(failure != null ? failure :
+                        new CancellationException("actor terminated before producing its result"));
+            }
+            completion.whenCompleteRuntime((value, failure) -> {
+                if (failure == null) published.completeFromRuntime(value);
+                else published.failFromRuntime(OresFuture.unwrap(failure));
+            });
+        });
+
         try {
             send(ref, message);
         } catch (Throwable failure) {
@@ -2692,7 +2710,7 @@ public final class ActorRuntime implements AutoCloseable {
                 failure.addSuppressed(cleanup);
             }
         }
-        return completion;
+        return published;
     }
 
     private void reserveActorSlot() {
@@ -4636,6 +4654,7 @@ public final class ActorRuntime implements AutoCloseable {
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             lifecycleLock.notifyAll();
+            ref.finalizedFuture.completeFromRuntime(null);
         }
 
         private void childFinalized(ActorCell<?> child) {
