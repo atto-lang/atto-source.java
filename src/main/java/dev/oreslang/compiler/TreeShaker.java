@@ -422,6 +422,20 @@ public final class TreeShaker {
             }
         }
 
+        private boolean constantEquals(Object left, Object right) {
+            if (left == right) return true;
+            if (left == null || right == null) return false;
+            if (left instanceof Number a && right instanceof Number b) {
+                boolean aIntegral = a instanceof Byte || a instanceof Short
+                        || a instanceof Integer || a instanceof Long;
+                boolean bIntegral = b instanceof Byte || b instanceof Short
+                        || b instanceof Integer || b instanceof Long;
+                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
+                return a.doubleValue() == b.doubleValue();
+            }
+            return Objects.equals(left, right);
+        }
+
         private Object evaluate(Ast.Expr expression, String module, Map<String, Object> locals) {
             if (expression == null) return UNKNOWN;
             if (expression instanceof Ast.LiteralExpr literal) return literal.value();
@@ -454,8 +468,8 @@ public final class TreeShaker {
                 return switch (binary.operator()) {
                     case "&&" -> left instanceof Boolean l && right instanceof Boolean r ? l && r : UNKNOWN;
                     case "||" -> left instanceof Boolean l && right instanceof Boolean r ? l || r : UNKNOWN;
-                    case "==" -> Objects.equals(left, right);
-                    case "!=" -> !Objects.equals(left, right);
+                    case "eq", "==" -> constantEquals(left, right);
+                    case "neq", "!=" -> !constantEquals(left, right);
                     case "<" -> compare(left, right, c -> c < 0);
                     case "<=" -> compare(left, right, c -> c <= 0);
                     case ">" -> compare(left, right, c -> c > 0);
