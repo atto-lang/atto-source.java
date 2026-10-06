@@ -234,7 +234,11 @@ public final class TypeChecker {
         }
         if (module.contracts().isEmpty()) return;
         Record actual = moduleShape(module);
+        Set<String> seenContracts = new HashSet<>();
         for (Ast.TypeRef ref : module.contracts()) {
+            if (!seenContracts.add(ref.name())) {
+                throw new IllegalArgumentException("module '" + module.name() + "' lists contract '" + ref.name() + "' more than once");
+            }
             Ast.InterfaceDecl contract = findInterface(ref.name());
             if (contract == null || !contract.moduleContract()) {
                 throw new IllegalArgumentException("unknown module contract '" + ref.name() + "'");
