@@ -1526,6 +1526,10 @@ public final class TypeChecker {
                         yield new Proxy(source);
                     }
                     case "ptr" -> {
+                        if (operand instanceof Proxy) {
+                            throw new IllegalArgumentException(
+                                    "rt ptr cannot expose the raw target of a synchronized proxy");
+                        }
                         Type source = deref(operand);
                         if (source instanceof Primitive
                                 || source instanceof StringLiteral
