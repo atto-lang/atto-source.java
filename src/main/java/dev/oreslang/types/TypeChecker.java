@@ -3465,7 +3465,8 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
+                // Future<void> is the canonical completion type for nb writech.
+                // OresFuture supports a null terminal payload, so void is valid here.
                 yield new Named("Future", List.of(element));
             }
             case "SharedMutex" -> {
