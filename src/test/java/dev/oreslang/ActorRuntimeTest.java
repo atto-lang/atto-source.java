@@ -325,13 +325,17 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void sharedActorHasNoPrivateMemorySlice() throws Exception {
+    void sharedActorHasNoPrivateMemorySliceButDoesOwnALocalHeap() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
             AtomicReference<Boolean> hasPrivateMemory = new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorId> localOwner = new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorKind> localKind = new AtomicReference<>();
 
             var ref = runtime.<String>spawnShared(() -> (message, context) -> {
                 hasPrivateMemory.set(context.privateMemory().isPresent());
+                localOwner.set(context.localMemory().owner());
+                localKind.set(context.localMemory().ownerKind());
                 received.countDown();
             });
 
@@ -339,6 +343,97 @@ final class ActorRuntimeTest {
 
             assertTrue(received.await(2, TimeUnit.SECONDS));
             assertFalse(hasPrivateMemory.get());
+            assertEquals(ref.id(), localOwner.get());
+            assertEquals(ActorRuntime.ActorKind.SHARED, localKind.get());
+        }
+    }
+
+
+    @Test
+    void sharedActorLocalHeapIsSeparateFromExplicitSharedRegionAndDiesWithActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch constructed = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.MemoryReservation> localReservation = new AtomicReference<>();
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> localBlock = new AtomicReference<>();
+
+            var sharedCell = runtime.syncCell("shared-region");
+            long sharedBeforeActor = runtime.sharedMemoryBytes();
+            assertTrue(sharedBeforeActor > 0L);
+
+            var ref = runtime.<String>spawnSharedTrusted(factoryContext -> {
+                var local = factoryContext.localMemory();
+                localReservation.set(local.reserveHeap(4096));
+                ActorRuntime.PrivateMemoryBlock block = local.allocateLocalBytes(64);
+                block.writeLong(0, 0x0A0B0C0D0E0F1011L);
+                localBlock.set(block);
+                constructed.countDown();
+                return (message, context) -> { };
+            });
+
+            ref.send("initialize");
+            assertTrue(constructed.await(2, TimeUnit.SECONDS));
+
+            assertTrue(runtime.sharedActorLocalMemoryBytes() >= 4160L);
+            assertTrue(runtime.sharedMemoryBytes() >= sharedBeforeActor,
+                    "explicit shared-region accounting must remain separate from actor-local heap accounting");
+            assertEquals(
+                    runtime.privateMemoryBytes()
+                            + runtime.sharedActorLocalMemoryBytes()
+                            + runtime.sharedMemoryBytes(),
+                    runtime.actorMemoryBytes());
+
+            ref.stop();
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes(),
+                    "shared actor local heap must bulk-retire with the actor");
+            assertTrue(runtime.sharedMemoryBytes() >= sharedBeforeActor,
+                    "explicit shared objects must not be reclaimed merely because one shared actor exits");
+            assertTrue(localBlock.get().closed());
+
+            // Reservation close is idempotent after actor-local heap teardown.
+            localReservation.get().close();
+            sharedCell.close();
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
+    void sharedActorLocalHeapBlockCannotBeUsedByAnotherSharedActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch created = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> block = new AtomicReference<>();
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var owner = runtime.<String>spawnSharedTrusted(factoryContext -> {
+                ActorRuntime.PrivateMemoryBlock local = factoryContext.localMemory().allocateLocalBytes(8);
+                local.writeLong(0, 42L);
+                block.set(local);
+                created.countDown();
+                return (message, context) -> { };
+            });
+
+            owner.send("initialize");
+            assertTrue(created.await(2, TimeUnit.SECONDS));
+
+            var other = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    block.get().readLong(0);
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            other.send("probe");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, observed.get());
+            assertTrue(observed.get().getMessage().contains("owning actor"));
+
+            owner.stop();
+            other.stop();
         }
     }
 
