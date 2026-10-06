@@ -761,8 +761,28 @@ public final class Parser {
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
         if (match(LT)) {
-            if (match(GT)) infer = true;
-            else {
+            if (match(GT)) {
+                infer = true;
+            } else if (name.equals("Fnc") || name.equals("Function")) {
+                /*
+                 * Callable types support both:
+                 *   Fnc<Arg1, Arg2, Result>       (legacy comma form)
+                 *   Fnc<Result(Arg1, Arg2)>       (signature-in-generics form)
+                 *
+                 * The signature form is normalized immediately to the same
+                 * TypeRef representation used by "(Args...) => Result".
+                 */
+                Ast.TypeRef first = parseTypeRef();
+                if (match(LPAREN)) {
+                    List<Ast.TypeRef> params = parseFunctionTypeParametersAfterOpen();
+                    consume(GT, "expected '>' after callable signature type");
+                    return Ast.TypeRef.functionType(params, first);
+                }
+
+                args.add(first);
+                while (match(COMMA)) args.add(parseTypeRef());
+                consume(GT, "expected '>' after type arguments");
+            } else {
                 do args.add(parseTypeRef()); while (match(COMMA));
                 consume(GT, "expected '>' after type arguments");
             }
@@ -772,6 +792,13 @@ public final class Parser {
 
     private Ast.TypeRef parseFunctionTypeSignature() {
         consume(LPAREN, "expected '(' in function type");
+        List<Ast.TypeRef> params = parseFunctionTypeParametersAfterOpen();
+        consume(FAT_ARROW, "function types use the fat arrow '=>'");
+        Ast.TypeRef result = parseTypeRef();
+        return Ast.TypeRef.functionType(params, result);
+    }
+
+    private List<Ast.TypeRef> parseFunctionTypeParametersAfterOpen() {
         List<Ast.TypeRef> params = new ArrayList<>();
         if (!check(RPAREN)) {
             do {
@@ -781,9 +808,7 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RPAREN, "expected ')' after function type parameters");
-        consume(FAT_ARROW, "function types use the fat arrow '=>'");
-        Ast.TypeRef result = parseTypeRef();
-        return Ast.TypeRef.functionType(params, result);
+        return params;
     }
 
     private boolean looksLikeFunctionType() {
