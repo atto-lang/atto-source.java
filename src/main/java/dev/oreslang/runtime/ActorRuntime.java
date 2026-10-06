@@ -276,14 +276,15 @@ public final class ActorRuntime implements AutoCloseable {
      * isolation boundary) has been revoked strongly enough that guest code
      * cannot continue running. The default runtime has no such authority.
      */
-    private volatile BiPredicate<ActorId, Object> forceCancellationHook =
-            (actorId, executionDomain) -> false;
+    private volatile ForceCancellationHook forceCancellationHook =
+            request -> false;
 
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
+    private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
@@ -361,10 +362,37 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public void setForceCancellationHook(
             BiPredicate<ActorId, Object> forceCancellationHook) {
+        requireNoForceCancellationHookReentry("install force-cancellation authority");
         requireSupervisorContext("install force-cancellation authority");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        this.forceCancellationHook = Objects.requireNonNull(
-                forceCancellationHook, "forceCancellationHook");
+        BiPredicate<ActorId, Object> leafHook =
+                Objects.requireNonNull(
+                        forceCancellationHook, "forceCancellationHook");
+        this.forceCancellationHook = request -> {
+            if (request.targets().size() != 1) return false;
+            IsolationTarget target = request.targets().getFirst();
+            return leafHook.test(
+                    target.actorId(),
+                    target.executionDomain());
+        };
+    }
+
+    /**
+     * Install host/VM authority that can revoke a complete structured actor
+     * subtree atomically. A false result or exception leaves the subtree fenced
+     * only temporarily; all fences are released and queued work may resume.
+     */
+    public void setForceCancellationTreeHook(
+            ForceCancellationHook forceCancellationHook) {
+        requireNoForceCancellationHookReentry(
+                "install force-cancellation tree authority");
+        requireSupervisorContext(
+                "install force-cancellation tree authority");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        this.forceCancellationHook =
+                Objects.requireNonNull(
+                        forceCancellationHook,
+                        "forceCancellationHook");
     }
 
     public int actorCount() { return actorCount.get(); }
@@ -916,7 +944,10 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
-        public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+        public boolean awaitTermination(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            requireBlockingHostContext(
+                    "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             ActorCell<?> cell = actors.get(id);
@@ -948,7 +979,13 @@ public final class ActorRuntime implements AutoCloseable {
          * isolate). It never relies on guest cooperation.
          */
         public boolean forceCancel() {
-            return ActorRuntime.this.cancel(this, CancellationMode.FORCE_ISOLATED);
+            return ActorRuntime.this.cancel(
+                    this,
+                    CancellationMode.FORCE_ISOLATED);
+        }
+
+        public boolean kill() {
+            return forceCancel();
         }
 
         public Optional<ActorId> parentId() {
@@ -967,6 +1004,159 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public String toString() {
             return "ActorRef[" + kind + ":" + id.value() + "]";
+        }
+    }
+
+    /**
+     * Parent-bound structured child capability. It can send to the child, but
+     * lifecycle authority is valid only in the spawning parent actor turn.
+     */
+    public final class ActorHandle<M> {
+        private final ActorRef<M> ref;
+        private final ActorId ownerActorId;
+
+        private ActorHandle(ActorRef<M> ref, ActorId ownerActorId) {
+            this.ref = Objects.requireNonNull(ref, "ref");
+            this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
+        }
+
+        public ActorRef<M> ref() { return ref; }
+        public ActorId id() { return ref.id(); }
+        public ActorKind kind() { return ref.kind(); }
+        public boolean isAlive() { return ref.isAlive(); }
+        public Optional<Throwable> failure() { return ref.failure(); }
+
+        public boolean awaitTermination(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            return ref.awaitTermination(timeout, unit);
+        }
+
+        public void send(M message) { ref.send(message); }
+
+        public void stop() {
+            requireOwnedChildHandle(this, "stop");
+            ActorRuntime.this.stop(ref);
+        }
+
+        public boolean cancel() {
+            requireOwnedChildHandle(this, "cancel");
+            return ActorRuntime.this.cancel(
+                    ref,
+                    CancellationMode.STRUCTURED);
+        }
+
+        public boolean kill() {
+            requireOwnedChildHandle(this, "kill");
+            return forceCancelInternal(ref);
+        }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+    }
+
+    /**
+     * Host/supervisor-only lifecycle capability. It intentionally exposes no
+     * message-send surface.
+     */
+    public final class ActorControlHandle {
+        private final ActorRef<?> ref;
+
+        private ActorControlHandle(ActorRef<?> ref) {
+            this.ref = Objects.requireNonNull(ref, "ref");
+        }
+
+        public ActorId id() { return ref.id(); }
+        public ActorKind kind() { return ref.kind(); }
+        public boolean isAlive() { return ref.isAlive(); }
+        public Optional<Throwable> failure() { return ref.failure(); }
+
+        public Optional<ActorId> parentId() {
+            ActorCell<?> cell = actors.get(ref.id());
+            return cell == null || cell.parent == null
+                    ? Optional.empty()
+                    : Optional.of(cell.parent.ref.id());
+        }
+
+        public List<ActorId> childIds() {
+            ActorCell<?> cell = actors.get(ref.id());
+            return cell == null
+                    ? List.of()
+                    : cell.children.stream()
+                            .map(child -> child.ref.id())
+                            .toList();
+        }
+
+        public boolean awaitTermination(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            return ref.awaitTermination(timeout, unit);
+        }
+
+        public void stop() {
+            requireSupervisorContext("stop actors through a control handle");
+            ActorRuntime.this.stop(ref);
+        }
+
+        public boolean cancel() {
+            requireSupervisorContext("cancel actors through a control handle");
+            return ActorRuntime.this.cancel(
+                    ref,
+                    CancellationMode.STRUCTURED);
+        }
+
+        public boolean kill() {
+            requireSupervisorContext("kill actors through a control handle");
+            return forceCancelInternal(ref);
+        }
+    }
+
+    public ActorControlHandle controlHandle(ActorId actorId) {
+        requireSupervisorContext("acquire an actor control handle");
+        Objects.requireNonNull(actorId, "actorId");
+        ActorCell<?> cell = actors.get(actorId);
+        if (cell == null) {
+            throw new IllegalArgumentException(
+                    "unknown or finalized actor " + actorId);
+        }
+        return new ActorControlHandle(cell.ref);
+    }
+
+    public ActorControlHandle controlHandle(ActorRef<?> ref) {
+        requireSupervisorContext("acquire an actor control handle");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        return new ActorControlHandle(ref);
+    }
+
+    private void requireOwnedChildHandle(
+            ActorHandle<?> handle,
+            String operation) {
+        if (!handle.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "ActorHandle belongs to a different ActorRuntime");
+        }
+        ActorCell<?> caller = currentActor.get();
+        if (caller == null || !caller.ref.id().equals(handle.ownerActorId)) {
+            throw new SecurityException(
+                    "ActorHandle lifecycle authority is bound to spawning parent "
+                            + handle.ownerActorId + "; cannot " + operation
+                            + " from this execution context");
+        }
+        ActorCell<?> target = actors.get(handle.ref.id());
+        if (target != null && target.parent != caller) {
+            throw new SecurityException(
+                    "ActorHandle no longer names a direct structured child");
+        }
+    }
+
+    private void requireNoForceCancellationHookReentry(String operation) {
+        if (Boolean.TRUE.equals(forceCancellationCallback.get())) {
+            throw new IllegalStateException(
+                    "force-cancellation revoker must not re-enter ActorRuntime while attempting to "
+                            + operation);
         }
     }
 
