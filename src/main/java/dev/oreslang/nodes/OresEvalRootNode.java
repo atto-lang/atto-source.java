@@ -30,6 +30,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
@@ -45,6 +47,28 @@ public final class OresEvalRootNode extends RootNode {
      * to a pinned/native address while preserving the same source semantics.
      */
     private record OresPtr(Object target) { }
+
+    /**
+     * Explicit synchronized capability created by rt proxy.
+     *
+     * <p>The wrapped guest object remains the authoritative storage. Every
+     * transitive proxy view shares this lock identity so a nested class/record
+     * cannot escape as a raw mutable alias.</p>
+     */
+    private static final class OresRwProxy {
+        private final Object target;
+        private final ReentrantReadWriteLock lock;
+
+        private OresRwProxy(Object target, ReentrantReadWriteLock lock) {
+            this.target = Objects.requireNonNull(target, "target");
+            this.lock = Objects.requireNonNull(lock, "lock");
+        }
+
+        @Override
+        public String toString() {
+            return "proxy(" + target.getClass().getSimpleName() + ")";
+        }
+    }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
         this(language, program, "<anonymous>", digestText(program.toString()));
@@ -692,26 +716,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
-                    if (receiver instanceof OresObject object) {
-                        Ast.FieldDecl field = runtimeField(object.klass, target.member());
-                        if (field == null || !object.fields.containsKey(target.member())) {
-                            throw new IllegalArgumentException("unknown field " + target.member());
-                        }
-                        if (field.bindingKind() != Ast.BindingKind.LET) {
-                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
-                                    + target.member() + "' is immutable");
-                        }
-                        Object previous = object.fields.get(target.member());
-                        object.fields.put(target.member(), value);
-                        try {
-                            if (env.singletonState != null) env.singletonState.validateStorageGraph();
-                        } catch (RuntimeException | Error failure) {
-                            object.fields.put(target.member(), previous);
-                            throw failure;
-                        }
-                        return value;
+                    if (receiver instanceof OresRwProxy proxy) {
+                        return assignProxyMember(proxy, target.member(), value, env.singletonState);
                     }
-                    throw new IllegalArgumentException("member assignment requires a class instance");
+                    if (receiver instanceof OresObject object) {
+                        return assignObjectField(object, target.member(), value, env.singletonState);
+                    }
+                    throw new IllegalArgumentException("member assignment requires a class instance or rt proxy");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
@@ -759,6 +770,7 @@ public final class OresEvalRootNode extends RootNode {
                             : intrinsic.name();
                     if (operation.equals("borrow") || operation.equals("take")
                             || operation.equals("copy") || operation.equals("share")
+                            || operation.equals("proxy")
                             || (namespacedRuntimeIntrinsic
                                 && (operation.equals("ptr") || operation.equals("deref")))) {
                         if (call.arguments().size() != 1) {
@@ -772,6 +784,7 @@ public final class OresEvalRootNode extends RootNode {
                             // operations. Runtime object identity is unchanged;
                             // only rt copy constructs independent storage.
                             case "borrow", "take", "share" -> value;
+                            case "proxy" -> proxyValue(value);
                             case "copy" -> copyValue(value, env.singletonState, new IdentityHashMap<>());
                             case "ptr" -> new OresPtr(value);
                             case "deref" -> {
@@ -787,6 +800,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    if (receiver instanceof OresRwProxy proxy) {
+                        return invokeProxyMethod(proxy, methodCall.member(), args, env.singletonState);
+                    }
                     if (receiver instanceof OresObject object) {
                         return invokeMethod(object, methodCall.member(), args, env.singletonState);
                     }
@@ -937,6 +953,9 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof SingletonObjectProxy proxy) {
                 throw new IllegalArgumentException("singleton object proxy members must be invoked directly and awaited: "
                         + proxy.module().name() + "." + proxy.fieldName() + "." + name + "(...)");
+            }
+            if (receiver instanceof OresRwProxy proxy) {
+                return readProxyMember(proxy, name, singletonState);
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
