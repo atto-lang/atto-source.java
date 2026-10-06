@@ -638,6 +638,15 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         return target == null ? -1 : target;
     }
 
+    /**
+     * Actual logical CPU currently executing this native carrier.
+     * Linux exposes this through sched_getcpu(); other supported platforms may
+     * return -1 when no stable current-CPU query exists.
+     */
+    public static int currentCarrierCpu() {
+        return isNativeCarrierThread() ? nativeCurrentCpu() : -1;
+    }
+
     /** CPU consumed by the current native carrier, excluding time descheduled. */
     public static long currentCarrierCpuTimeNanos() {
         return isNativeCarrierThread() ? nativeCurrentThreadCpuNanos() : 0L;
@@ -663,6 +672,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static native void nativeAwaitEnabled(long handle, int slot);
     private static native int nativeBindCurrentThreadToCarrierSlot(int slot);
     private static native void nativeShutdown(long handle);
+    private static native int nativeCurrentCpu();
     private static native long nativeCurrentThreadId();
     private static native long nativeCurrentThreadCpuNanos();
     private static native long nativeCarrierCpuTimeNanos(long handle, int slot);
