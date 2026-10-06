@@ -1018,22 +1018,42 @@ public final class ActorRuntime implements AutoCloseable {
          * uses this only when a protected class/struct member itself is mutable;
          * the raw nested reference never escapes to source code.
          */
+        @SuppressWarnings("unchecked")
         public <R> Proxy<R> child(R nested) {
             requireProxyAccess("derive rt proxy view");
             if (nested == null) throw new IllegalArgumentException("cannot proxy a null nested value");
-            reserveSharedRuntimeBytes(HANDLE_BYTES, "shared proxy child handle");
-            Proxy<R> child = new Proxy<>(
-                    nested,
-                    lock,
-                    targetProvenance,
-                    sourceActorId,
-                    sourceExecutionDomain);
-            sharedProxies.add(child);
-            if (closed.get()) {
-                child.closeFromRuntime();
-                throw new IllegalStateException("actor runtime is closed");
+
+            /*
+             * Nested views are interned by target identity inside one lock
+             * domain. Without this, repeated reads such as proxy.inner.value
+             * would allocate/root a fresh handle and charge HANDLE_BYTES every
+             * time. The monitor is held only for the tiny lookup/create
+             * critical section; protected guest state still uses the fair RW
+             * lock.
+             */
+            synchronized (lock) {
+                for (Proxy<?> existing : sharedProxies) {
+                    if (existing.lock == lock
+                            && existing.target == nested
+                            && !existing.proxyClosed.get()) {
+                        return (Proxy<R>) existing;
+                    }
+                }
+
+                reserveSharedRuntimeBytes(HANDLE_BYTES, "shared proxy child handle");
+                Proxy<R> child = new Proxy<>(
+                        nested,
+                        lock,
+                        targetProvenance,
+                        sourceActorId,
+                        sourceExecutionDomain);
+                sharedProxies.add(child);
+                if (closed.get()) {
+                    child.closeFromRuntime();
+                    throw new IllegalStateException("actor runtime is closed");
+                }
+                return child;
             }
-            return child;
         }
 
         private T requireOpenTarget() {
