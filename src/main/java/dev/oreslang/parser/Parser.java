@@ -40,27 +40,33 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (match(CLASS)) {
+                modifiers = mergeModifiers(modifiers, parseModifiers());
+                consume(DEFINE, "compatibility class declaration requires both 'class' and 'define'");
+                modifiers = mergeModifiers(modifiers, parseModifiers());
+                validateClassModifiers(modifiers);
+                rootDeclarations.add(parseClass(modifiers.isAbstract));
+                continue;
+            }
+
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.generator || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
-                        throw error(previous(), "modules do not accept function/class modifiers");
-                    }
+                    validateNoModifiers(modifiers, "modules");
                     modules.add(parseModule(annotations));
                     continue;
                 }
                 if (match(CLASS)) {
-                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
-                    if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
+                    modifiers = mergeModifiers(modifiers, parseModifiers());
+                    validateClassModifiers(modifiers);
                     rootDeclarations.add(parseClass(modifiers.isAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
-                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
-                    if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
+                    validateOnlyVisibilityModifiers(modifiers, "interfaces");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -166,19 +172,26 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        if (match(CLASS)) {
+            modifiers = mergeModifiers(modifiers, parseModifiers());
+            consume(DEFINE, "compatibility class declaration requires both 'class' and 'define'");
+            modifiers = mergeModifiers(modifiers, parseModifiers());
+            validateClassModifiers(modifiers);
+            return parseClass(modifiers.isAbstract);
+        }
+
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             if (modifiers.shared) {
                 throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
             }
             if (match(CLASS)) {
-                if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations, not classes or class methods");
-                if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
+                modifiers = mergeModifiers(modifiers, parseModifiers());
+                validateClassModifiers(modifiers);
                 return parseClass(modifiers.isAbstract);
             }
             if (match(INTERFACE)) {
-                if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
-                if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
+                validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 return parseInterface(modifiers.visibility);
             }
             throw error(previous(), "expected class or interface after 'define'");
@@ -203,8 +216,18 @@ public final class Parser {
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "actor functions are declared with 'actor fnc', not 'actor fn'");
             }
-            if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
-            if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
+            if (match(FNC)) {
+                Modifiers trailing = parseModifiers();
+                if (trailing.shared) throw error(previous(), "'shared' must appear before the actor keyword");
+                modifiers = mergeModifiers(modifiers, trailing);
+                return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
+            }
+            if (match(ROUTINE)) {
+                Modifiers trailing = parseModifiers();
+                if (trailing.shared) throw error(previous(), "'shared' must appear before the actor keyword");
+                modifiers = mergeModifiers(modifiers, trailing);
+                return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
+            }
             if (modifiers.async || modifiers.generator || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic || modifiers.isAbstract) {
                 throw error(actorToken, "actor declarations do not accept async, generator, nlex, pure, trap, static, or abstract modifiers");
             }
@@ -221,11 +244,18 @@ public final class Parser {
             if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
-        if (modifiers.hasCallableOnlyModifiers()) throw error(peek(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
-        if (modifiers.generator) throw error(peek(), "'generator' applies only to fnc or routine declarations");
-        if (match(INTERFACE)) return parseInterface(modifiers.visibility);
-        if (match(TYPE)) return parseTypeAlias();
-        if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
+        if (match(INTERFACE)) {
+            validateOnlyVisibilityModifiers(modifiers, "interfaces");
+            return parseInterface(modifiers.visibility);
+        }
+        if (match(TYPE)) {
+            validateNoModifiers(modifiers, "type aliases");
+            return parseTypeAlias();
+        }
+        if (isBindingKind(peek().type())) {
+            validateOnlyVisibilityModifiers(modifiers, "module bindings");
+            return parseModuleBinding(annotations, modifiers.visibility);
+        }
         return null;
     }
 
@@ -279,23 +309,25 @@ public final class Parser {
                 if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
             }
-            if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
-            if (mods.hasCallableOnlyModifiers()) throw error(peek(), "'nlex', 'pure', and 'trap' are not class-member modifiers in this compiler revision");
             if (isBindingKind(peek().type())) {
-                if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
+                validateClassFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (check(IDENT) && checkNext(COLON)) {
-                if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
+                validateClassFieldModifiers(mods);
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
             }
+
+            boolean explicitFnc = match(FNC);
+            if (explicitFnc) mods = mergeModifiers(mods, parseModifiers());
+            validateClassMethodModifiers(mods);
             if (mods.isStatic) {
-                consume(FNC, "static class functions must be declared with 'static fnc'");
+                if (!explicitFnc) consume(FNC, "static class functions must be declared with 'static fnc'");
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-            } else if (check(FNC)) {
-                throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
+            } else if (explicitFnc) {
+                throw error(previous(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -305,6 +337,42 @@ public final class Parser {
                         ? "expected '}' to close class " + name
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(name, isAbstract, Ast.ActorKind.NONE, generics, parents, interfaces, fields, methods);
+    }
+
+    private void validateClassModifiers(Modifiers modifiers) {
+        if (modifiers.async || modifiers.generator || modifiers.hasCallableOnlyModifiers()
+                || modifiers.isStatic || modifiers.shared) {
+            throw error(previous(),
+                    "classes accept only private/pub visibility and abstract in this compiler revision");
+        }
+    }
+
+    private void validateClassFieldModifiers(Modifiers modifiers) {
+        if (modifiers.async || modifiers.generator || modifiers.hasCallableOnlyModifiers()
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+            throw error(peek(), "class fields accept only private/pub visibility modifiers");
+        }
+    }
+
+    private void validateClassMethodModifiers(Modifiers modifiers) {
+        if (modifiers.generator || modifiers.hasCallableOnlyModifiers() || modifiers.shared) {
+            throw error(peek(), "class methods do not accept generator, nlex, pure, trap, or shared modifiers");
+        }
+    }
+
+    private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
+        if (modifiers.async || modifiers.generator || modifiers.hasCallableOnlyModifiers()
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+            throw error(previous(), context + " accept only private/pub visibility modifiers");
+        }
+    }
+
+    private void validateNoModifiers(Modifiers modifiers, String context) {
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator
+                || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic
+                || modifiers.isAbstract || modifiers.shared) {
+            throw error(previous(), context + " do not accept declaration modifiers");
+        }
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -325,23 +393,18 @@ public final class Parser {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
             }
-            if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
-            if (mods.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are not actor-member modifiers");
 
             if (isBindingKind(peek().type())) {
-                if (mods.isStatic) throw error(peek(), "actor state cannot be static");
-                if (mods.visibility == Ast.Visibility.PUBLIC) {
-                    throw error(peek(), "actor state fields are private; expose state through actor methods");
-                }
+                validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
 
-            if (mods.isAbstract) throw error(peek(), "actor methods cannot be abstract");
-            if (mods.isStatic) {
+            boolean explicitFnc = match(FNC);
+            if (explicitFnc) mods = mergeModifiers(mods, parseModifiers());
+            validateActorMethodModifiers(mods);
+            if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
-            } else {
-                match(FNC);
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -350,6 +413,23 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods);
+    }
+
+    private void validateActorFieldModifiers(Modifiers modifiers) {
+        if (modifiers.visibility == Ast.Visibility.PUBLIC) {
+            throw error(peek(), "actor state fields are private; expose state through actor methods");
+        }
+        if (modifiers.async || modifiers.generator || modifiers.hasCallableOnlyModifiers()
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+            throw error(peek(), "actor state fields do not accept callable/static/actor modifiers");
+        }
+    }
+
+    private void validateActorMethodModifiers(Modifiers modifiers) {
+        if (modifiers.generator || modifiers.hasCallableOnlyModifiers()
+                || modifiers.isAbstract || modifiers.shared) {
+            throw error(peek(), "actor methods do not accept generator, nlex, pure, trap, abstract, or shared modifiers");
+        }
     }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
@@ -363,17 +443,13 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             parseAnnotations();
             Modifiers mods = parseModifiers();
-            if (mods.generator) {
-                throw error(previous(), "'generator' is not permitted on interface members");
-            }
-            if (mods.hasCallableOnlyModifiers()) {
-                throw error(previous(), "'nlex', 'pure', and 'trap' are not interface-member modifiers");
-            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
             if (match(FNC)) {
+                mods = mergeModifiers(mods, parseModifiers());
+                validateNoModifiers(mods, "interface callable signatures");
                 String memberName = consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
@@ -384,6 +460,8 @@ public final class Parser {
                 members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
                 continue;
             }
+
+            validateNoModifiers(mods, "interface fields");
 
             if (check(IDENT) && checkNext(COLON)) {
                 String fieldName = advance().lexeme();
