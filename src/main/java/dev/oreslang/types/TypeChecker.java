@@ -1193,7 +1193,38 @@ public final class TypeChecker {
                 default -> Unknown.INSTANCE;
             };
         }
+        if (expr instanceof Ast.SpreadExpr) {
+            throw new IllegalArgumentException(
+                    "spread expressions are only valid as arguments to a variadic callable");
+        }
         if (expr instanceof Ast.CallExpr call) {
+            if (isBuiltinStdoutCall(call, "log", env)) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    if (argument instanceof Ast.SpreadExpr spread) {
+                        requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
+                    } else {
+                        typeOf(argument, env, generics, self);
+                    }
+                }
+                return Primitive.VOID;
+            }
+            if (isBuiltinStdoutCall(call, "logList", env)) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException("stdio.stdout.logList expects exactly one array/list/tuple argument");
+                }
+                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
+                return Primitive.VOID;
+            }
+            if (call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+                throw new IllegalArgumentException(
+                        "spread arguments require a variadic callable; fixed-arity Oreslang callables do not accept dynamic spread");
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -1645,8 +1676,14 @@ public final class TypeChecker {
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
             receiver = unwrapMutexGuard(receiver);
-            if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
-                return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
+                if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
+                    return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                }
+                if (member.member().equals("log")) {
+                    throw new IllegalArgumentException(
+                            "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
+                }
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process") || name.name().equals("actor"))) return Unknown.INSTANCE;
@@ -1870,6 +1907,20 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member) || !member.member().equals(memberName)) return false;
+        if (!(member.receiver() instanceof Ast.MemberExpr stdout) || !stdout.member().equals("stdout")) return false;
+        return stdout.receiver() instanceof Ast.NameExpr stdio
+                && stdio.name().equals("stdio")
+                && env.lookup("stdio") == null;
+    }
+
+    private void requireSpreadable(Type type, String operation) {
+        type = deref(type);
+        if (type instanceof ListType || type instanceof Tuple) return;
+        throw new IllegalArgumentException(operation + " requires an array/list/tuple value");
     }
 
     private static boolean isBooleanIntrinsicName(String name) {
@@ -3624,6 +3675,8 @@ public final class TypeChecker {
             rejectStaticClassGenericReferences(conditional.condition(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(conditional.whenTrue(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(conditional.whenFalse(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.SpreadExpr spread) {
+            rejectStaticClassGenericReferences(spread.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.CallExpr call) {
             for (Ast.TypeRef argument : call.typeArguments()) {
                 rejectStaticClassGenericReference(argument, classGenerics, klass, method);

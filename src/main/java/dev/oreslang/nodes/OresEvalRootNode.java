@@ -1238,7 +1238,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
             ArrayList<Object> values = new ArrayList<>(arguments.size());
-            for (Ast.Expr argument : arguments) values.add(eval(argument, env));
+            for (Ast.Expr argument : arguments) {
+                if (argument instanceof Ast.SpreadExpr spread) {
+                    values.addAll(expandArgumentSequence(eval(spread.expression(), env), "argument spread"));
+                } else {
+                    values.add(eval(argument, env));
+                }
+            }
             return List.copyOf(values);
         }
 
@@ -1528,6 +1534,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (expr instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
+            }
             if (expr instanceof Ast.CallExpr call) {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
@@ -1684,6 +1693,8 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "write" -> (Invokable) stdout::write;
                     case "println" -> (Invokable) stdout::println;
+                    case "log" -> (Invokable) stdout::log;
+                    case "logList" -> (Invokable) stdout::logList;
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
@@ -3381,6 +3392,18 @@ public final class OresEvalRootNode extends RootNode {
     private record StdoutFacade(OresContext context) {
         private Object write(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.write");requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.println");requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
+        private Object log(List<Object> args){
+            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
+            for(Object arg:args)context.output().print(String.valueOf(arg));
+            context.output().println();
+            context.output().flush();
+            return null;
+        }
+        private Object logList(List<Object> args){
+            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");
+            requireOne(args,"stdio.stdout.logList");
+            return log(expandArgumentSequence(args.getFirst(),"stdio.stdout.logList"));
+        }
     }
     private record ProcessFacade(OresContext context) {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
@@ -3390,6 +3413,11 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
+    }
+    private static List<Object> expandArgumentSequence(Object value,String name){
+        if(value instanceof List<?> list)return new ArrayList<>(list);
+        if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
+        throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}

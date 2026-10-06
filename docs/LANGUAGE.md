@@ -1018,8 +1018,16 @@ In addition to `stdio.print` and `stdio.println`, the stream-shaped form is avai
 ```ores
 stdio.stdout.write(value);
 stdio.stdout.println(value);
+stdio.stdout.log("ORES_TEST|", status, "|", full_name, "|", detail);
+
+val parts = arr["ORES_TEST|", status, "|", full_name, "|", detail];
+stdio.stdout.log(...parts);
+stdio.stdout.logList(parts);
 ```
 
+`stdout.log(...)` stringifies each argument, concatenates the values with no inserted separator, and appends one newline. This makes it a compact replacement for a run of `write(...)` calls followed by `println(...)`. `stdout.logList(sequence)` is exactly the sequence form of the same operation and is equivalent to `stdout.log(...sequence)`.
+
+The `...expression` syntax is an argument-list spread operator. In this initial variadic surface the spread value must be an Array/List/tuple. Oreslang keeps fixed-arity calls statically sound: dynamic spread is rejected for ordinary fixed-arity functions and methods until the language has an explicit variadic callable type.
 
 ## Execution profiles: JIT, AOT, and hybrid
 
