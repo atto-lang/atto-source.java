@@ -5124,6 +5124,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
+                    if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                        return proxy.write(raw ->
+                                assignProxyMemberRaw(
+                                        raw,
+                                        target.member(),
+                                        value,
+                                        env));
+                    }
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
@@ -5162,6 +5170,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
+                    if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                        return proxy.write(raw ->
+                                assignProxyIndexRaw(raw, index, value));
+                    }
                     if (receiver instanceof DynamicStructValue dynamic) {
                         if (!(index instanceof String key)) {
                             throw new IllegalArgumentException("DynamicStruct key must be a string");
@@ -5253,29 +5265,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("DynamicStruct key must be a string");
-                    }
-                    if (!dynamic.fields.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown DynamicStruct key " + key);
-                    }
-                    return dynamic.fields.get(key);
-                }
-                if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("object/map key must be a string");
-                    }
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown object/map key " + key);
-                    }
-                    return map.get(key);
-                }
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
-                int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
-                if (receiver instanceof Object[] array) return array[i];
-                throw new IllegalArgumentException("value is not indexable: " + receiver);
+                return indexValue(receiver, index);
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("DynamicStruct")) {
