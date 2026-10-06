@@ -1620,6 +1620,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireCallerRuntimeAffinity(String operation) {
+        requireNoForceCancellationHookReentry(operation);
         ActorRuntime caller = currentActorRuntime();
         if (caller != null && caller != this) {
             throw new SecurityException(
@@ -1627,7 +1628,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private static void requireSupervisorContext(String operation) {
+    private void requireSupervisorContext(String operation) {
+        requireNoForceCancellationHookReentry(operation);
         if (inActorExecution()) {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
@@ -2816,9 +2818,6 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell != null && cell.stopped.get()) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
-        if (Thread.currentThread().isInterrupted()) {
-            throw new ActorCancellationSignal("actor execution interrupted");
-        }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
@@ -3363,6 +3362,13 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value instanceof ActorRuntime.ActorHandle<?>
+                || value instanceof ActorRuntime.ActorControlHandle
+                || value instanceof ActorRuntime.ContinuationTarget
+                || value instanceof ChannelRuntime.Channel<?>) {
+            throw new SecurityException(
+                    "execution-domain local capabilities cannot be wrapped as Shared");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
         }
@@ -3416,6 +3422,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (++nodes[0] > MAX_MESSAGE_GRAPH_NODES) {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
+        }
+        if (value instanceof ActorRuntime.ActorHandle<?>
+                || value instanceof ActorRuntime.ActorControlHandle
+                || value instanceof ActorRuntime.ContinuationTarget) {
+            throw new SecurityException(
+                    "actor lifecycle capabilities are execution-domain local and cannot cross actor mailboxes");
+        }
+        if (value instanceof ChannelRuntime.Channel<?>) {
+            throw new IllegalArgumentException(
+                    "channel capability is execution-domain local and cannot cross actor mailboxes");
         }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
