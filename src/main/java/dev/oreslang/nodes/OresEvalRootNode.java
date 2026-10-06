@@ -5786,7 +5786,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     yield new ClassFacade(this, klass);
                 }
-                case ACTOR, INTERFACE, TRAIT, STRUCT, TYPE, TYPES ->
+                case ACTOR, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES ->
                         throw new IllegalArgumentException(
                                 "import " + kind.name().toLowerCase()
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
