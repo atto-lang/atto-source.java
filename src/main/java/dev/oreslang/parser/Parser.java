@@ -56,51 +56,79 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (match(DEFINE)) {
-                if (modifiers.shared) {
-                    throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+                if (modifiers.shared || modifiers.untrusted) {
+                    throw error(
+                            previous(),
+                            "'shared'/'untrusted' must modify an actor declaration");
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE
+                            || modifiers.async
+                            || modifiers.generator
+                            || modifiers.structural
+                            || modifiers.nonLexical
+                            || modifiers.isStatic
+                            || modifiers.isAbstract
+                            || afterDefineAbstract) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
                     modules.add(parseModule(annotations));
                     continue;
                 }
-                if (match(CONTRACT)) {
-                    if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
-                        throw error(previous(), "contracts do not accept class/callable modifiers");
+                if (match(CLASS)) {
+                    if (modifiers.structural) {
+                        throw error(previous(), "structural cannot modify a class");
                     }
-                    rejectCallableStructuralAnnotation(annotations, "contract declarations");
-                    rootDeclarations.add(parseContract(modifiers.visibility));
-                    continue;
-                }
-                        if (match(CLASS)) {
-                    if (modifiers.structural) throw error(previous(), "structural cannot modify a class");
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     validateClassModifiers(modifiers);
                     if (modifiers.visibility == Ast.Visibility.PUBLIC) {
-                        throw error(previous(), "top-level classes are file-private; put the class in a module to export it");
+                        throw error(
+                                previous(),
+                                "top-level classes are file-private; put the class in a module to export it");
                     }
-                    rootDeclarations.add(parseClass(Ast.Visibility.PRIVATE,
-                            modifiers.isAbstract || afterDefineAbstract, true));
+                    rootDeclarations.add(parseClass(
+                            Ast.Visibility.PRIVATE,
+                            modifiers.isAbstract || afterDefineAbstract,
+                            true));
                     continue;
                 }
                 if (match(CONTRACT)) {
-                    if (modifiers.generator || modifiers.nonLexical || modifiers.structural || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) throw error(previous(), "contract declarations do not accept callable/class modifiers");
+                    if (afterDefineAbstract
+                            || modifiers.async
+                            || modifiers.generator
+                            || modifiers.nonLexical
+                            || modifiers.structural
+                            || modifiers.isStatic
+                            || modifiers.isAbstract) {
+                        throw error(
+                                previous(),
+                                "contract declarations do not accept callable/class modifiers");
+                    }
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
                     rootDeclarations.add(parseContract(modifiers.visibility));
                     continue;
                 }
-                if (match(INTERFACE)) { throw error(previous(), "'generator' applies only to fnc or routine declarations");
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
-                    if (modifiers.structural) throw error(previous(), "'structural' applies to callable declarations, not interface declarations");
+                if (match(INTERFACE)) {
+                    if (afterDefineAbstract
+                            || modifiers.async
+                            || modifiers.generator
+                            || modifiers.nonLexical
+                            || modifiers.structural
+                            || modifiers.isStatic
+                            || modifiers.isAbstract) {
+                        throw error(
+                                previous(),
+                                "interface declarations do not accept callable/class modifiers");
+                    }
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                throw error(
+                        previous(),
+                        "expected module, class, contract, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -209,31 +237,55 @@ public final class Parser {
 
         if (match(DEFINE)) {
             if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+                throw error(
+                        previous(),
+                        "'shared'/'untrusted' must modify an actor declaration");
             }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CONTRACT)) {
-                if (modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
-                    throw error(previous(), "contracts do not accept class/callable modifiers");
+                if (afterDefineAbstract
+                        || modifiers.async
+                        || modifiers.generator
+                        || modifiers.nonLexical
+                        || modifiers.structural
+                        || modifiers.isStatic
+                        || modifiers.isAbstract) {
+                    throw error(
+                            previous(),
+                            "contract declarations do not accept callable/class modifiers");
                 }
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 return parseContract(modifiers.visibility);
             }
             if (match(CLASS)) {
-                    if (modifiers.structural) throw error(previous(), "structural cannot modify a class");
-                    rejectCallableStructuralAnnotation(annotations, "class declarations");
+                if (modifiers.structural) {
+                    throw error(previous(), "structural cannot modify a class");
+                }
+                rejectCallableStructuralAnnotation(annotations, "class declarations");
                 validateClassModifiers(modifiers);
-                return parseClass(modifiers.visibility,
-                        modifiers.isAbstract || afterDefineAbstract, false);
+                return parseClass(
+                        modifiers.visibility,
+                        modifiers.isAbstract || afterDefineAbstract,
+                        false);
             }
             if (match(INTERFACE)) {
-                if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
-                if (modifiers.structural) throw error(previous(), "'structural' applies to callable declarations, not interface declarations");
+                if (afterDefineAbstract
+                        || modifiers.async
+                        || modifiers.generator
+                        || modifiers.nonLexical
+                        || modifiers.structural
+                        || modifiers.isStatic
+                        || modifiers.isAbstract) {
+                    throw error(
+                            previous(),
+                            "interface declarations do not accept callable/class modifiers");
+                }
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class or interface after 'define'");
+            throw error(
+                    previous(),
+                    "expected class, contract, or interface after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
