@@ -394,12 +394,27 @@ Implemented:
 - force-cancel isolation-revocation contract;
 - bounded internal continuation headroom.
 
-Remaining compiler/runtime integration:
+Current compiler/runtime integration:
 
-- lower arbitrary pending blocking `readch`, `writech`, `select`, and
-  ordinary `await` from actor source frames into the existing resumable
-  OresScheduler Task/state-machine ABI;
-- connect the force-cancel hook to the dedicated untrusted-isolate runtime stack
-  when that stack is reconciled onto current main;
-- migrate transitional free-standing async backend behavior so every source
-  async continuation is explicitly owned by an actor/root-actor domain.
+- pending blocking `readch`, `writech`, `select`, and ordinary `await`
+  use the `OresScheduler.Task` / `SourceTask` resumable state-machine ABI;
+- actor callables use the same source-task machinery and resume through the
+  actor mailbox scheduler;
+- the force-cancel hook still requires a VM/host implementation that can revoke
+  the complete untrusted isolation domain before logical teardown is published.
+
+## Resumable source execution
+
+Blocking source-level `await`, `readch`, `writech`, and `select` record
+their continuation in a heap-owned `SourceTask`, return
+`OresScheduler.Await`, and unwind the current carrier before a completion
+schedules a fresh dispatch.
+
+`nb readch`, `nb writech`, and `nb select` are registration-only operations
+that return an `OresFuture` immediately. Callback-form `nb cb writech` uses
+the same completion substrate but re-enters the owning actor through its
+mailbox; completion producers never execute guest callback code inline.
+
+Structured cancellation owns outstanding runtime Futures and child actors.
+Force cancellation first fences the complete structured subtree and requires
+an outer VM/host revocation hook before logical teardown is published.
