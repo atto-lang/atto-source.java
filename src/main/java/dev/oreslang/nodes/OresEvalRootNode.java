@@ -16,6 +16,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresScheduler;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -440,8 +441,19 @@ public final class OresEvalRootNode extends RootNode {
 
 
         @FunctionalInterface
+        @FunctionalInterface
         private interface SourceValueCont {
             void accept(SourceTask task, Object value, Throwable failure);
+        }
+
+        @FunctionalInterface
+        private interface SourceArgsCont {
+            void accept(SourceTask task, List<Object> values, Throwable failure);
+        }
+
+        @FunctionalInterface
+        private interface SourceObjectCont {
+            void accept(SourceTask task, Map<String, Object> value, Throwable failure);
         }
 
         @FunctionalInterface
@@ -2638,10 +2650,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 List<Ast.Expr> expressions,
                 Env env,
-                java.util.function.BiConsumer<
-                        SourceTask,
-                        List<Object>,
-                        Throwable> continuation) {
+                SourceArgsCont continuation) {
             ArrayList<Object> values = new ArrayList<>(expressions.size());
             evalSuspendableArgumentAt(
                     task,
@@ -2698,11 +2707,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     values,
                     0,
-                    (t, built) ->
+                    (t, built, failure) ->
                             continuation.accept(
                                     t,
                                     built,
-                                    null));
+                                    failure));
         }
 
         private void evalSuspendableObjectField(
@@ -2711,7 +2720,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayList<Object> values,
                 int index,
-                java.util.function.BiConsumer<SourceTask, Map<String, Object>> continuation) {
+                SourceObjectCont continuation) {
             if (index >= object.fields().size()) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 for (Object value : values) {
