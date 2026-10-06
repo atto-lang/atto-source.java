@@ -1209,7 +1209,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
-            closeWithWriteLease();
+            // Runtime teardown has already fenced source/actor access, so it
+            // must not call acquireAsync(), whose admission intentionally
+            // rejects a globally closed runtime. Acquire the logical lock
+            // directly and retire only after active readers/writers drain.
+            ProxyRwLock.Lease lease = lock.acquireAsync(true).join();
+            try {
+                closeUnderWriteLease();
+            } finally {
+                lease.close();
+            }
         }
 
         private void closeWithWriteLease() {
@@ -4922,6 +4931,18 @@ public final class ActorRuntime implements AutoCloseable {
         for (ActorCell<?> cell : snapshot) cell.stop();
 
         if (firstClose) {
+            // Pending proxy acquisitions are scheduler waiters, not carrier
+            // blockers. Fail them promptly during teardown so no suspended
+            // actor/root task remains retained behind a lock request.
+            Set<ProxyRwLock> proxyLocks = java.util.Collections.newSetFromMap(
+                    new IdentityHashMap<>());
+            for (Proxy<?> proxy : List.copyOf(sharedProxies)) {
+                if (proxyLocks.add(proxy.lock)) {
+                    proxy.lock.failWaiters(
+                            new CancellationException("ActorRuntime closed while waiting for rt Proxy"));
+                }
+            }
+
             // Stop executor carriers so queued work is rejected/removed and
             // blocked host-side executor operations can wake. This interrupt is
             // backend shutdown mechanics only; it is never an actor
