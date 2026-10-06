@@ -1537,7 +1537,9 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseOr() {
         Ast.Expr expr = parseBitwiseXor();
-        while (matchSingleOperator(PIPE)) expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+        while (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
+            expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+        }
         return expr;
     }
 
