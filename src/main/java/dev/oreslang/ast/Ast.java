@@ -123,6 +123,7 @@ public final class Ast {
             CallableKind kind,
             Visibility visibility,
             boolean async,
+            boolean generator,
             boolean nonLexical,
             ActorKind actorKind,
             List<String> genericParameters,
@@ -136,19 +137,34 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+
+        /** Compatibility constructor for non-generator callables. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean nonLexical, ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body) {
+            this(name, kind, visibility, async, false, nonLexical, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
+
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             ActorKind actorKind, List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, actorKind, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
         }
+
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, ActorKind.NONE,
+                    genericParameters, parameters, returnType, annotations, body);
         }
+
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, false, false, ActorKind.NONE,
+                    genericParameters, parameters, returnType, annotations, body);
         }
     }
 
@@ -242,6 +258,24 @@ public final class Ast {
             body = List.copyOf(body);
         }
         public int arity() { return parameters.size(); }
+
+        /**
+         * Overload identity for class callables is deliberately only name + arity.
+         * Parameter types, parameter names, generic parameters, return types,
+         * and the implicit/explicit self receiver never participate in overload selection.
+         */
+        public MethodArity overloadIdentity() { return new MethodArity(name, arity()); }
+
+        public boolean matchesArity(String candidateName, int candidateArity) {
+            return name.equals(candidateName) && arity() == candidateArity;
+        }
+    }
+
+    public record MethodArity(String name, int arity) {
+        public MethodArity {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
+            if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
+        }
     }
 
     public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
@@ -250,7 +284,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt { }
 
@@ -281,6 +315,11 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
+    public record YieldStmt(Expr value) implements Stmt {
+        public YieldStmt {
+            if (value == null) throw new IllegalArgumentException("yield requires a value");
+        }
+    }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
 
@@ -350,13 +389,22 @@ public final class Ast {
         }
     }
 
-    public record ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) implements Stmt {
+    public record ForOfStmt(
+            BindingKind bindingKind,
+            String bindingName,
+            Expr iterable,
+            boolean asyncIteration,
+            List<Stmt> body) implements Stmt {
         public ForOfStmt { body = List.copyOf(body); }
+        public ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) {
+            this(bindingKind, bindingName, iterable, false, body);
+        }
     }
 
     public record ForOfDestructureStmt(
             List<DestructureBinding> bindings,
             Expr iterable,
+            boolean asyncIteration,
             List<Stmt> body) implements Stmt {
         public ForOfDestructureStmt {
             bindings = List.copyOf(bindings);
@@ -364,6 +412,9 @@ public final class Ast {
             if (bindings.isEmpty()) {
                 throw new IllegalArgumentException("for-of destructure pattern cannot be empty");
             }
+        }
+        public ForOfDestructureStmt(List<DestructureBinding> bindings, Expr iterable, List<Stmt> body) {
+            this(bindings, iterable, false, body);
         }
     }
 

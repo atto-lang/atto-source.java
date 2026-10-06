@@ -261,7 +261,7 @@ define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
-Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible types. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
+Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
 
 `Object` and `List` are extensible base classes:
 
@@ -488,6 +488,58 @@ The initial interpreter backend uses host-owned virtual threads for ordinary asy
 
 This preserves the central async rule: **I/O/task latency should compose through futures and continuations; CPU-bound work that intentionally monopolizes a carrier must be explicit rather than hidden inside `async`.**
 
+## Generators and async iterators
+
+`generator` is a callable modifier for top-level/module `fnc` and `routine` declarations. It is deliberately not a class-method modifier.
+
+```ores
+generator fnc ids(): int {
+  yield 10;
+  yield 20;
+  return;
+}
+
+async generator routine events(): String {
+  yield await next_event();
+  yield await next_event();
+  return;
+}
+```
+
+The declared source return type is the **yielded element type**. Calling a synchronous generator produces `Iterator<T>`; calling an async generator produces `AsyncIterator<T>` directly, not `Future<Iterator<T>>`. Existing `Generator<T>` and `AsyncGenerator<T>` annotations remain aliases for those public protocol types.
+
+`Iterator.next()` returns `IteratorResult<T>`; `AsyncIterator.next()` returns `Future<IteratorResult<T>>`. Results have readonly `done: bool` and `value: Option<T>` members: yielded values are `Some(value)`, while terminal/closed pulls return `done = true` and `None`. Both protocols expose `close()` to cancel the suspended activation. Async pulls retain serialized activation semantics and cross the Ores-owned Future boundary. Result data may cross ordinary async boundaries when its element type is task-safe; the iterator activation itself cannot.
+
+```ores
+val Iterator<int> iterator = values();
+val IteratorResult<int> result = iterator.next();
+if !result.done; do stdio.stdout.write(result.value.unwrap()); fi
+iterator.close();
+```
+
+`done` remains reserved as a lexical identifier, but is readable in the member namespace (`result.done`). Parameterized runtime `is` checks remain forbidden until generic arguments are reified; the iterator protocol does not weaken that rule.
+
+`async` and `generator` are independent modifiers and may appear in either order. Inside a generator, `yield value` suspends the activation after producing one element. A bare `return;` completes the sequence. Returning a value from a generator is rejected.
+
+Async iteration uses `for await ... of ...`:
+
+```ores
+pub async fnc consume(): void {
+  for await event of events() do
+    handle(event);
+  done
+  return;
+}
+```
+
+A synchronous `for ... of ...` consumes `Generator<T>` or ordinary synchronous iterables. `for await ... of ...` consumes `AsyncGenerator<T>` or a class whose `[Symbol.asyncIterator]()` method returns an `AsyncGenerator<T>`. It also accepts synchronous generators, arrays, tuples, and `[Symbol.iterator]()` values through a runtime-owned asynchronous adapter: every pull crosses the OresFuture boundary, and closing the loop closes the suspended adapter and its source. An asynchronous iterable still cannot be consumed by a synchronous loop.
+
+Generator activations are affine runtime state. They are not actor messages, shared values, or async-task payloads. `yield` is a suspension boundary: a live `MutexGuard` or borrow may not cross it in the current ownership model. Async iterator pulls are suspension boundaries as well.
+
+Actor callables cannot be generators. An actor mailbox turn may suspend only through the actor scheduler's continuation protocol; a generator activation must not escape a turn. Class methods and static class `fnc` are also non-generator declarations for now. A class can still implement `[Symbol.asyncIterator]()` by returning an async generator created by a top-level/module callable.
+
+The interpreter represents a live generator with one serialized resumable activation. The native/AOT compiler may lower the same contract to an explicit program-counter/state-machine frame. This mirrors the existing rule for `await`: the representation is backend-specific, but suspension/resumption semantics are language-level.
+
 ## Actors
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
@@ -700,7 +752,17 @@ define class Lookup as
 end
 ```
 
-Two methods with the same name and same arity are a compile-time error even when their parameter types differ. Top-level/module `fnc` and `routine` declarations never overload.
+Overload identity is exactly **name + arity**, where arity counts only caller-supplied arguments; the implicit or explicit `self` receiver is not counted. Two instance methods with the same name and same arity are a compile-time error even when their parameter types, parameter names, generic parameters, async modifier, or return types differ. Arity selects the callable slot; after that selection, every supplied argument must still type-check positionally against that slot's declared parameter types or compilation fails. Parameter and return types validate the selected callable contract, but they never choose between overloads.
+
+Static class functions follow the same arity-only rule in their separate class-level namespace. A static function in a generic class does not implicitly capture the class's generic parameters because a class-level call has no instance generic binding; it must declare any static-function generics itself.
+
+A same-name/same-arity member inherited from one parent is an override slot, not a type-based overload. If distinct parents contribute that same slot, the child must explicitly resolve it. Generic parent/interface arguments are substituted only after the arity slot is selected, and incompatible generic views are rejected rather than used as overload discriminators.
+
+Abstract methods use the same slot identity. Every caller-visible arity of an abstract method is a separate required slot, and a concrete subclass must provide a concrete compatible implementation for each inherited abstract slot. Abstract classes cannot be instantiated.
+
+Special symbol methods such as `[Symbol.iterator]` are not exempt: they use the same name + arity identity, inheritance ambiguity checks, and override-contract rules as ordinary methods.
+
+Top-level/module `fnc` and `routine` declarations never overload.
 
 ## Ternary expressions
 
@@ -827,6 +889,36 @@ define class Bag as
 end
 ```
 
+Generator call results participate in the same iterator loop syntax:
+
+```ores
+generator fnc values(): int {
+  yield 1;
+  yield 2;
+  return;
+}
+
+for value of values() do
+  work(value)
+done
+```
+
+Async iterators use the explicit `for await` form and require an async callable context:
+
+```ores
+async generator fnc values_async(): int {
+  yield 1;
+  yield 2;
+  return;
+}
+
+for await value of values_async() do
+  await work_async(value)
+done
+```
+
+Classes may expose `[Symbol.asyncIterator](): AsyncGenerator<T>` when they need a custom async-iteration facade.
+
 The compiler/runtime inserts a scheduler safepoint on **every `loop`, conventional `for`, and iterator-loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
 
 This means Oreslang does not require recursion as the only way to loop, while still giving actor/isolate schedulers a compulsory cooperation point inside generated loop execution.
@@ -939,29 +1031,45 @@ Without one of those explicit structural opt-ins, passing that object to a nomin
 
 `self` is injected by the compiler/runtime as an immutable receiver binding. It cannot be declared as a local parameter name or reassigned.
 
+Instance method code belongs to the class declaration, not to individual objects. Creating one million `Box` values does not create one million copies of `Box.get`.
+
 Direct method calls do not create per-instance closures:
 
 ```ores
 box.get();
 ```
 
-The runtime resolves the shared class method definition and passes the receiver as the hidden first argument.
+The compiler/runtime resolves the shared class method slot and passes `box` as a hidden first argument. The hidden receiver is not part of the source-visible arity used for overload selection.
 
-Instance and actor methods are intentionally **not** first-class values:
-
-```ores
-val Fnc<int> callback = box.get; // compile-time error
-```
-
-When callback behavior is required, the receiver capture must be explicit:
+Methods may also be used as first-class callbacks:
 
 ```ores
-val Fnc<int> callback = || -> {
-  return box.get();
-};
+val Fnc<int> callback = box.get;
+doWork(self.get);
 ```
 
-The lambda has ordinary closure-capture semantics; the method itself remains one shared class definition. Oreslang therefore has no implicit bound-method object and no JavaScript-style dynamic `this` rebinding.
+A method value is a small bound-method/fat-pointer value: receiver identity plus shared method identity/slot information. It never contains a copied method body. Calling `callback()` always uses the receiver captured at extraction time; there is no JavaScript-style dynamic `this` rebinding.
+
+Direct calls allocate no bound-method carrier. First-class extraction logically materializes the receiver+slot pair; an AOT or JIT backend may keep a non-escaping pair in registers/on the stack or eliminate it entirely, while an escaping callback may require a small heap object.
+
+If a method name is overloaded by arity, an expected function type may select the slot:
+
+```ores
+fnc doWork(Fnc<int> callback): int {
+  return callback();
+}
+
+define class Box as
+  pub get(): int { return 1; }
+  pub get(int fallback): int { return fallback; }
+
+  pub run(): int {
+    return doWork(self.get); // selects get/0
+  }
+end
+```
+
+An untyped overloaded extraction such as `val callback = box.get;` is rejected because no arity is available to identify the closed-world method slot. Generic method values remain direct-call-only until Oreslang has an explicit specialization syntax for them.
 
 
 ## Incremental compilation and code units
