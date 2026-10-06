@@ -936,6 +936,18 @@ public final class ActorRuntime implements AutoCloseable {
         Behavior<M> create(ActorContext<M> context) throws Exception;
     }
 
+    /**
+     * Compiler-owned persistent source actor constructor.
+     *
+     * <p>This is deliberately distinct from the public host BehaviorFactory
+     * surface: the evaluator may capture immutable compiler metadata needed to
+     * materialize source actor state, but guest values still enter only through
+     * mailbox transport. The factory is invoked after the actor execution domain
+     * and ActorContext are installed.</p>
+     */
+    @FunctionalInterface
+    public interface SourceBehaviorFactory<M> extends BehaviorFactory<M> { }
+
     public interface ActorContext<M> {
         ActorRef<M> self();
         ActorRuntime runtime();
@@ -2275,6 +2287,92 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
         return spawn(ActorKind.SHARED, policy, behaviorFactory);
+    }
+
+    /**
+     * Compiler-only persistent source-actor entrypoint.
+     *
+     * <p>Unlike host trusted factories, this path is valid from inside an actor
+     * turn so source-level {@code spawn Child()} can preserve structured parent
+     * ownership. It is intentionally limited to SHARED actors until the source
+     * object representation is backed by ActorMemorySlice for PRIVATE/UNTRUSTED
+     * actors.</p>
+     */
+    public <M> ActorRef<M> spawnSourceShared(
+            SourceBehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        return spawnInternal(
+                ActorKind.SHARED,
+                defaultSpawnPolicy(),
+                behaviorFactory,
+                true);
+    }
+
+    /**
+     * Runtime request/reply bridge used by compiler-lowered persistent actor
+     * methods. The request crosses the target mailbox and the response crosses
+     * a one-shot reply actor mailbox; the OresFuture itself never crosses an
+     * actor boundary.
+     *
+     * <p>The wire request is {@code requestParts + replyRef}. Replies are
+     * {@code [true]} for void, {@code [true, value]} for success, or
+     * {@code [false, failureType, message]} for failure.</p>
+     */
+    public OresFuture<Object> requestReply(
+            ActorRef<List<Object>> target,
+            List<?> requestParts) {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(requestParts, "requestParts");
+        requireCallerRuntimeAffinity("request actor reply");
+        if (currentActorKind() == ActorKind.UNTRUSTED) {
+            throw new SecurityException("untrusted actors cannot issue actor requests");
+        }
+
+        CompletableFuture<Object> completion = new CompletableFuture<>();
+        OresFuture<Object> result = ownCurrentActorFuture(OresFuture.from(completion));
+
+        ActorRef<Object> reply = spawnInternal(
+                ActorKind.PRIVATE,
+                defaultSpawnPolicy(),
+                factoryContext -> (response, turnContext) -> {
+                    try {
+                        if (!(response instanceof List<?> wire)
+                                || wire.isEmpty()
+                                || !(wire.getFirst() instanceof Boolean ok)) {
+                            completion.completeExceptionally(
+                                    new IllegalStateException(
+                                            "invalid source actor reply protocol"));
+                            return;
+                        }
+                        if (ok) {
+                            completion.complete(wire.size() > 1 ? wire.get(1) : null);
+                        } else {
+                            String failureType = wire.size() > 1
+                                    ? String.valueOf(wire.get(1))
+                                    : "ActorMethodFailure";
+                            String message = wire.size() > 2
+                                    ? String.valueOf(wire.get(2))
+                                    : "actor method failed";
+                            completion.completeExceptionally(
+                                    new IllegalStateException(
+                                            failureType + ": " + message));
+                        }
+                    } finally {
+                        turnContext.self().stop();
+                    }
+                },
+                true);
+
+        ArrayList<Object> request = new ArrayList<>(requestParts.size() + 1);
+        request.addAll(requestParts);
+        request.add(reply);
+        try {
+            send(target, List.copyOf(request));
+        } catch (RuntimeException | Error failure) {
+            stop(reply);
+            completion.completeExceptionally(failure);
+        }
+        return result;
     }
 
     /**
