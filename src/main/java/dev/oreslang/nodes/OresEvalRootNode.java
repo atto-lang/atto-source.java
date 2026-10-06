@@ -4726,6 +4726,49 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        private Invocation prepareProxyInvocation(
+                Ast.CallExpr call,
+                ActorRuntime.Proxy<?> proxy,
+                List<Object> args,
+                Env env) {
+            Invocation inner = proxy.read(raw ->
+                    prepareInvocationEvaluated(call, raw, args, env));
+
+            if (inner.kind() != InvocationKind.METHOD) {
+                throw new IllegalArgumentException(
+                        "rt Proxy<T> only exposes direct class methods; callable fields "
+                                + "must remain behind an explicit proxy method");
+            }
+
+            Ast.MethodDecl method = (Ast.MethodDecl) inner.target();
+            if (method.async() || inner.owner().methodContainsPotentialSuspension(method)) {
+                throw new IllegalArgumentException(
+                        "rt Proxy<T> method '" + method.name()
+                                + "' may not suspend or await while an rw-lock is held");
+            }
+
+            Ast.TypeRef receiverType = method.explicitReceiverType();
+            boolean readOnly = receiverType != null
+                    && receiverType.isBorrow()
+                    && !receiverType.mutableBorrow();
+
+            ProxyMethodPlan plan = new ProxyMethodPlan(
+                    proxy, inner, readOnly, method.name());
+            return new Invocation(
+                    this, InvocationKind.PROXY_METHOD, proxy, plan, List.of());
+        }
+
+        private Object executeProxyMethod(ProxyMethodPlan plan) {
+            java.util.function.Function<Object, Object> body = ignored -> {
+                Object result = plan.inner().owner().invoke(plan.inner());
+                return requireProxyBoundaryValue(
+                        result,
+                        "rt proxy method '" + plan.label() + "' result");
+            };
+            return plan.readOnly()
+                    ? plan.proxy().read(body)
+                    : plan.proxy().write(body);
+        }
         private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
             ArrayList<Object> values = new ArrayList<>(arguments.size());
             for (Ast.Expr argument : arguments) {
