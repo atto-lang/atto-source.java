@@ -14,7 +14,7 @@ public final class Ast {
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
-    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, TRAIT, STRUCT, TYPE, TYPES, ALL }
+    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
 
     public record ImportDecl(
             ImportKind kind,
@@ -25,26 +25,32 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
+            contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
+        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
-    public enum ActorKind { NONE, PRIVATE, SHARED }
+    public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
     }
 
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
-        public TypeRef { arguments = List.copyOf(arguments); }
+        public TypeRef {
+            // Both source spellings denote one primitive throughout every compiler pass.
+            if (name.equals("boolean")) name = "bool";
+            arguments = List.copyOf(arguments);
+        }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
@@ -318,21 +324,27 @@ public final class Ast {
         }
     }
 
-    public record InterfaceFieldDecl(String name, TypeRef type) implements InterfaceMember { }
+    public record InterfaceFieldDecl(String name, TypeRef type, BindingKind bindingKind) implements InterfaceMember {
+        public InterfaceFieldDecl(String name, TypeRef type) { this(name, type, BindingKind.VAL); }
+    }
 
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
-            List<InterfaceMember> members) implements Decl {
+            List<InterfaceMember> members,
+            boolean moduleContract) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members);
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
+        }
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters, List<TypeRef> parents, List<InterfaceMember> members) {
+            this(name, visibility, genericParameters, parents, members, false);
         }
     }
 
@@ -415,7 +427,7 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name, boolean rest) {
@@ -593,9 +605,57 @@ public final class Ast {
         public LoopStmt { body = List.copyOf(body); }
     }
 
+    public enum ChannelOperation { READ, WRITE, DEFAULT }
+    public enum WaitMode { BLOCKING, NONBLOCKING, IMMEDIATE }
+    public enum SelectPolicy { FAIR, PRIORITY, RANDOM }
+
+    public record SelectArm(
+            ChannelOperation operation,
+            Expr channel,
+            Expr value,
+            BindingKind bindingKind,
+            String bindingName,
+            List<Stmt> body) {
+        public SelectArm {
+            body = List.copyOf(body);
+            if (operation == ChannelOperation.DEFAULT) {
+                if (channel != null || value != null || bindingKind != null || bindingName != null) {
+                    throw new IllegalArgumentException("default select arm cannot carry channel/value/binding metadata");
+                }
+            } else {
+                if (channel == null) throw new IllegalArgumentException("channel select arm requires a channel");
+                if (operation == ChannelOperation.READ && value != null) {
+                    throw new IllegalArgumentException("read select arm cannot carry a write value");
+                }
+                if (operation == ChannelOperation.WRITE && value == null) {
+                    throw new IllegalArgumentException("write select arm requires a value");
+                }
+                if ((bindingKind == null) != (bindingName == null)) {
+                    throw new IllegalArgumentException("select binding kind/name must appear together");
+                }
+                if (operation == ChannelOperation.WRITE && bindingName != null) {
+                    throw new IllegalArgumentException("write select arm cannot bind a read value");
+                }
+            }
+        }
+    }
+
+    public record SelectStmt(
+            WaitMode mode,
+            SelectPolicy policy,
+            List<SelectArm> arms) implements Stmt {
+        public SelectStmt {
+            arms = List.copyOf(arms);
+            if (arms.isEmpty()) throw new IllegalArgumentException("select requires at least one arm");
+            long defaults = arms.stream().filter(arm -> arm.operation() == ChannelOperation.DEFAULT).count();
+            if (defaults > 1) throw new IllegalArgumentException("select permits at most one default arm");
+        }
+    }
+
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -647,6 +707,67 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    public record ChannelOpExpr(
+            ChannelOperation operation,
+            WaitMode mode,
+            Expr channel,
+            Expr value,
+            boolean callback,
+            List<Stmt> callbackBody) implements Expr {
+        public ChannelOpExpr {
+            if (operation == ChannelOperation.DEFAULT) {
+                throw new IllegalArgumentException("default is not a standalone channel operation");
+            }
+            if (channel == null) throw new IllegalArgumentException("channel operation requires a channel");
+            if (operation == ChannelOperation.READ && value != null) {
+                throw new IllegalArgumentException("readch cannot carry a write value");
+            }
+            if (operation == ChannelOperation.WRITE && value == null) {
+                throw new IllegalArgumentException("writech requires a value");
+            }
+            callbackBody = List.copyOf(callbackBody == null ? List.of() : callbackBody);
+            if (callback && (operation != ChannelOperation.WRITE || mode != WaitMode.NONBLOCKING)) {
+                throw new IllegalArgumentException(
+                        "channel callbacks are only valid for nonblocking writech");
+            }
+            if (!callback && !callbackBody.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "non-callback channel operations cannot carry a callback body");
+            }
+        }
+
+        public ChannelOpExpr(
+                ChannelOperation operation,
+                WaitMode mode,
+                Expr channel,
+                Expr value) {
+            this(operation, mode, channel, value, false, List.of());
+        }
+
+        public ChannelOpExpr(
+                ChannelOperation operation,
+                WaitMode mode,
+                Expr channel,
+                Expr value,
+                List<Stmt> callbackBody) {
+            this(operation, mode, channel, value, true, callbackBody);
+        }
+    }
+
+    /**
+     * Dynamic select operates on a runtime SelectSet or iterable/map of
+     * SelectCase values. Static select remains a statement so branch control
+     * flow (return/break/continue) is checked in its enclosing callable.
+     */
+    public record DynamicSelectExpr(
+            WaitMode mode,
+            SelectPolicy policy,
+            Expr cases) implements Expr {
+        public DynamicSelectExpr {
+            if (cases == null) throw new IllegalArgumentException("dynamic select requires a case collection");
+        }
+    }
 
     public record ListExpr(List<Expr> elements) implements Expr {
         public ListExpr { elements = List.copyOf(elements); }
