@@ -77,6 +77,26 @@ final class OresVMTest {
     }
 
     @Test
+    void vmStartupBarrierIsIdempotentAndSurvivesRepeatedBootstrapCalls() {
+        ActorRuntime.DispatcherConfig config = ActorRuntime.DispatcherConfig.defaults();
+        OresVM vm = OresVM.dedicated(config);
+        try {
+            int expected = config.controlParallelism();
+
+            for (int i = 0; i < 32; i++) {
+                vm.startup();
+                assertTrue(vm.started());
+                assertEquals(
+                        expected,
+                        vm.controlCarrierCount(),
+                        "repeated startup must not reduce the resident CONTROL carrier floor");
+            }
+        } finally {
+            vm.shutdownNow();
+        }
+    }
+
+    @Test
     void vmKernelTypeIsNotPublicAndContextDoesNotExposeIt() {
         assertFalse(Modifier.isPublic(OresVM.class.getModifiers()),
                 "OresVM is a runtime kernel type, not a user/interop API");
