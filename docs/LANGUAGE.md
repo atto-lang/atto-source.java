@@ -228,7 +228,7 @@ The important notation boundary is:
 | nested runtime arrays | `Array[Array[T]]` |
 | ordinary nominal generic collection class | `ArrayList<T>` |
 | runtime initial capacity | `new ArrayList<T>(capacity: 5)` |
-| fixed intrinsic compile-time extent assertion | `FixedArray<size=4>[4 of T]` |
+| fixed intrinsic compile-time extent | `FixedArray[4 of T]` |
 
 Thus `ArrayList<T>[]` is not the Oreslang spelling for a nominal
 `ArrayList`, and `ArrayList<size=5>[]` is doubly wrong: it loses the
@@ -340,8 +340,11 @@ no precedence rule.
 
 For runtime-extent collections, current `size` and `capacity` are not
 properties of the type. They belong to runtime construction. Fixed-extent
-sequences are different: `size=N` may be used as a compile-time layout
-assertion and must equal the statically expanded arity.
+sequences encode extent directly in their sequence shape, so new code should
+use `FixedArray[4 of T]` or `Tuple[T1, T2]` rather than repeat the same
+information in metadata. The existing fixed-only `size=N` metadata remains
+accepted as a compatibility assertion and must equal the statically expanded
+arity; it is not the canonical source of extent.
 
 ```ores
 // runtime-extent policy: size/capacity are constructor state
@@ -351,20 +354,24 @@ val xs: Vector<growth_policy=GP.Foo>[int] = [1, 2, 3];
 // Vector<size=3>[int]
 // Vector<capacity=32>[int]
 
-// fixed product/storage policy: size is a checked compile-time assertion
+// fixed extent is carried by the shape itself
 val pair: Tuple<
     growth_policy=GP.Fixed,
     allocator=Arena,
-    align=64,
-    size=2
+    align=64
 >[int, string] = (7, "seven");
 
-val fixed: FixedArray<size=4, align=32>[4 of int] = [1, 2, 3, 4];
+val fixed: FixedArray<align=32>[4 of int] = [1, 2, 3, 4];
+
+// compatibility-only redundant assertion; accepted but not canonical
+val fixed_compat: FixedArray<size=4, align=32>[4 of int] = [1, 2, 3, 4];
 ```
 
 `capacity=N` remains runtime state and is not accepted as type metadata.
-`growth_policy` on a tuple/fixed sequence describes backing-storage or
-construction policy only; it never makes the logical arity resizable.
+Fixed-only `size=N` is retained solely as a checked compatibility assertion;
+the bracketed shape is authoritative. `growth_policy` on a tuple/fixed
+sequence describes backing-storage or construction policy only; it never makes
+the logical arity resizable.
 `inline_capacity` and `max_capacity`, when present on a fixed sequence,
 must be at least its exact arity.
 
