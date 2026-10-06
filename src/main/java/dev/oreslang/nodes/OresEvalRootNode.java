@@ -38,6 +38,7 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
+    public static final String INVOKE_MODULE_PUBLIC_COMMAND = "__ores_internal_invoke_module_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
     private final Ast.Program program;
@@ -91,6 +92,16 @@ public final class OresEvalRootNode extends RootNode {
                 && arguments[1] instanceof String functionName) {
             current.link();
             return current.invokePublic(functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+        }
+        if (arguments.length >= 3
+                && INVOKE_MODULE_PUBLIC_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String moduleName
+                && arguments[2] instanceof String functionName) {
+            current.link();
+            return current.invokeModulePublic(
+                    moduleName,
+                    functionName,
+                    java.util.Arrays.copyOfRange(arguments, 3, arguments.length));
         }
 
         // Backward-compatible single-source execution. Multi-file hosts use
@@ -357,6 +368,23 @@ public final class OresEvalRootNode extends RootNode {
                         + "' does not export public function '" + name + "'");
             }
             Object result = callFunction(fn, java.util.Arrays.asList(arguments));
+            return result instanceof HostObjectFacade host ? host.value() : result;
+        }
+
+        private Object invokeModulePublic(
+                String moduleName,
+                String functionName,
+                Object[] arguments) {
+            Ast.ModuleDecl module = modules.get(moduleName);
+            if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
+                throw new IllegalArgumentException(
+                        "code unit '" + codeUnitId
+                                + "' does not export module '" + moduleName + "'");
+            }
+            Object result = invokeModuleFunction(
+                    module,
+                    functionName,
+                    java.util.Arrays.asList(arguments));
             return result instanceof HostObjectFacade host ? host.value() : result;
         }
 
