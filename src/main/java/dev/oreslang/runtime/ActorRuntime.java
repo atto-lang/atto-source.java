@@ -1613,7 +1613,28 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new RejectedExecutionException(
                         "root OresScheduler ready queue is full");
             }
-            pumpRootScheduler();
+
+            try {
+                pumpRootScheduler();
+            } catch (RejectedExecutionException rejected) {
+                /*
+                 * The task has already been removed from rootSchedulerQueue by
+                 * pumpRootScheduler(). Let the owning OresScheduler observe the
+                 * rejection so its TaskRunner can become terminal instead of
+                 * remaining permanently QUEUED.
+                 */
+                throw rejected;
+            }
+
+            /*
+             * CONTROL shutdown may race the initial admission check and queue
+             * offer. If shutdown prevented the task from being drained, remove
+             * it and fail the caller; silently leaving it in the queue would
+             * create an unresumable Future.
+             */
+            if (controlDispatcher.isShutdown() && rootSchedulerQueue.remove(task)) {
+                throw new RejectedExecutionException("CONTROL dispatcher shut down during admission");
+            }
         }
 
         private void pumpRootScheduler() {
@@ -1643,16 +1664,21 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RejectedExecutionException rejected) {
                 if (controlDispatcher.isShutdown() || messageWatchdog.isShutdown()) {
                     rootSlots.release();
-                    return;
+                    throw rejected;
                 }
 
                 // CONTROL's own bounded queue can be temporarily saturated by
                 // supervisor/mailman work. Keep this logical root slot reserved
                 // and retry without running guest code on the caller thread.
-                messageWatchdog.schedule(
-                        () -> submitRootSchedulerTurn(task),
-                        1L,
-                        TimeUnit.MILLISECONDS);
+                try {
+                    messageWatchdog.schedule(
+                            () -> submitRootSchedulerTurn(task),
+                            1L,
+                            TimeUnit.MILLISECONDS);
+                } catch (RejectedExecutionException retryRejected) {
+                    rootSlots.release();
+                    throw retryRejected;
+                }
             }
         }
 
