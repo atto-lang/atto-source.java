@@ -4199,6 +4199,12 @@ public final class OresEvalRootNode extends RootNode {
         private ChannelRuntime.Channel<Object> requireChannel(
                 Object value,
                 String where) {
+            // Explicitly allowlisted host imports may supply a runtime channel.
+            // The host facade still enforces JAVA_INTEROP at the call boundary.
+            if (value instanceof HostObjectFacade host) {
+                value = context.env().isHostObject(host.value())
+                        ? context.env().asHostObject(host.value()) : host.value();
+            }
             if (!(value instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException(
                         where + " requires Channel<T>; got " + value);
