@@ -43,14 +43,10 @@ public final class OresMutex {
     }
 
     public static <T> Shared<T> shared(T value) {
-        if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.PRIVATE) {
-            throw new SecurityException("private actors cannot create SharedMutex<T>");
-        }
-        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
-        if (actorPolicy != null) {
-            actorPolicy.require(
-                    IsolatePolicy.Capability.SHARED_MEMORY,
-                    "SharedMutex.new");
+        if (ActorRuntime.currentActorKind() != null) {
+            throw new SecurityException(
+                    "SharedMutex<T> is host/runtime synchronized state and cannot be created "
+                            + "inside an actor turn; use an owner actor or explicit rt proxy");
         }
         return new Shared<>(value);
     }
@@ -407,20 +403,10 @@ public final class OresMutex {
         }
 
         private void requireActorAccess() {
-            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.PRIVATE) {
-                throw new SecurityException("private actors cannot access SharedMutex<T>");
-            }
-            IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
-            if (actorPolicy != null) {
-                actorPolicy.require(
-                        IsolatePolicy.Capability.SHARED_MEMORY,
-                        "SharedMutex operation");
-            }
-
-            ActorRuntime current = ActorRuntime.currentActorRuntime();
-            if (current != null && !bindToRuntime(current)) {
-                throw new WrongMutexDomainException(
-                        "SharedMutex belongs to another ActorRuntime");
+            if (ActorRuntime.currentActorKind() != null) {
+                throw new SecurityException(
+                        "SharedMutex<T> is host/runtime synchronized state and cannot be accessed "
+                                + "from actor application code; use mailbox/channel mutation or rt proxy");
             }
         }
 
