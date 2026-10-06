@@ -94,6 +94,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
     }
 
+    interface RuntimeAbort { void abort(Throwable failure); }
+
+    private volatile RuntimeAbort operationOwner;
+    void runtimeAbort(RuntimeAbort owner) { operationOwner = owner; }
+
+    private volatile Object taskProducer;
+
+    void taskProducer(Object producer) { taskProducer = producer; }
+    Object taskProducer() { return taskProducer; }
+
     private final BooleanSupplier cancelAdmission;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
@@ -386,6 +396,33 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return completed;
     }
 
+    /** Cancel operation ownership but publish the original deadline failure. */
+    boolean abortFromRuntime(Throwable failure) {
+        Object producer = operationOwner != null ? operationOwner : taskProducer;
+        if (producer instanceof RuntimeAbort task) {
+            if (isDone()) return false;
+            task.abort(failure);
+            return true;
+        }
+        if (isDone() || !cancelAdmission.getAsBoolean()) return false;
+        // Channel/select admission first withdraws the operation atomically.
+        // Finish cleanup before waking the waiter with the typed error.
+        Runnable hook = cancelHook.getAndSet(null);
+        if (hook != null && cancelHookRun.compareAndSet(false, true)) {
+            try { hook.run(); } catch (RuntimeException | Error ignored) { }
+        }
+        if (failure instanceof CancellationException cancelled) return settle(new Cancelled(cancelled));
+        return failFromRuntime(failure);
+    }
+
+    static void requireNonblockingCarrier(String operation) {
+        if (ActorRuntime.inActorExecution() || ActorRuntime.inActorGroupMailmanExecution()
+                || ActorRuntime.isActorCarrierThread() || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()) {
+            throw new OresDeadlockError(operation + " would block an Oreslang carrier; use await suspension");
+        }
+    }
+
     /**
      * Runtime-only completion subscription.
      *
@@ -522,8 +559,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Object observed = state.get();
         boolean interrupted = false;
         if (observed == PENDING) {
+            requireNonblockingCarrier("Future.join");
             java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-            whenCompleteRuntime((value, failure) -> done.countDown());
+            RuntimeWaiterRegistration<T> registration = whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
             for (;;) {
                 try {
                     done.await();
@@ -532,6 +570,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                     interrupted = true;
                 }
             }
+            registration.detach();
             observed = state.get();
         }
         if (interrupted) Thread.currentThread().interrupt();
@@ -554,6 +593,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
+        taskProducer = null;
+        operationOwner = null;
 
         RuntimeWaiterRegistration<T> waiter;
         while ((waiter = waiters.poll()) != null) {
@@ -586,15 +627,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Object observed = state.get();
         if (observed != PENDING) return observed;
 
+        if (unit != null && timeout == 0) return state.get();
+        requireNonblockingCarrier("Future.get");
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        RuntimeWaiterRegistration<T> registration = whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) done.await();
+            else if (!done.await(timeout, unit)) return state.get();
+            return state.get();
+        } finally {
+            registration.detach();
         }
-        return state.get();
     }
 
     @SuppressWarnings("unchecked")

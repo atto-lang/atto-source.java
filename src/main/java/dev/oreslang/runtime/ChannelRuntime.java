@@ -161,7 +161,7 @@ public final class ChannelRuntime {
          */
         public OresFuture<T> readAsync() {
             OresFuture<SelectResult> selected =
-                    SelectSet.of(read(this)).selectAsync(SelectPolicy.PRIORITY);
+                    SelectSet.of(read(this)).selectAsyncUnowned(SelectPolicy.PRIORITY);
             return mapSelection(selected, result -> {
                 @SuppressWarnings("unchecked")
                 T value = (T) result.value();
@@ -176,7 +176,7 @@ public final class ChannelRuntime {
             requireValue(value);
             OresFuture<SelectResult> selected =
                     SelectSet.of(write(this, value))
-                            .selectAsync(SelectPolicy.PRIORITY);
+                            .selectAsyncUnowned(SelectPolicy.PRIORITY);
             return mapSelection(selected, ignored -> null);
         }
 
@@ -317,6 +317,10 @@ public final class ChannelRuntime {
         }
 
         public OresFuture<SelectResult> selectAsync(SelectPolicy policy) {
+            return OresDeadlineScope.own(selectAsyncUnowned(policy));
+        }
+
+        private OresFuture<SelectResult> selectAsyncUnowned(SelectPolicy policy) {
             SelectRegistration registration =
                     new SelectRegistration(
                             this,
@@ -829,7 +833,7 @@ public final class ChannelRuntime {
                 result.failFromRuntime(failure);
             }
         });
-        return result;
+        return OresDeadlineScope.own(result);
     }
 
     private static void runCompletions(List<Runnable> completions) {

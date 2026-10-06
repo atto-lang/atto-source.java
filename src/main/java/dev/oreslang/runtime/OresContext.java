@@ -290,7 +290,7 @@ public final class OresContext implements AutoCloseable {
                 throw new IllegalStateException(
                         "root main scheduler task resumed after terminal state");
             }
-        });
+        }, isolatePolicy.maxWallTime());
         if (isolatedRootTurns != null) {
             while (!task.isDone()) {
                 Runnable turn = isolatedRootTurns.poll();
