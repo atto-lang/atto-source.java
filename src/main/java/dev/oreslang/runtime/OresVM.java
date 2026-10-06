@@ -93,22 +93,35 @@ final class OresVM {
         String prefix = Objects.requireNonNull(threadPrefix, "threadPrefix");
         ActorRuntime.DispatcherConfig schedulerConfig =
                 Objects.requireNonNull(config, "config");
-        this.dispatchers = new ActorRuntime.DispatcherGroup(
-                schedulerConfig,
-                prefix);
-        this.blockingIo = new BlockingIoExecutor(prefix);
-        this.processVm = processVm;
 
-        // VM construction is the runtime bootstrap boundary. The physical
-        // CONTROL carrier pool must already be live before this VM can be
-        // published through its opaque context binding. No context lookup can
-        // therefore observe a partially-started VM.
+        ActorRuntime.DispatcherGroup createdDispatchers =
+                new ActorRuntime.DispatcherGroup(schedulerConfig, prefix);
+        BlockingIoExecutor createdBlockingIo = null;
         try {
+            createdBlockingIo = new BlockingIoExecutor(prefix);
+            this.dispatchers = createdDispatchers;
+            this.blockingIo = createdBlockingIo;
+            this.processVm = processVm;
+
+            // VM construction is the runtime bootstrap boundary. The physical
+            // CONTROL carrier pool must already be live before this VM can be
+            // published through its opaque context binding. No context lookup can
+            // therefore observe a partially-started VM.
             startup();
             VM_BINDINGS.put(contextBindingToken, this);
         } catch (RuntimeException | Error failure) {
-            blockingIo.close();
-            dispatchers.shutdownNow();
+            if (createdBlockingIo != null) {
+                try {
+                    createdBlockingIo.close();
+                } catch (Throwable cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+            }
+            try {
+                createdDispatchers.shutdownNow();
+            } catch (Throwable cleanup) {
+                failure.addSuppressed(cleanup);
+            }
             throw failure;
         }
     }
