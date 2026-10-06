@@ -793,11 +793,12 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Explicit synchronized shared-memory cell.
+     * Host/runtime-internal synchronized shared-memory cell.
      *
-     * Actor fields do not use this: a mailbox turn already provides exclusive
-     * mutation of actor-owned state. SyncCell is for state intentionally shared
-     * by multiple SHARED actors.
+     * <p>Actor application code does not mutate SyncCell directly. Mutable
+     * application state is actor-owned and crosses actor boundaries as
+     * mailbox/channel commands. Use Shared<T> for immutable zero-copy reads or
+     * explicit rt proxy / OresProxy for exceptional synchronized mutable access.</p>
      */
     public final class SyncCell<T> implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock(true);
@@ -822,7 +823,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public T snapshot() {
-            rejectPrivateActorSharedMemoryAccess("SyncCell.snapshot");
+            rejectActorSharedMutableAccess("SyncCell.snapshot");
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -836,7 +837,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public <R> R read(Function<? super T, ? extends R> reader) {
             Objects.requireNonNull(reader);
-            requireSharedActorTurn();
+            rejectActorSharedMutableAccess("SyncCell.read");
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -855,7 +856,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         public T update(UnaryOperator<T> updater) {
             Objects.requireNonNull(updater);
-            requireSharedActorTurn();
+            rejectActorSharedMutableAccess("SyncCell.update");
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -883,7 +884,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            rejectPrivateActorSharedMemoryAccess("SyncCell.close");
+            rejectActorSharedMutableAccess("SyncCell.close");
             boolean entered = enterSyncCell(this);
             try {
                 closeFromRuntime();
@@ -2863,7 +2864,7 @@ public final class ActorRuntime implements AutoCloseable {
         } else {
             policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
         }
-        rejectPrivateActorSharedMemoryAccess("SyncCell creation");
+        rejectActorSharedMutableAccess("SyncCell creation");
         SyncCell<T> cell = new SyncCell<>(initialValue);
         syncCells.add(cell);
         if (closed.get()) {
@@ -2894,14 +2895,17 @@ public final class ActorRuntime implements AutoCloseable {
     private void rejectPrivateActorSharedMemoryAccess(String operation) {
         ActorCell<?> current = currentActor.get();
         if (current != null && isPrivateKind(current.kind)) {
-            throw new IllegalStateException("private actors cannot access synchronized shared memory via " + operation);
+            throw new IllegalStateException("private actors cannot access shared runtime memory via " + operation);
         }
     }
 
-    private void requireSharedActorTurn() {
-        ActorCell<?> cell = currentActor.get();
-        if (cell == null || cell.kind != ActorKind.SHARED) {
-            throw new IllegalStateException("shared state mutation requires a shared actor mailbox turn");
+    private void rejectActorSharedMutableAccess(String operation) {
+        ActorCell<?> current = currentActor.get();
+        if (current != null) {
+            throw new SecurityException(
+                    operation + " is host/runtime-internal synchronized state; "
+                            + "actor mutation must use its owned heap, mailbox/channel messages, "
+                            + "or an explicit rt proxy domain");
         }
     }
 
@@ -3480,33 +3484,42 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("MutexGuard<T> is lexical and cannot cross actor mailboxes");
         }
-        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+        if (value instanceof OresMutex.Shared<?>) {
+            throw new SecurityException(
+                    "SharedMutex<T> cannot cross actor mailboxes; shared mutable application state "
+                            + "must have an owner actor or use explicit Proxy<T>");
+        }
+        if (value instanceof OresProxy<?> proxy) {
             if (target.kind != ActorKind.SHARED) {
-                throw new SecurityException("private actors cannot receive SharedMutex<T>");
+                throw new SecurityException(
+                        "Proxy<T> is unavailable to private/untrusted actors");
+            }
+            if (!proxy.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "Proxy<T> belongs to a different ActorRuntime");
             }
             ActorKind senderKind = currentActorKind();
-            if (senderKind != null && isPrivateKind(senderKind)) {
-                throw new SecurityException("private actors cannot send SharedMutex<T>");
+            if (senderKind != null && senderKind != ActorKind.SHARED) {
+                throw new SecurityException(
+                        "private/untrusted actors cannot send Proxy<T>");
             }
             IsolatePolicy senderPolicy = currentActorPolicy();
             if (senderPolicy != null) {
-                senderPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor send");
+                senderPolicy.require(IsolatePolicy.Capability.ACTOR_PROXY, "Proxy actor send");
             } else {
-                policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
+                policyCeiling.require(IsolatePolicy.Capability.ACTOR_PROXY, "Proxy host send");
             }
-            target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
-            sharedMutex.inspectForTransport(payload ->
-                    requireSharedMutexPayloadSafe(
-                            payload,
-                            new IdentityHashMap<>(),
-                            depth + 1));
+            target.policy.require(IsolatePolicy.Capability.ACTOR_PROXY, "Proxy actor receive");
             return;
         }
         if (value instanceof Shared<?> shared) {
             requireMutexTransport(target, shared.value(), visiting, depth + 1);
             return;
         }
-        if (value instanceof SyncCell<?>) return;
+        if (value instanceof SyncCell<?>) {
+            throw new SecurityException(
+                    "SyncCell cannot cross actor mailboxes; it is host/runtime-internal synchronized state");
+        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
@@ -3635,6 +3648,13 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof SyncCell<?>) return;
+        if (value instanceof OresProxy<?> proxy) {
+            if (!proxy.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "Proxy<T> belongs to a different ActorRuntime");
+            }
+            return;
+        }
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
             requireOwnedActorRefs(sharedMutex.transportValue(), visiting, depth + 1);
             return;
@@ -3700,6 +3720,13 @@ public final class ActorRuntime implements AutoCloseable {
                         "SyncCell belongs to a different ActorRuntime and cannot cross shared-memory domains");
             }
             if (cell.closed()) throw new IllegalArgumentException("SyncCell is closed");
+            return;
+        }
+        if (value instanceof OresProxy<?> proxy) {
+            if (!proxy.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "Proxy<T> belongs to a different ActorRuntime");
+            }
             return;
         }
         if (value instanceof OresMutex.Shared<?>) {
@@ -3826,6 +3853,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof OresProxy<?>
                 || value instanceof OresMutex.Lock<?>
                 || value instanceof OresMutex.Guard<?>) {
             throw new SecurityException(
@@ -3876,6 +3904,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
+        }
+        if (value instanceof OresProxy<?>) {
+            throw new IllegalArgumentException(
+                    "Proxy<T> is mutable synchronized state and cannot be wrapped as Shared<T>");
         }
         if (value instanceof OresMutex.Shared<?>) {
             throw new IllegalArgumentException("SharedMutex is mutable shared state and cannot be wrapped as Shared");
@@ -3950,6 +3982,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof OresProxy<?>
                 || value instanceof OresMutex.Shared<?>) {
             return;
         }
@@ -4024,6 +4057,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
+                || value instanceof OresProxy<?>
                 || value instanceof OresMutex.Lock<?>
                 || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException(
@@ -4066,6 +4100,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
+        if (value instanceof OresProxy<?> proxy) return proxy;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
@@ -4123,6 +4158,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
+        }
+        if (value instanceof OresProxy<?>) {
+            throw new IllegalArgumentException("private actors cannot receive Proxy<T>");
         }
         if (value instanceof OresMutex.Shared<?>) {
             throw new IllegalArgumentException("private actors cannot receive SharedMutex<T>");
@@ -4182,6 +4220,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof OresProxy<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4250,6 +4289,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return scalar;
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
+        if (value instanceof OresProxy<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4302,6 +4342,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
+        }
+        if (value instanceof OresProxy<?>) {
+            throw new IllegalArgumentException("private actors cannot receive Proxy<T>");
         }
         if (value instanceof Shared<?> shared) {
             return estimatePrivateTransportBytes(shared.value(), visiting, depth + 1, limit);
@@ -4425,6 +4468,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
+        if (value instanceof OresProxy<?>) {
+            throw new IllegalArgumentException("Proxy<T> is a live capability and cannot be frozen");
+        }
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot be frozen");
