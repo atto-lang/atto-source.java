@@ -343,7 +343,7 @@ public final class TypeChecker {
 
     private void checkInterface(Ast.InterfaceDecl iface) {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
-        Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
+        Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
         Set<String> interfaceFieldNames = new LinkedHashSet<>();
         collectInterfaceFieldNames(iface, interfaceFieldNames, new LinkedHashSet<>());
