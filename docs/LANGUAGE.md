@@ -455,6 +455,30 @@ value into runtime-shared memory. Explicit `rt borrow` may still create a
 lexical checker borrow of a named scalar binding; it does not allocate storage
 or grant pointer/address semantics.
 
+For identity classes, the copy contract is a well-known symbol method, not an
+ordinary method name:
+
+```ores
+define class Box as
+  pub [Symbol.rtCopy]() => self {
+    return new Box();
+  }
+
+  // This is an unrelated application method and has no rt-copy meaning.
+  pub copy() => self {
+    return self;
+  }
+end
+```
+
+Only `[Symbol.rtCopy]()` is consulted by `rt copy`. The hook must be a
+concrete, synchronous, non-generic, public instance method declared directly on
+the concrete class, use a read-only receiver, and return a fresh instance of
+that same concrete class. The runtime verifies that the hook did not mutate the
+source and did not retain mutable aliases into the source graph. Ordinary
+`copy()` remains available to application code with any semantics its API
+chooses.
+
 For identity-bearing values, ownership and allocation are separate:
 `rt borrow`, `rt take`, and same-domain `rt share` do not relocate storage.
 `rt copy` creates independent storage in the current semantic allocation
