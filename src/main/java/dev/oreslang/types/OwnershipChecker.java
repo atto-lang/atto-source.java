@@ -1308,7 +1308,16 @@ public final class OwnershipChecker {
             validateBorrow(owner, true);
             return;
         }
-        throw error("mutation target must be rooted in a mutable local/parameter or &mut borrow");
+
+        /*
+         * Projected proxy views remain synchronized capabilities. This admits
+         * proxy.inner.value = x and proxy.inner.mutate() without treating an
+         * ordinary raw member projection as a mutable ownership root.
+         */
+        ValueInfo projected = checkExpr(receiver, scope, false);
+        if (projected.type != null && isProxyType(projected.type)) return;
+
+        throw error("mutation target must be rooted in a mutable local/parameter, &mut borrow, or rt Proxy<T> view");
     }
 
     private VarState borrowOwner(Ast.Expr operand, Scope scope) {
