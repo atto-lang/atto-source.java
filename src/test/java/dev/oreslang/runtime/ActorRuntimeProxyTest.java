@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -306,6 +307,38 @@ final class ActorRuntimeProxyTest {
                     "dispose must settle queued readers instead of granting stale access");
             assertThrows(RuntimeException.class, lateReader::join);
             assertEquals(0, proxy.queuedWaiters());
+        }
+    }
+
+
+    @Test
+    void proxyPromotedFromActorDomainSurvivesSourceActorTermination() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            AtomicReference<ActorRuntime.Proxy<int[]>> promoted = new AtomicReference<>();
+
+            var owner = runtime.<String>spawnSharedTrusted(
+                    context -> (message, actorContext) -> {
+                        int[] actorOwned = {21};
+                        ActorRuntime.Proxy<int[]> proxy = runtime.proxy(actorOwned);
+                        assertTrue(proxy.promotedFromActorDomain());
+                        assertEquals(actorContext.self().id(), proxy.sourceActorId().orElseThrow());
+                        promoted.set(proxy);
+                        actorContext.self().stop();
+                    });
+
+            owner.send("promote");
+            assertTrue(owner.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty());
+
+            ActorRuntime.Proxy<int[]> proxy = promoted.get();
+            assertNotNull(proxy);
+            assertEquals(21, proxy.read(value -> value[0]).intValue(),
+                    "proxy promotion must detach target lifetime from the retired actor domain");
+            proxy.write(value -> {
+                value[0] = 34;
+                return null;
+            });
+            assertEquals(34, proxy.read(value -> value[0]).intValue());
         }
     }
 
