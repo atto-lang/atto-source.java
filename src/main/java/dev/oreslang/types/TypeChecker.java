@@ -2462,7 +2462,7 @@ public final class TypeChecker {
             case "<=" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, true);
             case ">" -> new GuardRange(name.name(), v, false, Double.POSITIVE_INFINITY, false);
             case ">=" -> new GuardRange(name.name(), v, true, Double.POSITIVE_INFINITY, false);
-            case "==" -> new GuardRange(name.name(), v, true, v, true);
+            case "eq", "==" -> new GuardRange(name.name(), v, true, v, true);
             default -> null;
         };
     }
