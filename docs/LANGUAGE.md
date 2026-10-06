@@ -122,7 +122,7 @@ end
 
 Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
 
-A typed module handle uses `Module<T>`, where `T` is a module contract. A module contract is not a class/struct interface and cannot be implemented by a class or actor.
+A module contract is not a class/struct interface and cannot be implemented by a class or actor.
 
 ## Functions and returns
 
