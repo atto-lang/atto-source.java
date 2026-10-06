@@ -1563,13 +1563,15 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation);
                                     return;
                                 }
+                                Iterable<?> values = iterableValues(iterable, env);
                                 runForOfIteration(
                                         t,
                                         loop,
                                         env,
-                                        iterableValues(iterable, env).iterator(),
+                                        values.iterator(),
                                         0,
-                                        continuation);
+                                        (completed, flow) -> finishSourceIterable(
+                                                completed, values, flow, continuation));
                             });
                     return;
                 }
@@ -1601,13 +1603,15 @@ public final class OresEvalRootNode extends RootNode {
                                             }, continuation);
                                     return;
                                 }
+                                Iterable<?> values = iterableValues(iterable, env);
                                 runForOfDestructureIteration(
                                         t,
                                         loop,
                                         env,
-                                        iterableValues(iterable, env).iterator(),
+                                        values.iterator(),
                                         0,
-                                        continuation);
+                                        (completed, flow) -> finishSourceIterable(
+                                                completed, values, flow, continuation));
                             });
                     return;
                 }
@@ -2073,6 +2077,19 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
             runAsyncForOfIteration(task, sourceAsyncGenerator(value, env), env, body, bind, continuation);
+        }
+
+        private void finishSourceIterable(SourceTask task, Iterable<?> values,
+                SourceFlow flow, SourceFlowCont continuation) {
+            if (!(values instanceof AutoCloseable)) {
+                continuation.accept(task, flow);
+                return;
+            }
+            task.suspend(context.asyncRuntime().submit(() -> {
+                closeIterable(values);
+                return null;
+            }), (t, ignored, failure) -> continuation.accept(t,
+                    failure == null ? flow : SourceFlow.throwing(failure)));
         }
 
         private void finishAsyncForOf(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,

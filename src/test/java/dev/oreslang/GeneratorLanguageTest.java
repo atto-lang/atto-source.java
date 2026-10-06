@@ -16,6 +16,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class GeneratorLanguageTest {
     @Test
+    void suspendableSyncIterationClosesProducerBeforeContinuingAfterBreak() throws Exception {
+        assertEquals("1:closed|done", run("""
+                generator fnc values(): int {
+                  try { yield 1; yield 2; } catch (err) { }
+                  finally { stdio.stdout.write(":closed"); }
+                  return;
+                }
+                pub async routine main(): void {
+                  for const item of values() {
+                    stdio.stdout.write(item);
+                    break;
+                  }
+                  stdio.stdout.write("|done");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void suspendableAsyncIterationClosesProducerOnBreak() throws Exception {
         assertEquals("1:closed", run("""
                 async generator fnc values(): int {
