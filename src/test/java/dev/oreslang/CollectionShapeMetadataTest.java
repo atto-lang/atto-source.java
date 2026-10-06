@@ -201,6 +201,63 @@ final class CollectionShapeMetadataTest {
     }
 
     @Test
+    void tupleSupportsFixedLayoutMetadataWithoutBecomingResizable() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val pair: Tuple<
+                      growth_policy=Fixed,
+                      allocator=Arena,
+                      align=64,
+                      size=2,
+                      inline_capacity=2,
+                      max_capacity=2,
+                      storage=Inline,
+                      rank=1
+                  >[int, string] = (7, "x");
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException size = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val pair: Tuple<size=3>[int, string] = (7, "x");
+                          return;
+                        }
+                        """)));
+        assertTrue(size.getMessage().contains("fixed arity 2"));
+
+        IllegalArgumentException growth = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val pair: Tuple<growth_policy=Geometric>[int, string] = (7, "x");
+                          return;
+                        }
+                        """)));
+        assertTrue(growth.getMessage().contains("cannot grow"));
+
+        IllegalArgumentException capacity = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val pair: Tuple<capacity=4>[int, string] = (7, "x");
+                          return;
+                        }
+                        """)));
+        assertTrue(capacity.getMessage().contains("not meaningful for Tuple"));
+    }
+
+    @Test
+    void tupleNamedShapeIsEquivalentToFiniteTupleType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val legacy: [int, string] = (7, "x");
+                  val explicit: Tuple[int, string] = legacy;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void multidimensionalBracketShorthandCreatesNestedHomogeneousCollectionType() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): void {
