@@ -4,6 +4,8 @@ on:
   push:
     branches: ["ci/prove-http-routing-ee19932f-20261006"]
   workflow_dispatch:
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
