@@ -1338,7 +1338,17 @@ public final class TypeChecker {
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
+                Type assignmentReceiver = deref(
+                        typeOf(member.receiver(), env, generics, self));
+                boolean proxyAssignment = assignmentReceiver instanceof Named proxy
+                        && proxy.name().equals("Proxy")
+                        && proxy.arguments().size() == 1;
                 targetType = memberType(member, env, generics, self);
+                if (proxyAssignment && !isProxyExportSafe(targetType)) {
+                    throw new IllegalArgumentException(
+                            "direct rt proxy field assignment is limited to copy/immutable fields; "
+                                    + "mutate nested state through a proxy method so no mutable alias escapes");
+                }
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
@@ -2162,7 +2172,12 @@ public final class TypeChecker {
                 if (dynamic.arguments().size() != 1) {
                     throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
                 }
-                return dynamic.arguments().getFirst();
+                Type valueType = dynamic.arguments().getFirst();
+                if (proxyReceiver && !isProxyExportSafe(valueType)) {
+                    throw new IllegalArgumentException(
+                            "rt proxy DynamicStruct field reads may return only copy/immutable data");
+                }
+                return valueType;
             }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
@@ -2172,7 +2187,15 @@ public final class TypeChecker {
                         requireClassMemberVisible(
                                 field.field().visibility(), field.owner(), "field", field.field().name());
                         Type pattern = classFieldType(field.owner(), field.field());
-                        return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
+                        Type result = substituteGenerics(
+                                pattern,
+                                classGenericBindings(field.owner(), field.ownerType()));
+                        if (proxyReceiver && !isProxyExportSafe(result)) {
+                            throw new IllegalArgumentException(
+                                    "rt proxy field '" + field.owner().name() + "." + field.field().name()
+                                            + "' may be read only when its value is copy/immutable");
+                        }
+                        return result;
                     }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (!methods.isEmpty()) {
