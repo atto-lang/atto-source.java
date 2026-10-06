@@ -139,12 +139,23 @@ public final class OwnershipChecker {
             throw error("structural parameter '" + param.name()
                     + "' is a read-only borrowed view and cannot be declared mut");
         }
-        ValueKind kind = param.structural() && !param.type().isBorrow()
-                ? ValueKind.IMM_BORROW
-                : kindOfType(param.type());
-        boolean mutableOwner = param.structural() ? false : param.mutable();
-        if (param.type().isBorrow() && param.type().mutableBorrow()) mutableOwner = false;
-        return new VarState(param.type(), mutableOwner, kind, Origin.PARAM);
+
+        // Pointer-free call contract: ordinary non-Copy parameters are read
+        // aliases; Type mut name parameters are exclusive aliases. Ownership
+        // transfer is explicit at the call site with rt take.
+        ValueKind kind;
+        if (param.mutable()) {
+            kind = ValueKind.MUT_BORROW;
+        } else if (param.structural()) {
+            kind = ValueKind.IMM_BORROW;
+        } else if (param.type().isBorrow()) {
+            kind = param.type().mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
+        } else {
+            kind = isCopyType(param.type()) ? ValueKind.COPY : ValueKind.IMM_BORROW;
+        }
+
+        // mut grants mutation through the referenced object, not rebinding.
+        return new VarState(param.type(), false, kind, Origin.PARAM);
     }
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
