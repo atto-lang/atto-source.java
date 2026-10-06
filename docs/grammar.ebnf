@@ -148,13 +148,19 @@ loop_stmt       = "loop" block ;
 
 if_stmt         = "if" condition
                   ( block
-                    { "elseif" condition block }
+                    { conditional_branch condition block }
                     [ "else" block ]
-                  | [ ";" ] ( "then" | "do" ) { statement }
-                    { "elseif" condition [ ";" ] ( "then" | "do" ) { statement } }
+                  | [ ";" ] ( "then" | deprecated_if_do ) { statement }
+                    { conditional_branch condition [ ";" ] ( "then" | deprecated_if_do ) { statement } }
                     [ "else" { statement } ]
                   )
                   "fi" ;
+conditional_branch
+                = "elif"
+                | "elseif"                 (* accepted alias *)
+                | "else" "if" ;            (* accepted alias; one fi closes the chain *)
+deprecated_if_do
+                = "do" ;                   (* accepted for migration; canonical spelling is then *)
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 

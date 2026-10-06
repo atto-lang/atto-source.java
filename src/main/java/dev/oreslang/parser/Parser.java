@@ -10,7 +10,16 @@ import static dev.oreslang.parser.Token.Type.*;
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
 
+    public record SyntaxWarning(int line, int column, String message) { }
+
+    public record ParseResult(Ast.Program program, List<SyntaxWarning> warnings) {
+        public ParseResult {
+            warnings = List.copyOf(warnings);
+        }
+    }
+
     private final List<Token> tokens;
+    private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
 
@@ -20,6 +29,12 @@ public final class Parser {
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    public static ParseResult parseWithWarnings(String source) {
+        Parser parser = new Parser(new Lexer(source).scan());
+        Ast.Program program = parser.parseProgram();
+        return new ParseResult(program, parser.warnings);
     }
 
     public Ast.Program parseProgram() {
@@ -1254,7 +1269,7 @@ public final class Parser {
         // Braces delimit branch bodies; they never replace the structural terminator.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseBlock()));
-            while (match(ELSEIF)) {
+            while (matchConditionalBranch()) {
                 condition = parseCondition();
                 branches.add(new Ast.IfBranch(condition, parseBlock()));
             }
@@ -1265,17 +1280,25 @@ public final class Parser {
             return new Ast.IfStmt(branches, elseBody);
         }
 
-        // Keyword-delimited form: if condition then ... elseif condition then ... else ... fi.
-        // 'do' remains accepted as a compatibility spelling for existing source.
+        // Canonical keyword-delimited form:
+        //   if condition; then
+        //   elif condition; then
+        //   else
+        //   fi
+        //
+        // Compatibility forms remain accepted while source migrates:
+        // - 'if ... do' / 'elseif ... do' are deprecated spellings.
+        // - 'elseif' aliases canonical 'elif'.
+        // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
-        if (!match(THEN, DO)) throw error(peek(), "expected 'then' after if condition");
+        consumeConditionalThen("if");
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
-        while (match(ELSEIF)) {
+        while (matchConditionalBranch()) {
             condition = parseCondition();
             match(SEMICOLON);
-            if (!match(THEN, DO)) throw error(peek(), "expected 'then' after elseif condition");
+            consumeConditionalThen("elif");
             body = parseUntil(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
@@ -1284,6 +1307,29 @@ public final class Parser {
         if (match(ELSE)) elseBody = parseUntil(FI);
         consume(FI, "expected 'fi' to close if");
         return new Ast.IfStmt(branches, elseBody);
+    }
+
+    private void consumeConditionalThen(String branch) {
+        if (match(THEN)) return;
+        if (match(DO)) {
+            Token deprecated = previous();
+            warnings.add(new SyntaxWarning(
+                    deprecated.line(),
+                    deprecated.column(),
+                    "conditional 'do' is deprecated; use 'then'"));
+            return;
+        }
+        throw error(peek(), "expected 'then' after " + branch + " condition");
+    }
+
+    private boolean matchConditionalBranch() {
+        if (match(ELSEIF)) return true; // Lexer maps both 'elif' and legacy 'elseif' here.
+        if (check(ELSE) && checkNext(IF)) {
+            advance();
+            advance();
+            return true;
+        }
+        return false;
     }
 
     private Ast.Expr parseCondition() {
