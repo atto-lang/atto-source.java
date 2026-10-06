@@ -2463,7 +2463,7 @@ public final class Parser {
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
@@ -2571,12 +2571,34 @@ public final class Parser {
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
+        java.util.Set<String> named = new java.util.LinkedHashSet<>();
+        boolean namedSeen = false;
         do {
-            boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            if (match(ELLIPSIS)) {
+                if (namedSeen) {
+                    throw error(previous(), "spread/positional arguments cannot follow named arguments");
+                }
+                args.add(new Ast.SpreadExpr(parseExpression()));
+                continue;
+            }
+
+            if (check(IDENT) && checkNext(COLON)) {
+                namedSeen = true;
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after named argument");
+                if (!named.add(name)) {
+                    throw error(previous(), "duplicate named argument '" + name + "'");
+                }
+                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                continue;
+            }
+
+            if (namedSeen) {
+                throw error(peek(), "positional arguments cannot follow named arguments");
+            }
+            args.add(parseExpression());
         } while (match(COMMA));
-        return args;
+        return List.copyOf(args);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
