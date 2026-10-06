@@ -3420,6 +3420,10 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                return prepareProxyInvocation(call, proxy, args, env);
+            }
+
             if (receiver instanceof OresObject object) {
                 Ast.MethodDecl method =
                         object.owner.findMethod(
@@ -4587,6 +4591,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (isRuntimeProxyIntrinsic(call)) {
+                throw new IllegalStateException(
+                        "rt proxy is a value-producing runtime intrinsic, not an ordinary invocation");
+            }
+
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -4599,6 +4608,10 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof ActorRuntime.Proxy<?> proxy) {
+                    return prepareProxyInvocation(call, proxy, args, env);
+                }
 
                 if (receiver instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
