@@ -1370,14 +1370,18 @@ public final class ActorRuntime implements AutoCloseable {
         DispatcherGroup(DispatcherConfig config, String prefix) {
             this.config = Objects.requireNonNull(config);
             this.maxActorMemoryBytes = configuredProcessActorMemoryLimit();
+            Objects.requireNonNull(prefix, "prefix");
+
             int controlParallelism = config.controlParallelism();
             int rootPermits = config.rootParallelism();
             int readyQueueCapacity;
             try {
                 readyQueueCapacity = Math.addExact(config.maxActors(), rootPermits);
             } catch (ArithmeticException overflow) {
-                throw new IllegalArgumentException("dispatcher ready-queue capacity overflow", overflow);
+                throw new IllegalArgumentException(
+                        "dispatcher ready-queue capacity overflow", overflow);
             }
+
             this.privateCarrierRegistry =
                     new CarrierRegistry(config.maxParallelismFor(ActorKind.PRIVATE));
             this.sharedCarrierRegistry =
@@ -1385,37 +1389,105 @@ public final class ActorRuntime implements AutoCloseable {
             this.untrustedCarrierRegistry =
                     new CarrierRegistry(config.maxParallelismFor(ActorKind.UNTRUSTED));
 
-            this.controlDispatcher = newDispatcher(
-                    controlParallelism,
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "control-plane-dispatcher-",
-                    null);
-            this.privateDispatcher = newDispatcher(
-                    config.privateParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "private-actor-dispatcher-",
-                    privateCarrierRegistry);
-            this.sharedDispatcher = newDispatcher(
-                    config.sharedParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "shared-actor-dispatcher-",
-                    sharedCarrierRegistry);
-            this.untrustedDispatcher = newDispatcher(
-                    config.untrustedParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "untrusted-actor-dispatcher-",
-                    untrustedCarrierRegistry);
-            this.untrustedWatchdog = newUntrustedWatchdog(
-                    namedFactory(prefix + "untrusted-watchdog-"));
-            this.messageWatchdog = newUntrustedWatchdog(
-                    namedFactory(prefix + "actor-turn-watchdog-"));
-            this.actorTimerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
-            this.rootSlots = new Semaphore(rootPermits, true);
-            this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
+            ThreadPoolExecutor control = null;
+            ThreadPoolExecutor privatePool = null;
+            ThreadPoolExecutor sharedPool = null;
+            ThreadPoolExecutor untrustedPool = null;
+            ScheduledThreadPoolExecutor untrustedWatchdog = null;
+            ScheduledThreadPoolExecutor messageWatchdog = null;
+            ActorTimerWheel timerWheel = null;
+            try {
+                control = newDispatcher(
+                        controlParallelism,
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "control-plane-dispatcher-",
+                        null);
+                privatePool = newDispatcher(
+                        config.privateParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "private-actor-dispatcher-",
+                        privateCarrierRegistry);
+                sharedPool = newDispatcher(
+                        config.sharedParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "shared-actor-dispatcher-",
+                        sharedCarrierRegistry);
+                untrustedPool = newDispatcher(
+                        config.untrustedParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "untrusted-actor-dispatcher-",
+                        untrustedCarrierRegistry);
+                untrustedWatchdog = newUntrustedWatchdog(
+                        namedFactory(prefix + "untrusted-watchdog-"));
+                messageWatchdog = newUntrustedWatchdog(
+                        namedFactory(prefix + "actor-turn-watchdog-"));
+                timerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
+
+                this.controlDispatcher = control;
+                this.privateDispatcher = privatePool;
+                this.sharedDispatcher = sharedPool;
+                this.untrustedDispatcher = untrustedPool;
+                this.untrustedWatchdog = untrustedWatchdog;
+                this.messageWatchdog = messageWatchdog;
+                this.actorTimerWheel = timerWheel;
+                this.rootSlots = new Semaphore(rootPermits, true);
+                this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
+            } catch (RuntimeException | Error failure) {
+                if (timerWheel != null) {
+                    try {
+                        timerWheel.close();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (messageWatchdog != null) {
+                    try {
+                        messageWatchdog.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (untrustedWatchdog != null) {
+                    try {
+                        untrustedWatchdog.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (untrustedPool != null) {
+                    try {
+                        untrustedPool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (sharedPool != null) {
+                    try {
+                        sharedPool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (privatePool != null) {
+                    try {
+                        privatePool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (control != null) {
+                    try {
+                        control.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                throw failure;
+            }
         }
 
         /**
