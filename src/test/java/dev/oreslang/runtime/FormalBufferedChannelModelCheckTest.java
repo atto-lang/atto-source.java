@@ -16,8 +16,8 @@ import org.junit.jupiter.api.Test;
  * Explicit-state model for a capacity-two buffered Channel.
  *
  * <p>Three distinct messages are enough to exhaustively prove bounded capacity,
- * nonblocking write rejection, retry after capacity becomes available, and FIFO
- * preservation across every legal write/read interleaving.</p>
+ * nonblocking write rejection, retry after capacity becomes available, FIFO
+ * preservation, and post-close draining of already-buffered values.</p>
  */
 final class FormalBufferedChannelModelCheckTest {
     private enum Message {
