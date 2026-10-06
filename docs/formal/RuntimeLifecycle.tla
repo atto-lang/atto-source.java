@@ -105,6 +105,7 @@ SpawnActor ==
     /\ context = "OPEN"
     /\ \E s \in 1..MaxSchedulers : schedulers[s] = "RUNNING"
     /\ actor = "NONE"
+    /\ channel = "OPEN"
     /\ actor' = "CREATED"
     /\ UNCHANGED <<vm, dispatcher, bindingPublished, context, schedulers, tasks, futures, channel>>
 
@@ -125,7 +126,7 @@ TerminateActor ==
 
 CloseChannel ==
     /\ channel = "OPEN"
-    /\ actor \notin {"RUNNING", "STOPPING"}
+    /\ actor \in {"NONE", "TERMINATED"}
     /\ channel' = "CLOSED"
     /\ UNCHANGED <<vm, dispatcher, bindingPublished, context, schedulers, tasks, futures, actor>>
 

@@ -79,7 +79,8 @@ final class RuntimeLifecycleModelCheckerTest {
         if ((s.task == Task.QUEUED || s.task == Task.RUNNING) && s.future == Future.PENDING)
             out.add(new State(s.vm, s.dispatcher, s.binding, s.context, s.scheduler,
                     Task.SETTLED, Future.CANCELLED, s.actor, s.channel));
-        if (s.context == Context.OPEN && s.scheduler == Scheduler.RUNNING && s.actor == Actor.NONE)
+        if (s.context == Context.OPEN && s.scheduler == Scheduler.RUNNING
+                && s.actor == Actor.NONE && s.channel == Channel.OPEN)
             out.add(new State(s.vm, s.dispatcher, s.binding, s.context, s.scheduler,
                     s.task, s.future, Actor.CREATED, s.channel));
         if (s.actor == Actor.CREATED)
@@ -91,7 +92,8 @@ final class RuntimeLifecycleModelCheckerTest {
         if (s.actor == Actor.STOPPING)
             out.add(new State(s.vm, s.dispatcher, s.binding, s.context, s.scheduler,
                     s.task, s.future, Actor.TERMINATED, s.channel));
-        if (s.channel == Channel.OPEN && s.actor != Actor.RUNNING && s.actor != Actor.STOPPING)
+        if (s.channel == Channel.OPEN
+                && (s.actor == Actor.NONE || s.actor == Actor.TERMINATED))
             out.add(new State(s.vm, s.dispatcher, s.binding, s.context, s.scheduler,
                     s.task, s.future, s.actor, Channel.CLOSED));
         if (s.scheduler == Scheduler.RUNNING && s.task == Task.SETTLED && s.actor == Actor.NONE)
