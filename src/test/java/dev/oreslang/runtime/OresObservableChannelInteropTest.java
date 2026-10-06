@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 final class OresObservableChannelInteropTest {
@@ -36,6 +37,60 @@ final class OresObservableChannelInteropTest {
         channel.writeAsync(42).join();
         assertThrowsCancellation(pending);
         assertEquals(42, channel.readAsync().join());
+    }
+
+    @Test
+    void channelProviderIsColdAndOwnsOneChannelPerSubscription() {
+        AtomicInteger calls = new AtomicInteger();
+        List<ChannelRuntime.Channel<Integer>> created = new java.util.ArrayList<>();
+
+        OresObservable<Integer> observable = OresObservable.fromChProvider(() -> {
+            ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+            created.add(channel);
+            calls.incrementAndGet();
+            return channel;
+        });
+
+        assertEquals(0, calls.get());
+
+        OresSubscription<Integer> first = observable.subscribe();
+        OresSubscription<Integer> second = observable.subscribe();
+        assertEquals(2, calls.get());
+        assertTrue(created.get(0) != created.get(1));
+
+        OresFuture<OresNotification<Integer>> firstPending = first.next();
+        OresFuture<OresNotification<Integer>> secondPending = second.next();
+        created.get(0).writeAsync(10).join();
+        created.get(1).writeAsync(20).join();
+
+        assertEquals(10, firstPending.join().value());
+        assertEquals(20, secondPending.join().value());
+
+        first.cancel();
+        second.cancel();
+        assertTrue(created.get(0).isClosed());
+        assertTrue(created.get(1).isClosed());
+    }
+
+    @Test
+    void channelProviderClosesOwnedChannelAfterSourceCompletion() {
+        AtomicInteger calls = new AtomicInteger();
+        List<ChannelRuntime.Channel<Integer>> created = new java.util.ArrayList<>();
+
+        OresObservable<Integer> observable = OresObservable.fromChProvider(() -> {
+            ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+            created.add(channel);
+            calls.incrementAndGet();
+            channel.tryWrite(7);
+            channel.close();
+            return channel;
+        });
+
+        OresSubscription<Integer> subscription = observable.subscribe();
+        assertEquals(7, subscription.next().join().value());
+        assertTrue(subscription.next().join().isComplete());
+        assertEquals(1, calls.get());
+        assertTrue(created.get(0).isClosed());
     }
 
     @Test
