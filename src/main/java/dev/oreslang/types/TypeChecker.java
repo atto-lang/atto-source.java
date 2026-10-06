@@ -4377,6 +4377,14 @@ public final class TypeChecker {
         }
 
         Integer declaredRank = metadataRank(metadata);
+        if (fixed && dimensions.size() != 1) {
+            throw new IllegalArgumentException(ref.name()
+                    + " is a fixed one-dimensional sequence type; nested fixed layouts must be expressed through nested element types");
+        }
+        if (fixed && declaredRank != null && declaredRank != 1) {
+            throw new IllegalArgumentException(ref.name()
+                    + " has fixed arity and currently requires rank=1; use nested Tuple/FixedArray element types for exact multidimensional layout");
+        }
         if (declaredRank != null && declaredRank != dimensions.size()) {
             if (dimensions.size() != 1) {
                 throw new IllegalArgumentException("rank=" + declaredRank + " disagrees with "
