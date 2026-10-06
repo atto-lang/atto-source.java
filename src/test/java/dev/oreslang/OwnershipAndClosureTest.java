@@ -17,7 +17,7 @@ final class OwnershipAndClosureTest {
     void canonicalTupleDestructurePreservesPerSlotCopyOwnership() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc pair(): Tuple[string, int] {
-                  return ("copy-me", 5);
+                  return tuple ("copy-me", 5);
                 }
 
                 pub fnc main(): void {
