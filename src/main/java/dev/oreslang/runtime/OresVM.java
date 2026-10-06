@@ -6,6 +6,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Process/runtime boundary for Oreslang execution.
@@ -77,7 +78,15 @@ final class OresVM {
             String, ActorRuntime.ActorGenerationLeaseFactory> generationBindings =
             new ConcurrentHashMap<>();
     private final AtomicBoolean shutdown = new AtomicBoolean();
-    private final AtomicBoolean started = new AtomicBoolean();
+    private final AtomicReference<StartupState> startupState =
+            new AtomicReference<>(StartupState.NEW);
+
+    private enum StartupState {
+        NEW,
+        STARTING,
+        STARTED,
+        FAILED
+    }
 
     private OresVM(
             ActorRuntime.DispatcherConfig config,
@@ -200,27 +209,43 @@ final class OresVM {
     }
 
     boolean started() {
-        return started.get();
+        return startupState.get() == StartupState.STARTED;
     }
 
     /**
      * Start the VM-owned root/control event-loop carriers exactly once.
      *
-     * <p>ROOT_TASK continuations, await completions, and future scheduler
-     * dispatches are admitted onto the VM CONTROL pool. Starting the pool here
-     * makes runtime readiness an invariant rather than an accident of the first
-     * submitted task. Channel/select/timer completions may subsequently enqueue
-     * work onto the same scheduler without ever executing guest code on their
-     * producer thread.</p>
+     * <p>Startup is a real lifecycle barrier: STARTED is published only after
+     * every configured CONTROL core carrier has been successfully prestarted.
+     * Concurrent callers either observe the completed barrier or wait for the
+     * one bootstrapper to finish. Guest execution can therefore never race
+     * runtime initialization.</p>
      */
     void startup() {
         ensureRunning();
-        if (!started.compareAndSet(false, true)) return;
-        try {
-            dispatchers.startRuntime();
-        } catch (RuntimeException | Error failure) {
-            started.set(false);
-            throw failure;
+
+        while (true) {
+            StartupState state = startupState.get();
+            switch (state) {
+                case STARTED -> {
+                    return;
+                }
+                case FAILED -> throw new IllegalStateException(
+                        "Oreslang VM scheduler bootstrap previously failed");
+                case NEW -> {
+                    if (startupState.compareAndSet(StartupState.NEW, StartupState.STARTING)) {
+                        try {
+                            dispatchers.startRuntime();
+                            startupState.set(StartupState.STARTED);
+                            return;
+                        } catch (RuntimeException | Error failure) {
+                            startupState.set(StartupState.FAILED);
+                            throw failure;
+                        }
+                    }
+                }
+                case STARTING -> Thread.onSpinWait();
+            }
         }
     }
 
