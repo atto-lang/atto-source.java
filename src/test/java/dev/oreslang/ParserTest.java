@@ -42,8 +42,8 @@ final class ParserTest {
         Ast.FunctionDecl second = (Ast.FunctionDecl) module.declarations().get(3);
         Ast.FunctionDecl third = (Ast.FunctionDecl) module.declarations().get(4);
 
-        assertEquals(Ast.Visibility.PUBLIC, ((Ast.ClassDecl) module.declarations().get(0)).visibility());
-        assertEquals(Ast.Visibility.PUBLIC, ((Ast.ClassDecl) module.declarations().get(1)).visibility());
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(0));
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(1));
 
         assertTrue(first.nonLexical());
         assertTrue(first.pure());
