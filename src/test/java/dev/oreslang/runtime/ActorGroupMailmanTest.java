@@ -159,6 +159,16 @@ final class ActorGroupMailmanTest {
                             () -> emitterRef.get().cancel(),
                             "Mailman must not cancel actors through ambient ActorRef authority");
                     expectSecurity(
+                            () -> {
+                                try {
+                                    emitterRef.get().awaitTermination(1, TimeUnit.MILLISECONDS);
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                    throw new AssertionError(interrupted);
+                                }
+                            },
+                            "Mailman must not synchronously await actor termination");
+                    expectSecurity(
                             () -> runtime.syncCell(1),
                             "Mailman must not create shared runtime state outside ActorGroupContext");
                     expectSecurity(
