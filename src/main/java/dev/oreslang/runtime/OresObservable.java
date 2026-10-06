@@ -548,12 +548,15 @@ public abstract class OresObservable<T> {
     public final OresFuture<T> last() {
         OresSubscription<T> sub = subscribe();
         OresFuture<T> result = new OresFuture<>(() -> sub.cancel());
-        lastNext(sub, result);
+        lastNext(sub, result, new Object[] { null }, new boolean[] { false });
         return result;
     }
 
     private static <T> void lastNext(
-            OresSubscription<T> sub, OresFuture<T> result) {
+            OresSubscription<T> sub,
+            OresFuture<T> result,
+            Object[] holder,
+            boolean[] hasValue) {
         if (result.isDone()) return;
         OresFuture<OresNotification<T>> pull = sub.next();
         pull.whenCompleteRuntime((n, failure) -> {
@@ -565,34 +568,20 @@ public abstract class OresObservable<T> {
                 return;
             }
             if (n.isComplete()) {
-                if (!result.isDone()) {
-                    // The current value is kept by the holder below.
+                if (!hasValue[0]) {
+                    result.failFromRuntime(new NoSuchElementException(
+                            "rx-ores last() observed an empty stream"));
+                } else {
+                    @SuppressWarnings("unchecked")
+                    T value = (T) holder[0];
+                    result.completeFromRuntime(value);
                 }
                 sub.cancel();
                 return;
             }
-            lastNextHolder(sub, result, n.value());
-        });
-    }
-
-    private static <T> void lastNextHolder(
-            OresSubscription<T> sub, OresFuture<T> result, T value) {
-        if (result.isDone()) return;
-        OresFuture<OresNotification<T>> pull = sub.next();
-        pull.whenCompleteRuntime((n, failure) -> {
-            if (result.isDone()) return;
-            if (failure != null) {
-                if (pull.isCancelled()) result.cancel(true);
-                else result.failFromRuntime(OresFuture.unwrap(failure));
-                sub.cancel();
-                return;
-            }
-            if (n.isComplete()) {
-                result.completeFromRuntime(value);
-                sub.cancel();
-            } else {
-                lastNextHolder(sub, result, n.value());
-            }
+            holder[0] = n.value();
+            hasValue[0] = true;
+            lastNext(sub, result, holder, hasValue);
         });
     }
 
