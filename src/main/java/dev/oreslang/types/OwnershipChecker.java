@@ -995,11 +995,7 @@ public final class OwnershipChecker {
                                 + "' takes self ownership but receiver is borrowed/shared/proxy");
                     }
                     checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
-                    ValueKind resultKind = kindOfType(method.returnType());
-                if (receiver.kind == ValueKind.PROXY && resultKind == ValueKind.MOVE_ONLY) {
-                    resultKind = ValueKind.PROXY;
-                }
-                return new ValueInfo(method.returnType(), resultKind, null);
+                    return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
                 }
 
                 boolean mutableReceiver = requiresMutableReceiver(method);
@@ -1035,7 +1031,11 @@ public final class OwnershipChecker {
                 } finally {
                     if (receiverBorrow != null) endTemporaryBorrow(receiverBorrow);
                 }
-                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                ValueKind resultKind = kindOfType(method.returnType());
+                if (receiver.kind == ValueKind.PROXY && resultKind == ValueKind.MOVE_ONLY) {
+                    resultKind = ValueKind.PROXY;
+                }
+                return new ValueInfo(method.returnType(), resultKind, null);
             }
 
             Ast.InterfaceDecl iface = interfaceOfReceiver(member.receiver(), scope);
