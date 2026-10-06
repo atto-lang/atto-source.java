@@ -193,6 +193,11 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireReadonlySharedAccess(String operation) {
         ActorKind kind = currentActorKind();
         if (kind == null) return;
+        if (currentActorRuntime() != this) {
+            throw new SecurityException(
+                    "runtime-shared value belongs to a different ActorRuntime; "
+                            + operation + " cannot cross runtime boundaries by captured reference");
+        }
         if (isPrivateKind(kind)) {
             throw new SecurityException(
                     "isolated/untrusted actors cannot directly access runtime-shared memory via "
