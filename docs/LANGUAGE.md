@@ -32,6 +32,7 @@ import actor Worker from "../xyz";
 import class Widget as ApiWidget from "../xyz";
 import fnc add as apiAdd from "../xyz";
 import interface ServiceApi from "../xyz";
+import contract StorageApi from "../xyz";
 import type UserId from "../xyz";
 import types ServiceApi, UserId from "../xyz";
 import types (ServiceApi, UserId) from "../xyz";
@@ -1085,7 +1086,7 @@ pub interface Foo extends Bar {
 }
 ```
 
-Explicit `implements` and module `@AdheresTo(...)` checks remain structural
+Explicit `implements` and module `conforms` checks remain structural
 conformance proofs.
 
 ## Method overloads
