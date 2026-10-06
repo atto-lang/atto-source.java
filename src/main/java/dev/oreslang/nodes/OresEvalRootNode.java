@@ -3665,6 +3665,10 @@ public final class OresEvalRootNode extends RootNode {
             HostClassFacade hostClass =
                     hostClasses.get(created.type().name());
             if (hostClass != null) {
+                if (hasNamedArguments(created.arguments())) {
+                    throw new IllegalArgumentException(
+                            "named arguments are unavailable for Java host constructors because stable parameter names are not part of the interop ABI");
+                }
                 context.requireCapability(
                         IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host constructor " + hostClass.className());
@@ -3684,6 +3688,24 @@ public final class OresEvalRootNode extends RootNode {
             if (klass == null) {
                 throw new IllegalArgumentException(
                         "unknown class " + created.type().name());
+            }
+
+            Ast.ConstructorDecl constructor = klass.constructor();
+            if (constructor != null) {
+                args = owner.bindEvaluatedArguments(
+                        created.arguments(),
+                        args,
+                        constructor.parameters(),
+                        "constructor " + klass.name());
+            } else if (hasNamedArguments(created.arguments())) {
+                List<Ast.FieldDecl> fields =
+                        owner.effectiveFields(klass, new LinkedHashSet<>());
+                args = owner.bindEvaluatedArgumentsByNames(
+                        created.arguments(),
+                        args,
+                        fields.stream().map(Ast.FieldDecl::name).toList(),
+                        "constructor " + klass.name(),
+                        false);
             }
             return owner.instantiate(klass, args, externalConstruction);
         }
@@ -5215,38 +5237,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
-                if (created.type().name().equals("DynamicStruct")) {
-                    if (!created.arguments().isEmpty()) {
-                        throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
-                    }
-                    return new DynamicStructValue();
-                }
-                HostClassFacade hostClass = hostClasses.get(created.type().name());
-                if (hostClass != null) {
-                    context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
-                            "Java host constructor " + hostClass.className());
-                    if (!hostClass.constructible()) {
-                        throw new IllegalArgumentException(
-                                "Java function namespace '" + created.type().name() + "' is not constructible");
-                    }
-                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                    return instantiateHost(hostClass, args);
-                }
-
-                Ast.ClassDecl klass = findClass(created.type().name());
-                Evaluator owner = this;
-                boolean externalConstruction = false;
-                if (klass == null) {
-                    Object imported = importedValue(created.type().name());
-                    if (imported instanceof ClassFacade externalClass) {
-                        owner = externalClass.owner();
-                        klass = externalClass.klass();
-                        externalConstruction = true;
-                    }
-                }
-                if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
-                List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                return owner.instantiate(klass, args, externalConstruction);
+                List<Object> args = evaluateArguments(created.arguments(), env);
+                return instantiateEvaluated(created, args, env);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -6082,7 +6074,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
                     Object value;
-                    if (i < args.size()) value = args.get(i);
+                    if (i < args.size() && args.get(i) != MISSING_ARGUMENT) value = args.get(i);
                     else if (field.initializer() != null) {
                         OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
