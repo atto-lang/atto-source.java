@@ -343,6 +343,7 @@ public final class ActorRuntime implements AutoCloseable {
     public CarrierBackend carrierBackend() {
         return privateDispatcher instanceof NativeCarrierExecutor
                 && sharedDispatcher instanceof NativeCarrierExecutor
+                && untrustedDispatcher instanceof NativeCarrierExecutor
                 ? CarrierBackend.NATIVE_PTHREAD
                 : CarrierBackend.JVM_THREAD_POOL;
     }
@@ -1665,6 +1666,27 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnInternal(ActorKind.SHARED, policy, context -> behaviorFactory.get(), true);
     }
 
+    /**
+     * Explicit hostile-code entrypoint. The runtime pins this actor to the
+     * fixed adversarial baseline and never grants ambient capabilities.
+     */
+    public <M> ActorRef<M> spawnUntrusted(
+            BehaviorFactory<M> behaviorFactory) {
+        return spawn(
+                ActorKind.UNTRUSTED,
+                IsolatePolicy.untrustedActor(),
+                behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnUntrusted(
+            IsolatePolicy requestedLimits,
+            BehaviorFactory<M> behaviorFactory) {
+        return spawn(
+                ActorKind.UNTRUSTED,
+                requestedLimits,
+                behaviorFactory);
+    }
+
     public <M> ActorRef<M> spawnShared(BehaviorFactory<M> behaviorFactory) {
         return spawn(ActorKind.SHARED, defaultSpawnPolicy(), behaviorFactory);
     }
@@ -1883,6 +1905,14 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
+
+        ActorCell<?> parentForPolicy = currentActor.get();
+        if (parentForPolicy != null) {
+            parentForPolicy.policy.require(
+                    IsolatePolicy.Capability.ACTOR_SPAWN,
+                    "actor spawn");
+        }
+
         IsolatePolicy effectivePolicy;
         if (kind == ActorKind.UNTRUSTED) {
             IsolatePolicy baseline = IsolatePolicy.untrustedActor();
@@ -1931,9 +1961,12 @@ public final class ActorRuntime implements AutoCloseable {
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
-                        if (parent.stopped.get() || parent.finalized) {
+                        if (parent.stopped.get()
+                                || parent.finalized
+                                || parent.forceKillFenced) {
                             throw new CancellationException(
-                                    "cannot spawn a child from a stopping actor " + parent.ref.id());
+                                    "cannot spawn a child from a stopping or force-fenced actor "
+                                            + parent.ref.id());
                         }
                         parent.children.add(cell);
                         linkedToParent = true;
@@ -2501,6 +2534,11 @@ public final class ActorRuntime implements AutoCloseable {
                 synchronized (cell.lifecycleLock) {
                     if (cell.stopped.get()) {
                         throw terminated(ref);
+                    }
+                    if (cell.forceKillFenced) {
+                        throw new IllegalStateException(
+                                "actor " + ref.id()
+                                        + " is fenced while force cancellation is pending");
                     }
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
@@ -3833,6 +3871,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        private volatile boolean forceKillFenced;
         private final AtomicInteger queuedMessages = new AtomicInteger();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
@@ -3900,7 +3939,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
-                if (stopped.get() || finalized) return false;
+                if (stopped.get() || forceKillFenced || finalized) return false;
                 activeTurns++;
                 return true;
             }
@@ -4010,7 +4049,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void schedule() {
-            if (stopped.get() || closed.get()) return;
+            if (stopped.get() || forceKillFenced || closed.get()) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 dispatcherFor(kind).execute(this::runBatch);
@@ -4032,9 +4071,9 @@ public final class ActorRuntime implements AutoCloseable {
                     // won that race, this task is an inert no-op.
                     if (!scheduled.get()) return;
 
-                    if (stopped.get() || closed.get()) {
+                    if (stopped.get() || closed.get() || forceKillFenced) {
                         scheduled.set(false);
-                        if (activeTurns == 0) finalizeStopLocked();
+                        if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
                         lifecycleLock.notifyAll();
                         return;
                     }
@@ -4060,6 +4099,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (scheduled.get()) scheduled.set(false);
                     if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                     reschedule = !stopped.get()
+                            && !forceKillFenced
                             && !closed.get()
                             && !finalized
                             && !mailbox.isEmpty();
