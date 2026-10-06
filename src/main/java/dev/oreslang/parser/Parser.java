@@ -1976,11 +1976,13 @@ public final class Parser {
     private Ast.DestructureStmt parseDestructure(Ast.DestructureKind kind, Ast.BindingKind inheritedKind) {
         Token.Type close;
         String closeText;
+        boolean parenthesizedSequence = false;
         if (kind == Ast.DestructureKind.SEQUENCE) {
             if (match(LBRACKET)) {
                 close = RBRACKET;
                 closeText = "]";
             } else if (match(LPAREN)) {
+                parenthesizedSequence = true;
                 close = RPAREN;
                 closeText = ")";
             } else {
@@ -2032,6 +2034,11 @@ public final class Parser {
                 throw error(peek(), "rest destructure binding must be the final binding");
             }
         } while (match(COMMA));
+
+        if (parenthesizedSequence && bindings.size() < 2) {
+            throw error(peek(),
+                    "singleton parenthesized destructuring is intentionally reserved; use an ordinary binding or explicit tuple APIs until singleton tuple syntax is finalized");
+        }
 
         consume(close, "expected '" + closeText + "' after destructure pattern");
         consume(EQUAL, "expected '=' after destructure pattern");
