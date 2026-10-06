@@ -190,12 +190,16 @@ The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an expli
 
 ## Collection shapes and named type metadata
 
-Collection syntax deliberately separates three concerns:
+Collection syntax deliberately separates four concerns:
 
-- `[...]` describes the element/sequence shape;
-- `<name=value, ...>` carries compile-time type/storage metadata;
-- `(...)` carries runtime construction state such as an initial size or
-  capacity.
+- ordinary nominal generic type arguments use `<T, K, V, ...>`;
+- intrinsic sequence shapes use `[...]`;
+- intrinsic compile-time layout/storage metadata uses `<name=value, ...>`;
+- runtime construction state uses named call arguments such as
+  `(capacity: 5)`.
+
+Those forms are not interchangeable. In particular, the element type never
+disappears merely because a collection has sizing policy.
 
 The core sequence families are intentionally distinct even when they share a
 runtime representation today:
@@ -211,9 +215,28 @@ runtime representation today:
 `Tuple`, `FixedArray`, and `FixedList` are distinct static kinds. A
 `FixedArray[int, string]` is therefore not silently assignable to
 `Tuple[int, string]`, even if both are currently list-backed in the
-interpreter. `ArrayList` is not a core Oreslang sequence spelling on current
-main; importing `java.util.ArrayList` remains explicit Java interop and does
-not define Oreslang collection semantics.
+interpreter.
+
+The important notation boundary is:
+
+| Intent | Canonical spelling |
+| --- | --- |
+| intrinsic homogeneous runtime array | `Array[T]` |
+| intrinsic growable vector | `Vector[T]` |
+| intrinsic fixed array of four T values | `FixedArray[4 of T]` |
+| intrinsic tuple/product | `Tuple[T1, T2]` |
+| nested runtime arrays | `Array[Array[T]]` |
+| ordinary nominal generic collection class | `ArrayList<T>` |
+| runtime initial capacity | `new ArrayList<T>(capacity: 5)` |
+| fixed intrinsic compile-time extent assertion | `FixedArray<size=4>[4 of T]` |
+
+Thus `ArrayList<T>[]` is not the Oreslang spelling for a nominal
+`ArrayList`, and `ArrayList<size=5>[]` is doubly wrong: it loses the
+element type and treats runtime sizing as type metadata. An `ArrayList<T>`
+implementation supplied by the Oreslang standard library is an ordinary
+generic class and therefore follows ordinary generic syntax. Importing
+`java.util.ArrayList` remains explicit Java interop and does not change these
+language rules.
 
 For exact finite storage, counted repetition is part of the shape:
 
@@ -332,20 +355,32 @@ construction policy only; it never makes the logical arity resizable.
 `inline_capacity` and `max_capacity`, when present on a fixed sequence,
 must be at least its exact arity.
 
-Repeated bracket suffixes provide homogeneous multidimensional shorthand:
+Nested element types are the clearest canonical spelling for multidimensional
+runtime collections:
 
 ```ores
-val matrix: Vector[int][int] =
+val matrix: Vector[Vector[int]] =
     [[1, 2], [3, 4]];
 
-// Explicit rank metadata is equivalent for a homogeneous shape:
-val matrix2: Vector<rank=2>[int] =
+val array_matrix: Array[Array[int]] =
     [[1, 2], [3, 4]];
 ```
 
-The compiler canonicalizes both to nested rank-2 collection semantics. This is
-distinct from an exact fixed multidimensional layout, whose extents belong in
-finite sequence shapes.
+The existing repeated-bracket and explicit-rank forms remain compatibility
+shorthands for homogeneous rank-N collections:
+
+```ores
+val matrix_compat: Vector[int][int] =
+    [[1, 2], [3, 4]];
+
+val matrix_rank: Vector<rank=2>[int] =
+    [[1, 2], [3, 4]];
+```
+
+New code should prefer nested element types because every bracketed shape has a
+single local meaning. Exact fixed multidimensional layouts remain explicit by
+nesting fixed element types, for example
+`FixedArray[3 of FixedArray[4 of int]]`.
 
 ## Bindings
 
