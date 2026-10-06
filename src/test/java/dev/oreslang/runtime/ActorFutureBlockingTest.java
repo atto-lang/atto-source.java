@@ -69,6 +69,7 @@ final class ActorFutureBlockingTest {
                     assertEquals(42, settled.join());
                     assertEquals(42, AsyncRuntime.await(settled));
                     assertThrows(TimeoutException.class, () -> pending.get(0, TimeUnit.NANOSECONDS));
+                    assertThrows(TimeoutException.class, () -> pending.get(-1, TimeUnit.NANOSECONDS));
                     assertEquals(0, pending.pendingRuntimeWaiterCount());
                     var original = new IllegalArgumentException("producer failed");
                     assertSame(original, assertThrows(ExecutionException.class,
