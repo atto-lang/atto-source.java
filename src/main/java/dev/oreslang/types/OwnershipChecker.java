@@ -540,10 +540,20 @@ public final class OwnershipChecker {
             return checkExpr(unary.operand(), scope, false);
         }
         if (expr instanceof Ast.AssignExpr assignment) {
+            boolean proxyTarget = assignment.target() instanceof Ast.MemberExpr member
+                    && isProxyReceiver(member.receiver(), scope)
+                    || assignment.target() instanceof Ast.IndexExpr indexed
+                    && isProxyReceiver(indexed.receiver(), scope);
             checkAssignmentTarget(assignment.target(), scope);
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
+            }
+            if (proxyTarget) {
+                // The moved value now lives behind the proxy lock. Returning
+                // it from the assignment expression would manufacture a raw
+                // second owner outside the synchronized domain.
+                return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
             }
             return assigned;
         }
