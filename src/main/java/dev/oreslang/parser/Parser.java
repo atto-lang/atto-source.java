@@ -936,6 +936,15 @@ public final class Parser {
                 if (generatorSeen) throw error(previous(), "duplicate 'generator' modifier");
                 generatorSeen = true;
                 generator = true;
+                // "generator*" is declaration sugar; plain "generator" remains
+                // accepted for source compatibility.
+                match(STAR);
+            } else if (check(IDENT) && peek().lexeme().equals("gen") && checkNext(STAR)) {
+                Token gen = advance();
+                advance(); // '*'
+                if (generatorSeen) throw error(gen, "duplicate generator modifier");
+                generatorSeen = true;
+                generator = true;
             } else if (matchContextualStructuralModifier()) {
                 if (structuralSeen) throw error(previous(), "duplicate 'structural' modifier");
                 structuralSeen = true;
@@ -2436,6 +2445,7 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
             if (match(CB)) {
@@ -2478,6 +2488,34 @@ public final class Parser {
         if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.BLOCKING);
 
         return parsePostfix();
+    }
+
+    private Ast.Expr parseRuntimeExpression() {
+        Token operation;
+        if (match(YIELD)) {
+            operation = previous(); // legacy spelling: rt yield
+        } else {
+            operation = consume(IDENT, "expected runtime operation after 'rt'");
+        }
+
+        boolean legacyYield = operation.type() == YIELD || operation.lexeme().equals("yield");
+        if (!legacyYield && !operation.lexeme().equals("cooperate")) {
+            throw error(operation,
+                    "unknown rt operation '" + operation.lexeme()
+                            + "'; use rt cooperate (legacy rt yield is also accepted)");
+        }
+
+        if (match(LPAREN)) {
+            if (!check(RPAREN)) {
+                throw error(peek(),
+                        "rt cooperate currently takes no arguments; scheduling policy hints are not enabled yet");
+            }
+            consume(RPAREN, "expected ')' after rt cooperate");
+        }
+
+        // Canonicalize the compatibility spelling immediately so every
+        // downstream pass sees one semantic operation.
+        return new Ast.RuntimeCallExpr("cooperate", List.of());
     }
 
     private Ast.Expr parseChannelOperation(
