@@ -14,6 +14,7 @@ import java.util.function.Function;
  */
 public final class OresProxy<T> {
     private static final ThreadLocal<OresProxy<?>> HELD_PROXY = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> HELD_WRITE = new ThreadLocal<>();
 
     private final ActorRuntime runtime;
     private final T value;
@@ -36,7 +37,7 @@ public final class OresProxy<T> {
     public <R> R read(Function<? super T, ? extends R> reader) {
         Objects.requireNonNull(reader, "reader");
         requireAccess("rt proxy read");
-        boolean entered = enterProxy();
+        boolean entered = enterProxy(false);
         lock.readLock().lock();
         try {
             return reader.apply(value);
@@ -49,7 +50,7 @@ public final class OresProxy<T> {
     public <R> R write(Function<? super T, ? extends R> writer) {
         Objects.requireNonNull(writer, "writer");
         requireAccess("rt proxy write");
-        boolean entered = enterProxy();
+        boolean entered = enterProxy(true);
         lock.writeLock().lock();
         try {
             return writer.apply(value);
@@ -97,10 +98,11 @@ public final class OresProxy<T> {
         }
     }
 
-    private boolean enterProxy() {
+    private boolean enterProxy(boolean write) {
         OresProxy<?> held = HELD_PROXY.get();
         if (held == null) {
             HELD_PROXY.set(this);
+            HELD_WRITE.set(write);
             return true;
         }
         if (held != this) {
@@ -108,11 +110,19 @@ public final class OresProxy<T> {
                     "nested access across different rt proxy values is forbidden; "
                             + "snapshot/read one proxy before entering another");
         }
+        if (write && !Boolean.TRUE.equals(HELD_WRITE.get())) {
+            throw new IllegalStateException(
+                    "rt proxy read-to-write lock upgrade is forbidden; "
+                            + "finish the read scope before mutating the proxy");
+        }
         return false;
     }
 
     private void exitProxy(boolean entered) {
-        if (entered) HELD_PROXY.remove();
+        if (entered) {
+            HELD_WRITE.remove();
+            HELD_PROXY.remove();
+        }
     }
 
     @Override
