@@ -243,6 +243,55 @@ final class ActorGroupMailmanTest {
         }
     }
 
+    @Test
+    void mixedSharedPrivateAndUntrustedMembersReachTheSameControlMailman() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run);
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(1, 1, 8, 64),
+                     ActorRuntime.TurnExecutor.direct(), vm::executeControl)) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            var shared = runtime.<ActorRuntime.ActorGroupId>spawnShared(
+                    () -> ActorGroupMailmanTest::emitAndStop);
+            var isolated = runtime.<ActorRuntime.ActorGroupId>spawnPrivate(
+                    context -> ActorGroupMailmanTest::emitAndStop);
+            var untrusted = runtime.<ActorRuntime.ActorGroupId>spawnUntrusted(
+                    context -> ActorGroupMailmanTest::emitAndStop);
+            Set<ActorRuntime.ActorId> senders = ConcurrentHashMap.newKeySet();
+            CountDownLatch delivered = new CountDownLatch(3);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            group.installMailman(8, (mail, context) -> {
+                try {
+                    assertSame(vm.rootScheduler(), OresScheduler.current());
+                    assertTrue(Thread.currentThread().getName().startsWith("ores-control-plane-"));
+                    assertEquals(group.id(), mail.group());
+                    senders.add(mail.actor());
+                    assertEquals("delivered", mail.message());
+                } catch (Throwable problem) { failure.compareAndSet(null, problem); }
+                finally { delivered.countDown(); }
+            });
+            for (var actor : List.of(shared, isolated, untrusted)) {
+                group.join(actor, join);
+                actor.send(group.id());
+            }
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(Set.of(shared.id(), isolated.id(), untrusted.id()), senders);
+            for (var actor : List.of(shared, isolated, untrusted)) {
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(actor.failure().isEmpty(), actor.failure().toString());
+            }
+            group.close();
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    private static void emitAndStop(ActorRuntime.ActorGroupId id,
+                                   ActorRuntime.ActorContext<ActorRuntime.ActorGroupId> context) {
+        context.actorGroup(id).emit("delivered");
+        context.self().stop();
+    }
+
     private static void expectSecurity(Runnable operation, String message) {
         try {
             operation.run();
