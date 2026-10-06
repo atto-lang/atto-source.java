@@ -1201,19 +1201,55 @@ public final class Parser {
      */
     private boolean looksLikeGroupedSequencePatternList() {
         if (!check(LPAREN)) return false;
-        int depth = 0;
+        int parenDepth = 0;
+        int bracketDepth = 0;
+        int braceDepth = 0;
+        int angleDepth = 0;
         for (int i = current; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
             if (type == LPAREN) {
-                depth++;
+                parenDepth++;
                 continue;
             }
             if (type == RPAREN) {
-                depth--;
-                if (depth == 0) return false;
+                parenDepth--;
+                if (parenDepth == 0) return false;
                 continue;
             }
-            if (depth == 1 && (type == OF || type == ELLIPSIS)) return true;
+
+            if (parenDepth != 1) continue;
+
+            if (type == LBRACKET) {
+                bracketDepth++;
+                continue;
+            }
+            if (type == RBRACKET) {
+                if (bracketDepth > 0) bracketDepth--;
+                continue;
+            }
+            if (type == LBRACE) {
+                braceDepth++;
+                continue;
+            }
+            if (type == RBRACE) {
+                if (braceDepth > 0) braceDepth--;
+                continue;
+            }
+            if (type == LT) {
+                angleDepth++;
+                continue;
+            }
+            if (type == GT) {
+                if (angleDepth > 0) angleDepth--;
+                continue;
+            }
+
+            if (bracketDepth == 0
+                    && braceDepth == 0
+                    && angleDepth == 0
+                    && (type == OF || type == ELLIPSIS)) {
+                return true;
+            }
         }
         return false;
     }
