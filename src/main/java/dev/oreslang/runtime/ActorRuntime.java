@@ -1418,6 +1418,25 @@ public final class ActorRuntime implements AutoCloseable {
             this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
         }
 
+        /**
+         * VM startup barrier for the CONTROL/root event-loop carriers.
+         *
+         * <p>The control pool is deliberately prestarted here rather than waiting
+         * for the first submitted task. ROOT_TASK admission, Future/await
+         * continuation dispatch, and future channel/select notifications therefore
+         * have a live carrier pool before guest main is entered.</p>
+         */
+        void startRuntime() {
+            if (controlDispatcher.isShutdown()) {
+                throw new IllegalStateException("CONTROL dispatcher is shut down");
+            }
+            controlDispatcher.prestartAllCoreThreads();
+        }
+
+        int controlCarrierCount() {
+            return controlDispatcher.getPoolSize();
+        }
+
         private synchronized void reserveActor(ActorKind kind) {
             if (actorCount >= config.maxActors()) {
                 throw new IllegalStateException(
