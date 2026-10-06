@@ -13,6 +13,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -25,6 +28,7 @@ public final class OresContext implements AutoCloseable {
     private final BufferedReader input;
     private final PrintWriter output;
     private final OresVM vm;
+    private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
@@ -49,7 +53,17 @@ public final class OresContext implements AutoCloseable {
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
                 env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
-        OresVM vm = OresVM.create(this::executeRootTurn);
+        // UNTRUSTED contexts admit one guest thread and the isolate's JNI
+        // scope belongs to the calling thread. Root task turns retain that
+        // admission while runtime CONTROL carriers remain prestarted.
+        this.isolatedRootTurns = isolatePolicy.adversarial()
+                ? new ArrayBlockingQueue<>(65_536) : null;
+        OresVM vm = OresVM.create(this::executeRootTurn,
+                isolatedRootTurns == null ? null : turn -> {
+                    if (!isolatedRootTurns.offer(turn)) {
+                        throw new RejectedExecutionException("isolated root turn queue is full");
+                    }
+                });
         if (!vm.started()) {
             vm.close();
             throw new IllegalStateException(
@@ -277,6 +291,25 @@ public final class OresContext implements AutoCloseable {
                         "root main scheduler task resumed after terminal state");
             }
         });
+        if (isolatedRootTurns != null) {
+            while (!task.isDone()) {
+                Runnable turn = isolatedRootTurns.poll();
+                if (turn == null) {
+                    // Waiting is outside guest execution. Re-entering on this
+                    // same caller preserves both sandbox admission and JNI scope.
+                    turn = env.getContext().leaveAndEnter(null, () -> {
+                        try {
+                            return isolatedRootTurns.poll(100, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new java.util.concurrent.CancellationException(
+                                    "isolated root execution interrupted");
+                        }
+                    });
+                }
+                if (turn != null) turn.run();
+            }
+        }
         return task.join();
     }
 

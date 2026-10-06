@@ -9,6 +9,31 @@ import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
     @Test
+    void rootGuestAdmissionCanStayOnCallerAcrossPendingAwait() throws Exception {
+        var turns = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, turns::add)) {
+            Thread caller = Thread.currentThread();
+            OresFuture<Integer> source = new OresFuture<>();
+            var pc = new java.util.concurrent.atomic.AtomicInteger();
+            OresFuture<Integer> task = vm.rootScheduler().start(resume -> {
+                assertEquals(caller, Thread.currentThread());
+                assertEquals(vm.rootScheduler(), OresScheduler.current());
+                if (pc.getAndIncrement() == 0) return OresScheduler.await(source);
+                return OresScheduler.done((Integer) resume.value() + 1);
+            });
+            assertTrue(vm.controlCarrierCount() > 0);
+            assertEquals(1, vm.rootScheduler().parallelism());
+            turns.poll(5, TimeUnit.SECONDS).run();
+            assertTrue(!task.isDone());
+            Thread producer = Thread.ofPlatform().start(() -> source.completeFromRuntime(41));
+            producer.join();
+            turns.poll(5, TimeUnit.SECONDS).run();
+            assertEquals(42, task.get(5, TimeUnit.SECONDS));
+            assertEquals(2, pc.get());
+        }
+    }
+
+    @Test
     void controlCarriersAreLiveBeforeFirstRootTaskTurn() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {

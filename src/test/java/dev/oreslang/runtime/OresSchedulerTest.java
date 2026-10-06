@@ -16,6 +16,17 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresSchedulerTest {
 
     @Test
+    void rejectedGuestContextAdmissionSettlesTheOwningTask() throws Exception {
+        IllegalStateException failure = new IllegalStateException("guest context entry rejected");
+        try (OresScheduler scheduler = OresScheduler.managed(1, runnable -> { throw failure; })) {
+            OresFuture<Integer> task = scheduler.start(resume -> OresScheduler.done(42));
+            var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertSame(failure, observed.getCause());
+        }
+    }
+
+    @Test
     void mixedLinkageScopeSurvivesResumeWithoutLeakingToOtherTasks() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> gate = new OresFuture<>();
