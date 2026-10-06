@@ -25,6 +25,7 @@ public final class CapabilityChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Map<String, String> javaImports = new HashMap<>();
+    private final Set<String> importedRoots = new HashSet<>();
     private final Set<Ast.FunctionDecl> callableStack =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final Set<Ast.MethodDecl> methodStack =
@@ -35,6 +36,11 @@ public final class CapabilityChecker {
     private CapabilityChecker(Ast.Program program) {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (imported.wildcard()) {
+                importedRoots.add(imported.namespace());
+            } else {
+                importedRoots.addAll(imported.names());
+            }
             if (!ImportRules.isJavaPath(imported.path())) continue;
             String className = ImportRules.javaClassName(imported.path());
             for (String binding : ImportRules.exposedBindings(imported)) {
@@ -328,10 +334,14 @@ public final class CapabilityChecker {
 
         if (expr instanceof Ast.NameExpr n
                 && isZeroAuthorityAdversarial(policy)
-                && isRestrictedFacadeRoot(n.name())) {
+                && (isRestrictedFacadeRoot(n.name())
+                        || importedRoots.contains(n.name()))) {
             throw new SecurityException(
-                    "untrusted actor cannot extract restricted capability facade '"
-                            + n.name() + "'");
+                    importedRoots.contains(n.name())
+                            ? "untrusted actor cannot extract imported code without explicit effect metadata: "
+                                    + n.name()
+                            : "untrusted actor cannot extract restricted capability facade '"
+                                    + n.name() + "'");
         }
 
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
@@ -347,6 +357,16 @@ public final class CapabilityChecker {
         }
         else if (expr instanceof Ast.CallExpr c) {
             String target = memberPath(c.callee());
+            if (isZeroAuthorityAdversarial(policy) && target != null) {
+                String root = target.contains(".")
+                        ? target.substring(0, target.indexOf('.'))
+                        : target;
+                if (importedRoots.contains(root)) {
+                    throw new SecurityException(
+                            "untrusted actor cannot call imported code without explicit effect metadata: "
+                                    + target);
+                }
+            }
             if (target != null) {
                 Ast.FunctionDecl fn = findFunction(target);
                 if (fn != null) checkReferencedFunction(fn, policy);
