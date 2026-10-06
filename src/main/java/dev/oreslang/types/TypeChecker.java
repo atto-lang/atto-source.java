@@ -849,22 +849,23 @@ public final class TypeChecker {
                                             + " does not accept call-site type arguments");
                         }
                         return switch (member.member()) {
-                            case "start" -> {
+                            case "start", "start_detached" -> {
+                                String api = "OresScheduler." + member.member();
                                 if (call.arguments().size() != 1) {
                                     throw new IllegalArgumentException(
-                                            "OresScheduler.start expects exactly one zero-argument lambda");
+                                            api + " expects exactly one zero-argument lambda");
                                 }
                                 Ast.Expr work = call.arguments().getFirst();
                                 if (!(work instanceof Ast.LambdaExpr lambda)
                                         || !lambda.parameters().isEmpty()) {
                                     throw new IllegalArgumentException(
-                                            "OresScheduler.start requires an inline zero-argument lambda");
+                                            api + " requires an inline zero-argument lambda");
                                 }
                                 Type callback = typeOf(lambda, env, generics, self);
                                 if (!(callback instanceof Function fn)
                                         || !fn.parameters().isEmpty()) {
                                     throw new IllegalArgumentException(
-                                            "OresScheduler.start requires a zero-argument lambda");
+                                            api + " requires a zero-argument lambda");
                                 }
                                 if (lambda.async()) {
                                     if (!(fn.result() instanceof Named future)
