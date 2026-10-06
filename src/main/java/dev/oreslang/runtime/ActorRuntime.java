@@ -2976,15 +2976,13 @@ public final class ActorRuntime implements AutoCloseable {
                                             if (failure != null) {
                                                 completion.failFromRuntime(
                                                         OresFuture.unwrap(failure));
-                                                turnContext.self().stop();
                                             } else {
                                                 R frozen = (R) freeze(value);
-                                                completeActorCallableWhenQuiescent(
-                                                        () -> completion.completeFromRuntime(frozen),
-                                                        () -> completion.cancel(false));
+                                                completion.completeFromRuntime(frozen);
                                             }
                                         } catch (Throwable callbackFailure) {
                                             completion.failFromRuntime(callbackFailure);
+                                        } finally {
                                             turnContext.self().stop();
                                         }
                                     });
@@ -2992,9 +2990,8 @@ public final class ActorRuntime implements AutoCloseable {
                         }
 
                         R frozen = (R) freeze(result);
-                        completeActorCallableWhenQuiescent(
-                                () -> completion.completeFromRuntime(frozen),
-                                () -> completion.cancel(false));
+                        completion.completeFromRuntime(frozen);
+                        turnContext.self().stop();
                     } catch (VirtualMachineError fatal) {
                         completion.failFromRuntime(fatal);
                         throw fatal;
