@@ -3579,6 +3579,12 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            if (iface.moduleContract() != parent.moduleContract()) {
+                throw new IllegalArgumentException(
+                        (iface.moduleContract() ? "module contract '" : "interface '") + iface.name()
+                                + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
+                                + parent.name() + "' across the interface/contract boundary");
+            }
             Type resolvedParent = resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
                 throw new IllegalArgumentException("parent interface must resolve to a named type");
