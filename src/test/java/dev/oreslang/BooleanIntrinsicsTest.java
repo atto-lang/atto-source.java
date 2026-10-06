@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -10,10 +12,30 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.StringJoiner;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class BooleanIntrinsicsTest {
+    @Test
+    void builtinGlobalsNeedNoImportsAndSurviveBuildAdmission() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  stdio.println(Some(And(true, true)).unwrap());
+                  stdio.println(Ok(Or(false, true)).unwrap());
+                  stdio.println(Xor(false, true, false));
+                  stdio.println(None.is_none());
+                  return;
+                }
+                """;
+        var parsed = TypeChecker.check(Parser.parse(program));
+        assertTrue(parsed.imports().isEmpty());
+        var built = OresCompiler.compileForBuild(program, BuildOptions.executable(Map.of()));
+        assertTrue(built.program().imports().isEmpty());
+        assertDoesNotThrow(() -> TypeChecker.check(built.program()));
+        assertEquals("true\ntrue\ntrue\ntrue\n", run(program, "boolean-builtin-globals.ores"));
+    }
+
     @Test
     void exhaustiveTruthTablesForGlobalAndQualifiedScalarAndArrayForms() throws Exception {
         StringBuilder program = new StringBuilder("pub fnc main(): void {\n");

@@ -608,6 +608,8 @@ arguments; `boolean<int>` and `bool<>` are invalid.
 `And`, `Or`, and `Xor` are compiler-provided overload families in the
 built-in `BooleanOps` namespace and are also available as globals, like
 `Some`, `None`, `Ok`, and `Err`.
+No imports or declarations are needed to call `And(...)`, `Or(...)`, or
+`Xor(...)` directly. The qualified `BooleanOps` forms are also built in.
 
 Conceptually, each family has these two arity-selected overloads:
 
