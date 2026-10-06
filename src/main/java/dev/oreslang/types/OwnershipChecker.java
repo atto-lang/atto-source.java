@@ -1011,20 +1011,17 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
-            boolean semanticProxyReceiver = isProxyType(receiverValue.type)
+            Ast.TypeRef receiverSurfaceType = receiverValue.type.isBorrow()
+                    ? receiverValue.type.borrowedTarget() : receiverValue.type;
+            boolean semanticProxyReceiver = isProxyType(receiverSurfaceType)
                     || isProxyReceiver(member.receiver(), scope);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
-            if (concreteReceiver == null) {
-                concreteReceiver = receiverValue.type.isBorrow()
-                        ? receiverValue.type.borrowedTarget() : receiverValue.type;
+            if (semanticProxyReceiver && isProxyType(receiverSurfaceType)) {
+                concreteReceiver = receiverSurfaceType.arguments().getFirst();
+            } else if (concreteReceiver == null) {
+                concreteReceiver = receiverSurfaceType;
             }
-            Ast.TypeRef proxySurfaceType = concreteReceiver;
-            if (semanticProxyReceiver && isProxyType(concreteReceiver)) {
-                concreteReceiver = concreteReceiver.arguments().getFirst();
-            }
-            if (proxySurfaceType != null
-                    && proxySurfaceType.name().equals("Proxy")
-                    && concreteReceiver.arguments().size() == 1
+            if (isProxyType(receiverSurfaceType)
                     && member.member().equals("dispose")) {
                 if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
                     throw error("Proxy<T>.dispose() takes no arguments or type arguments");
