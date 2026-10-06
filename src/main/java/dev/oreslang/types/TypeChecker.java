@@ -1713,6 +1713,16 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                if (receiver instanceof Named proxy
+                        && proxy.name().equals("Proxy")
+                        && proxy.arguments().size() == 1
+                        && member.member().equals("dispose")) {
+                    if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Proxy<T>.dispose() takes no arguments or type arguments");
+                    }
+                    return Primitive.VOID;
+                }
                 Type receiverValueType = receiverDispatchType(receiver);
                 receiver = receiverValueType;
 
