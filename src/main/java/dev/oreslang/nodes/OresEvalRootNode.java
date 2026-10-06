@@ -2369,11 +2369,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.SpawnExpr spawned) {
-                throw new IllegalStateException(
-                        "spawn actor-class runtime lowering is not linked yet; compiler validation is fail-closed until typed mailbox construction lands: "
-                                + spawned.call());
-            }
-            if (expr instanceof Ast.AwaitExpr awaited) {
+                    continuation.accept(
+                            task,
+                            spawnSourceActor(spawned),
+                            null);
+                    return;
+                }
+                if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
                             awaited.expression(),
@@ -3386,7 +3388,7 @@ public final class OresEvalRootNode extends RootNode {
                         ((Ast.FunctionDecl) invocation.target()).async();
                 case METHOD, STATIC_FUNCTION, STATIC_FUNCTION_BODY ->
                         ((Ast.MethodDecl) invocation.target()).async();
-                case INVOKABLE -> false;
+                case INVOKABLE -> invocation.target() instanceof DeclaredFutureInvokable;
             };
         }
 
@@ -3397,6 +3399,14 @@ public final class OresEvalRootNode extends RootNode {
                 Env env) {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
+
+            if (receiver instanceof SourceActorRef actor) {
+                return actor.owner.invokableInvocation(
+                        new SourceActorMethodValue(
+                                actor,
+                                member.member()),
+                        args);
+            }
 
             if (receiver instanceof OresObject object) {
                 Ast.MethodDecl method =
@@ -3604,6 +3614,263 @@ public final class OresEvalRootNode extends RootNode {
                         "unknown class " + created.type().name());
             }
             return owner.instantiate(klass, args, externalConstruction);
+        }
+
+        private SourceActorRef spawnSourceActor(Ast.SpawnExpr spawned) {
+            Ast.CallExpr call = spawned.call();
+            if (!(call.callee() instanceof Ast.NameExpr name)) {
+                throw new IllegalStateException(
+                        "spawn runtime lowering requires a direct actor-class name");
+            }
+            if (!call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+                throw new IllegalStateException(
+                        "actor-class spawn arguments/generics are not enabled yet");
+            }
+
+            Ast.ClassDecl klass = findClass(name.name());
+            if (klass == null || klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "spawn target '" + name.name() + "' is not a source actor class");
+            }
+            if (klass.actorKind() == Ast.ActorKind.PRIVATE) {
+                throw new IllegalStateException(
+                        "persistent isoactor source state is not enabled until OresObject storage is backed by ActorMemorySlice");
+            }
+            if (klass.actorKind() == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalStateException(
+                        "persistent untrusted actor source state is not enabled until OresObject storage is backed by the isolated actor memory domain");
+            }
+
+            ActorRuntime.ActorRef<List<Object>> ref =
+                    context.actors().spawnSourceShared(
+                            actorContext -> {
+                                OresObject state = instantiateSourceActorState(klass);
+                                return (message, turnContext) ->
+                                        dispatchSourceActorMessage(
+                                                state,
+                                                message,
+                                                turnContext);
+                            });
+            return new SourceActorRef(this, klass, ref);
+        }
+
+        private OresObject instantiateSourceActorState(Ast.ClassDecl klass) {
+            if (klass.actorKind() != Ast.ActorKind.SHARED) {
+                throw new IllegalStateException(
+                        "only shared source actor state lowering is enabled");
+            }
+
+            List<Ast.FieldDecl> actorFields =
+                    effectiveFields(klass, new LinkedHashSet<>());
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : actorFields) {
+                fields.put(field.name(), UNINITIALIZED_FIELD);
+            }
+            OresObject object = new OresObject(this, klass, fields);
+
+            for (Ast.FieldDecl field : actorFields) {
+                if (field.initializer() == null) {
+                    throw new IllegalStateException(
+                            "actor state field '" + klass.name() + "." + field.name()
+                                    + "' requires an initializer until actor initializer semantics are explicit");
+                }
+                OwnedField owned =
+                        findField(
+                                klass,
+                                field.name(),
+                                new LinkedHashSet<>());
+                Ast.ClassDecl fieldOwner =
+                        owned == null ? klass : owned.owner();
+                Env initializerEnv =
+                        new Env(
+                                null,
+                                false,
+                                fieldOwner);
+                initializerEnv.define(
+                        "self",
+                        object,
+                        Ast.BindingKind.VAL);
+                fields.put(
+                        field.name(),
+                        eval(
+                                field.initializer(),
+                                initializerEnv));
+            }
+            return object;
+        }
+
+        private OresFuture<Object> requestSourceActor(
+                SourceActorRef actor,
+                String methodName,
+                List<Object> args) {
+            Ast.MethodDecl method =
+                    actor.owner.findMethod(
+                            actor.klass,
+                            CallableSelector.instance(
+                                    methodName,
+                                    args.size()),
+                            new LinkedHashSet<>());
+            if (method == null
+                    || method.isStatic()
+                    || method.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "no public actor protocol method '"
+                                + actor.klass.name()
+                                + "."
+                                + methodName
+                                + "' with arity "
+                                + args.size());
+            }
+            if (!method.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "generic actor protocol methods are not enabled yet");
+            }
+
+            ArrayList<Object> transportedArgs =
+                    new ArrayList<>(args);
+            return context.actors().requestReply(
+                    actor.ref,
+                    List.of(
+                            methodName,
+                            java.util.Collections.unmodifiableList(
+                                    transportedArgs)));
+        }
+
+        @SuppressWarnings("unchecked")
+        private void dispatchSourceActorMessage(
+                OresObject state,
+                List<Object> wire,
+                ActorRuntime.ActorContext<List<Object>> actorContext) {
+            ActorRuntime runtime = actorContext.runtime();
+            ActorRuntime.ActorRef<Object> reply = null;
+            try {
+                if (wire.size() != 3
+                        || !(wire.get(0) instanceof String methodName)
+                        || !(wire.get(1) instanceof List<?> rawArgs)
+                        || !(wire.get(2) instanceof ActorRuntime.ActorRef<?> rawReply)) {
+                    throw new IllegalArgumentException(
+                            "invalid source actor request protocol");
+                }
+                reply =
+                        (ActorRuntime.ActorRef<Object>)
+                                rawReply;
+
+                Ast.MethodDecl method =
+                        findMethod(
+                                state.klass,
+                                CallableSelector.instance(
+                                        methodName,
+                                        rawArgs.size()),
+                                new LinkedHashSet<>());
+                if (method == null
+                        || method.isStatic()
+                        || method.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "no public actor protocol method '"
+                                    + state.klass.name()
+                                    + "."
+                                    + methodName
+                                    + "' with arity "
+                                    + rawArgs.size());
+                }
+                if (!method.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic actor protocol methods are not enabled yet");
+                }
+
+                Object result =
+                        invoke(
+                                methodInvocation(
+                                        state,
+                                        method,
+                                        objectArguments(rawArgs)));
+                if (result instanceof OresFuture<?> pending) {
+                    ActorRuntime.ContinuationTarget target =
+                            runtime.captureCurrentContinuationTarget();
+                    ActorRuntime.ActorRef<Object> replyTarget = reply;
+                    OresFuture<Object> typed =
+                            (OresFuture<Object>) pending;
+                    runtime.enqueueOnCompletion(
+                            typed,
+                            target,
+                            (value, failure) -> {
+                                if (failure != null) {
+                                    sendSourceActorFailure(
+                                            runtime,
+                                            replyTarget,
+                                            OresFuture.unwrap(failure));
+                                    throw propagateActorFailure(
+                                            OresFuture.unwrap(failure));
+                                }
+                                sendSourceActorSuccess(
+                                        runtime,
+                                        replyTarget,
+                                        value);
+                            });
+                    return;
+                }
+
+                sendSourceActorSuccess(
+                        runtime,
+                        reply,
+                        result);
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                if (reply != null) {
+                    sendSourceActorFailure(
+                            runtime,
+                            reply,
+                            fatal);
+                }
+                throw fatal;
+            } catch (Throwable failure) {
+                if (reply != null) {
+                    sendSourceActorFailure(
+                            runtime,
+                            reply,
+                            failure);
+                }
+                throw propagateActorFailure(failure);
+            }
+        }
+
+        private void sendSourceActorSuccess(
+                ActorRuntime runtime,
+                ActorRuntime.ActorRef<Object> reply,
+                Object value) {
+            runtime.send(
+                    reply,
+                    value == null
+                            ? List.of(Boolean.TRUE)
+                            : List.of(
+                                    Boolean.TRUE,
+                                    value));
+        }
+
+        private void sendSourceActorFailure(
+                ActorRuntime runtime,
+                ActorRuntime.ActorRef<Object> reply,
+                Throwable failure) {
+            String message =
+                    failure.getMessage() == null
+                            ? failure.toString()
+                            : failure.getMessage();
+            runtime.send(
+                    reply,
+                    List.of(
+                            Boolean.FALSE,
+                            failure.getClass().getName(),
+                            message));
+        }
+
+        private RuntimeException propagateActorFailure(
+                Throwable failure) {
+            if (failure instanceof RuntimeException runtime) {
+                return runtime;
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            return new RuntimeException(failure);
         }
 
         private Object callFunctionRaw(Ast.FunctionDecl fn, List<Object> args) {
@@ -5056,6 +5323,9 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args, externalConstruction);
             }
+            if (expr instanceof Ast.SpawnExpr spawned) {
+                return spawnSourceActor(spawned);
+            }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
                 if (value instanceof OresFuture<?> future) {
@@ -5147,6 +5417,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof SourceActorRef actor) {
+                throw new IllegalArgumentException(
+                        "actor protocol method '"
+                                + actor.klass.name()
+                                + "."
+                                + name
+                                + "' is direct-call-only; invoke it as actorRef."
+                                + name
+                                + "(...)");
+            }
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host class " + host.className());
@@ -6927,6 +7207,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
+    private interface DeclaredFutureInvokable extends Invokable { }
     private interface TailInvokable extends Invokable { }
 
     private record TailCallable(Evaluator owner, Invokable delegate) implements TailInvokable {
@@ -7179,6 +7460,47 @@ public final class OresEvalRootNode extends RootNode {
         private DynamicStructValue(Map<String, Object> initial) { this.fields = new LinkedHashMap<>(initial); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
         @Override public String toString() { return "DynamicStruct" + fields; }
+    }
+
+    private static final class SourceActorRef {
+        private final Evaluator owner;
+        private final Ast.ClassDecl klass;
+        private final ActorRuntime.ActorRef<List<Object>> ref;
+
+        private SourceActorRef(
+                Evaluator owner,
+                Ast.ClassDecl klass,
+                ActorRuntime.ActorRef<List<Object>> ref) {
+            this.owner = owner;
+            this.klass = klass;
+            this.ref = ref;
+        }
+
+        @Override
+        public String toString() {
+            return "ActorRef<" + klass.name() + ">[" + ref.id() + "]";
+        }
+    }
+
+    private static final class SourceActorMethodValue
+            implements DeclaredFutureInvokable {
+        private final SourceActorRef actor;
+        private final String methodName;
+
+        private SourceActorMethodValue(
+                SourceActorRef actor,
+                String methodName) {
+            this.actor = actor;
+            this.methodName = methodName;
+        }
+
+        @Override
+        public Object call(List<Object> arguments) {
+            return actor.owner.requestSourceActor(
+                    actor,
+                    methodName,
+                    arguments);
+        }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
