@@ -1712,6 +1712,12 @@ public final class TypeChecker {
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                     && factoryCall.member().equals("new")) {
+                if (factory.name().equals("SharedMutex")
+                        && currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor code cannot create SharedMutex<T>; "
+                                    + "use an owner actor/mailbox or explicit rt proxy");
+                }
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
@@ -1885,10 +1891,10 @@ public final class TypeChecker {
                 }
                 if (receiver instanceof Named named) {
                     if (named.name().equals("SharedMutex")
-                            && currentActorKind != Ast.ActorKind.NONE
-                            && member.member().equals("with_lock")) {
+                            && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
-                                "actor code cannot use blocking SharedMutex.with_lock(); use try_lock() or await lock_async()");
+                                "actor code cannot access SharedMutex<T>; "
+                                        + "cross-actor mutation must use mailbox/channel messages or explicit rt proxy");
                     }
                     if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
                             && named.arguments().size() == 1
