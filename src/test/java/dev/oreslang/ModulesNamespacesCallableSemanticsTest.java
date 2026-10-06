@@ -162,6 +162,77 @@ final class ModulesNamespacesCallableSemanticsTest {
                 """)));
     }
 
+    @Test
+    void moduleContractFieldsRequireExactBindingSemantics() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define contract Config as
+                  val String name;
+                  let int capacity;
+                end
+
+                define module good conforms Config as
+                  pub val String name = "x";
+                  pub let int capacity = 10;
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define contract Config as
+                  val String name;
+                end
+
+                define module bad conforms Config as
+                  pub let String name = "x";
+                end
+                """)));
+    }
+
+    @Test
+    void moduleContractInheritanceIsContractOnly() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define contract Base as
+                  val String name;
+                end
+
+                define contract Derived extends Base as
+                  fnc size(): int;
+                end
+
+                define module good conforms Derived as
+                  pub val String name = "x";
+                  pub fnc size(): int { return 1; }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define interface Base as
+                  fnc size(): int;
+                end
+
+                define contract Bad extends Base as
+                  fnc size(): int;
+                end
+                """)));
+    }
+
+    @Test
+    void moduleContractsDoNotHaveSelfTypes() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define contract Bad as
+                  fnc clone(): self;
+                end
+                """)));
+    }
+
+    @Test
+    void publicModuleContractsAreLegalDeclarations() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub define contract PublicApi as
+                  fnc ping(): void;
+                end
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "modules-namespaces-callables.ores")
