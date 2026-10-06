@@ -996,6 +996,15 @@ public final class OwnershipChecker {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
             }
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("Proxy")
+                    && concreteReceiver.arguments().size() == 1
+                    && member.member().equals("dispose")) {
+                if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
+                    throw error("Proxy<T>.dispose() takes no arguments or type arguments");
+                }
+                return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
