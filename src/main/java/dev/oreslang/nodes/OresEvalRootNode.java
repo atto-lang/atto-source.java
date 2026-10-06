@@ -5489,6 +5489,48 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown IteratorResult member " + name);
                 };
             }
+            if (receiver instanceof List<?> rawList) {
+                return switch (name) {
+                    case "size" -> (long) rawList.size();
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Array.get");
+                        Object rawIndex = args.getFirst();
+                        if (!(rawIndex instanceof Number number) || !isIntegral(number)) {
+                            throw new IllegalArgumentException("Array.get index must be an integer");
+                        }
+                        return rawList.get(Math.toIntExact(number.longValue()));
+                    };
+                    case "add" -> (Invokable) args -> {
+                        requireOne(args, "Array.add");
+                        try {
+                            @SuppressWarnings("unchecked")
+                            List<Object> mutable = (List<Object>) rawList;
+                            mutable.add(args.getFirst());
+                        } catch (UnsupportedOperationException failure) {
+                            throw new IllegalArgumentException("sequence is immutable and does not support add", failure);
+                        }
+                        return null;
+                    };
+                    case "set" -> (Invokable) args -> {
+                        if (args.size() != 2) {
+                            throw new IllegalArgumentException("Array.set expects index and value");
+                        }
+                        Object rawIndex = args.getFirst();
+                        if (!(rawIndex instanceof Number number) || !isIntegral(number)) {
+                            throw new IllegalArgumentException("Array.set index must be an integer");
+                        }
+                        try {
+                            @SuppressWarnings("unchecked")
+                            List<Object> mutable = (List<Object>) rawList;
+                            mutable.set(Math.toIntExact(number.longValue()), args.get(1));
+                        } catch (UnsupportedOperationException failure) {
+                            throw new IllegalArgumentException("sequence is immutable and does not support set", failure);
+                        }
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown array/list member " + name);
+                };
+            }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
