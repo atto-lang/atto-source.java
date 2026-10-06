@@ -852,6 +852,38 @@ final class ActorRuntimeTest {
 
 
     @Test
+    void capturedForeignReadonlySharedHandlesCannotBypassRuntimeBoundary() throws Exception {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var foreignShared = left.shareReadonly(List.of(1, 2, 3));
+            var foreignCell = left.syncCell(7);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var ref = right.<String>spawnSharedTrusted(factoryContext ->
+                    (message, context) -> {
+                        try {
+                            assertThrows(SecurityException.class, foreignShared::value);
+                            assertThrows(SecurityException.class, foreignCell::snapshot);
+                            assertThrows(
+                                    SecurityException.class,
+                                    () -> foreignCell.read(value -> value));
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            checked.countDown();
+                            context.self().stop();
+                        }
+                    });
+
+            ref.send("check");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertNull(failure.get());
+        }
+    }
+
+    @Test
     void actorRefsCannotBecomeImplicitCrossRuntimeChannels() {
         try (ActorRuntime left = new ActorRuntime();
              ActorRuntime right = new ActorRuntime()) {
