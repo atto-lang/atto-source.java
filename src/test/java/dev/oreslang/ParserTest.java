@@ -204,7 +204,8 @@ final class ParserTest {
                 end
                 """);
 
-        Ast.ClassDecl router = program.classes().getFirst();
+        Ast.ModuleDecl root = program.modules().getFirst();
+        Ast.ClassDecl router = (Ast.ClassDecl) root.declarations().getFirst();
         Ast.MethodDecl validate = router.methods().getFirst();
         assertEquals(3, validate.body().size());
         assertTrue(validate.body().stream().allMatch(statement -> statement instanceof Ast.IfStmt));
