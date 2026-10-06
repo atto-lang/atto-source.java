@@ -364,4 +364,60 @@ final class RuntimeProxyLanguageTest {
         }
         return output.toString(StandardCharsets.UTF_8);
     }
+
+    @Test
+    void nestedClassViewsStayProxiedAndSupportSynchronizedMutation() throws Exception {
+        String output = run("""
+                define class Inner as
+                  pub let int value = 1;
+
+                  pub bump(mut self): int {
+                    self.value = self.value + 1;
+                    return self.value;
+                  }
+                end
+
+                define class Outer as
+                  pub val Inner inner = new Inner();
+                end
+
+                pub routine main(): void {
+                  val guarded = rt proxy new Outer();
+                  stdio.stdout.write(guarded.inner.bump());
+                  guarded.inner.value = 7;
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(guarded.inner.value);
+                  return;
+                }
+                """);
+
+        assertEquals("2:7", output);
+    }
+
+    @Test
+    void nestedProxyTypeCannotBeAssignedToRawChildOwner() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> check("""
+                        define class Inner as
+                          pub let int value = 1;
+                        end
+
+                        define class Outer as
+                          pub val Inner inner = new Inner();
+                        end
+
+                        fnc bad(): void {
+                          val guarded = rt proxy new Outer();
+                          let Inner raw = guarded.inner;
+                          stdio.println(raw.value);
+                          return;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("assign")
+                        || failure.getMessage().contains("Proxy"),
+                failure.getMessage());
+    }
+
 }
