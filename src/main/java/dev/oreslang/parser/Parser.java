@@ -2694,6 +2694,15 @@ public final class Parser {
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
+        if (match(TUPLE)) {
+            consume(LPAREN, "expected '(' after tuple");
+            if (check(RPAREN)) {
+                throw error(peek(), "tuple construction requires at least one element");
+            }
+            List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after tuple elements");
+            return new Ast.TupleExpr(items);
+        }
         if (match(OBJ)) return parseObjectLiteral();
         if (match(ARR)) {
             consume(LBRACKET, "expected '[' after arr");
@@ -2709,16 +2718,13 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
-            Ast.Expr first = parseExpression();
-            if (match(COMMA)) {
-                List<Ast.Expr> items = new ArrayList<>();
-                items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
-                consume(RPAREN, "expected ')' after tuple");
-                return new Ast.TupleExpr(items);
+            Ast.Expr grouped = parseExpression();
+            if (check(COMMA)) {
+                throw error(peek(),
+                        "parenthesized comma expressions do not construct tuples; use tuple (...)");
             }
             consume(RPAREN, "expected ')' after expression");
-            return first;
+            return grouped;
         }
         if (match(LBRACKET)) {
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
