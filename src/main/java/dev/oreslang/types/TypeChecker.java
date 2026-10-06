@@ -2450,6 +2450,21 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list) {
+            if (expected instanceof ListType sequenceExpected) {
+                for (int i = 0; i < list.elements().size(); i++) {
+                    Type actual = typeOfAgainstExpected(
+                            list.elements().get(i),
+                            sequenceExpected.element(),
+                            env,
+                            generics,
+                            self);
+                    requireAssignable(
+                            actual,
+                            sequenceExpected.element(),
+                            "sequence literal element " + i);
+                }
+                return sequenceExpected;
+            }
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
@@ -2591,7 +2606,7 @@ public final class TypeChecker {
         if (source instanceof ListType list) {
             List<Type> result = new ArrayList<>(bindings.size());
             for (int i = 0; i < fixedArity; i++) result.add(list.element());
-            if (restIndex >= 0) result.add(new ListType(list.element()));
+            if (restIndex >= 0) result.add(new ListType(list.element(), list.kind()));
             return List.copyOf(result);
         }
 
@@ -2782,7 +2797,7 @@ public final class TypeChecker {
     private Type bindReceiverSelf(Type type, Type receiver) {
         if (type instanceof SelfType) return receiver;
         if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
+        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver), list.kind());
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Named named) return new Named(
@@ -4684,6 +4699,7 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof ListType p && actual instanceof ListType a) {
+            if (p.kind() != a.kind()) return;
             inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
             return;
         }
@@ -4709,7 +4725,7 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
+        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings), list.kind());
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
