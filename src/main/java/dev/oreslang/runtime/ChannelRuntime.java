@@ -583,16 +583,6 @@ public final class ChannelRuntime {
                         break;
                     }
 
-                    CaseRegistration reader =
-                            findMutualPeerLocked(
-                                    chosen,
-                                    SelectOperation.READ);
-                    if (reader != null) {
-                        commitPairLocked(reader, chosen, completions);
-                        progressed = true;
-                        break;
-                    }
-
                     if (channel.capacity > channel.buffer.size()) {
                         @SuppressWarnings("unchecked")
                         Channel<Object> writable =
@@ -607,6 +597,22 @@ public final class ChannelRuntime {
                                 completions);
                         progressed = true;
                         break;
+                    }
+
+                    // Buffered channels preserve FIFO: an older buffered value
+                    // must be consumed before a pending writer may rendezvous
+                    // directly with a newer reader. Direct pairing is only the
+                    // transport for capacity-0 rendezvous channels.
+                    if (channel.capacity == 0) {
+                        CaseRegistration reader =
+                                findMutualPeerLocked(
+                                        chosen,
+                                        SelectOperation.READ);
+                        if (reader != null) {
+                            commitPairLocked(reader, chosen, completions);
+                            progressed = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -640,9 +646,10 @@ public final class ChannelRuntime {
                         || channel.capacity > channel.buffer.size()) {
                     return registration;
                 }
-                if (findMutualPeerLocked(
-                        registration,
-                        SelectOperation.READ) != null) {
+                if (channel.capacity == 0
+                        && findMutualPeerLocked(
+                                registration,
+                                SelectOperation.READ) != null) {
                     return registration;
                 }
             }
@@ -679,10 +686,9 @@ public final class ChannelRuntime {
         }
 
         if (channel.closed) return true;
-        if (hasOppositePeerLocked(registration, SelectOperation.READ)) {
-            return true;
-        }
-        return channel.capacity > channel.buffer.size();
+        if (channel.capacity > channel.buffer.size()) return true;
+        return channel.capacity == 0
+                && hasOppositePeerLocked(registration, SelectOperation.READ);
     }
 
     private static boolean hasOppositePeerLocked(

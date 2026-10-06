@@ -267,7 +267,8 @@ final class ChannelSelectSyntaxTest {
     @Test
     void nonblockingWriteCallbackUsesTheSameChannelOperationSurface() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                actor fnc write(Channel<int> output): void {
+                actor fnc write(): void {
+                  val Channel<int> output = Channel.new<int>(1);
                   nb cb writech output, 42 || -> {
                     stdio.println("write complete");
                   };
@@ -351,7 +352,8 @@ final class ChannelSelectSyntaxTest {
         IllegalArgumentException moved = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc bad(Channel<int> input): void {
+                        actor fnc bad(): void {
+                          val Channel<int> input = Channel.new<int>(1);
                           val Array<int> owned = [1, 2, 3];
 
                           nb select {
@@ -373,7 +375,8 @@ final class ChannelSelectSyntaxTest {
 @Test
     void nbSelectMayCaptureCopyValuesAndActorSelf() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc copy_capture(Channel<int> input): void {
+                actor fnc copy_capture(): void {
+                  val Channel<int> input = Channel.new<int>(1);
                   val int label = 7;
 
                   nb select {
@@ -407,18 +410,19 @@ final class ChannelSelectSyntaxTest {
         IllegalArgumentException moved = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc bad(Channel<int> input): void {
+                        actor fnc bad(): void {
+                          val Channel<int> input = Channel.new<int>(1);
                           val Array<int> owned = [1, 2, 3];
 
-                          val (() => void) callback = || -> {
-                            nb select {
-                            case readch input: val value
+                          nb select {
+                          case readch input: val value
+                            val (() => void) callback = || -> {
                               stdio.println(owned[0]);
-                            }
-                            return;
-                          };
+                              return;
+                            };
+                            callback();
+                          }
 
-                          callback();
                           stdio.println(owned[0]);
                           return;
                         }
