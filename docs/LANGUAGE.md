@@ -227,6 +227,63 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 
 Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
+## Assignment, equality, and identity
+
+Assignment remains an expression. `lhs = rhs` mutates `lhs` and evaluates to
+the assigned value, including inside call arguments and control-flow expressions.
+Oreslang does **not** interpret `name = value` inside a call as a named argument.
+
+The canonical comparison operators deliberately separate value equality from identity:
+
+- `a eq b` is canonical value equality.
+- `a neq b` is canonical value inequality.
+- Adjacent `a !eq b` is an equivalent inequality spelling. Whitespace between
+  `!` and `eq` does not form this operator.
+- `a == b` and `a != b` remain accepted compatibility aliases, but canonical
+  Oreslang style prefers `eq` and `neq`.
+- `a is b` is identity: both operands must be identity-bearing reference/handle
+  values with overlapping runtime domains.
+- `!(a eq b)` is ordinary logical negation and is equivalent to value inequality.
+
+`eq`, `neq`, and `is` are reserved operator keywords rather than ordinary
+identifier names. This intentionally prevents visually hostile constructs such
+as `is is foo`. Keyword spellings may still appear after `.` because member
+names occupy a separate syntactic namespace.
+
+Value equality is defined by Oreslang semantics, never arbitrary host/JVM
+`equals()` behavior. Numbers compare numerically across compatible numeric
+representations; structural records/maps, tuples, arrays/lists, `Option`,
+`Result`, and iterator-result values recurse through their contents. Ordinary
+class/actor instances remain identity-equal by default unless a future explicit
+equality protocol is introduced. `switch` constants and literal match patterns
+use the same value-equality operation, so equality cannot change meaning between
+language constructs.
+
+Identity is likewise semantic rather than a promise about backend object boxing.
+Ordinary objects/reference collections use reference identity, while stable
+handles such as actor IDs/references compare the underlying handle identity.
+Scalars and value-semantic aggregates/wrappers are rejected for `is`.
+
+Because plain infix `is` owns identity, nominal expression type tests use an
+explicit `type` marker:
+
+```ores
+if animal is type Dog dog then
+  dog.bark();
+fi
+```
+
+Match-arm type patterns retain the compact prefix form because pattern position
+is unambiguous:
+
+```ores
+match animal
+  is Dog dog -> { dog.bark(); }
+  else -> { return; }
+end
+```
+
+
 ## Classes, receivers, multiple inheritance, and interfaces
 
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
