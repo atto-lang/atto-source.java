@@ -395,7 +395,16 @@ final class OresVM {
             throw new IllegalStateException(
                     "the process Oreslang VM is host-owned and cannot be shut down by a context");
         }
-        if (!shutdown.compareAndSet(false, true)) return;
+
+        /*
+         * Startup and shutdown are mutually exclusive lifecycle transitions.
+         * Hold the same monitor used by startup() while publishing the shutdown
+         * bit, then release it before closing owned resources so teardown cannot
+         * deadlock on a callback that needs this VM monitor.
+         */
+        synchronized (this) {
+            if (!shutdown.compareAndSet(false, true)) return;
+        }
 
         RuntimeException firstFailure = null;
         for (HotReloadManager manager : List.copyOf(hotReloadManagers)) {
