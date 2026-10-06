@@ -319,7 +319,16 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.ModuleDecl module : program.modules()) {
                     for (Ast.Decl decl : module.declarations()) {
                         if (decl instanceof Ast.FunctionDecl fn && fn.name().equals("init")) {
-                            last = invoke(functionBodyInvocation(fn, List.of()));
+                            Object initialized =
+                                    invoke(functionBodyInvocation(fn, List.of()));
+                            if (initialized instanceof OresFuture<?> future) {
+                                if (OresScheduler.current() != null) {
+                                    throw new IllegalStateException(
+                                            "module init cannot suspend from inside a scheduler-owned startup turn");
+                                }
+                                initialized = future.join();
+                            }
+                            last = initialized;
                         }
                     }
                 }
