@@ -282,7 +282,15 @@ final class ActorGroupMailmanTest {
                 assertTrue(actor.failure().isEmpty(), actor.failure().toString());
             }
             group.close();
-            assertEquals(0L, runtime.sharedMemoryBytes());
+            // Delivery is signalled inside the callback; the active envelope
+            // releases its reservation in the runtime finally block afterward.
+            // Close drains queued mail without interrupting an active callback.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (runtime.sharedMemoryBytes() != 0L && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "active and queued Mailman reservations must eventually release");
         }
     }
 
