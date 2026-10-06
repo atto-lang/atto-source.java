@@ -68,6 +68,13 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
             new ThreadLocal<>();
+    /**
+     * Narrow internal escape hatch used only by ActorGroupContext.send().
+     * A Mailman callback otherwise has no ambient ActorRuntime authority even
+     * though it executes on a CONTROL carrier.
+     */
+    private static final ThreadLocal<Boolean> ACTOR_GROUP_MAILMAN_CONTEXT_SEND =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
@@ -445,6 +452,7 @@ public final class ActorRuntime implements AutoCloseable {
      * domain is retired. Guest code cannot mutate this hook.
      */
     public void setActorExitHook(Consumer<Object> actorExitHook) {
+        requireSupervisorContext("install actor exit hook");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
@@ -1745,7 +1753,9 @@ public final class ActorRuntime implements AutoCloseable {
 
             final OresFuture<Void> dispatch;
             try {
-                dispatch = controlDispatcher.execute(this::runQuantum);
+                dispatch = Objects.requireNonNull(
+                        controlDispatcher.execute(this::runQuantum),
+                        "ActorGroup Mailman CONTROL dispatcher returned null Future");
             } catch (RuntimeException | Error submissionFailure) {
                 scheduled.set(false);
                 throw submissionFailure;
@@ -1788,13 +1798,23 @@ public final class ActorRuntime implements AutoCloseable {
 
                     @Override
                     public int memberCount() {
+                        if (stopped.get() || group.closed() || closed.get()) {
+                            throw new IllegalStateException(
+                                    "ActorGroup Mailman is stopped for " + group.id);
+                        }
                         return group.members.size();
                     }
 
                     @Override
                     public <M> void send(ActorRef<M> target, M message) {
                         Objects.requireNonNull(target, "target");
-                        target.send(message);
+                        synchronized (admissionLock) {
+                            if (stopped.get() || group.closed() || closed.get()) {
+                                throw new IllegalStateException(
+                                        "ActorGroup Mailman is stopped for " + group.id);
+                            }
+                            sendFromActorGroupMailman(group, target, message);
+                        }
                     }
                 };
 
@@ -1950,6 +1970,32 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private <M> void sendFromActorGroupMailman(
+            ActorGroup group,
+            ActorRef<M> target,
+            M message) {
+        ActorGroupMailmanExecution mailman = CURRENT_ACTOR_GROUP_MAILMAN.get();
+        if (mailman == null
+                || mailman.runtime() != this
+                || !mailman.groupId().equals(group.id)) {
+            throw new SecurityException(
+                    "ActorGroupContext.send requires the owning Mailman execution context");
+        }
+
+        boolean priorPermit =
+                Boolean.TRUE.equals(ACTOR_GROUP_MAILMAN_CONTEXT_SEND.get());
+        ACTOR_GROUP_MAILMAN_CONTEXT_SEND.set(Boolean.TRUE);
+        try {
+            send(target, message);
+        } finally {
+            if (priorPermit) {
+                ACTOR_GROUP_MAILMAN_CONTEXT_SEND.set(Boolean.TRUE);
+            } else {
+                ACTOR_GROUP_MAILMAN_CONTEXT_SEND.remove();
+            }
+        }
+    }
+
     private void requireCallerRuntimeAffinity(String operation) {
         requireNoForceCancellationHookReentry(operation);
         ActorRuntime caller = currentActorRuntime();
@@ -1958,9 +2004,16 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor cannot " + operation + " through another ActorRuntime");
         }
         ActorGroupMailmanExecution mailman = CURRENT_ACTOR_GROUP_MAILMAN.get();
-        if (mailman != null && mailman.runtime() != this) {
-            throw new SecurityException(
-                    "ActorGroup Mailman cannot " + operation + " through another ActorRuntime");
+        if (mailman != null) {
+            if (mailman.runtime() != this) {
+                throw new SecurityException(
+                        "ActorGroup Mailman cannot " + operation + " through another ActorRuntime");
+            }
+            if (!Boolean.TRUE.equals(ACTOR_GROUP_MAILMAN_CONTEXT_SEND.get())) {
+                throw new SecurityException(
+                        "ActorGroup Mailman cannot " + operation
+                                + " through ambient ActorRuntime authority; use ActorGroupContext");
+            }
         }
     }
 
