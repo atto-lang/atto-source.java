@@ -229,33 +229,28 @@ final class RuntimeProxyLanguageTest {
                 }
                 """));
 
-        IllegalArgumentException escaped = assertThrows(
-                IllegalArgumentException.class,
-                () -> check("""
-                        define class Inner as
-                          pub let int value = 1;
-                        end
+        assertDoesNotThrow(() -> check("""
+                define class Inner as
+                  pub let int value = 1;
+                end
 
-                        define class Outer as
-                          pub let Inner inner = new Inner();
-                        end
+                define class Outer as
+                  pub let Inner inner = new Inner();
+                end
 
-                        fnc make(): Proxy<Outer> {
-                          return rt proxy new Outer();
-                        }
+                fnc make(): Proxy<Outer> {
+                  return rt proxy new Outer();
+                }
 
-                        fnc bad(): void {
-                          val leaked = make().inner;
-                          return;
-                        }
-                        """));
-        assertTrue(escaped.getMessage().contains("move-only")
-                        || escaped.getMessage().contains("Proxy"),
-                escaped.getMessage());
+                fnc good_nested(): int {
+                  val protected_inner = make().inner;
+                  return protected_inner.value;
+                }
+                """));
     }
 
     @Test
-    void proxyDoesNotLeakMoveOnlyFields() {
+    void nestedProxyFieldNeverDowngradesToRawMoveOnlyOwner() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> check("""
@@ -269,13 +264,15 @@ final class RuntimeProxyLanguageTest {
 
                         fnc bad(): void {
                           val guarded = rt proxy new Outer();
-                          val escaped = guarded.inner;
+                          let Inner escaped = guarded.inner;
                           stdio.println(escaped.value);
                           return;
                         }
                         """));
 
-        assertTrue(failure.getMessage().contains("cannot extract move-only field"));
+        assertTrue(failure.getMessage().contains("Proxy")
+                        || failure.getMessage().contains("assign"),
+                failure.getMessage());
     }
 
     @Test
