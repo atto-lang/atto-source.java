@@ -800,6 +800,9 @@ public final class OwnershipChecker {
             }
             if (intrinsic.name().startsWith("$rt$") && ownershipOperation.equals("ptr")) {
                 VarState owner = intrinsicOwner(call, scope, "ptr");
+                if (owner.kind == ValueKind.PROXY) {
+                    throw error("rt ptr cannot expose the raw target of a synchronized proxy");
+                }
                 validateBorrow(owner, false);
                 Ast.TypeRef target = owner.type.isBorrow() ? owner.type.borrowedTarget() : owner.type;
                 if (isCopyType(target)) {
