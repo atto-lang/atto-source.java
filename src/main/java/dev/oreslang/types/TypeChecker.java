@@ -1733,6 +1733,10 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                boolean proxyReceiver = receiver instanceof Named proxy
+                        && proxy.name().equals("Proxy")
+                        && proxy.arguments().size() == 1;
+                if (proxyReceiver) receiver = unwrapProxy(receiver);
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
 
@@ -1945,10 +1949,15 @@ public final class TypeChecker {
                         String label = "method " + owner.name() + "." + method.name();
                         Map<String, Type> bindings = new HashMap<>(classGenericBindings(owner, ownerType));
                         bindings.putAll(explicitGenericBindings(method.genericParameters(), call.typeArguments(), generics, self, label));
+                        if (proxyReceiver && method.async()) {
+                            throw new IllegalArgumentException(
+                                    "async method '" + owner.name() + "." + method.name()
+                                            + "' cannot execute while an rt proxy lock is held");
+                        }
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -1957,6 +1966,12 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        if (proxyReceiver && !isProxyExportSafe(result)) {
+                            throw new IllegalArgumentException(
+                                    "rt proxy method '" + owner.name() + "." + method.name()
+                                            + "' may return only copy/immutable data; mutable references cannot escape the proxy domain");
+                        }
+                        return result;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -2044,6 +2059,10 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            boolean proxyReceiver = deref(receiver) instanceof Named proxy
+                    && proxy.name().equals("Proxy")
+                    && proxy.arguments().size() == 1;
+            if (proxyReceiver) receiver = unwrapProxy(deref(receiver));
             Type sumReceiver = receiverDispatchType(deref(receiver));
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
@@ -2120,7 +2139,13 @@ public final class TypeChecker {
 
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
-                if (result != null) return result;
+                if (result != null) {
+                    if (proxyReceiver && !isProxyExportSafe(result)) {
+                        throw new IllegalArgumentException(
+                                "rt proxy field reads may return only copy/immutable data");
+                    }
+                    return result;
+                }
 
                 String methodPrefix = CallableSelector.instance(member.member(), 0).mangledName().replace("$arity0", "$arity");
                 boolean structuralMethod = record.members().keySet().stream()
@@ -2846,8 +2871,8 @@ public final class TypeChecker {
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
-        Type receiver = receiverDispatchType(
-                unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self))));
+        Type rawReceiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
+        Type receiver = receiverDispatchType(unwrapProxy(rawReceiver));
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
@@ -2947,14 +2972,19 @@ public final class TypeChecker {
             return;
         }
         if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport SharedMutex<T> through actor mailboxes; "
+                            + "use an owner actor or explicit Proxy<T>");
+        }
+        if (named.name().equals("Proxy")) {
+            if (actorKind != Ast.ActorKind.SHARED) {
                 throw new IllegalArgumentException(
-                        where + " cannot use SharedMutex<T> with isoactor/private actors");
+                        where + " cannot use Proxy<T> with private/untrusted actors");
             }
             if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                    || !isProxyableTarget(named.arguments().getFirst(), new LinkedHashSet<>())) {
                 throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
+                        where + " requires Proxy<T> with a proxy-safe class/struct target");
             }
             return;
         }
@@ -3132,7 +3162,8 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")
+                || named.name().equals("Proxy")) return false;
         if (named.name().equals("DynamicStruct")) {
             return named.arguments().size() == 1
                     && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
