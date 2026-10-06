@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -15,6 +15,19 @@ public final class Types {
 
     public record Named(String name, List<Type> arguments) implements Type {
         public Named { arguments = List.copyOf(arguments); }
+    }
+
+    /**
+     * Receiver-polymorphic type carried by the implicit instance receiver.
+     *
+     * <p>The bound is the nominal type whose members are available while checking
+     * the method body. A SelfType value may widen to that nominal type, but a
+     * fresh value of the nominal type cannot narrow back to SelfType because the
+     * actual receiver may be a more-derived subtype. Values already proven to
+     * have the receiver-polymorphic self type may flow through aliases/parameters.
+     */
+    public record SelfType(Type bound) implements Type {
+        public SelfType { Objects.requireNonNull(bound, "self bound"); }
     }
 
     /** Rust-style compile-time borrow; erased by the interpreter runtime. */
@@ -56,6 +69,15 @@ public final class Types {
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
+        if (from instanceof SelfType source) {
+            if (to instanceof SelfType target) {
+                return isAssignable(source.bound(), target.bound())
+                        && isAssignable(target.bound(), source.bound());
+            }
+            return isAssignable(source.bound(), to);
+        }
+        // A nominal base value cannot manufacture the receiver-polymorphic proof.
+        if (to instanceof SelfType) return false;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
 
         if (from instanceof Union source) {

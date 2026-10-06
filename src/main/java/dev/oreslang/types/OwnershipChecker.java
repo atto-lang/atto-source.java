@@ -801,8 +801,12 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            checkExpr(member.receiver(), scope, false);
+            ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+            if (concreteReceiver == null) {
+                concreteReceiver = receiverValue.type.isBorrow()
+                        ? receiverValue.type.borrowedTarget() : receiverValue.type;
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
@@ -829,7 +833,9 @@ public final class OwnershipChecker {
                     throw error("method '" + target.owner().name() + "." + method.name()
                             + "' cannot return move-only state through a mutex guard/critical-section borrow");
                 }
-                Ast.TypeRef callResult = callableResultType(signature.result(), method.async(), false);
+                Ast.TypeRef result = signature.result().name().equals("self")
+                        ? concreteReceiver : signature.result();
+                Ast.TypeRef callResult = callableResultType(result, method.async(), false);
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
