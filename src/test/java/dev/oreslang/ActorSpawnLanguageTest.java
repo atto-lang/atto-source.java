@@ -321,10 +321,15 @@ final class ActorSpawnLanguageTest {
                 }
                 """;
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).out(output).build()) {
+        Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build();
+        try {
             context.eval(Source.newBuilder(OresLanguage.ID, program, "persistent-counter.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
+        } finally {
+            // Persistent actors outlive main; host teardown explicitly cancels
+            // them and waits for carrier/context exit.
+            context.close(true);
         }
         assertEquals("42\n50\n", output.toString(StandardCharsets.UTF_8));
     }
