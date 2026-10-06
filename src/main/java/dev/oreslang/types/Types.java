@@ -66,8 +66,15 @@ public final class Types {
 
     public record ListType(Type element) implements Type { }
 
-    public record Tuple(List<Type> elements) implements Type {
-        public Tuple { elements = List.copyOf(elements); }
+    public record Tuple(List<Type> elements, Map<String, String> layoutMetadata) implements Type {
+        public Tuple {
+            elements = List.copyOf(elements);
+            layoutMetadata = Map.copyOf(layoutMetadata);
+        }
+
+        public Tuple(List<Type> elements) {
+            this(elements, Map.of());
+        }
     }
 
     public record Union(List<Type> options) implements Type {
