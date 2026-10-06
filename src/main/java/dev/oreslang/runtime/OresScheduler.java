@@ -138,7 +138,21 @@ public final class OresScheduler implements AutoCloseable {
                 new LinkedBlockingQueue<>(queueCapacity),
                 factory,
                 new ThreadPoolExecutor.AbortPolicy());
-        pool.prestartAllCoreThreads();
+        try {
+            pool.allowCoreThreadTimeOut(false);
+            int newlyStarted = pool.prestartAllCoreThreads();
+            int live = pool.getPoolSize();
+            if (live != parallelism) {
+                throw new IllegalStateException(
+                        "scheduler carrier bootstrap incomplete: required="
+                                + parallelism
+                                + ", live=" + live
+                                + ", newlyStarted=" + newlyStarted);
+            }
+        } catch (RuntimeException | Error failure) {
+            pool.shutdownNow();
+            throw failure;
+        }
         this.executor = pool;
         this.ownedExecutor = pool;
     }
@@ -331,13 +345,36 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private void executeTurn(Runnable turn, Runnable afterTurn) {
+    private void executeTurn(
+            Runnable turn,
+            Runnable afterTurn,
+            java.util.function.Consumer<? super Throwable> admissionFailure) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
+        Objects.requireNonNull(admissionFailure, "admissionFailure");
         ensureOpen();
         executor.execute(() -> {
             try {
-                turnExecutor.execute(() -> runBound(turn));
+                try {
+                    turnExecutor.execute(() -> runBound(turn));
+                } catch (VirtualMachineError fatal) {
+                    admissionFailure.accept(fatal);
+                    throw fatal;
+                } catch (ThreadDeath fatal) {
+                    admissionFailure.accept(fatal);
+                    throw fatal;
+                } catch (LinkageError fatal) {
+                    admissionFailure.accept(fatal);
+                    throw fatal;
+                } catch (RuntimeException | Error failure) {
+                    /*
+                     * Context entry/admission is part of the scheduler turn
+                     * contract. If it fails before runBound() can execute the
+                     * task, settle the task here; otherwise its Future could
+                     * remain permanently pending in QUEUED.
+                     */
+                    admissionFailure.accept(failure);
+                }
             } finally {
                 afterTurn.run();
             }
@@ -414,7 +451,7 @@ public final class OresScheduler implements AutoCloseable {
 
         private void enqueueTurn() {
             try {
-                executeTurn(this::runTurn, this::afterCarrierTurn);
+                executeTurn(this::runTurn, this::afterCarrierTurn, this::failTerminal);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
