@@ -4846,7 +4846,8 @@ public final class TypeChecker {
 
         Ast.TypeRef shape = dimensions.getFirst();
         if (fixed) {
-            List<Ast.TypeRef> exact = expandFiniteSequencePatterns(shape.arguments(), ref.name());
+            List<Ast.TypeRef> exact =
+                    expandFixedSequencePatterns(shape.arguments(), ref.name(), metadata);
             validateFixedExtentMetadata(ref.name(), metadata, exact.size());
             TupleKind kind = switch (ref.name()) {
                 case "FixedArray" -> TupleKind.FIXED_ARRAY;
@@ -4895,6 +4896,67 @@ public final class TypeChecker {
                     + " multidimensional shorthand does not combine with repeat patterns yet");
         }
         return element;
+    }
+
+    private List<Ast.TypeRef> expandFixedSequencePatterns(
+            List<Ast.TypeRef> patterns,
+            String collectionName,
+            Map<String, Ast.TypeRef> metadata) {
+        int repeatIndex = -1;
+        for (int i = 0; i < patterns.size(); i++) {
+            if (!patterns.get(i).isRepeatMany()) continue;
+            if (repeatIndex >= 0) {
+                throw new IllegalArgumentException(
+                        collectionName + " fixed sequence shape may contain at most one unbounded '...' repetition");
+            }
+            repeatIndex = i;
+        }
+
+        if (repeatIndex < 0) {
+            return expandFiniteSequencePatterns(patterns, collectionName);
+        }
+
+        Ast.TypeRef sizeRef = metadata.get("size");
+        if (sizeRef == null) {
+            throw new IllegalArgumentException(
+                    collectionName + " with unbounded '...' sequence shape requires size=N to close the fixed extent");
+        }
+        if (repeatIndex != patterns.size() - 1) {
+            throw new IllegalArgumentException(
+                    collectionName + " unbounded '...' repetition must be the final sequence-shape item");
+        }
+
+        long requested = sizeRef.intLiteralValue();
+        if (requested > 1_000_000L) {
+            throw new IllegalArgumentException("fixed sequence size is too large: " + requested);
+        }
+
+        List<Ast.TypeRef> expanded = new ArrayList<>();
+        if (repeatIndex > 0) {
+            expanded.addAll(expandFiniteSequencePatterns(
+                    patterns.subList(0, repeatIndex), collectionName));
+        }
+        if (requested < expanded.size()) {
+            throw new IllegalArgumentException(
+                    collectionName + " size=" + requested
+                            + " is smaller than the finite prefix arity " + expanded.size());
+        }
+
+        Ast.TypeRef repeat = patterns.get(repeatIndex);
+        List<Ast.TypeRef> unit = expandFiniteSequencePatterns(
+                repeat.arguments(), collectionName + " repeating unit");
+        if (unit.isEmpty()) {
+            throw new IllegalArgumentException(
+                    collectionName + " unbounded repetition requires a non-empty repeating unit");
+        }
+
+        int target = Math.toIntExact(requested);
+        int cursor = 0;
+        while (expanded.size() < target) {
+            expanded.add(unit.get(cursor % unit.size()));
+            cursor++;
+        }
+        return List.copyOf(expanded);
     }
 
     private List<Ast.TypeRef> expandFiniteSequencePatterns(List<Ast.TypeRef> patterns, String collectionName) {
@@ -4984,7 +5046,7 @@ public final class TypeChecker {
         Ast.TypeRef size = metadata.get("size");
         if (size != null && size.intLiteralValue() != exactSize) {
             throw new IllegalArgumentException(collectionName + " size=" + size.intLiteralValue()
-                    + " disagrees with fixed sequence arity " + exactSize);
+                    + " disagrees with resolved fixed sequence arity " + exactSize);
         }
         Ast.TypeRef inlineCapacity = metadata.get("inline_capacity");
         if (inlineCapacity != null && inlineCapacity.intLiteralValue() < exactSize) {
@@ -5034,7 +5096,8 @@ public final class TypeChecker {
 
         Ast.TypeRef shape = dimensions.getFirst();
         if (name.equals("FixedArray") || name.equals("FixedList")) {
-            List<Ast.TypeRef> exact = expandFiniteSequencePatterns(shape.arguments(), name);
+            List<Ast.TypeRef> exact = expandFixedSequencePatterns(
+                    shape.arguments(), name, namedTypeParameters(declared));
             if (literal.elements().size() != exact.size()) {
                 throw new IllegalArgumentException(name + " literal has " + literal.elements().size()
                         + " element(s), but its fixed sequence shape requires " + exact.size());
