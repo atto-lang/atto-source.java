@@ -313,7 +313,7 @@ static void *carrier_reaper_main(void *raw) {
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeBindCurrentThreadToCarrierSlot(
+Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeBindCurrentThreadToAffinityOrdinal(
         JNIEnv *env, jclass cls, jlong affinity_ordinal) {
     (void)env;
     (void)cls;
