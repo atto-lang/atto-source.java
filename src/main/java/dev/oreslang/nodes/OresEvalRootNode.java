@@ -1054,6 +1054,9 @@ public final class OresEvalRootNode extends RootNode {
                         arg -> expressionContainsPotentialSuspension(
                                 arg, seen));
             }
+            if (expr instanceof Ast.SpawnExpr spawned) {
+                return expressionContainsPotentialSuspension(spawned.call(), seen);
+            }
             if (expr instanceof Ast.ListExpr list) {
                 return list.elements().stream().anyMatch(
                         item -> expressionContainsPotentialSuspension(item, seen));
