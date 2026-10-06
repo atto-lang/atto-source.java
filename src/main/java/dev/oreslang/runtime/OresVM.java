@@ -96,7 +96,14 @@ final class OresVM {
         // VM construction is the runtime bootstrap boundary. The physical
         // CONTROL carrier pool must already be live before any Oreslang root
         // task (including pub routine main) can be admitted to the scheduler.
-        startup();
+        try {
+            startup();
+        } catch (RuntimeException | Error failure) {
+            VM_BINDINGS.remove(contextBindingToken, this);
+            blockingIo.close();
+            dispatchers.shutdownNow();
+            throw failure;
+        }
     }
 
     /** The one physical Oreslang VM for the current OS process. */
