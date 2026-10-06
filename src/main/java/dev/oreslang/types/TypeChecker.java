@@ -71,12 +71,43 @@ public final class TypeChecker {
 
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
     public static Ast.Program checkTypes(Ast.Program program) {
+        return checkTypes(program, Map.of());
+    }
+
+    /**
+     * Type analysis with linker-supplied imported nominal metadata.
+     *
+     * Imported declarations are intentionally supplied out-of-band instead of
+     * being spliced into the source AST: they are visible for type resolution
+     * but cannot become local declarations, runtime values, or exports.
+     */
+    public static Ast.Program checkTypes(
+            Ast.Program program,
+            Map<String, Ast.InterfaceDecl> importedInterfaces) {
         program = AnnotationExpander.expand(program);
-        TypeChecker checker = new TypeChecker();
+        TypeChecker checker = new TypeChecker(importedInterfaces);
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
         return program;
+    }
+
+    private TypeChecker() {
+        this(Map.of());
+    }
+
+    private TypeChecker(Map<String, Ast.InterfaceDecl> importedInterfaces) {
+        if (importedInterfaces == null) {
+            throw new IllegalArgumentException("imported interface metadata cannot be null");
+        }
+        for (Map.Entry<String, Ast.InterfaceDecl> entry : importedInterfaces.entrySet()) {
+            String localName = entry.getKey();
+            Ast.InterfaceDecl declaration = entry.getValue();
+            if (localName == null || localName.isBlank() || declaration == null) {
+                throw new IllegalArgumentException("imported interface metadata contains a null/blank entry");
+            }
+            interfaces.put(localName, declaration);
+        }
     }
 
     private void validateImports(Ast.Program program) {
