@@ -2868,16 +2868,9 @@ public final class TypeChecker {
             return;
         }
         if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
-                throw new IllegalArgumentException(
-                        where + " cannot use SharedMutex<T> with isoactor/private actors");
-            }
-            if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
-                throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
-            }
-            return;
+            throw new IllegalArgumentException(
+                    where + " cannot use SharedMutex<T> across any actor boundary; "
+                            + "actors own mutable state and cross-actor mutation uses mailbox/channel messages");
         }
 
         for (Type argument : named.arguments()) {
