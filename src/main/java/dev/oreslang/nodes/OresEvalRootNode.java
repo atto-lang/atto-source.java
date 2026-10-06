@@ -1054,6 +1054,9 @@ public final class OresEvalRootNode extends RootNode {
                         arg -> expressionContainsPotentialSuspension(
                                 arg, seen));
             }
+            if (expr instanceof Ast.SpawnExpr spawned) {
+                return expressionContainsPotentialSuspension(spawned.call(), seen);
+            }
             if (expr instanceof Ast.ListExpr list) {
                 return list.elements().stream().anyMatch(
                         item -> expressionContainsPotentialSuspension(item, seen));
@@ -2365,7 +2368,12 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
-                if (expr instanceof Ast.AwaitExpr awaited) {
+                if (expr instanceof Ast.SpawnExpr spawned) {
+                throw new IllegalStateException(
+                        "spawn actor-class runtime lowering is not linked yet; compiler validation is fail-closed until typed mailbox construction lands: "
+                                + spawned.call());
+            }
+            if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
                             awaited.expression(),
