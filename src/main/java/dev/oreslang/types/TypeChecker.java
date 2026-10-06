@@ -2463,7 +2463,7 @@ public final class TypeChecker {
         if (type instanceof SelfType) return receiver;
         if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
         if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
-        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.layoutMetadata());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Named named) return new Named(
                 named.name(), named.arguments().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
@@ -3008,7 +3008,7 @@ public final class TypeChecker {
         }
         if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
         if (type instanceof Tuple tuple) {
-            return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList());
+            return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList(), tuple.layoutMetadata());
         }
         if (type instanceof Union union) {
             return Types.unionOf(union.options().stream()
@@ -4268,7 +4268,7 @@ public final class TypeChecker {
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
-        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.layoutMetadata());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Function fn) return new Function(
@@ -4360,9 +4360,19 @@ public final class TypeChecker {
         List<Ast.TypeRef> exact = expandFiniteSequencePatterns(shape.arguments(), "Tuple");
         validateTupleMetadata(metadata, exact.size());
 
-        return new Tuple(exact.stream()
-                .map(element -> resolve(element, generics, self, allowNullMarker))
-                .toList());
+        return new Tuple(
+                exact.stream()
+                        .map(element -> resolve(element, generics, self, allowNullMarker))
+                        .toList(),
+                tupleSemanticMetadata(metadata));
+    }
+
+    private Map<String, String> tupleSemanticMetadata(Map<String, Ast.TypeRef> metadata) {
+        Map<String, String> canonical = new java.util.TreeMap<>();
+        for (Map.Entry<String, Ast.TypeRef> entry : metadata.entrySet()) {
+            canonical.put(entry.getKey(), entry.getValue().toString());
+        }
+        return Map.copyOf(canonical);
     }
 
     private void validateTupleMetadata(Map<String, Ast.TypeRef> metadata, int arity) {
