@@ -5009,16 +5009,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean acquireContinuationLease() {
+            boolean overflow = false;
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized || closed.get()) return false;
                 if (continuationLeases == Integer.MAX_VALUE) {
-                    fail(new IllegalStateException(
-                            "actor continuation lease overflow for " + ref.id()));
-                    return false;
+                    overflow = true;
+                } else {
+                    continuationLeases++;
                 }
-                continuationLeases++;
-                return true;
             }
+            if (overflow) {
+                fail(new IllegalStateException(
+                        "actor continuation lease overflow for " + ref.id()));
+                return false;
+            }
+            return true;
         }
 
         private void releaseContinuationLease() {
@@ -5035,23 +5040,25 @@ public final class ActorRuntime implements AutoCloseable {
         private void requestQuiescentStop(
                 Runnable publication,
                 Runnable abandonment) {
+            Objects.requireNonNull(publication, "publication");
+            Objects.requireNonNull(abandonment, "abandonment");
+            boolean abandonImmediately = false;
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized || closed.get()) {
-                    abandonment.run();
-                    return;
+                    abandonImmediately = true;
+                } else {
+                    if (quiescentStopRequested) {
+                        throw new IllegalStateException(
+                                "actor " + ref.id()
+                                        + " already has a pending quiescent completion");
+                    }
+                    quiescentStopRequested = true;
+                    quiescentPublication = publication;
+                    quiescentAbandonment = abandonment;
+                    maybeScheduleQuiescentStopLocked();
                 }
-                if (quiescentStopRequested) {
-                    throw new IllegalStateException(
-                            "actor " + ref.id()
-                                    + " already has a pending quiescent completion");
-                }
-                quiescentStopRequested = true;
-                quiescentPublication =
-                        Objects.requireNonNull(publication, "publication");
-                quiescentAbandonment =
-                        Objects.requireNonNull(abandonment, "abandonment");
-                maybeScheduleQuiescentStopLocked();
             }
+            if (abandonImmediately) abandonment.run();
         }
 
         private void maybeScheduleQuiescentStopLocked() {
