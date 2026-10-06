@@ -217,6 +217,7 @@ final class ActorGroupMailmanTest {
 
             emitter.send(1);
             assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertTrue(emitter.awaitTermination(5, TimeUnit.SECONDS));
             assertNotNull(expectedOverflow.get());
             assertTrue(expectedOverflow.get().getMessage().contains("outbox capacity"));
             assertEquals(2, group.mailmanOutboxSize());
