@@ -146,6 +146,17 @@ public final class OresEvalRootNode extends RootNode {
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
 
+        // Logical allocation units for the JVM/reference backend. These are
+        // quota/accounting estimates, not claims about HotSpot object layout.
+        private static final long GUEST_OBJECT_BASE_BYTES = 64L;
+        private static final long GUEST_FIELD_SLOT_BYTES = 24L;
+        private static final long GUEST_SEQUENCE_BASE_BYTES = 32L;
+        private static final long GUEST_SEQUENCE_SLOT_BYTES = 8L;
+        private static final long GUEST_MAP_BASE_BYTES = 64L;
+        private static final long GUEST_MAP_ENTRY_BYTES = 40L;
+        private static final long GUEST_CLOSURE_BASE_BYTES = 64L;
+        private static final long GUEST_CONTINUATION_BASE_BYTES = 96L;
+
         private enum InvocationKind {
             FUNCTION,
             FUNCTION_BODY,
@@ -179,6 +190,47 @@ public final class OresEvalRootNode extends RootNode {
             this.codeUnitId = normalizeUnitId(codeUnitId);
             indexImports();
             indexDeclarations();
+        }
+
+        private ActorRuntime.AllocationDomain accountGuestHeapAllocation(
+                long baseBytes,
+                long slots,
+                long bytesPerSlot) {
+            long slotBytes;
+            long total;
+            try {
+                slotBytes = Math.multiplyExact(Math.max(0L, slots), bytesPerSlot);
+                total = Math.addExact(baseBytes, slotBytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException("guest allocation accounting overflow", overflow);
+            }
+            return context.actors().accountGuestHeapAllocation(total);
+        }
+
+        private ActorRuntime.AllocationDomain accountGuestObjectAllocation(long fields) {
+            return accountGuestHeapAllocation(
+                    GUEST_OBJECT_BASE_BYTES, fields, GUEST_FIELD_SLOT_BYTES);
+        }
+
+        private ActorRuntime.AllocationDomain accountGuestSequenceAllocation(long elements) {
+            return accountGuestHeapAllocation(
+                    GUEST_SEQUENCE_BASE_BYTES, elements, GUEST_SEQUENCE_SLOT_BYTES);
+        }
+
+        private ActorRuntime.AllocationDomain accountGuestMapAllocation(long entries) {
+            return accountGuestHeapAllocation(
+                    GUEST_MAP_BASE_BYTES, entries, GUEST_MAP_ENTRY_BYTES);
+        }
+
+        private ActorRuntime.AllocationDomain accountGuestClosureAllocation() {
+            return context.actors().accountGuestHeapAllocation(GUEST_CLOSURE_BASE_BYTES);
+        }
+
+        private ActorRuntime.AllocationDomain accountGuestContinuationAllocation(long capturedSlots) {
+            return accountGuestHeapAllocation(
+                    GUEST_CONTINUATION_BASE_BYTES,
+                    capturedSlots,
+                    GUEST_SEQUENCE_SLOT_BYTES);
         }
 
         private void indexImports() {
@@ -596,6 +648,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.receiver = null;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                accountGuestContinuationAllocation(this.arguments.size());
             }
 
             private SourceTask(
@@ -607,6 +660,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                accountGuestContinuationAllocation(this.arguments.size() + 1L);
             }
 
             private SourceTask(List<Ast.Stmt> blockBody) {
@@ -616,6 +670,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.arguments = List.of();
+                accountGuestContinuationAllocation(1L);
             }
 
             @Override
