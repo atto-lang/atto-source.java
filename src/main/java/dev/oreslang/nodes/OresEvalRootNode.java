@@ -179,7 +179,8 @@ public final class OresEvalRootNode extends RootNode {
             Ast.FunctionDecl main = functions.get(Parser.ROOT_MODULE + ".main");
             if (main == null) main = findFunction("main");
             if (main == null) return null;
-            return callFunction(main, List.of(arguments));
+            Object result = callFunction(main, List.of(arguments));
+            return main.async() && result instanceof OresFuture<?> future ? future.join() : result;
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
@@ -189,7 +190,363 @@ public final class OresEvalRootNode extends RootNode {
                         "actor callable '" + fn.name()
                                 + "' cannot be invoked directly; use spawn " + fn.name() + "(...)");
             }
-            return callFunctionBody(fn, normalized);
+            return fn.async() ? startAsyncFunction(fn, normalized) : callFunctionBody(fn, normalized);
+        }
+
+        /** Stackless source continuation: only resume() executes guest operations. */
+        private final class AsyncTask implements dev.oreslang.runtime.OresScheduler.Task<Object> {
+            private final ArrayDeque<Runnable> ready = new ArrayDeque<>();
+            private OresFuture<?> awaiting;
+            private java.util.function.Consumer<Object> resumeValue;
+            private java.util.function.Consumer<Throwable> resumeFailure;
+            private boolean finished;
+            private Object result;
+            private Throwable failure;
+            private long nextTemporary;
+
+            AsyncTask(List<Ast.Stmt> body, Env parameters, Ast.TypeRef returns, String label) {
+                block(body, parameters, flow -> {
+                    failure = flow.failure();
+                    if (failure == null) {
+                        try { result = detachAsyncValue(shapeReturnedValue(returns, flow.value(), label)); }
+                        catch (Throwable problem) { failure = problem; }
+                    }
+                    finished = true;
+                    ready.clear();
+                });
+            }
+
+            @Override public dev.oreslang.runtime.OresScheduler.Step<Object> resume(dev.oreslang.runtime.OresScheduler.Resume resume) {
+                if (!resume.initial()) {
+                    var success = resumeValue;
+                    var failed = resumeFailure;
+                    resumeValue = null; resumeFailure = null; awaiting = null;
+                    enqueue(() -> { if (resume.failure() == null) success.accept(resume.value()); else failed.accept(resume.failure()); }, failed);
+                }
+                int quantum = 0;
+                while (!finished && awaiting == null && !ready.isEmpty()) {
+                    context.schedulerSafepoint();
+                    ready.removeFirst().run();
+                    if (++quantum == 256 && !finished && awaiting == null && !ready.isEmpty()) {
+                        resumeValue = ignored -> { };
+                        resumeFailure = problem -> { failure = problem; finished = true; ready.clear(); };
+                        awaiting = OresFuture.completed(Boolean.TRUE);
+                    }
+                }
+                if (failure != null) {
+                    if (failure instanceof RuntimeException runtime) throw runtime;
+                    if (failure instanceof Error error) throw error;
+                    throw new java.util.concurrent.CompletionException(failure);
+                }
+                if (finished) return dev.oreslang.runtime.OresScheduler.done(result);
+                if (awaiting == null) throw new IllegalStateException("async source task lost its continuation");
+                return dev.oreslang.runtime.OresScheduler.await(awaiting);
+            }
+
+            private void enqueue(Runnable action, java.util.function.Consumer<Throwable> failed) {
+                ready.addLast(() -> {
+                    try { action.run(); }
+                    catch (VirtualMachineError | ThreadDeath | LinkageError fatal) { throw fatal; }
+                    catch (Throwable problem) { failed.accept(problem); }
+                });
+            }
+            private TaskFlow failed(Throwable failure) { return new TaskFlow(false, null, failure); }
+            private TaskFlow normal() { return new TaskFlow(false, null, null); }
+            private void block(List<Ast.Stmt> body, Env parent, java.util.function.Consumer<TaskFlow> completed) {
+                Env local = new Env(parent);
+                ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+                sequence(body, 0, local, deferred, flow -> cleanup(local, deferred, flow, completed));
+            }
+            private void cleanup(Env local, ArrayDeque<Ast.Expr> deferred, TaskFlow flow, java.util.function.Consumer<TaskFlow> completed) {
+                if (deferred.isEmpty()) {
+                    try { local.releaseMutexGuards(flow.failure() != null); completed.accept(flow); }
+                    catch (Throwable failure) { completed.accept(failed(failure)); }
+                    return;
+                }
+                expression(deferred.pop(), local, ignored -> cleanup(local, deferred, flow, completed),
+                        problem -> cleanup(local, deferred, failed(problem), completed));
+            }
+            private void sequence(List<Ast.Stmt> body, int index, Env env, ArrayDeque<Ast.Expr> deferred, java.util.function.Consumer<TaskFlow> completed) {
+                if (index == body.size()) { completed.accept(normal()); return; }
+                statement(body.get(index), env, deferred, flow -> {
+                    if (flow.returned() || flow.failure() != null) completed.accept(flow);
+                    else sequence(body, index + 1, env, deferred, completed);
+                });
+            }
+            private void statement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred, java.util.function.Consumer<TaskFlow> completed) {
+                java.util.function.Consumer<Throwable> failed = problem -> completed.accept(failed(problem));
+                enqueue(() -> {
+                    if (stmt instanceof Ast.BindingStmt binding) {
+                        if (binding.initializer() instanceof Ast.LambdaExpr) env.reserve(binding.name(), binding.kind());
+                        expression(binding.initializer(), env, value -> {
+                            if (binding.initializer() instanceof Ast.LambdaExpr) env.initialize(binding.name(), value);
+                            else env.define(binding.name(), value, binding.kind());
+                            completed.accept(normal());
+                        }, failed);
+                    } else if (stmt instanceof Ast.ReturnStmt ret) {
+                        if (ret.value() == null) completed.accept(new TaskFlow(true, null, null));
+                        else expression(ret.value(), env, value -> completed.accept(new TaskFlow(true, value, null)), failed);
+                    } else if (stmt instanceof Ast.ExprStmt expr) {
+                        expression(expr.expression(), env, ignored -> completed.accept(normal()), failed);
+                    } else if (stmt instanceof Ast.DeferStmt defer) {
+                        deferred.push(defer.expression()); completed.accept(normal());
+                    } else if (stmt instanceof Ast.IfStmt branch) {
+                        branch(branch, 0, env, completed);
+                    } else if (stmt instanceof Ast.TryStmt tried) {
+                        block(tried.body(), env, outcome -> {
+                            java.util.function.Consumer<TaskFlow> finalize = prior -> block(tried.finallyBody(), env,
+                                    ended -> completed.accept(ended.returned() || ended.failure() != null ? ended : prior));
+                            if (outcome.failure() instanceof RuntimeException problem && !(problem instanceof OresPanic)
+                                    && !ActorRuntime.isActorControlAbort(problem)) {
+                                Env caught = new Env(env); caught.define(tried.errorName(), problem, Ast.BindingKind.VAL);
+                                block(tried.catchBody(), caught, finalize);
+                            } else finalize.accept(outcome);
+                        });
+                    } else if (stmt instanceof Ast.ForStmt loop) {
+                        Env local = new Env(env);
+                        java.util.function.Consumer<TaskFlow> initialized = flow -> {
+                            if (flow.returned() || flow.failure() != null) completed.accept(flow);
+                            else loop(loop, local, completed);
+                        };
+                        if (loop.initializer() == null) initialized.accept(normal());
+                        else statement(loop.initializer(), local, new ArrayDeque<>(), initialized);
+                    } else if (stmt instanceof Ast.ForOfStmt loop) {
+                        expression(loop.iterable(), env, value -> each(loop, iterableValues(value).iterator(), env, completed), failed);
+                    } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                        expression(destructure.initializer(), env, value -> {
+                            Env captured = new Env(env); String temp = capture(value, captured);
+                            executeStatement(new Ast.DestructureStmt(destructure.kind(), destructure.bindings(), new Ast.NameExpr(temp)), captured, deferred);
+                            for (Ast.DestructureBinding binding : destructure.bindings())
+                                if (!binding.isDiscard()) env.define(binding.name(), captured.lookup(binding.name()), binding.kind());
+                            completed.accept(normal());
+                        }, failed);
+                    } else throw new IllegalArgumentException("unsupported async statement " + stmt);
+                }, failed);
+            }
+            private void branch(Ast.IfStmt branch, int index, Env env, java.util.function.Consumer<TaskFlow> completed) {
+                if (index == branch.branches().size()) { block(branch.elseBody(), env, completed); return; }
+                Ast.IfBranch current = branch.branches().get(index);
+                expression(current.condition(), env, value -> {
+                    if (truth(value)) block(current.body(), env, completed); else branch(branch, index + 1, env, completed);
+                }, problem -> completed.accept(failed(problem)));
+            }
+            private void loop(Ast.ForStmt loop, Env env, java.util.function.Consumer<TaskFlow> completed) {
+                java.util.function.Consumer<Throwable> failed = problem -> completed.accept(failed(problem));
+                java.util.function.Consumer<Object> condition = value -> {
+                    if (!truth(value)) { completed.accept(normal()); return; }
+                    block(loop.body(), env, flow -> {
+                        if (flow.returned() || flow.failure() != null) completed.accept(flow);
+                        else if (loop.update() == null) enqueue(() -> loop(loop, env, completed), failed);
+                        else expression(loop.update(), env, ignored -> loop(loop, env, completed), failed);
+                    });
+                };
+                if (loop.condition() == null) condition.accept(Boolean.TRUE); else expression(loop.condition(), env, condition, failed);
+            }
+            private void each(Ast.ForOfStmt loop, java.util.Iterator<?> values, Env env, java.util.function.Consumer<TaskFlow> completed) {
+                if (!values.hasNext()) { completed.accept(normal()); return; }
+                Env iteration = new Env(env); iteration.define(loop.bindingName(), values.next(), loop.bindingKind());
+                block(loop.body(), iteration, flow -> {
+                    if (flow.returned() || flow.failure() != null) completed.accept(flow);
+                    else enqueue(() -> each(loop, values, env, completed), problem -> completed.accept(failed(problem)));
+                });
+            }
+            private String capture(Object value, Env env) {
+                String name = "$async_value_" + nextTemporary++;
+                env.define(name, value, Ast.BindingKind.VAL); return name;
+            }
+            private Ast.Expr captured(Object value, Env env) { return new Ast.NameExpr(capture(value, env)); }
+            private void expressions(List<Ast.Expr> expressions, int index, Env env, List<Object> values,
+                                     java.util.function.Consumer<List<Object>> completed, java.util.function.Consumer<Throwable> failed) {
+                if (index == expressions.size()) { completed.accept(values); return; }
+                expression(expressions.get(index), env, value -> {
+                    values.add(value); expressions(expressions, index + 1, env, values, completed, failed);
+                }, failed);
+            }
+            private void expression(Ast.Expr expr, Env env, java.util.function.Consumer<Object> completed, java.util.function.Consumer<Throwable> failed) {
+                enqueue(() -> {
+                    if (expr instanceof Ast.AwaitExpr awaited) {
+                        expression(awaited.expression(), env, value -> {
+                            if (value instanceof ActorRuntime.ActorSpawn<?, ?> spawn) value = spawn.ready();
+                            OresFuture<?> pending = value instanceof OresFuture<?> future ? future
+                                    : value instanceof CompletionStage<?> stage ? OresFuture.from(stage) : null;
+                            if (pending == null) throw new IllegalArgumentException("await requires Future or ActorSpawn");
+                            awaiting = pending; resumeValue = completed; resumeFailure = failed;
+                        }, failed);
+                    } else if (expr instanceof Ast.ConditionalExpr choice) {
+                        expression(choice.condition(), env, value -> expression(truth(value) ? choice.whenTrue() : choice.whenFalse(), env, completed, failed), failed);
+                    } else if (expr instanceof Ast.BinaryExpr binary) {
+                        expression(binary.left(), env, left -> {
+                            if (binary.operator().equals("&&") && !truth(left)) { completed.accept(false); return; }
+                            if (binary.operator().equals("||") && truth(left)) { completed.accept(true); return; }
+                            expression(binary.right(), env, right -> {
+                                Env captured = new Env(env);
+                                completed.accept(eval(new Ast.BinaryExpr(binary.operator(), captured(left, captured), captured(right, captured)), captured));
+                            }, failed);
+                        }, failed);
+                    } else if (expr instanceof Ast.UnaryExpr unary) {
+                        expression(unary.operand(), env, value -> {
+                            Env captured = new Env(env); completed.accept(eval(new Ast.UnaryExpr(unary.operator(), captured(value, captured)), captured));
+                        }, failed);
+                    } else if (expr instanceof Ast.MemberExpr member) {
+                        expression(member.receiver(), env, receiver -> completed.accept(member(receiver, member.member())), failed);
+                    } else if (expr instanceof Ast.IndexExpr index) {
+                        expression(index.receiver(), env, receiver -> expression(index.index(), env, value -> {
+                            Env captured = new Env(env); completed.accept(eval(new Ast.IndexExpr(captured(receiver, captured), captured(value, captured)), captured));
+                        }, failed), failed);
+                    } else if (expr instanceof Ast.CallExpr call) {
+                        call(call, env, completed, failed);
+                    } else if (expr instanceof Ast.SpawnExpr spawned) {
+                        expressions(spawned.call().arguments(), 0, env, new ArrayList<>(), values -> {
+                            Env captured = new Env(env);
+                            completed.accept(spawnFunction(new Ast.CallExpr(spawned.call().callee(), spawned.call().typeArguments(),
+                                    spawned.call().typeArgumentsPresent(), values.stream().map(value -> captured(value, captured)).toList()), captured));
+                        }, failed);
+                    } else if (expr instanceof Ast.AssignExpr assigned) {
+                        // Await in assignment target is uncommon, but still must preserve receiver-before-value order.
+                        target(assigned.target(), env, (target, captured) -> expression(assigned.value(), env,
+                                value -> completed.accept(eval(new Ast.AssignExpr(target, captured(value, captured)), captured)), failed), failed);
+                    } else if (expr instanceof Ast.ListExpr list) {
+                        expressions(list.elements(), 0, env, new ArrayList<>(), values -> completed.accept(new ArrayList<>(values)), failed);
+                    } else if (expr instanceof Ast.TupleExpr tuple) {
+                        expressions(tuple.elements(), 0, env, new ArrayList<>(), values -> completed.accept(List.copyOf(values)), failed);
+                    } else if (expr instanceof Ast.NewExpr created) {
+                        expressions(created.arguments(), 0, env, new ArrayList<>(), values -> {
+                            Env captured = new Env(env); completed.accept(eval(new Ast.NewExpr(created.type(), values.stream().map(value -> captured(value, captured)).toList()), captured));
+                        }, failed);
+                    } else if (expr instanceof Ast.ObjectExpr object) {
+                        expressions(object.fields().stream().map(Ast.ObjectField::value).toList(), 0, env, new ArrayList<>(), values -> {
+                            LinkedHashMap<String,Object> map = new LinkedHashMap<>();
+                            for (int i = 0; i < values.size(); i++) map.put(object.fields().get(i).name(), values.get(i));
+                            completed.accept(Map.copyOf(map));
+                        }, failed);
+                    } else completed.accept(eval(expr, env));
+                }, failed);
+            }
+            private void target(Ast.Expr target, Env env, java.util.function.BiConsumer<Ast.Expr,Env> completed, java.util.function.Consumer<Throwable> failed) {
+                Env captured = new Env(env);
+                if (target instanceof Ast.MemberExpr member) expression(member.receiver(), env,
+                        value -> completed.accept(new Ast.MemberExpr(captured(value, captured), member.member()), captured), failed);
+                else if (target instanceof Ast.IndexExpr index) expression(index.receiver(), env,
+                        receiver -> expression(index.index(), env, value -> completed.accept(new Ast.IndexExpr(captured(receiver, captured), captured(value, captured)), captured), failed), failed);
+                else completed.accept(target, captured);
+            }
+            private void call(Ast.CallExpr call, Env env, java.util.function.Consumer<Object> completed, java.util.function.Consumer<Throwable> failed) {
+                if (call.callee() instanceof Ast.MemberExpr method) {
+                    expression(method.receiver(), env, receiver -> expressions(call.arguments(), 0, env, new ArrayList<>(), args -> {
+                        if (receiver instanceof ModuleFacade || receiver instanceof ImportedNamespace) invoke(member(receiver, method.member()), args, completed, failed);
+                        else if (receiver instanceof ClassFacade klass) {
+                            Ast.MethodDecl fn = klass.owner().findStaticFunction(klass.klass(), method.member(), args.size(), new LinkedHashSet<>());
+                            if (fn == null) throw new IllegalArgumentException("unknown static function " + method.member());
+                            invoke(new SourceMethod(klass.owner(), klass.klass(), null, fn), args, completed, failed);
+                        } else if (receiver instanceof OresObject object) {
+                            Ast.MethodDecl fn = object.owner.findMethod(object.klass, method.member(), args.size(), new LinkedHashSet<>());
+                            if (fn == null) throw new IllegalArgumentException("unknown method " + method.member());
+                            invoke(new SourceMethod(object.owner, object.klass, object, fn), args, completed, failed);
+                        } else {
+                            Env captured = new Env(env);
+                            completed.accept(eval(new Ast.CallExpr(new Ast.MemberExpr(captured(receiver, captured), method.member()),
+                                    args.stream().map(value -> captured(value, captured)).toList()), captured));
+                        }
+                    }, failed), failed);
+                } else expression(call.callee(), env, callee -> expressions(call.arguments(), 0, env, new ArrayList<>(),
+                        args -> invoke(callee, args, completed, failed), failed), failed);
+            }
+            private void invoke(Object callee, List<Object> args, java.util.function.Consumer<Object> completed, java.util.function.Consumer<Throwable> failed) {
+                if (callee instanceof SourceCallable source && !source.fn.async()) {
+                    Ast.FunctionDecl fn = source.fn;
+                    if (fn.actorKind() != Ast.ActorKind.NONE) throw new IllegalArgumentException("actor callable requires spawn");
+                    Env parameters = new Env(null, fn.nonLexical());
+                    List<?> normalized = source.owner.normalizeFunctionArguments(fn, args);
+                    for (int i = 0; i < normalized.size(); i++) parameters.define(fn.parameters().get(i).name(), normalized.get(i), fn.parameters().get(i).mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                    if (source.owner != Evaluator.this) {
+                        awaiting = source.owner.context.startAsync(source.owner.new AsyncTask(fn.body(), parameters, fn.returnType(), "function " + fn.name()));
+                        resumeValue = completed; resumeFailure = failed; return;
+                    }
+                    block(fn.body(), parameters, flow -> {
+                        if (flow.failure() != null) failed.accept(flow.failure());
+                        else completed.accept(shapeReturnedValue(fn.returnType(), flow.value(), "function " + fn.name()));
+                    });
+                } else if (callee instanceof SourceLambda source) {
+                    Env parameters = source.parameters(args);
+                    if (source.lambda.expressionBody() != null) expression(source.lambda.expressionBody(), parameters, completed, failed);
+                    else block(source.lambda.blockBody(), parameters, flow -> {
+                        if (flow.failure() != null) failed.accept(flow.failure()); else completed.accept(flow.value());
+                    });
+                } else if (callee instanceof SourceMethod source && !source.fn.async()) {
+                    if (args.size() != source.fn.parameters().size()) throw new IllegalArgumentException("method arity mismatch");
+                    Env parameters = new Env(null);
+                    if (source.receiver != null) parameters.define("self", source.receiver, Ast.BindingKind.VAL);
+                    for (int i = 0; i < args.size(); i++) parameters.define(source.fn.parameters().get(i).name(), args.get(i), source.fn.parameters().get(i).mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                    if (source.owner != Evaluator.this) {
+                        awaiting = source.owner.context.startAsync(source.owner.new AsyncTask(source.fn.body(), parameters, source.fn.returnType(), "method " + source.fn.name()));
+                        resumeValue = completed; resumeFailure = failed; return;
+                    }
+                    block(source.fn.body(), parameters, flow -> {
+                        if (flow.failure() != null) failed.accept(flow.failure());
+                        else completed.accept(shapeReturnedValue(source.fn.returnType(), flow.value(), "method " + source.fn.name()));
+                    });
+                } else if (callee instanceof BoundMethod bound) {
+                    Ast.MethodDecl fn = bound.owner.findMethod(bound.receiver.klass, bound.methodName, args.size(), new LinkedHashSet<>());
+                    if (fn == null) throw new IllegalArgumentException("unknown bound method " + bound.methodName);
+                    invoke(new SourceMethod(bound.owner, bound.receiver.klass, bound.receiver, fn), args, completed, failed);
+                } else if (callee instanceof Invokable invokable) completed.accept(invokable.call(args));
+                else throw new IllegalArgumentException("value is not callable: " + callee);
+            }
+        }
+        private record TaskFlow(boolean returned, Object value, Throwable failure) { }
+        private final class SourceCallable implements Invokable {
+            private final Evaluator owner;
+            private final Ast.FunctionDecl fn;
+            private SourceCallable(Evaluator owner, Ast.FunctionDecl fn) { this.owner = owner; this.fn = fn; }
+            @Override public Object call(List<Object> args) { return owner.callFunction(fn, args); }
+        }
+        private final class SourceLambda implements Invokable {
+            private final Ast.LambdaExpr lambda;
+            private final Env captured;
+            private final boolean nonLexical;
+            SourceLambda(Ast.LambdaExpr lambda, Env captured, boolean nonLexical) {
+                this.lambda = lambda; this.captured = captured; this.nonLexical = nonLexical;
+            }
+            private Env parameters(List<Object> args) {
+                if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
+                Env local = new Env(captured, nonLexical);
+                for (int i = 0; i < args.size(); i++) {
+                    Ast.Param parameter = lambda.parameters().get(i);
+                    local.define(parameter.name(), args.get(i), parameter.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+                return local;
+            }
+            @Override public Object call(List<Object> args) {
+                Env local = parameters(args);
+                if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
+                try { executeBlock(lambda.blockBody(), local); return null; }
+                catch (ReturnSignal signal) { return signal.value; }
+            }
+        }
+        private final class SourceMethod implements Invokable {
+            private final Evaluator owner;
+            private final Ast.ClassDecl klass;
+            private final OresObject receiver;
+            private final Ast.MethodDecl fn;
+            SourceMethod(Evaluator owner, Ast.ClassDecl klass, OresObject receiver, Ast.MethodDecl fn) {
+                this.owner = owner; this.klass = klass; this.receiver = receiver; this.fn = fn;
+            }
+            @Override public Object call(List<Object> args) {
+                return receiver == null ? owner.callStaticFunction(klass, fn, args) : owner.callMethod(receiver, fn, args);
+            }
+        }
+        private Object detachAsyncValue(Object value) {
+            if (value == null || value instanceof OresFuture<?>) return value;
+            if (value instanceof CompletionStage<?> stage) return OresFuture.from(stage);
+            return ActorRuntime.freeze(value);
+        }
+        private Object startAsyncFunction(Ast.FunctionDecl fn, List<?> args) {
+            Env parameters = new Env(null, fn.nonLexical());
+            for (int i = 0; i < args.size(); i++) {
+                Ast.Param parameter = fn.parameters().get(i);
+                parameters.define(parameter.name(), detachAsyncValue(args.get(i)), parameter.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            return context.startAsync(new AsyncTask(fn.body(), parameters, fn.returnType(), "function " + fn.name()));
         }
 
         private Object spawnFunction(Ast.CallExpr call, Env env) {
@@ -493,7 +850,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object imported = importedValue(name.name());
                 if (imported != Env.MISSING) return imported;
                 Ast.FunctionDecl fn = findFunction(name.name());
-                if (fn != null) return (Invokable) args -> callFunction(fn, args);
+                if (fn != null) return new SourceCallable(this, fn);
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
@@ -692,18 +1049,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
-                Env captured = nonLexical ? null : env.snapshot();
-                return (Invokable) args -> {
-                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
-                    Env local = new Env(captured, nonLexical);
-                    for (int i = 0; i < lambda.parameters().size(); i++) {
-                        Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-                    }
-                    if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    try { executeBlock(lambda.blockBody(), local); return null; }
-                    catch (ReturnSignal signal) { return signal.value; }
-                };
+                return new SourceLambda(lambda, nonLexical ? null : env.snapshot(), nonLexical);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
@@ -920,7 +1266,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return (Invokable) args -> klass.owner().callStaticFunction(klass.klass(), fn, args);
+                    return new SourceMethod(klass.owner(), klass.klass(), null, fn);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
@@ -1128,8 +1474,9 @@ public final class OresEvalRootNode extends RootNode {
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                env.define(param.name(), fn.async() ? detachAsyncValue(args.get(i)) : args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            if (fn.async()) return context.startAsync(new AsyncTask(fn.body(), env, fn.returnType(), "static function " + fn.name()));
             try {
                 executeBlock(fn.body(), env);
                 return null;
@@ -1207,7 +1554,7 @@ public final class OresEvalRootNode extends RootNode {
                                 "code unit '" + codeUnitId
                                         + "' does not export function '" + name + "'");
                     }
-                    yield (Invokable) args -> callFunction(fn, args);
+                    yield new SourceCallable(this, fn);
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
@@ -1267,7 +1614,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl klass = findClass(name);
             if (klass != null) return new ClassFacade(this, klass);
             Ast.FunctionDecl fn = findFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) return (Invokable) args -> callFunction(fn, args);
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) return new SourceCallable(this, fn);
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
                     if (decl instanceof Ast.FieldDecl field
@@ -1369,7 +1716,7 @@ public final class OresEvalRootNode extends RootNode {
                     return new ClassFacade(this, klass);
                 }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    return (Invokable) args -> callFunction(fn, args);
+                    return new SourceCallable(this, fn);
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);

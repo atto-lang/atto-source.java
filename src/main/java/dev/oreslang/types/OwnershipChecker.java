@@ -618,7 +618,8 @@ public final class OwnershipChecker {
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef result = fn.async() ? new Ast.TypeRef("Future", List.of(signature.result()), false) : signature.result();
+                return new ValueInfo(result, kindOfType(result), null);
             }
         }
 
@@ -634,7 +635,8 @@ public final class OwnershipChecker {
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef result = fn.async() ? new Ast.TypeRef("Future", List.of(signature.result()), false) : signature.result();
+                return new ValueInfo(result, kindOfType(result), null);
             }
         }
 
@@ -660,7 +662,8 @@ public final class OwnershipChecker {
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name());
-                    return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                    Ast.TypeRef result = staticFunction.async() ? new Ast.TypeRef("Future", List.of(signature.result()), false) : signature.result();
+                    return new ValueInfo(result, kindOfType(result), null);
                 }
             }
 

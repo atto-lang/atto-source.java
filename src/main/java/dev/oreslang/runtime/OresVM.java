@@ -201,6 +201,11 @@ final class OresVM {
         return rootScheduler;
     }
 
+    void dispatchAsyncRoot(Runnable task) {
+        ensureRunning();
+        dispatchers.executeControlTask(task);
+    }
+
     SchedulerTopology schedulerTopology() {
         ActorRuntime.DispatcherConfig config = dispatchers.config();
         return new SchedulerTopology(

@@ -228,7 +228,7 @@ public final class TypeChecker {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
@@ -289,6 +289,12 @@ public final class TypeChecker {
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         Type returns = resolve(fn.returnType(), generics, null);
+        if (fn.async() && fn.actorKind() != Ast.ActorKind.NONE)
+            throw new IllegalArgumentException("async actor callables require actor-owned continuation lowering");
+        if (fn.async()) {
+            for (Ast.Param parameter : fn.parameters()) validateAsyncType(resolveParam(parameter, generics, null), false);
+            validateAsyncType(returns, true);
+        }
         if (fn.actorKind() != Ast.ActorKind.NONE) {
             validateActorCallableBoundaryType(
                     returns,
@@ -400,6 +406,8 @@ public final class TypeChecker {
                 }
             }
 
+            if (method.async() && !method.isStatic())
+                throw new IllegalArgumentException("async instance methods require receiver ownership lowering; use a static async function");
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
@@ -437,6 +445,7 @@ public final class TypeChecker {
                                     + " cannot be 'mut'; mutable caller authority cannot cross the actor boundary");
                 }
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                if (method.async()) validateAsyncType(parameterType, false);
                 if (actorIngress) {
                     validateActorCallableBoundaryType(
                             parameterType,
@@ -452,6 +461,7 @@ public final class TypeChecker {
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (method.async()) validateAsyncType(returns, true);
             if (actorEndpoint) {
                 if (returns instanceof Named reactive &&
                         (reactive.name().equals("Observable") || reactive.name().equals("Stream")))
@@ -557,6 +567,7 @@ public final class TypeChecker {
 
     private void validateOrdinaryFunctionForActorContext(Ast.FunctionDecl fn) {
         if (currentActorKind == Ast.ActorKind.NONE) return;
+        if (fn.async()) throw new IllegalArgumentException("source async tasks currently require a trusted root context; actor helpers cannot start async root tasks");
         ActorEffectContext effect = new ActorEffectContext(currentActorKind, currentActorConstructor);
         Set<ActorEffectContext> checked =
                 actorEffectCheckedFunctions.computeIfAbsent(fn, ignored -> new HashSet<>());
@@ -598,6 +609,7 @@ public final class TypeChecker {
             Named ownerType,
             Ast.MethodDecl method) {
         if (currentActorKind == Ast.ActorKind.NONE) return;
+        if (method.async()) throw new IllegalArgumentException("source async tasks currently require a trusted root context; actor helpers cannot start async root tasks");
         if (owner.actorKind() != Ast.ActorKind.NONE && !currentActorConstructor) {
             // Actor methods are already checked under their actor domain during
             // class validation. Re-check only when constructor context must
@@ -630,12 +642,14 @@ public final class TypeChecker {
             }
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                if (method.async()) validateAsyncType(parameterType, false);
                 env.define(
                         param.name(),
                         parameterType,
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (method.async()) validateAsyncType(returns, true);
             currentActorKind = effect.kind();
             currentActorConstructor = effect.constructor();
             checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -778,7 +792,7 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -891,7 +905,7 @@ public final class TypeChecker {
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     validateOrdinaryFunctionForActorContext(target);
-                    return checkGenericCallable(
+                    return asyncResult(target.async(), checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
                             target.returnType(),
@@ -899,7 +913,7 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label));
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
@@ -919,7 +933,7 @@ public final class TypeChecker {
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     validateOrdinaryFunctionForActorContext(target);
-                    return checkGenericCallable(
+                    return asyncResult(target.async(), checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
                             target.returnType(),
@@ -927,7 +941,7 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label));
                 }
             }
             if (currentActorKind != Ast.ActorKind.NONE) {
@@ -1027,7 +1041,7 @@ public final class TypeChecker {
                     validateOrdinaryMethodForActorContext(klass, nominalClassType(klass), fn);
                     List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
-                    return checkGenericCallable(
+                    return asyncResult(fn.async(), checkGenericCallable(
                             callableGenerics,
                             fn.parameters(),
                             fn.returnType(),
@@ -1035,7 +1049,7 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label));
                 }
                 if (receiver instanceof Named named) {
                     if (named.name().equals("ActorRef") && named.arguments().size() == 1) {
@@ -1237,7 +1251,7 @@ public final class TypeChecker {
                                 "generic callable '" + namespace.name() + "." + member.member()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), Set.of(), null);
+                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), moduleFunction.async(), Set.of(), null);
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
@@ -1284,7 +1298,7 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                    return functionType(fn.parameters(), fn.returnType(), fn.async(), Set.of(), null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -2292,7 +2306,7 @@ public final class TypeChecker {
             if (method.isStatic()) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -2323,7 +2337,7 @@ public final class TypeChecker {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), generics, self),
                         "class " + klass.name());
             }
         }
@@ -2352,7 +2366,7 @@ public final class TypeChecker {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
-                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), generics, null),
+                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, generics, null),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
@@ -2563,6 +2577,25 @@ public final class TypeChecker {
         members.put(name, type);
     }
 
+    private void validateAsyncType(Type type, boolean returns) {
+        if (returns && type == Primitive.VOID) return;
+        if (type instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) {
+            validateAsyncType(named.arguments().getFirst(), true);
+            return;
+        }
+        if (type == Primitive.VOID || !isSharedSafe(type, new LinkedHashSet<>(), Map.of()))
+            throw new IllegalArgumentException("async boundaries require owned data or Future<owned data>");
+    }
+
+    private Type asyncResult(boolean async, Type result) {
+        return async ? new Named("Future", List.of(result)) : result;
+    }
+
+    private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, boolean async, Set<String> generics, Type self) {
+        Function raw = functionType(params, returns, generics, self);
+        return new Function(raw.parameters(), asyncResult(async, raw.result()));
+    }
+
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
         return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
     }
@@ -2571,11 +2604,12 @@ public final class TypeChecker {
             List<String> callableGenerics,
             List<Ast.Param> params,
             Ast.TypeRef returns,
+            boolean async,
             Set<String> ownerGenerics,
             Type self) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
-        Function raw = functionType(params, returns, all, self);
+        Function raw = functionType(params, returns, async, all, self);
         if (callableGenerics.isEmpty()) return raw;
 
         Map<String, Type> canonical = new HashMap<>();

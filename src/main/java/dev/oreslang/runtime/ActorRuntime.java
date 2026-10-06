@@ -264,9 +264,12 @@ public final class ActorRuntime implements AutoCloseable {
                 && currentActorKind() == ActorKind.UNTRUSTED;
     }
 
+    private static final ThreadLocal<Object> CURRENT_ASYNC_DOMAIN = new ThreadLocal<>();
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-        return current == null ? Thread.currentThread() : current.executionDomain();
+        return current != null ? current.executionDomain()
+                : CURRENT_ASYNC_DOMAIN.get() != null ? CURRENT_ASYNC_DOMAIN.get() : Thread.currentThread();
     }
 
     /**
@@ -1753,6 +1756,28 @@ public final class ActorRuntime implements AutoCloseable {
         CURRENT_ROOT_RUNTIME.set(this);
         try { return task.get(); }
         finally { CURRENT_ROOT_RUNTIME.set(previous); }
+    }
+
+    <T> T executeAsyncRootFromKernel(long deadline, Object domain, Supplier<T> task) {
+        if (closed.get()) throw new CancellationException("actor runtime is closed");
+        if (inActorExecution() || inMailmanExecution())
+            throw new SecurityException("async root turns cannot borrow actor/mailman execution identity");
+        ActorRuntime prior = CURRENT_ROOT_RUNTIME.get();
+        Long priorDeadline = CURRENT_ROOT_DEADLINE_NANOS.get();
+        Object priorDomain = CURRENT_ASYNC_DOMAIN.get();
+        boolean priorCarrier = isActorCarrierThread();
+        if (prior != null && prior != this) throw new SecurityException("async root crossed runtime boundary");
+        CURRENT_ROOT_RUNTIME.set(this);
+        CURRENT_ROOT_DEADLINE_NANOS.set(deadline);
+        CURRENT_ASYNC_DOMAIN.set(Objects.requireNonNull(domain));
+        ACTOR_CARRIER.set(Boolean.TRUE);
+        try { schedulerSafepoint(); return task.get(); }
+        finally {
+            if (prior == null) CURRENT_ROOT_RUNTIME.remove(); else CURRENT_ROOT_RUNTIME.set(prior);
+            if (priorDeadline == null) CURRENT_ROOT_DEADLINE_NANOS.remove(); else CURRENT_ROOT_DEADLINE_NANOS.set(priorDeadline);
+            if (priorDomain == null) CURRENT_ASYNC_DOMAIN.remove(); else CURRENT_ASYNC_DOMAIN.set(priorDomain);
+            if (!priorCarrier) ACTOR_CARRIER.remove();
+        }
     }
 
     private ActorRuntime(
