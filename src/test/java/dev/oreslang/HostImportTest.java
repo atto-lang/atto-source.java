@@ -100,7 +100,7 @@ final class HostImportTest {
         IsolatePolicy filePolicy = javaOnly.withCapabilities(
                 IsolatePolicy.Capability.FILESYSTEM_READ,
                 IsolatePolicy.Capability.FILESYSTEM_WRITE);
-        assertDoesNotThrow(() -> filePolicy.restrictedContextBuilder(
+        assertThrows(SecurityException.class, () -> filePolicy.restrictedContextBuilder(
                 ExecutionProfile.serverJit(), Set.of("java.io.File")));
     }
 
