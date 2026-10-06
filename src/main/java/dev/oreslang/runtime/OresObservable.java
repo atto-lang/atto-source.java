@@ -313,6 +313,7 @@ public abstract class OresObservable<T> {
                     return new OresSubscription<>() {
                         private final boolean[] done = new boolean[sources.length];
                         private int remaining = sources.length;
+                        private OresFuture<ChannelRuntime.SelectResult> activeSelect;
 
                         @Override protected OresFuture<OresNotification<T>> nextFromRuntime() {
                             if (remaining == 0) return OresFuture.completed(OresNotification.complete());
@@ -328,12 +329,35 @@ public abstract class OresObservable<T> {
 
                             ChannelRuntime.SelectSet set = new ChannelRuntime.SelectSet(cases);
                             OresFuture<ChannelRuntime.SelectResult> selected = set.selectAsync();
+                            activeSelect = selected;
                             OresFuture<OresNotification<T>> result =
                                     new OresFuture<>(() -> selected.cancel(true));
                             selected.whenCompleteRuntime((selection, failure) -> {
+                                activeSelect = null;
                                 if (failure != null) {
-                                    if (selected.isCancelled()) result.cancel(true);
-                                    else result.failFromRuntime(OresFuture.unwrap(failure));
+                                    Throwable cause = OresFuture.unwrap(failure);
+                                    if (selected.isCancelled()) {
+                                        result.cancel(true);
+                                    } else if (cause instanceof ChannelRuntime.ChannelClosedException) {
+                                        for (int i = 0; i < sources.length; i++) {
+                                            ChannelRuntime.Channel<? extends T> ch = sources[i].nativeChannel();
+                                            if (ch.isClosed() && ch.isEmpty()) done[i] = true;
+                                        }
+                                        remaining = 0;
+                                        for (boolean value : done) if (!value) remaining++;
+                                        if (remaining == 0) {
+                                            result.completeFromRuntime(OresNotification.complete());
+                                        } else {
+                                            OresFuture<OresNotification<T>> next = nextFromRuntime();
+                                            next.whenCompleteRuntime((n, nextFailure) -> {
+                                                if (nextFailure != null) result.failFromRuntime(OresFuture.unwrap(nextFailure));
+                                                else if (next.isCancelled()) result.cancel(true);
+                                                else result.completeFromRuntime(n);
+                                            });
+                                        }
+                                    } else {
+                                        result.failFromRuntime(cause);
+                                    }
                                     return;
                                 }
 
@@ -368,10 +392,10 @@ public abstract class OresObservable<T> {
                         }
 
                         @Override protected void cancelFromRuntime() {
-                            for (OresObservable<? extends T> source : sources) {
-                                // Do not close caller-owned channels. Cancellation
-                                // only cancels the observation.
-                            }
+                            OresFuture<ChannelRuntime.SelectResult> select = activeSelect;
+                            if (select != null) select.cancel(true);
+                            // Never close caller-owned channels. Cancellation
+                            // only unregisters this subscription's native select.
                         }
                     };
                 }
