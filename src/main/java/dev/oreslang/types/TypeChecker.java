@@ -4339,6 +4339,81 @@ public final class TypeChecker {
         return Map.copyOf(named);
     }
 
+    private Type resolveTupleNamedType(
+            Ast.TypeRef ref,
+            Set<String> generics,
+            Type self,
+            boolean allowNullMarker) {
+        List<Ast.TypeRef> positional = positionalTypeArguments(ref);
+        List<Ast.TypeRef> dimensions = sequenceShapeDimensions(ref);
+        Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
+
+        if (!positional.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Tuple uses bracketed positional shape syntax; use Tuple[T1, T2, ...], not Tuple<T1, T2, ...>");
+        }
+        if (dimensions.size() != 1) {
+            throw new IllegalArgumentException("Tuple requires exactly one finite bracketed shape, for example Tuple[int, string]");
+        }
+
+        Ast.TypeRef shape = dimensions.getFirst();
+        List<Ast.TypeRef> exact = expandFiniteSequencePatterns(shape.arguments(), "Tuple");
+        validateTupleMetadata(metadata, exact.size());
+
+        return new Tuple(exact.stream()
+                .map(element -> resolve(element, generics, self, allowNullMarker))
+                .toList());
+    }
+
+    private void validateTupleMetadata(Map<String, Ast.TypeRef> metadata, int arity) {
+        Set<String> allowed = Set.of(
+                "growth_policy", "allocator", "align", "size",
+                "inline_capacity", "max_capacity", "storage", "rank");
+
+        for (Map.Entry<String, Ast.TypeRef> entry : metadata.entrySet()) {
+            String name = entry.getKey();
+            Ast.TypeRef value = entry.getValue();
+
+            if (name.equals("capacity")) {
+                throw new IllegalArgumentException(
+                        "'capacity' is not meaningful for Tuple; tuple capacity is exactly its fixed arity");
+            }
+            if (!allowed.contains(name)) {
+                throw new IllegalArgumentException("unknown named type parameter '" + name + "' for Tuple");
+            }
+
+            if (Set.of("align", "size", "inline_capacity", "max_capacity", "rank").contains(name)) {
+                if (!value.isIntLiteral()) {
+                    throw new IllegalArgumentException("'" + name + "' requires an integer compile-time value");
+                }
+                long number = value.intLiteralValue();
+                if (name.equals("align")) {
+                    if (number <= 0 || (number & (number - 1)) != 0) {
+                        throw new IllegalArgumentException("'align' must be a positive power of two");
+                    }
+                } else if (name.equals("rank")) {
+                    if (number != 1) {
+                        throw new IllegalArgumentException("Tuple rank is always 1");
+                    }
+                } else if (number != arity) {
+                    throw new IllegalArgumentException("'" + name + "' for Tuple must equal fixed arity " + arity);
+                }
+            }
+
+            if (name.equals("growth_policy")) {
+                String policy = value.name();
+                boolean fixedPolicy = policy.equals("Fixed")
+                        || policy.equals("fixed")
+                        || policy.endsWith(".Fixed")
+                        || policy.endsWith(".fixed");
+                if (!fixedPolicy) {
+                    throw new IllegalArgumentException(
+                            "Tuple cannot grow; growth_policy must be Fixed (or a qualified *.Fixed policy)");
+                }
+            }
+        }
+    }
+
     private Type resolveCollectionType(
             Ast.TypeRef ref,
             Set<String> generics,
@@ -4644,6 +4719,7 @@ public final class TypeChecker {
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
+            case "Tuple" -> resolveTupleNamedType(ref, generics, self, allowNullMarker);
             case "Array", "List", "Vector", "Slice", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
