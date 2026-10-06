@@ -505,6 +505,204 @@ public abstract class OresObservable<T> {
         return result;
     }
 
+    /** Convert the stream to a Future that succeeds only when exactly one value exists. */
+    public final OresFuture<T> single() {
+        OresSubscription<T> sub = subscribe();
+        OresFuture<T> result = new OresFuture<>(() -> sub.cancel());
+        ArrayList<T> values = new ArrayList<>(2);
+        singleNext(sub, values, result);
+        return result;
+    }
+
+    private static <T> void singleNext(
+            OresSubscription<T> sub, ArrayList<T> values, OresFuture<T> result) {
+        if (result.isDone()) return;
+        OresFuture<OresNotification<T>> pull = sub.next();
+        pull.whenCompleteRuntime((n, failure) -> {
+            if (result.isDone()) return;
+            if (failure != null) {
+                if (pull.isCancelled()) result.cancel(true);
+                else result.failFromRuntime(OresFuture.unwrap(failure));
+                sub.cancel();
+                return;
+            }
+            if (n.isComplete()) {
+                if (values.size() == 1) result.completeFromRuntime(values.get(0));
+                else result.failFromRuntime(new NoSuchElementException(
+                        "rx-ores single() requires exactly one stream value"));
+                sub.cancel();
+                return;
+            }
+            values.add(n.value());
+            if (values.size() > 1) {
+                result.failFromRuntime(new IllegalStateException(
+                        "rx-ores single() observed more than one stream value"));
+                sub.cancel();
+                return;
+            }
+            singleNext(sub, values, result);
+        });
+    }
+
+    /** Convert the last stream value to a Future; completion without a value fails. */
+    public final OresFuture<T> last() {
+        OresSubscription<T> sub = subscribe();
+        OresFuture<T> result = new OresFuture<>(() -> sub.cancel());
+        lastNext(sub, result);
+        return result;
+    }
+
+    private static <T> void lastNext(
+            OresSubscription<T> sub, OresFuture<T> result) {
+        if (result.isDone()) return;
+        OresFuture<OresNotification<T>> pull = sub.next();
+        pull.whenCompleteRuntime((n, failure) -> {
+            if (result.isDone()) return;
+            if (failure != null) {
+                if (pull.isCancelled()) result.cancel(true);
+                else result.failFromRuntime(OresFuture.unwrap(failure));
+                sub.cancel();
+                return;
+            }
+            if (n.isComplete()) {
+                if (!result.isDone()) {
+                    // The current value is kept by the holder below.
+                }
+                sub.cancel();
+                return;
+            }
+            lastNextHolder(sub, result, n.value());
+        });
+    }
+
+    private static <T> void lastNextHolder(
+            OresSubscription<T> sub, OresFuture<T> result, T value) {
+        if (result.isDone()) return;
+        OresFuture<OresNotification<T>> pull = sub.next();
+        pull.whenCompleteRuntime((n, failure) -> {
+            if (result.isDone()) return;
+            if (failure != null) {
+                if (pull.isCancelled()) result.cancel(true);
+                else result.failFromRuntime(OresFuture.unwrap(failure));
+                sub.cancel();
+                return;
+            }
+            if (n.isComplete()) {
+                result.completeFromRuntime(value);
+                sub.cancel();
+            } else {
+                lastNextHolder(sub, result, n.value());
+            }
+        });
+    }
+
+    /**
+     * Defer an async/Future-producing operation until subscription. Each
+     * subscription gets its own Future producer, matching cold async sources.
+     */
+    public static <T> OresObservable<T> deferFuture(
+            java.util.function.Supplier<? extends OresFuture<? extends T>> producer) {
+        Objects.requireNonNull(producer, "producer");
+        return new OresObservable<>() {
+            @Override protected OresSubscription<T> subscribeFromRuntime() {
+                return new OresSubscription<>() {
+                    private OresFuture<? extends T> future;
+                    private boolean started;
+                    @Override protected OresFuture<OresNotification<T>> nextFromRuntime() {
+                        if (started) return OresFuture.completed(OresNotification.complete());
+                        started = true;
+                        try {
+                            future = Objects.requireNonNull(producer.get(),
+                                    "rx-ores deferred producer returned null Future");
+                        } catch (Throwable failure) {
+                            return OresFuture.failed(failure);
+                        }
+                        OresFuture<OresNotification<T>> result = new OresFuture<>(
+                                () -> future.cancel(true));
+                        future.whenCompleteRuntime((value, failure) -> {
+                            if (failure != null) {
+                                if (future.isCancelled()) result.cancel(true);
+                                else result.failFromRuntime(OresFuture.unwrap(failure));
+                            } else {
+                                try {
+                                    result.completeFromRuntime(OresNotification.next(
+                                            Objects.requireNonNull(value)));
+                                } catch (Throwable e) {
+                                    result.failFromRuntime(e);
+                                }
+                            }
+                        });
+                        return result;
+                    }
+                    @Override protected void cancelFromRuntime() {
+                        if (future != null) future.cancel(true);
+                    }
+                };
+            }
+        };
+    }
+
+    /**
+     * Async flattening primitive: each source value is mapped to one Future
+     * and the Future is flattened back into the stream. This is the runtime
+     * substrate for a language-level flat_map(async ...), with one in-flight
+     * inner Future per subscription turn.
+     */
+    public final <R> OresObservable<R> flatMapFuture(
+            Function<? super T, ? extends OresFuture<? extends R>> mapper) {
+        Objects.requireNonNull(mapper, "mapper");
+        OresObservable<T> upstream = this;
+        return new OresObservable<>() {
+            @Override protected OresSubscription<R> subscribeFromRuntime() {
+                OresSubscription<T> outer = upstream.subscribe();
+                return new OresSubscription<>() {
+                    private OresFuture<? extends R> inner;
+                    @Override protected OresFuture<OresNotification<R>> nextFromRuntime() {
+                        OresFuture<OresNotification<T>> outerPull = outer.next();
+                        OresFuture<OresNotification<R>> result = new OresFuture<>(
+                                () -> outerPull.cancel(true));
+                        outerPull.whenCompleteRuntime((n, failure) -> {
+                            if (failure != null) {
+                                if (outerPull.isCancelled()) result.cancel(true);
+                                else result.failFromRuntime(OresFuture.unwrap(failure));
+                                return;
+                            }
+                            if (n.isComplete()) {
+                                result.completeFromRuntime(OresNotification.complete());
+                                return;
+                            }
+                            try {
+                                inner = Objects.requireNonNull(mapper.apply(n.value()),
+                                        "rx-ores flatMapFuture mapper returned null Future");
+                            } catch (Throwable mapperFailure) {
+                                result.failFromRuntime(mapperFailure);
+                                return;
+                            }
+                            inner.whenCompleteRuntime((value, innerFailure) -> {
+                                if (innerFailure != null) {
+                                    if (inner.isCancelled()) result.cancel(true);
+                                    else result.failFromRuntime(OresFuture.unwrap(innerFailure));
+                                    return;
+                                }
+                                try {
+                                    result.completeFromRuntime(OresNotification.next(
+                                            Objects.requireNonNull(value)));
+                                } catch (Throwable e) {
+                                    result.failFromRuntime(e);
+                                }
+                            });
+                        });
+                        return result;
+                    }
+                    @Override protected void cancelFromRuntime() {
+                        outer.cancel();
+                        if (inner != null) inner.cancel(true);
+                    }
+                };
+            }
+        };
+    }
+
     public final OresFuture<List<T>> collect() {
         OresSubscription<T> sub = subscribe();
         OresFuture<List<T>> result = new OresFuture<>(() -> sub.cancel());
