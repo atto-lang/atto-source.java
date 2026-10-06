@@ -47,8 +47,10 @@ import java.util.function.UnaryOperator;
  * serially. Carrier-thread identity is never actor identity.
  *
  * PRIVATE and SHARED actors are deliberately bulkheaded onto different
- * dispatchers. Private actors also receive a confined logical memory slice;
- * shared actors may coordinate through explicitly synchronized shared cells.
+ * dispatchers. Every actor receives an actor-local allocation domain independent
+ * of carrier-thread identity. PRIVATE actors additionally enforce confined-memory
+ * transport rules; SHARED actors may opt into explicitly synchronized shared
+ * cells without forcing ordinary actor-owned allocations into the shared domain.
  */
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
@@ -227,6 +229,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
+    private final AtomicLong sharedActorLocalMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
@@ -331,43 +334,54 @@ public final class ActorRuntime implements AutoCloseable {
 
     public int actorCount() { return actorCount.get(); }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
+    public long sharedActorLocalMemoryBytes() { return sharedActorLocalMemoryBytes.get(); }
+    public long actorLocalMemoryBytes() {
+        return privateMemoryBytes.get() + sharedActorLocalMemoryBytes.get();
+    }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
-    public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
+    public long actorMemoryBytes() { return actorLocalMemoryBytes() + sharedMemoryBytes.get(); }
 
     /**
-     * Logical actor-confined memory slice for one private actor.
+     * Actor-local allocation domain for exactly one actor.
      *
-     * This is independent of carrier threads. Mailbox payloads and persistent
-     * actor-state allocations share one budget. The current JVM backend uses
-     * accounting plus alias isolation; a native/polyglot-isolate backend can map
-     * this same contract to a physically separate heap/arena.
+     * This is independent of carrier threads. PRIVATE actors use the domain as
+     * part of their confinement contract. SHARED actors use the same ownership
+     * boundary for ordinary local state while Shared/SharedMutex allocations stay
+     * in the explicit runtime-wide shared domain. The current JVM backend meters
+     * these logical domains; native/polyglot backends can map them to physically
+     * distinct heaps/arenas without changing actor scheduling semantics.
      */
     public final class ActorMemorySlice implements AutoCloseable {
         private final ActorId owner;
+        private final ActorKind kind;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
-        private ActorMemorySlice(ActorId owner, long limitBytes) {
+        private ActorMemorySlice(ActorId owner, ActorKind kind, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
+            this.kind = Objects.requireNonNull(kind);
             this.limitBytes = limitBytes;
         }
 
         public ActorId owner() { return owner; }
+        public ActorKind kind() { return kind; }
         public long limitBytes() { return limitBytes; }
         public long usedBytes() { return usedBytes.get(); }
         public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
         public boolean closed() { return sliceClosed.get(); }
 
         /**
-         * Reserve persistent private-actor heap. Compiler/interpreter lowering
+         * Reserve persistent actor-local heap. Compiler/interpreter lowering
          * should retain the reservation for as long as the state allocation is
          * live and close it when that allocation dies.
          */
         public MemoryReservation reserveHeap(long bytes) {
             requireCurrentOwner();
-            return reserve(bytes, "private actor heap");
+            return reserve(bytes, kind == ActorKind.PRIVATE
+                    ? "private actor heap"
+                    : "shared actor local heap");
         }
 
         /**
@@ -378,6 +392,9 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
+            if (kind != ActorKind.PRIVATE) {
+                throw new IllegalStateException("direct confined memory blocks require a private actor");
+            }
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
             MemoryReservation reservation = reserve(bytes, "private actor direct heap");
             try {
@@ -391,12 +408,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private MemoryReservation reserveMailbox(Object isolatedMessage) {
-            return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
+            return reserve(
+                    estimateFrozenBytes(isolatedMessage),
+                    kind == ActorKind.PRIVATE ? "private actor mailbox" : "shared actor local mailbox");
         }
 
         private synchronized MemoryReservation reserve(long bytes, String purpose) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
-            if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
+            if (sliceClosed.get()) throw new IllegalStateException("actor-local memory slice is closed");
             if (bytes == 0) return new MemoryReservation(this, 0);
 
             long current = usedBytes.get();
@@ -411,16 +430,16 @@ public final class ActorRuntime implements AutoCloseable {
                         + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
             }
 
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
+            reserveActorLocalRuntimeBytes(bytes, owner, kind, purpose);
             usedBytes.set(next);
             return new MemoryReservation(this, bytes);
         }
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || cell.kind != ActorKind.PRIVATE || !cell.ref.id().equals(owner)) {
+            if (cell == null || cell.memorySlice != this || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
-                        "private actor memory slice may only be reserved by its owning actor");
+                        "actor-local memory slice may only be reserved by its owning actor");
             }
         }
 
@@ -429,10 +448,10 @@ public final class ActorRuntime implements AutoCloseable {
             long remaining = usedBytes.addAndGet(-bytes);
             if (remaining < 0) {
                 usedBytes.addAndGet(bytes);
-                throw new IllegalStateException("private actor memory accounting underflow for " + owner);
+                throw new IllegalStateException("actor-local memory accounting underflow for " + owner);
             }
             try {
-                releasePrivateRuntimeBytes(bytes, owner);
+                releaseActorLocalRuntimeBytes(bytes, owner, kind);
             } catch (RuntimeException failure) {
                 usedBytes.addAndGet(bytes);
                 throw failure;
@@ -445,7 +464,7 @@ public final class ActorRuntime implements AutoCloseable {
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            if (bytes != 0) releaseActorLocalRuntimeBytes(bytes, owner, kind);
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -748,8 +767,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Compiler-facing actor constructor. The actor context is available before
-     * state initialization, so private actor fields can reserve/allocate in the
-     * actor's confined memory slice rather than being captured from the caller.
+     * state initialization, so actor-owned fields can reserve in the actor-local
+     * allocation domain. Private actors additionally use it for confined state.
      */
     @FunctionalInterface
     public interface BehaviorFactory<M> {
@@ -761,7 +780,14 @@ public final class ActorRuntime implements AutoCloseable {
         ActorRuntime runtime();
         IsolatePolicy policy();
         ActorKind kind();
-        Optional<ActorMemorySlice> privateMemory();
+
+        /** Actor-owned allocation domain; present for both SHARED and PRIVATE actors. */
+        Optional<ActorMemorySlice> localMemory();
+
+        /** Compatibility/confinement view: present only for PRIVATE actors. */
+        default Optional<ActorMemorySlice> privateMemory() {
+            return kind() == ActorKind.PRIVATE ? localMemory() : Optional.empty();
+        }
     }
 
     /**
@@ -1547,35 +1573,47 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void reservePrivateRuntimeBytes(long bytes, ActorId owner, String purpose) {
+    private void reserveActorLocalRuntimeBytes(
+            long bytes,
+            ActorId owner,
+            ActorKind kind,
+            String purpose) {
         synchronized (memoryBudgetLock) {
             long privateBytes = privateMemoryBytes.get();
+            long sharedLocalBytes = sharedActorLocalMemoryBytes.get();
             long sharedBytes = sharedMemoryBytes.get();
             long total;
             try {
-                total = Math.addExact(Math.addExact(privateBytes, sharedBytes), bytes);
+                total = Math.addExact(
+                        Math.addExact(Math.addExact(privateBytes, sharedLocalBytes), sharedBytes),
+                        bytes);
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " aggregate accounting overflow");
             }
             if (total > policyCeiling.maxHeapBytes()) {
                 throw new IllegalStateException(purpose + " aggregate runtime limit exceeded for " + owner
                         + ": requested=" + bytes + " privateUsed=" + privateBytes
+                        + " sharedActorLocalUsed=" + sharedLocalBytes
                         + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
             }
-            privateMemoryBytes.addAndGet(bytes);
+            if (kind == ActorKind.PRIVATE) privateMemoryBytes.addAndGet(bytes);
+            else sharedActorLocalMemoryBytes.addAndGet(bytes);
         }
     }
 
-    private void releasePrivateRuntimeBytes(long bytes, ActorId owner) {
+    private void releaseActorLocalRuntimeBytes(long bytes, ActorId owner, ActorKind kind) {
         if (bytes == 0) return;
         synchronized (memoryBudgetLock) {
-            long current = privateMemoryBytes.get();
+            AtomicLong counter = kind == ActorKind.PRIVATE
+                    ? privateMemoryBytes
+                    : sharedActorLocalMemoryBytes;
+            long current = counter.get();
             if (bytes > current) {
                 throw new IllegalStateException(
-                        "private actor aggregate memory accounting underflow for " + owner
-                                + ": release=" + bytes + " privateUsed=" + current);
+                        "actor-local aggregate memory accounting underflow for " + owner
+                                + ": release=" + bytes + " used=" + current + " kind=" + kind);
             }
-            privateMemoryBytes.set(current - bytes);
+            counter.set(current - bytes);
         }
     }
 
@@ -1585,16 +1623,20 @@ public final class ActorRuntime implements AutoCloseable {
         if (bytes == 0) return;
         synchronized (memoryBudgetLock) {
             long privateBytes = privateMemoryBytes.get();
+            long sharedLocalBytes = sharedActorLocalMemoryBytes.get();
             long sharedBytes = sharedMemoryBytes.get();
             long total;
             try {
-                total = Math.addExact(Math.addExact(privateBytes, sharedBytes), bytes);
+                total = Math.addExact(
+                        Math.addExact(Math.addExact(privateBytes, sharedLocalBytes), sharedBytes),
+                        bytes);
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " aggregate accounting overflow");
             }
             if (total > policyCeiling.maxHeapBytes()) {
                 throw new IllegalStateException(purpose + " aggregate runtime limit exceeded"
                         + ": requested=" + bytes + " privateUsed=" + privateBytes
+                        + " sharedActorLocalUsed=" + sharedLocalBytes
                         + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
             }
             sharedMemoryBytes.addAndGet(bytes);
@@ -2979,9 +3021,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ? Integer.MAX_VALUE
                     : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
             this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
-            this.memorySlice = kind == ActorKind.PRIVATE
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
-                    : null;
+            this.memorySlice = new ActorMemorySlice(ref.id(), kind, policy.maxHeapBytes());
         }
 
         private int mailboxCapacityWithControlHeadroom() {
@@ -3219,8 +3259,8 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public ActorRuntime runtime() { return ActorRuntime.this; }
                     @Override public IsolatePolicy policy() { return policy; }
                     @Override public ActorKind kind() { return kind; }
-                    @Override public Optional<ActorMemorySlice> privateMemory() {
-                        return Optional.ofNullable(memorySlice);
+                    @Override public Optional<ActorMemorySlice> localMemory() {
+                        return Optional.of(memorySlice);
                     }
                 };
 
