@@ -341,7 +341,7 @@ final class OresVM {
     }
 
     ActorRuntime.DispatcherGroup dispatcherGroup() {
-        ensureRunning();
+        startup();
         return dispatchers;
     }
 
