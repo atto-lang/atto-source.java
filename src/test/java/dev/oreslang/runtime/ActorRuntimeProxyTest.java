@@ -109,7 +109,7 @@ final class ActorRuntimeProxyTest {
             proxy.close();
             assertTrue(proxy.closed());
         } finally {
-            if (!runtime.isClosed()) runtime.close();
+            runtime.close();
         }
     }
 
