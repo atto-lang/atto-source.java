@@ -4454,9 +4454,16 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
-                    MessageEnvelope envelope = mailbox.tryRead().orElse(null);
-                    if (envelope == null) break;
-                    releaseMailboxSlot(envelope.isContinuation());
+                    MessageEnvelope envelope;
+                    synchronized (lifecycleLock) {
+                        // stop() closes and drains the channel under this lock.
+                        // Check and poll atomically with teardown: a normal stop
+                        // must not become a ChannelClosedException actor failure.
+                        if (stopped.get()) break;
+                        envelope = mailbox.tryRead().orElse(null);
+                        if (envelope == null) break;
+                        releaseMailboxSlot(envelope.isContinuation());
+                    }
                     try (envelope) {
                         if (envelope.isContinuation()) {
                             envelope.continuation().run();
