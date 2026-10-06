@@ -4799,13 +4799,19 @@ public final class TypeChecker {
                         + " requires an explicit finite sequence shape, for example "
                         + (ref.name().equals("Tuple") ? "Tuple[int, string]" : ref.name() + "[4 of int]"));
             }
-            if (ref.inferArguments()) return new ListType(Unknown.INSTANCE);
-            if (positional.size() != 1) {
-                throw new IllegalArgumentException(ref.name()
-                        + " requires one element type when using legacy '<T>' syntax; "
-                        + "prefer " + ref.name() + "[T]");
+            if (ref.inferArguments()) return sequenceType(ref.name(), Unknown.INSTANCE);
+            Ast.TypeRef declaredElement = metadata.get("type");
+            if (declaredElement == null && positional.size() == 1) {
+                // Compatibility for hand-built/pre-normalization AST producers.
+                declaredElement = positional.getFirst();
             }
-            return new ListType(resolve(positional.getFirst(), generics, self, allowNullMarker));
+            if (declaredElement == null) {
+                throw new IllegalArgumentException(ref.name()
+                        + " requires an element type parameter or an explicit '[T]' shape");
+            }
+            return sequenceType(
+                    ref.name(),
+                    resolve(declaredElement, generics, self, allowNullMarker));
         }
 
         if (!positional.isEmpty()) {
@@ -4840,7 +4846,7 @@ public final class TypeChecker {
             }
             Type nested = resolve(base, generics, self, allowNullMarker);
             int rank = declaredRank == null ? dimensions.size() : declaredRank;
-            for (int i = 0; i < rank; i++) nested = new ListType(nested);
+            for (int i = 0; i < rank; i++) nested = sequenceType(ref.name(), nested);
             return nested;
         }
 
@@ -4849,6 +4855,8 @@ public final class TypeChecker {
             List<Ast.TypeRef> exact =
                     expandFixedSequencePatterns(shape.arguments(), ref.name(), metadata);
             validateFixedExtentMetadata(ref.name(), metadata, exact.size());
+            validateDeclaredSequenceElementDomain(
+                    ref.name(), metadata.get("type"), exact, generics, self, allowNullMarker);
             TupleKind kind = switch (ref.name()) {
                 case "FixedArray" -> TupleKind.FIXED_ARRAY;
                 case "FixedList" -> TupleKind.FIXED_LIST;
@@ -4879,9 +4887,16 @@ public final class TypeChecker {
             element = resolve(pattern, generics, self, allowNullMarker);
         }
 
+        Ast.TypeRef declaredElement = metadata.get("type");
+        if (declaredElement != null) {
+            Type declared = resolve(declaredElement, generics, self, allowNullMarker);
+            requireAssignable(element, declared, ref.name() + " type parameter");
+            element = declared;
+        }
+
         int rank = declaredRank == null ? 1 : declaredRank;
         Type result = element;
-        for (int i = 0; i < rank; i++) result = new ListType(result);
+        for (int i = 0; i < rank; i++) result = sequenceType(ref.name(), result);
         return result;
     }
 
@@ -4998,9 +5013,37 @@ public final class TypeChecker {
         return Types.unionOf(resolved);
     }
 
+    private Type sequenceType(String collectionName, Type element) {
+        Types.SequenceKind kind = switch (collectionName) {
+            case "Array" -> Types.SequenceKind.ARRAY;
+            case "Vector" -> Types.SequenceKind.VECTOR;
+            case "Slice" -> Types.SequenceKind.SLICE;
+            default -> Types.SequenceKind.LIST;
+        };
+        return new ListType(element, kind);
+    }
+
+    private void validateDeclaredSequenceElementDomain(
+            String collectionName,
+            Ast.TypeRef declaredElementRef,
+            List<Ast.TypeRef> exactShape,
+            Set<String> generics,
+            Type self,
+            boolean allowNullMarker) {
+        if (declaredElementRef == null) return;
+        Type declared = resolve(declaredElementRef, generics, self, allowNullMarker);
+        for (int i = 0; i < exactShape.size(); i++) {
+            Type actual = resolve(exactShape.get(i), generics, self, allowNullMarker);
+            requireAssignable(
+                    actual,
+                    declared,
+                    collectionName + " shape element " + i + " against type parameter");
+        }
+    }
+
     private void validateCollectionMetadata(String collectionName, Map<String, Ast.TypeRef> metadata) {
         Set<String> allowed = Set.of(
-                "growth_policy", "allocator", "align", "inline_capacity",
+                "type", "growth_policy", "allocator", "align", "inline_capacity",
                 "max_capacity", "storage", "rank");
         for (Map.Entry<String, Ast.TypeRef> entry : metadata.entrySet()) {
             String name = entry.getKey();
