@@ -188,6 +188,132 @@ fnc named(): {foo: int, bar: string} {
 
 The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. A record type names required members; extra members remain compatible with the structural type system.
 
+## Collection shapes and named type metadata
+
+Collection syntax deliberately separates three concerns:
+
+- `[...]` describes the element/sequence shape;
+- `<name=value, ...>` carries compile-time type/storage metadata;
+- `(...)` carries runtime construction state such as an initial size or
+  capacity.
+
+For exact finite storage, counted repetition is part of the shape:
+
+```ores
+val xs: FixedArray[3 of int, 3 of string] =
+    [10, 20, 30, "foo", "bar", "baz"];
+```
+
+The type above has six exact positions. `N of T` is a compile-time sequence
+pattern, not a generic value argument.
+
+Runtime-extent collections distinguish arbitrary elements from repeating flat
+patterns:
+
+```ores
+val arbitrary: Vector[int | string | bool] =
+    [5, "foo", true, false, 9];
+
+val patterned: Vector[...(int, string, bool)] =
+    [5, "foo", true, 6, "bar", false];
+```
+
+`Vector[int | string | bool]` allows those element types in any order.
+`Vector[...(int, string, bool)]` requires zero or more complete
+`int, string, bool` groups. Consequently, bare
+`Vector[int, string, bool]` is rejected: a finite sequence shape conflicts
+with the resizable vector contract. Use a `FixedArray`, an explicit `...`
+repeat, a union, or a vector of tuple values depending on intent.
+
+Counted and unbounded patterns compose:
+
+```ores
+val records: Vector[...(3 of int, 2 of string)] =
+    [1, 2, 3, "a", "b",
+     4, 5, 6, "c", "d"];
+```
+
+Compile-time collection policy is named and order-independent:
+
+```ores
+val xs: Vector<
+    growth_policy=GP.Foo,
+    allocator=Arena,
+    align=64,
+    inline_capacity=32,
+    max_capacity=4096
+>[int] = [1, 2, 3];
+```
+
+Named parameters are canonicalized by name, so source ordering is not part of
+type identity. The compiler currently recognizes `growth_policy`,
+`allocator`, `align`, `inline_capacity`, `max_capacity`, `storage`,
+and `rank` for the built-in collection family. Alignment must be a positive
+power of two.
+
+Metadata annotations lower to the exact same compiler representation:
+
+```ores
+@NamedParams<
+    growth_policy=GP.Foo,
+    allocator=Arena,
+    align=64
+>
+val xs: Vector[...(int, string, bool)] = [5, "foo", true];
+```
+
+is equivalent to:
+
+```ores
+val xs: Vector<
+    growth_policy=GP.Foo,
+    allocator=Arena,
+    align=64
+>[...(int, string, bool)] = [5, "foo", true];
+```
+
+Specialized aliases are also accepted:
+
+```ores
+@GrowthPolicy<GP.Foo>
+@Allocator<Arena>
+@Align<64>
+val xs: Vector[...(int, string, bool)] = [5, "foo", true];
+```
+
+Conflicting inline and annotation metadata is an error; there is deliberately
+no precedence rule.
+
+Current size and capacity are not properties of a mutable collection's type.
+They belong to runtime construction:
+
+```ores
+// type/storage policy
+val xs: Vector<growth_policy=GP.Foo>[int] = [1, 2, 3];
+
+// size/capacity belong in constructor/runtime state, never:
+// Vector<size=3>[int]
+// Vector<capacity=32>[int]
+```
+
+This distinction ensures that a type cannot become false merely because a
+vector grows.
+
+Repeated bracket suffixes provide homogeneous multidimensional shorthand:
+
+```ores
+val matrix: Vector[int][int] =
+    [[1, 2], [3, 4]];
+
+// Explicit rank metadata is equivalent for a homogeneous shape:
+val matrix2: Vector<rank=2>[int] =
+    [[1, 2], [3, 4]];
+```
+
+The compiler canonicalizes both to nested rank-2 collection semantics. This is
+distinct from an exact fixed multidimensional layout, whose extents belong in
+finite sequence shapes.
+
 ## Bindings
 
 Every local binding is declared as exactly one of:
@@ -227,6 +353,63 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 
 Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
+## Assignment, equality, and identity
+
+Assignment remains an expression. `lhs = rhs` mutates `lhs` and evaluates to
+the assigned value, including inside call arguments and control-flow expressions.
+Oreslang does **not** interpret `name = value` inside a call as a named argument.
+
+The canonical comparison operators deliberately separate value equality from identity:
+
+- `a eq b` is canonical value equality.
+- `a neq b` is canonical value inequality.
+- Adjacent `a !eq b` is an equivalent inequality spelling. Whitespace between
+  `!` and `eq` does not form this operator.
+- `a == b` and `a != b` remain accepted compatibility aliases, but canonical
+  Oreslang style prefers `eq` and `neq`.
+- `a is b` is identity: both operands must be identity-bearing reference/handle
+  values with overlapping runtime domains.
+- `!(a eq b)` is ordinary logical negation and is equivalent to value inequality.
+
+`eq`, `neq`, and `is` are reserved operator keywords rather than ordinary
+identifier names. This intentionally prevents visually hostile constructs such
+as `is is foo`. Keyword spellings may still appear after `.` because member
+names occupy a separate syntactic namespace.
+
+Value equality is defined by Oreslang semantics, never arbitrary host/JVM
+`equals()` behavior. Numbers compare numerically across compatible numeric
+representations; structural records/maps, tuples, arrays/lists, `Option`,
+`Result`, and iterator-result values recurse through their contents. Ordinary
+class/actor instances remain identity-equal by default unless a future explicit
+equality protocol is introduced. `switch` constants and literal match patterns
+use the same value-equality operation, so equality cannot change meaning between
+language constructs.
+
+Identity is likewise semantic rather than a promise about backend object boxing.
+Ordinary objects/reference collections use reference identity, while stable
+handles such as actor IDs/references compare the underlying handle identity.
+Scalars and value-semantic aggregates/wrappers are rejected for `is`.
+
+Because plain infix `is` owns identity, nominal expression type tests use an
+explicit `type` marker:
+
+```ores
+if animal is type Dog dog then
+  dog.bark();
+fi
+```
+
+Match-arm type patterns retain the compact prefix form because pattern position
+is unambiguous:
+
+```ores
+match animal
+  is Dog dog -> { dog.bark(); }
+  else -> { return; }
+end
+```
+
+
 ## Classes, receivers, multiple inheritance, and interfaces
 
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
@@ -261,7 +444,7 @@ define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
-Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible types. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
+Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
 
 `Object` and `List` are extensible base classes:
 
@@ -341,6 +524,65 @@ end
 ```
 
 Class interface satisfaction uses public members, including inherited public members.
+
+## Boolean combinator intrinsics
+
+`And`, `Or`, and `Xor` are compiler-provided overload families in the
+built-in `BooleanOps` namespace and are also available as globals, like
+`Some`, `None`, `Ok`, and `Err`.
+
+Conceptually, each family has these two arity-selected overloads:
+
+```ores
+define module BooleanOps as
+  pub fnc Or(bool first, bool second, ...bool rest): bool { /* intrinsic */ }
+  pub fnc Or(List<bool> values): bool { /* intrinsic */ }
+
+  pub fnc And(bool first, bool second, ...bool rest): bool { /* intrinsic */ }
+  pub fnc And(List<bool> values): bool { /* intrinsic */ }
+
+  pub fnc Xor(bool first, bool second, ...bool rest): bool { /* intrinsic */ }
+  pub fnc Xor(List<bool> values): bool { /* intrinsic */ }
+end
+```
+
+The overload decision is **name + caller-visible arity only**:
+
+- arity `1` selects the `List<bool>` overload;
+- arity `>= 2` selects the variadic scalar-bool overload;
+- arity `0` is invalid;
+- parameter types do not participate in overload selection.
+
+Therefore both global and qualified forms are equivalent:
+
+```ores
+if And(foo, bar) then
+  // ...
+fi
+
+if Or(foo, bar, And(x, y)) then
+  // ...
+fi
+
+val bool a = BooleanOps.And([foo, bar]);
+val bool b = BooleanOps.Or(foo, bar, x);
+```
+
+For the scalar overload, `And` and `Or` short-circuit left-to-right exactly
+like `&&` and `||`; `Xor` evaluates all scalar operands and returns true
+when an odd number are true. These calls are compiler intrinsics and bypass
+ordinary callable dispatch, so scalar forms can lower to the same boolean
+control-flow IR as the operators.
+
+The one-argument list overload has ordinary eager argument evaluation, then
+reduces the already-created list. Empty lists are valid: `And([])` is
+`true`, `Or([])` is `false`, and `Xor([])` is `false`.
+
+Module/top-level `fnc` and `routine` overload identity is also name + exact
+arity. Same-name/different-arity declarations are valid; same-name/same-arity
+declarations are rejected even when their parameter types differ. An overloaded
+callable family cannot be extracted as an untyped first-class function value;
+a direct call supplies the arity needed to select a slot.
 
 ## Option, Result, and null
 
@@ -487,6 +729,58 @@ Oreslang follows the useful parts of the C# Task-based Asynchronous Pattern whil
 The initial interpreter backend uses host-owned virtual threads for ordinary async tasks. That is an implementation detail, not a language promise. The compiler is free to replace it with C#-style continuation/state-machine lowering. Guest source receives no raw thread handle and does not gain `THREAD_CREATE` authority merely by using `async`.
 
 This preserves the central async rule: **I/O/task latency should compose through futures and continuations; CPU-bound work that intentionally monopolizes a carrier must be explicit rather than hidden inside `async`.**
+
+## Generators and async iterators
+
+`generator` is a callable modifier for top-level/module `fnc` and `routine` declarations. It is deliberately not a class-method modifier.
+
+```ores
+generator fnc ids(): int {
+  yield 10;
+  yield 20;
+  return;
+}
+
+async generator routine events(): String {
+  yield await next_event();
+  yield await next_event();
+  return;
+}
+```
+
+The declared source return type is the **yielded element type**. Calling a synchronous generator produces `Iterator<T>`; calling an async generator produces `AsyncIterator<T>` directly, not `Future<Iterator<T>>`. Existing `Generator<T>` and `AsyncGenerator<T>` annotations remain aliases for those public protocol types.
+
+`Iterator.next()` returns `IteratorResult<T>`; `AsyncIterator.next()` returns `Future<IteratorResult<T>>`. Results have readonly `done: bool` and `value: Option<T>` members: yielded values are `Some(value)`, while terminal/closed pulls return `done = true` and `None`. Both protocols expose `close()` to cancel the suspended activation. Async pulls retain serialized activation semantics and cross the Ores-owned Future boundary. Result data may cross ordinary async boundaries when its element type is task-safe; the iterator activation itself cannot.
+
+```ores
+val Iterator<int> iterator = values();
+val IteratorResult<int> result = iterator.next();
+if !result.done; do stdio.stdout.write(result.value.unwrap()); fi
+iterator.close();
+```
+
+`done` remains reserved as a lexical identifier, but is readable in the member namespace (`result.done`). Parameterized runtime `is` checks remain forbidden until generic arguments are reified; the iterator protocol does not weaken that rule.
+
+`async` and `generator` are independent modifiers and may appear in either order. Inside a generator, `yield value` suspends the activation after producing one element. A bare `return;` completes the sequence. Returning a value from a generator is rejected.
+
+Async iteration uses `for await ... of ...`:
+
+```ores
+pub async fnc consume(): void {
+  for await const event of events() do
+    handle(event);
+  done
+  return;
+}
+```
+
+A synchronous `for ... of ...` consumes `Generator<T>` or ordinary synchronous iterables. `for await ... of ...` consumes `AsyncGenerator<T>` or a class whose `[Symbol.asyncIterator]()` method returns an `AsyncGenerator<T>`. It also accepts synchronous generators, arrays, tuples, and `[Symbol.iterator]()` values through a runtime-owned asynchronous adapter: every pull crosses the OresFuture boundary, and closing the loop closes the suspended adapter and its source. An asynchronous iterable still cannot be consumed by a synchronous loop.
+
+Generator activations are affine runtime state. They are not actor messages, shared values, or async-task payloads. `yield` is a suspension boundary: a live `MutexGuard` or borrow may not cross it in the current ownership model. Async iterator pulls are suspension boundaries as well.
+
+Actor callables cannot be generators. An actor mailbox turn may suspend only through the actor scheduler's continuation protocol; a generator activation must not escape a turn. Class methods and static class `fnc` are also non-generator declarations for now. A class can still implement `[Symbol.asyncIterator]()` by returning an async generator created by a top-level/module callable.
+
+The interpreter represents a live generator with one serialized resumable activation. The native/AOT compiler may lower the same contract to an explicit program-counter/state-machine frame. This mirrors the existing rule for `await`: the representation is backend-specific, but suspension/resumption semantics are language-level.
 
 ## Actors
 
@@ -643,6 +937,35 @@ let Fnc<int, int> fact = |int n| -> {
 };
 ```
 
+Callable types also support a signature-inside-generics spelling:
+
+```ores
+val Fnc<int(int)> doubler = |int value| -> {
+  return value * 2;
+};
+
+val Fnc<String(int, bool)> describe = |int value, bool enabled| -> {
+  return enabled ? "enabled" : "disabled";
+};
+```
+
+The type before the inner parentheses is the result type, and the types inside
+the parentheses are the parameter types. Optional documentation-only parameter
+names are accepted, so `Fnc<String(int value, bool enabled)>` is equivalent.
+
+The existing comma form remains supported for compatibility, with parameter
+types first and the result type last:
+
+```ores
+Fnc<String(int, bool)>   // signature form: returns String
+Fnc<int, bool, String>   // comma form: exactly the same type
+(int, bool) => String    // ordinary function-type form: exactly the same type
+```
+
+`Function<...>` is an alias of `Fnc<...>` and accepts both generic spellings.
+All of these forms normalize to the same callable type; they do not create
+distinct overload, ABI, runtime, or closure representations.
+
 ## Semicolons
 
 Semicolons are strongly recommended. They remain the canonical formatter output.
@@ -700,7 +1023,17 @@ define class Lookup as
 end
 ```
 
-Two methods with the same name and same arity are a compile-time error even when their parameter types differ. Top-level/module `fnc` and `routine` declarations never overload.
+Overload identity is exactly **name + arity**, where arity counts only caller-supplied arguments; the implicit or explicit `self` receiver is not counted. Two instance methods with the same name and same arity are a compile-time error even when their parameter types, parameter names, generic parameters, async modifier, or return types differ. Arity selects the callable slot; after that selection, every supplied argument must still type-check positionally against that slot's declared parameter types or compilation fails. Parameter and return types validate the selected callable contract, but they never choose between overloads.
+
+Static class functions follow the same arity-only rule in their separate class-level namespace. A static function in a generic class does not implicitly capture the class's generic parameters because a class-level call has no instance generic binding; it must declare any static-function generics itself.
+
+A same-name/same-arity member inherited from one parent is an override slot, not a type-based overload. If distinct parents contribute that same slot, the child must explicitly resolve it. Generic parent/interface arguments are substituted only after the arity slot is selected, and incompatible generic views are rejected rather than used as overload discriminators.
+
+Abstract methods use the same slot identity. Every caller-visible arity of an abstract method is a separate required slot, and a concrete subclass must provide a concrete compatible implementation for each inherited abstract slot. Abstract classes cannot be instantiated.
+
+Special symbol methods such as `[Symbol.iterator]` are not exempt: they use the same name + arity identity, inheritance ambiguity checks, and override-contract rules as ordinary methods.
+
+Top-level/module callables use the same **name + exact arity** overload rule. Same-name/different-arity `fnc` declarations are valid, and same-name/different-arity `routine` declarations are valid. A single name may not mix `fnc` and `routine` declarations, because those kinds have different reifiability/recursion semantics but occupy the same module value namespace.
 
 ## Ternary expressions
 
@@ -795,11 +1128,11 @@ In the typed shorthand, `int i = 0` creates an implicit mutable `let i: int` sco
 and iterator-style loops. The compact `of` form does not require parentheses, and both body styles are valid:
 
 ```ores
-for item of values do
+for const item of values do
   work(item)
 done
 
-for [key, value] of entries do
+for const [key, value] of entries do
   consume(key, value)
 done
 
@@ -808,12 +1141,26 @@ for let [key, value] of mutable_entries {
   consume(key, value);
 }
 
-for (val item of values) {
+for (const item of values) {
   work(item);
 }
 ```
 
-A sequence pattern defaults to `val` bindings. `for let [k, v] ...` or `for const [k, v] ...` applies that binding kind to the pattern, while an explicit kind inside the pattern propagates to subsequent names. `_` discards one tuple/list position without creating a binding.
+Iterator variables are declarations, so every `for ... of ...` header must explicitly use `const` or `let`. Use `const` for the normal read-only iteration case and `let` only when the per-iteration local is rebound. Sequence patterns require the same outer declaration, such as `for const [k, v] of entries`; an explicit `const` or `let` inside the pattern may change the binding kind for subsequent names. `_` discards one tuple/list position without creating a binding.
+
+Bare forms such as `for item of values` are rejected at compile time with `variable used before declared`. `val` is not accepted as a for-of binder; the iterator surface intentionally uses only `const` and `let`.
+
+`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn. It does **not** claim that the element value is a compile-time constant; the ordinary compile-time-constant initializer rule for standalone `const` declarations does not apply to this compiler-initialized slot. `let` creates the same per-iteration slot but permits rebinding that local.
+
+Parentheses may fence the entire iterator header when that improves readability or avoids syntactic ambiguity:
+
+```ores
+for (const item of complex_iterable()) do
+  work(item);
+done
+```
+
+Parentheses never make a bare name or typed-looking name into a declaration: `for (item of values)` and `for (int item of values)` are both errors until the binding begins with `const` or `let`. Element types are inferred from the iterable in the current grammar; write `for const item of values`, not `for const int item of values`. Constrain or cast the iterable when a stronger element type is required.
 
 A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 
@@ -827,6 +1174,36 @@ define class Bag as
 end
 ```
 
+Generator call results participate in the same iterator loop syntax:
+
+```ores
+generator fnc values(): int {
+  yield 1;
+  yield 2;
+  return;
+}
+
+for const value of values() do
+  work(value)
+done
+```
+
+Async iterators use the explicit `for await` form and require an async callable context:
+
+```ores
+async generator fnc values_async(): int {
+  yield 1;
+  yield 2;
+  return;
+}
+
+for await const value of values_async() do
+  await work_async(value)
+done
+```
+
+Classes may expose `[Symbol.asyncIterator](): AsyncGenerator<T>` when they need a custom async-iteration facade.
+
 The compiler/runtime inserts a scheduler safepoint on **every `loop`, conventional `for`, and iterator-loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
 
 This means Oreslang does not require recursion as the only way to loop, while still giving actor/isolate schedulers a compulsory cooperation point inside generated loop execution.
@@ -838,8 +1215,16 @@ In addition to `stdio.print` and `stdio.println`, the stream-shaped form is avai
 ```ores
 stdio.stdout.write(value);
 stdio.stdout.println(value);
+stdio.stdout.log("ORES_TEST|", status, "|", full_name, "|", detail);
+
+val parts = arr["ORES_TEST|", status, "|", full_name, "|", detail];
+stdio.stdout.log(...parts);
+stdio.stdout.logList(parts);
 ```
 
+`stdout.log(...)` stringifies each argument, concatenates the values with no inserted separator, and appends one newline. This makes it a compact replacement for a run of `write(...)` calls followed by `println(...)`. `stdout.logList(sequence)` is exactly the sequence form of the same operation and is equivalent to `stdout.log(...sequence)`.
+
+The `...expression` syntax is an argument-list spread operator. In this initial variadic surface the spread value must be an Array/List/tuple. Oreslang keeps fixed-arity calls statically sound: dynamic spread is rejected for ordinary fixed-arity functions and methods until the language has an explicit variadic callable type.
 
 ## Execution profiles: JIT, AOT, and hybrid
 
@@ -939,29 +1324,45 @@ Without one of those explicit structural opt-ins, passing that object to a nomin
 
 `self` is injected by the compiler/runtime as an immutable receiver binding. It cannot be declared as a local parameter name or reassigned.
 
+Instance method code belongs to the class declaration, not to individual objects. Creating one million `Box` values does not create one million copies of `Box.get`.
+
 Direct method calls do not create per-instance closures:
 
 ```ores
 box.get();
 ```
 
-The runtime resolves the shared class method definition and passes the receiver as the hidden first argument.
+The compiler/runtime resolves the shared class method slot and passes `box` as a hidden first argument. The hidden receiver is not part of the source-visible arity used for overload selection.
 
-Instance and actor methods are intentionally **not** first-class values:
-
-```ores
-val Fnc<int> callback = box.get; // compile-time error
-```
-
-When callback behavior is required, the receiver capture must be explicit:
+Methods may also be used as first-class callbacks:
 
 ```ores
-val Fnc<int> callback = || -> {
-  return box.get();
-};
+val Fnc<int> callback = box.get;
+doWork(self.get);
 ```
 
-The lambda has ordinary closure-capture semantics; the method itself remains one shared class definition. Oreslang therefore has no implicit bound-method object and no JavaScript-style dynamic `this` rebinding.
+A method value is a small bound-method/fat-pointer value: receiver identity plus shared method identity/slot information. It never contains a copied method body. Calling `callback()` always uses the receiver captured at extraction time; there is no JavaScript-style dynamic `this` rebinding.
+
+Direct calls allocate no bound-method carrier. First-class extraction logically materializes the receiver+slot pair; an AOT or JIT backend may keep a non-escaping pair in registers/on the stack or eliminate it entirely, while an escaping callback may require a small heap object.
+
+If a method name is overloaded by arity, an expected function type may select the slot:
+
+```ores
+fnc doWork(Fnc<int> callback): int {
+  return callback();
+}
+
+define class Box as
+  pub get(): int { return 1; }
+  pub get(int fallback): int { return fallback; }
+
+  pub run(): int {
+    return doWork(self.get); // selects get/0
+  }
+end
+```
+
+An untyped overloaded extraction such as `val callback = box.get;` is rejected because no arity is available to identify the closed-world method slot. Generic method values remain direct-call-only until Oreslang has an explicit specialization syntax for them.
 
 
 ## Incremental compilation and code units

@@ -190,6 +190,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
+            if (expression instanceof Ast.SpreadExpr spread) return containsLambda(spread.expression());
             if (expression instanceof Ast.BinaryExpr binary) {
                 return containsLambda(binary.left()) || containsLambda(binary.right());
             }
@@ -275,6 +276,9 @@ public final class TreeShaker {
                         substitute(cast.value(), substitutions, shadowed),
                         cast.targetType(),
                         cast.mode());
+            }
+            if (expression instanceof Ast.SpreadExpr spread) {
+                return new Ast.SpreadExpr(substitute(spread.expression(), substitutions, shadowed));
             }
             if (expression instanceof Ast.BinaryExpr binary) {
                 return new Ast.BinaryExpr(
@@ -422,6 +426,20 @@ public final class TreeShaker {
             }
         }
 
+        private boolean constantEquals(Object left, Object right) {
+            if (left == right) return true;
+            if (left == null || right == null) return false;
+            if (left instanceof Number a && right instanceof Number b) {
+                boolean aIntegral = a instanceof Byte || a instanceof Short
+                        || a instanceof Integer || a instanceof Long;
+                boolean bIntegral = b instanceof Byte || b instanceof Short
+                        || b instanceof Integer || b instanceof Long;
+                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
+                return a.doubleValue() == b.doubleValue();
+            }
+            return Objects.equals(left, right);
+        }
+
         private Object evaluate(Ast.Expr expression, String module, Map<String, Object> locals) {
             if (expression == null) return UNKNOWN;
             if (expression instanceof Ast.LiteralExpr literal) return literal.value();
@@ -454,8 +472,8 @@ public final class TreeShaker {
                 return switch (binary.operator()) {
                     case "&&" -> left instanceof Boolean l && right instanceof Boolean r ? l && r : UNKNOWN;
                     case "||" -> left instanceof Boolean l && right instanceof Boolean r ? l || r : UNKNOWN;
-                    case "==" -> Objects.equals(left, right);
-                    case "!=" -> !Objects.equals(left, right);
+                    case "eq", "==" -> constantEquals(left, right);
+                    case "neq", "!=" -> !constantEquals(left, right);
                     case "<" -> compare(left, right, c -> c < 0);
                     case "<=" -> compare(left, right, c -> c <= 0);
                     case ">" -> compare(left, right, c -> c > 0);
@@ -503,6 +521,7 @@ public final class TreeShaker {
                         function.kind(),
                         function.visibility(),
                         function.async(),
+                        function.generator(),
                         function.nonLexical(),
                         function.actorKind(),
                         function.genericParameters(),
@@ -530,6 +549,19 @@ public final class TreeShaker {
                 for (Ast.FieldDecl field : klass.fields()) {
                     fields.add((Ast.FieldDecl) rewriteDeclaration(module, field));
                 }
+                Ast.ConstructorDecl constructor = klass.constructor();
+                if (constructor != null) {
+                    LinkedHashMap<String, Object> locals = new LinkedHashMap<>();
+                    locals.put("self", UNKNOWN);
+                    for (Ast.Param parameter : constructor.parameters()) {
+                        locals.put(parameter.name(), UNKNOWN);
+                    }
+                    constructor = new Ast.ConstructorDecl(
+                            constructor.visibility(),
+                            constructor.parameters(),
+                            constructor.annotations(),
+                            rewriteStatements(constructor.body(), module, locals));
+                }
                 List<Ast.MethodDecl> methods = new ArrayList<>();
                 for (Ast.MethodDecl method : klass.methods()) {
                     LinkedHashMap<String, Object> locals = new LinkedHashMap<>();
@@ -550,12 +582,14 @@ public final class TreeShaker {
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
+                        klass.visibility(),
                         klass.isAbstract(),
                         klass.actorKind(),
                         klass.genericParameters(),
                         klass.parents(),
                         klass.interfaces(),
                         fields,
+                        constructor,
                         methods);
             }
             return declaration;
@@ -596,6 +630,10 @@ public final class TreeShaker {
             if (statement instanceof Ast.ReturnStmt returned) {
                 return List.of(new Ast.ReturnStmt(
                         rewriteExpression(returned.value(), module, locals)));
+            }
+            if (statement instanceof Ast.YieldStmt yielded) {
+                return List.of(new Ast.YieldStmt(
+                        rewriteExpression(yielded.value(), module, locals)));
             }
             if (statement instanceof Ast.ExprStmt expression) {
                 return List.of(new Ast.ExprStmt(
@@ -695,6 +733,7 @@ public final class TreeShaker {
                 return List.of(new Ast.ForOfDestructureStmt(
                         loop.bindings(),
                         iterable,
+                        loop.asyncIteration(),
                         rewriteStatements(loop.body(), module, bodyLocals)));
             }
             if (statement instanceof Ast.ForOfStmt loop) {
@@ -705,6 +744,7 @@ public final class TreeShaker {
                         loop.bindingKind(),
                         loop.bindingName(),
                         iterable,
+                        loop.asyncIteration(),
                         rewriteStatements(loop.body(), module, bodyLocals)));
             }
             if (statement instanceof Ast.ForStmt loop) {
@@ -751,6 +791,9 @@ public final class TreeShaker {
                         rewriteExpression(cast.value(), module, locals),
                         cast.targetType(),
                         cast.mode());
+            }
+            if (expression instanceof Ast.SpreadExpr spread) {
+                return new Ast.SpreadExpr(rewriteExpression(spread.expression(), module, locals));
             }
             if (expression instanceof Ast.BinaryExpr binary) {
                 Ast.Expr left = rewriteExpression(binary.left(), module, locals);
@@ -908,8 +951,10 @@ public final class TreeShaker {
             if (declaration instanceof Ast.InterfaceDecl iface) {
                 return iface.visibility() == Ast.Visibility.PUBLIC;
             }
-            // Classes and aliases currently have no declaration-level visibility.
-            return declaration instanceof Ast.ClassDecl || declaration instanceof Ast.TypeAliasDecl;
+            if (declaration instanceof Ast.ClassDecl klass) {
+                return klass.visibility() == Ast.Visibility.PUBLIC;
+            }
+            return declaration instanceof Ast.TypeAliasDecl;
         }
 
         private void mark(String id) {
@@ -920,7 +965,8 @@ public final class TreeShaker {
             for (Ast.ModuleDecl module : input.modules()) {
                 if (!module.name().equals(moduleName)) continue;
                 for (Ast.Decl declaration : module.declarations()) {
-                    boolean exposed = declaration instanceof Ast.ClassDecl
+                    boolean exposed = declaration instanceof Ast.ClassDecl klass
+                                    && klass.visibility() == Ast.Visibility.PUBLIC
                             || declaration instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                             || declaration instanceof Ast.FieldDecl field
@@ -970,6 +1016,15 @@ public final class TreeShaker {
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));
+                }
+                if (klass.constructor() != null) {
+                    Ast.ConstructorDecl constructor = klass.constructor();
+                    for (Ast.Param parameter : constructor.parameters()) scanType(parameter.type());
+                    for (Ast.Annotation annotation : constructor.annotations()) scanAnnotation(annotation);
+                    LinkedHashSet<String> locals = new LinkedHashSet<>();
+                    locals.add("self");
+                    for (Ast.Param parameter : constructor.parameters()) locals.add(parameter.name());
+                    scanStatements(module, constructor.body(), locals);
                 }
                 for (Ast.MethodDecl method : klass.methods()) {
                     scanType(method.explicitReceiverType());
@@ -1027,6 +1082,8 @@ public final class TreeShaker {
                     }
                 } else if (statement instanceof Ast.ReturnStmt returned) {
                     scanExpression(module, returned.value(), locals);
+                } else if (statement instanceof Ast.YieldStmt yielded) {
+                    scanExpression(module, yielded.value(), locals);
                 } else if (statement instanceof Ast.ExprStmt expression) {
                     scanExpression(module, expression.expression(), locals);
                 } else if (statement instanceof Ast.DeferStmt deferred) {
@@ -1130,6 +1187,8 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.CastExpr cast) {
                 scanExpression(module, cast.value(), locals);
                 scanType(cast.targetType());
+            } else if (expression instanceof Ast.SpreadExpr spread) {
+                scanExpression(module, spread.expression(), locals);
             } else if (expression instanceof Ast.BinaryExpr binary) {
                 scanExpression(module, binary.left(), locals);
                 scanExpression(module, binary.right(), locals);

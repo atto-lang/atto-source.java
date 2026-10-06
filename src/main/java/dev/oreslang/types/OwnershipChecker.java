@@ -87,7 +87,29 @@ public final class OwnershipChecker {
         scope.close();
     }
 
+    private Ast.ClassDecl initializingClass;
+
     private void checkClass(Ast.ClassDecl klass) {
+        if (klass.constructor() != null) {
+            Ast.ConstructorDecl constructor = klass.constructor();
+            Scope scope = new Scope(null);
+            scope.define("self", new VarState(
+                    Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
+                    false,
+                    ValueKind.MUT_BORROW,
+                    Origin.PARAM));
+            for (Ast.Param param : constructor.parameters()) {
+                scope.define(param.name(), stateForParam(param));
+            }
+            initializingClass = klass;
+            try {
+                checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
+            } finally {
+                initializingClass = null;
+            }
+            scope.close();
+        }
+
         for (Ast.MethodDecl method : klass.methods()) {
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
@@ -187,6 +209,19 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.YieldStmt yielded) {
+            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+                throw error("cannot yield while holding a MutexGuard; release the guard before suspension");
+            }
+            if (scope.hasLiveBorrow()) {
+                throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
+            }
+            ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (containsMutexGuardType(value.type)) {
+                throw error("MutexGuard values cannot be yielded from a generator");
+            }
+            return;
+        }
         if (stmt instanceof Ast.ExprStmt expression) {
             ValueInfo value = checkExpr(expression.expression(), scope, false);
             if (containsMutexGuardType(value.type)) {
@@ -262,14 +297,18 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            if (loop.asyncIteration()
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
+                throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
+            }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
-            Ast.TypeRef elementType = iterableElementType(iterable.type);
+            Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
             for (int i = 0; i < loop.bindings().size(); i++) {
                 Ast.DestructureBinding binding = loop.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i);
+                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i, binding.rest());
                 loopScope.define(binding.name(), new VarState(
                         bindingType,
                         binding.kind() == Ast.BindingKind.LET,
@@ -282,8 +321,12 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
+            if (loop.asyncIteration()
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
+                throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
+            }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
-            Ast.TypeRef elementType = iterableElementType(iterable.type);
+            Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
             loopScope.define(loop.bindingName(), new VarState(
@@ -451,6 +494,9 @@ public final class OwnershipChecker {
                             : ValueKind.MOVE_ONLY,
                     null);
         }
+        if (expr instanceof Ast.SpreadExpr spread) {
+            return checkExpr(spread.expression(), scope, consuming);
+        }
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
         }
@@ -503,6 +549,11 @@ public final class OwnershipChecker {
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
                     return new ValueInfo(fieldType, fieldKind, null);
+                }
+                if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
+                        && isRootedAtActorSelf(member.receiver(), scope)) {
+                    throw error("actor self method '" + klass.name() + "." + member.member()
+                            + "' cannot escape its mailbox turn as a bound method; invoke it directly inside the turn");
                 }
             }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
@@ -588,6 +639,16 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (isBuiltinStdoutCall(call, "log", scope) || isBuiltinStdoutCall(call, "logList", scope)) {
+            for (Ast.Expr argument : call.arguments()) {
+                Ast.Expr value = argument instanceof Ast.SpreadExpr spread ? spread.expression() : argument;
+                ValueInfo info = checkExpr(value, scope, false);
+                if (containsMutexGuardType(info.type)) {
+                    throw error("MutexGuard cannot be formatted or logged");
+                }
+            }
+            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -634,7 +695,8 @@ public final class OwnershipChecker {
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
 
@@ -650,7 +712,8 @@ public final class OwnershipChecker {
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
 
@@ -676,7 +739,8 @@ public final class OwnershipChecker {
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name());
-                    return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                    Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
+                    return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
             }
 
@@ -765,7 +829,8 @@ public final class OwnershipChecker {
                     throw error("method '" + target.owner().name() + "." + method.name()
                             + "' cannot return move-only state through a mutex guard/critical-section borrow");
                 }
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef callResult = callableResultType(signature.result(), method.async(), false);
+                return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
 
@@ -777,6 +842,14 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr member) || !member.member().equals(memberName)) return false;
+        if (!(member.receiver() instanceof Ast.MemberExpr stdout) || !stdout.member().equals("stdout")) return false;
+        return stdout.receiver() instanceof Ast.NameExpr stdio
+                && stdio.name().equals("stdio")
+                && scope.lookup("stdio") == null;
     }
 
     private ValueInfo checkBuiltinSumCall(Ast.MemberExpr member, List<Ast.Expr> arguments, Scope scope) {
@@ -895,7 +968,9 @@ public final class OwnershipChecker {
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
                 if (field == null) throw error("unknown field '" + member.member() + "' on " + klass.name());
-                if (field.bindingKind() != Ast.BindingKind.LET) {
+                if (field.bindingKind() != Ast.BindingKind.LET
+                        && !(klass == initializingClass && member.receiver() instanceof Ast.NameExpr name
+                            && name.name().equals("self"))) {
                     throw error("field '" + klass.name() + "." + member.member() + "' is immutable; declare the field with let to permit mutation");
                 }
             }
@@ -1026,6 +1101,8 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.YieldStmt yielded) {
+                scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
@@ -1111,6 +1188,8 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.CallExpr e) {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.SpreadExpr e) {
+            scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.MemberExpr e) scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
         else if (expr instanceof Ast.IndexExpr e) {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
@@ -1624,51 +1703,162 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
-    private Ast.TypeRef sequenceDestructureBindingType(Ast.TypeRef source, int index) {
+    private Ast.TypeRef sequenceDestructureBindingType(Ast.TypeRef source, int index, boolean rest) {
         if (source == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
-        if (concrete.isTupleType() && index < concrete.arguments().size()) {
-            return concrete.arguments().get(index);
+
+        if (concrete.isUnion()) {
+            List<Ast.TypeRef> alternatives = concrete.arguments().stream()
+                    .map(option -> sequenceDestructureBindingType(option, index, rest))
+                    .toList();
+            if (alternatives.stream().anyMatch(type -> type.name().equals("$infer$"))) {
+                return Ast.TypeRef.inferred();
+            }
+            return Ast.TypeRef.union(alternatives);
         }
+
+        Ast.TypeRef iterableShape = sequenceDestructureSourceType(concrete);
+        if (!iterableShape.equals(concrete)) {
+            return sequenceDestructureBindingType(iterableShape, index, rest);
+        }
+
+        if (concrete.isTupleType()) {
+            if (rest) {
+                if (index > concrete.arguments().size()) return Ast.TypeRef.inferred();
+                return Ast.TypeRef.tupleType(concrete.arguments().subList(index, concrete.arguments().size()));
+            }
+            if (index < concrete.arguments().size()) return concrete.arguments().get(index);
+            return Ast.TypeRef.inferred();
+        }
+
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
                 && concrete.arguments().size() == 1) {
-            return concrete.arguments().getFirst();
+            return rest ? concrete : concrete.arguments().getFirst();
+        }
+        return Ast.TypeRef.inferred();
+    }
+
+    private Ast.TypeRef sequenceDestructureSourceType(Ast.TypeRef source) {
+        Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass == null) return concrete;
+
+        ResolvedMethod iterator =
+                findMethodTarget(klass, concrete, "Symbol.iterator", 0, new LinkedHashSet<>());
+        if (iterator == null) return concrete;
+
+        Ast.TypeRef result = substituteType(
+                iterator.method().returnType(),
+                genericBindings(iterator.owner().genericParameters(), iterator.ownerType().arguments()));
+        if (result == null) return Ast.TypeRef.inferred();
+        if (result.isTupleType()) return result;
+        if ((result.name().equals("Array") || result.name().equals("List"))
+                && result.arguments().size() == 1) {
+            return result;
         }
         return Ast.TypeRef.inferred();
     }
 
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
         if (source == null) return Ast.TypeRef.inferred();
+        Ast.DestructureBinding binding = destructure.bindings().get(index);
         if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
-            return sequenceDestructureBindingType(source, index);
+            return sequenceDestructureBindingType(source, index, binding.rest());
         } else {
             Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
-            if (concrete.isRecordType()) {
-                Ast.TypeRef member = concrete.recordMembers().get(name);
-                if (member != null) return member;
-            }
-            if (concrete.name().equals("DynamicStruct") && concrete.arguments().size() == 1) {
-                return concrete.arguments().getFirst();
-            }
-            Ast.ClassDecl klass = findClass(concrete.name());
-            if (klass != null) {
-                ResolvedField target = findFieldTarget(klass, concrete, name, new LinkedHashSet<>());
-                if (target != null && target.field().visibility() == Ast.Visibility.PUBLIC) {
-                    return substituteType(
-                            target.field().type(),
-                            genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
+
+            if (binding.rest()) {
+                if (concrete.isUnion()) {
+                    List<Ast.TypeRef> alternatives = concrete.arguments().stream()
+                            .map(option -> objectRestBindingType(option, destructure.bindings()))
+                            .toList();
+                    if (alternatives.stream().anyMatch(type -> type.name().equals("$infer$"))) {
+                        return Ast.TypeRef.inferred();
+                    }
+                    return Ast.TypeRef.union(alternatives);
                 }
+                return objectRestBindingType(concrete, destructure.bindings());
+            }
+
+            if (concrete.isUnion()) {
+                List<Ast.TypeRef> alternatives = concrete.arguments().stream()
+                        .map(option -> objectMemberBindingType(option, name))
+                        .toList();
+                if (alternatives.stream().anyMatch(type -> type.name().equals("$infer$"))) {
+                    return Ast.TypeRef.inferred();
+                }
+                return Ast.TypeRef.union(alternatives);
+            }
+            return objectMemberBindingType(concrete, name);
+        }
+    }
+
+    private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
+        Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
+        if (!concrete.isRecordType()) return Ast.TypeRef.inferred();
+
+        Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.recordMembers());
+        for (Ast.DestructureBinding binding : bindings) {
+            if (!binding.rest() && !binding.isDiscard()) remainder.remove(binding.name());
+        }
+        return Ast.TypeRef.recordType(remainder);
+    }
+
+    private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
+        if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
+        if (concrete.isRecordType()) {
+            Ast.TypeRef member = concrete.recordMembers().get(name);
+            if (member != null) return member;
+        }
+        if (concrete.name().equals("DynamicStruct") && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass != null) {
+            ResolvedField target = findFieldTarget(klass, concrete, name, new LinkedHashSet<>());
+            if (target != null && target.field().visibility() == Ast.Visibility.PUBLIC) {
+                return substituteType(
+                        target.field().type(),
+                        genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
             }
         }
         return Ast.TypeRef.inferred();
     }
 
-    private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType) {
-        if (iterableType == null) return Ast.TypeRef.inferred();
-        if ((iterableType.name().equals("Array") || iterableType.name().equals("List"))
-                && iterableType.arguments().size() == 1) {
-            return iterableType.arguments().getFirst();
+    private Ast.TypeRef callableResultType(
+            Ast.TypeRef result,
+            boolean async,
+            boolean generator) {
+        if (generator) {
+            return new Ast.TypeRef(
+                    async ? "AsyncIterator" : "Iterator",
+                    List.of(result),
+                    false);
         }
+        if (async) return new Ast.TypeRef("Future", List.of(result), false);
+        return result;
+    }
+
+    private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType, boolean asyncIteration) {
+        if (iterableType == null) return Ast.TypeRef.inferred();
+        Ast.TypeRef concrete = iterableType.isBorrow() ? iterableType.borrowedTarget() : iterableType;
+        if (asyncIteration && (concrete.name().equals("AsyncGenerator") || concrete.name().equals("AsyncIterator"))
+                && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+        if ((concrete.name().equals("Array") || concrete.name().equals("List")
+                        || concrete.name().equals("Generator") || concrete.name().equals("Iterator"))
+                && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+        if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
+            Ast.TypeRef first = concrete.arguments().getFirst();
+            return concrete.arguments().stream().allMatch(first::equals)
+                    ? first
+                    : Ast.TypeRef.inferred();
+        }
+        Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
+        if (!sequence.equals(concrete)) return iterableElementType(sequence, asyncIteration);
         return Ast.TypeRef.inferred();
     }
 
@@ -1820,6 +2010,17 @@ public final class OwnershipChecker {
         private boolean hasLiveMutexGuard() {
             for (VarState state : visibleStates()) {
                 if (!state.moved && containsAcquiredMutexGuardType(state.type)) return true;
+            }
+            return false;
+        }
+
+        private boolean hasLiveBorrow() {
+            for (VarState state : visibleStates()) {
+                if (state.moved) continue;
+                if (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                        || state.immutableBorrows > 0 || state.mutableBorrowed) {
+                    return true;
+                }
             }
             return false;
         }
