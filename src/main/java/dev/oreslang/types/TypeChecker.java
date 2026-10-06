@@ -2146,7 +2146,15 @@ public final class TypeChecker {
             }
             if (expected instanceof Union union
                     && union.options().stream().allMatch(option -> option instanceof Tuple)) {
-                return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+                List<TupleKind> kinds = union.options().stream()
+                        .map(option -> ((Tuple) option).kind())
+                        .distinct()
+                        .toList();
+                if (kinds.size() == 1) {
+                    return new Tuple(
+                            list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
+                            kinds.getFirst());
+                }
             }
         }
         return typeOf(expr, env, generics, self);
