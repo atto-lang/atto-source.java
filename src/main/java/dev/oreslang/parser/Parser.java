@@ -69,7 +69,7 @@ public final class Parser {
                     continue;
                 }
                 if (match(CONTRACT)) {
-                    if (modifiers.visibility == Ast.Visibility.PUBLIC || modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (modifiers.structural || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "contracts do not accept class/callable modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
@@ -87,13 +87,8 @@ public final class Parser {
                             modifiers.isAbstract || afterDefineAbstract, true));
                     continue;
                 }
-                if (match(CONTRACT)) {
-                    if (modifiers.generator || modifiers.nonLexical || modifiers.structural || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) throw error(previous(), "contract declarations do not accept callable/class modifiers");
-                    rejectCallableStructuralAnnotation(annotations, "contract declarations");
-                    rootDeclarations.add(parseContract(modifiers.visibility));
-                    continue;
-                }
-                if (match(INTERFACE)) { throw error(previous(), "'generator' applies only to fnc or routine declarations");
+                if (match(INTERFACE)) {
+                    if (modifiers.generator) throw error(previous(), "'generator' applies only to fnc or routine declarations");
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                     if (modifiers.structural) throw error(previous(), "'structural' applies to callable declarations, not interface declarations");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
@@ -508,6 +503,7 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
+        if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
 
         List<Ast.InterfaceMember> members = new ArrayList<>();
@@ -540,7 +536,7 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                Ast.TypeRef returns = match(FAT_ARROW) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns));
                 continue;
