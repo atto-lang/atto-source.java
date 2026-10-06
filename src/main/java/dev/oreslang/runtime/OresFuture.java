@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -29,6 +30,10 @@ import java.util.function.Supplier;
  * <p>Completion authority belongs to the runtime operation that created the
  * Future. Guest code may observe state, await, or request cancellation, but it
  * cannot forge a value/failure.</p>
+ *
+ * <p>Blocking host bridges ({@code get}, timed {@code get}, and {@code join})
+ * reject pending reads inside actor execution. Settled reads and zero-timeout
+ * polling remain available without parking an actor dispatcher.</p>
  */
 public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private static final Object PENDING = new Object();
@@ -93,16 +98,31 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
     }
 
+    private final BooleanSupplier cancelAdmission;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
     public OresFuture() {
-        this(() -> { });
+        this(() -> true, () -> { });
     }
 
     OresFuture(Runnable cancelHook) {
+        this(() -> true, cancelHook);
+    }
+
+    /**
+     * Runtime-only constructor for operations whose cancellation must win an
+     * external arbitration before the Future transitions to cancelled.
+     *
+     * <p>This is used by channels/select so a cancellation racing with a ready
+     * case cannot consume a channel value after cancellation has already won.
+     * Guest code never receives the admission capability.</p>
+     */
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
+        this.cancelAdmission = Objects.requireNonNull(
+                cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
     }
@@ -407,6 +427,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
+        if (state.get() != PENDING) return false;
+        if (!cancelAdmission.getAsBoolean()) return false;
+
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
         if (!settle(new Cancelled(cancelled))) return false;
@@ -503,6 +526,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Object observed = state.get();
         boolean interrupted = false;
         if (observed == PENDING) {
+            requireBlockingAllowed();
             java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
             whenCompleteRuntime((value, failure) -> done.countDown());
             for (;;) {
@@ -566,6 +590,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private Object awaitState(long timeout, TimeUnit unit) throws InterruptedException {
         Object observed = state.get();
         if (observed != PENDING) return observed;
+        // Zero-timeout polling observes state without registering an actor waiter.
+        // The public timed-get API rejects negative timeouts.
+        if (unit != null && timeout == 0L) return PENDING;
+        requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
         whenCompleteRuntime((value, failure) -> done.countDown());
@@ -576,6 +604,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             return state.get() == PENDING ? PENDING : state.get();
         }
         return state.get();
+    }
+
+    private static void requireBlockingAllowed() {
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -637,7 +672,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
     }
 
-    static Throwable unwrap(Throwable failure) {
+    public static Throwable unwrap(Throwable failure) {
         Throwable current = failure;
         while ((current instanceof CompletionException || current instanceof ExecutionException)
                 && current.getCause() != null) {

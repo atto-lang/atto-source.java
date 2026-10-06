@@ -522,6 +522,7 @@ public final class TreeShaker {
                         function.visibility(),
                         function.async(),
                         function.generator(),
+                        function.structural(),
                         function.nonLexical(),
                         function.actorKind(),
                         function.genericParameters(),
@@ -573,6 +574,7 @@ public final class TreeShaker {
                             method.isStatic(),
                             method.isAbstract(),
                             method.async(),
+                            method.structural(),
                             method.explicitReceiverType(),
                             method.genericParameters(),
                             method.parameters(),
@@ -714,6 +716,27 @@ public final class TreeShaker {
                         subject,
                         cases,
                         rewriteStatements(switched.defaultBody(), module, new LinkedHashMap<>(locals))));
+            }
+            if (statement instanceof Ast.SelectStmt selected) {
+                List<Ast.SelectArm> arms = new ArrayList<>();
+                for (Ast.SelectArm arm : selected.arms()) {
+                    LinkedHashMap<String, Object> armLocals =
+                            new LinkedHashMap<>(locals);
+                    if (arm.bindingName() != null) {
+                        armLocals.put(arm.bindingName(), UNKNOWN);
+                    }
+                    arms.add(new Ast.SelectArm(
+                            arm.operation(),
+                            rewriteExpression(arm.channel(), module, locals),
+                            rewriteExpression(arm.value(), module, locals),
+                            arm.bindingKind(),
+                            arm.bindingName(),
+                            rewriteStatements(arm.body(), module, armLocals)));
+                }
+                return List.of(new Ast.SelectStmt(
+                        selected.mode(),
+                        selected.policy(),
+                        arms));
             }
             if (statement instanceof Ast.TryStmt tried) {
                 LinkedHashMap<String, Object> catchLocals = new LinkedHashMap<>(locals);
@@ -864,6 +887,19 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(rewriteExpression(awaited.expression(), module, locals));
+            }
+            if (expression instanceof Ast.ChannelOpExpr operation) {
+                return new Ast.ChannelOpExpr(
+                        operation.operation(),
+                        operation.mode(),
+                        rewriteExpression(operation.channel(), module, locals),
+                        rewriteExpression(operation.value(), module, locals));
+            }
+            if (expression instanceof Ast.DynamicSelectExpr selected) {
+                return new Ast.DynamicSelectExpr(
+                        selected.mode(),
+                        selected.policy(),
+                        rewriteExpression(selected.cases(), module, locals));
             }
             if (expression instanceof Ast.ListExpr list) {
                 List<Ast.Expr> elements = new ArrayList<>();
@@ -1114,6 +1150,17 @@ public final class TreeShaker {
                         scanStatements(module, arm.body(), new LinkedHashSet<>(locals));
                     }
                     scanStatements(module, switched.defaultBody(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.SelectStmt selected) {
+                    for (Ast.SelectArm arm : selected.arms()) {
+                        scanExpression(module, arm.channel(), locals);
+                        scanExpression(module, arm.value(), locals);
+                        LinkedHashSet<String> armLocals =
+                                new LinkedHashSet<>(locals);
+                        if (arm.bindingName() != null) {
+                            armLocals.add(arm.bindingName());
+                        }
+                        scanStatements(module, arm.body(), armLocals);
+                    }
                 } else if (statement instanceof Ast.TryStmt tried) {
                     scanStatements(module, tried.body(), new LinkedHashSet<>(locals));
                     LinkedHashSet<String> catchLocals = new LinkedHashSet<>(locals);
@@ -1213,6 +1260,12 @@ public final class TreeShaker {
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
                 scanExpression(module, awaited.expression(), locals);
+            }
+            else if (expression instanceof Ast.ChannelOpExpr operation) {
+                scanExpression(module, operation.channel(), locals);
+                scanExpression(module, operation.value(), locals);
+            } else if (expression instanceof Ast.DynamicSelectExpr selected) {
+                scanExpression(module, selected.cases(), locals);
             } else if (expression instanceof Ast.ListExpr list) {
                 for (Ast.Expr element : list.elements()) scanExpression(module, element, locals);
             } else if (expression instanceof Ast.TupleExpr tuple) {

@@ -52,16 +52,15 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void modulesAreTypedNamespacesAndCanAdhereToInterfaces() {
+    void modulesAreTypedNamespacesAndCanConformToContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define interface MathApi
+                  define contract MathApi as
                     fnc add(int a, int b) => int;
                   end
                 end
 
-                @AdheresTo(contracts.MathApi)
-                define module math
+                define module math conforms contracts.MathApi as
                   pub fnc add(int a, int b): int { return a + b; }
                 end
 
@@ -79,13 +78,12 @@ final class LanguageHardeningTest {
     void directOnlyRoutineStillParticipatesInModuleCallableContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define interface Api
+                  define contract Api as
                     fnc ping(int value) => int;
                   end
                 end
 
-                @AdheresTo(contracts.Api)
-                define module service
+                define module service conforms contracts.Api as
                   pub routine ping(int value): int {
                     return value + 1;
                   }
@@ -172,7 +170,7 @@ final class LanguageHardeningTest {
     void structuralMethodsAreDirectOnlyButDirectCallsRemainTyped() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module model
-                  define interface Api
+                  define interface Api as
                     fnc apply(int value) => int;
                   end
 
@@ -186,7 +184,7 @@ final class LanguageHardeningTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define module model
-                          define interface Api
+                          define interface Api as
                             fnc apply(int value) => int;
                           end
 
@@ -203,7 +201,7 @@ final class LanguageHardeningTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define module model
-                          define interface Api
+                          define interface Api as
                             fnc apply(int value) => int;
                           end
 
@@ -430,20 +428,19 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void moduleAdherenceRejectsMissingExports() {
+    void moduleConformanceRejectsMissingExports() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define interface Api
+                  define contract Api as
                     fnc ping() => int;
                   end
                 end
 
-                @AdheresTo(contracts.Api)
-                define module broken
+                define module broken conforms contracts.Api as
                   pub fnc pong(): int { return 1; }
                 end
                 """)));
-        assertTrue(error.getMessage().contains("does not adhere"));
+        assertTrue(error.getMessage().contains("does not conform"));
     }
 
     @Test
@@ -599,6 +596,90 @@ final class LanguageHardeningTest {
                 end
                 """)));
     }
+    @Test
+    void capabilityAdmissionTraversesMatchSwitchAndDestructureLoops() {
+        Ast.Program inMatch = TypeChecker.check(Parser.parse("""
+                fnc hidden(int tag): void {
+                  match first tag
+                  _ -> {
+                    val lock = SharedMutex.new(1);
+                    return;
+                  }
+                  end
+                }
+                """));
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(
+                        inMatch,
+                        IsolatePolicy.strictFaas()));
+
+        Ast.Program inSwitch = TypeChecker.check(Parser.parse("""
+                fnc hidden(int tag): void {
+                  switch tag
+                  case 1 -> {
+                    val lock = SharedMutex.new(1);
+                  }
+                  default -> {
+                    return;
+                  }
+                  end
+                  return;
+                }
+                """));
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(
+                        inSwitch,
+                        IsolatePolicy.strictFaas()));
+
+        Ast.Program inDestructureLoop = TypeChecker.check(Parser.parse("""
+                fnc hidden(): void {
+                  for const [left, right] of arr[arr[1, 2]] {
+                    val lock = SharedMutex.new(left + right);
+                  }
+                  return;
+                }
+                """));
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(
+                        inDestructureLoop,
+                        IsolatePolicy.strictFaas()));
+    }
+
+    @Test
+    void staticClassGenericCannotHideInsideSelectArm() {
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Token<X> as
+                        end
+
+                        define class Box<T> as
+                          pub static fnc bad(): void {
+                            val Channel<int> input = Channel.new<int>(1);
+
+                            try select {
+                              case readch input: val value {
+                                val token = new Token<T>();
+                              }
+                              default: {
+                                stdio.println("not ready");
+                              }
+                            }
+
+                            return;
+                          }
+                        end
+                        """)));
+
+        assertTrue(
+                rejected.getMessage().contains("static")
+                        && rejected.getMessage().contains("T"),
+                rejected::getMessage);
+    }
+
     @Test
     void strictFaasRejectsSharedActorDeclarationsAtAdmission() {
         Ast.Program sharedActor = TypeChecker.check(Parser.parse("""

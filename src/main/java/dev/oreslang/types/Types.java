@@ -40,14 +40,47 @@ public final class Types {
         public Record { members = Map.copyOf(members); }
     }
 
-    public record Function(List<Type> parameters, Type result) implements Type {
-        public Function { parameters = List.copyOf(parameters); }
+    public record Function(
+            List<Type> parameters,
+            List<Boolean> mutableParameters,
+            boolean async,
+            Type result) implements Type {
+        public Function {
+            parameters = List.copyOf(parameters);
+            mutableParameters = List.copyOf(mutableParameters);
+            if (parameters.size() != mutableParameters.size()) {
+                throw new IllegalArgumentException(
+                        "function parameter mutability metadata must match parameter arity");
+            }
+        }
+
+        /**
+         * Source-level Fnc<...> types and built-in callables have no mutable
+         * parameters and are synchronous unless a declaration explicitly says
+         * otherwise.
+         */
+        public Function(List<Type> parameters, Type result) {
+            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result);
+        }
     }
 
     public record ListType(Type element) implements Type { }
 
-    public record Tuple(List<Type> elements) implements Type {
-        public Tuple { elements = List.copyOf(elements); }
+    public enum TupleKind {
+        TUPLE,
+        FIXED_ARRAY,
+        FIXED_LIST
+    }
+
+    public record Tuple(List<Type> elements, TupleKind kind) implements Type {
+        public Tuple {
+            elements = List.copyOf(elements);
+            kind = Objects.requireNonNull(kind, "kind");
+        }
+
+        public Tuple(List<Type> elements) {
+            this(elements, TupleKind.TUPLE);
+        }
     }
 
     public record Union(List<Type> options) implements Type {
@@ -114,6 +147,7 @@ public final class Types {
         }
 
         if (from instanceof Tuple source && to instanceof Tuple target) {
+            if (source.kind() != target.kind()) return false;
             if (source.elements().size() != target.elements().size()) return false;
             for (int i = 0; i < source.elements().size(); i++) {
                 if (!isAssignable(source.elements().get(i), target.elements().get(i))) return false;
@@ -123,6 +157,11 @@ public final class Types {
 
         if (from instanceof Function source && to instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
+            if (source.async() != target.async()) return false;
+            // Parameter mutation authority is part of the callable contract.
+            // Keep it invariant: callers and implementations must agree exactly
+            // on which arguments may be mutated.
+            if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!isAssignable(target.parameters().get(i), source.parameters().get(i))) return false;
             }
