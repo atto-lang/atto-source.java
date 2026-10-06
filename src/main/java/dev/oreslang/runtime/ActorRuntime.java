@@ -1995,6 +1995,12 @@ public final class ActorRuntime implements AutoCloseable {
                 task = Objects.requireNonNull(
                         cooperativeMailman.createTask(envelope.mail, context),
                         "cooperative Mailman returned null task");
+            } catch (Throwable factoryFailure) {
+                // The envelope has already left the bounded outbox, so generic
+                // drain logic can no longer see its reservation. Release it
+                // here before propagating the factory failure.
+                envelope.release();
+                throw factoryFailure;
             } finally {
                 active.set(false);
             }
