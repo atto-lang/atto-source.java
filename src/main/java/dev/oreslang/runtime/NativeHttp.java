@@ -453,7 +453,11 @@ public final class NativeHttp implements AutoCloseable {
                     } catch (Throwable failure) {
                         synchronized (state) { state.busy = false; }
                         state.abort("body too large".equals(failure.getMessage()) ? 413 : 500);
+                        SourceBoundaryTrace.record(failure, "native:http", state.requestId, "I/O");
                         result.failFromRuntime(failure);
+                        if (failure instanceof VirtualMachineError fatal) throw fatal;
+                        if (failure instanceof ThreadDeath fatal) throw fatal;
+                        if (failure instanceof LinkageError fatal) throw fatal;
                     }
                 });
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
