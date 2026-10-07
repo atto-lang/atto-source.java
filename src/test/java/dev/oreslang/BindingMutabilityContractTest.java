@@ -83,4 +83,65 @@ final class BindingMutabilityContractTest {
                   }
                 """);
     }
+
+    @Test void mutableReceiverMethodRequiresMutableReferentCapability() {
+        String box = """
+                define class Counter as
+                  pub let int count = 0;
+                  pub increment(mut self)(): void {
+                    self.count = self.count + 1;
+                    return;
+                  }
+                  pub read(): int {
+                    return self.count;
+                  }
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(box + """
+                fnc bad(): int {
+                  const Counter counter = new Counter();
+                  counter.increment();
+                  return counter.read();
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(box + """
+                fnc bad(): int {
+                  let Counter counter = new Counter();
+                  counter.increment();
+                  return counter.read();
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(box + """
+                fnc ok(): int {
+                  val Counter counter = new Counter();
+                  counter.increment();
+                  return counter.read();
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(box + """
+                fnc ok(): int {
+                  let mut Counter counter = new Counter();
+                  counter.increment();
+                  counter = new Counter();
+                  return counter.read();
+                }
+                """)));
+    }
+
+    @Test void ordinaryMethodBodyCannotSecretlyMutateReadOnlySelf() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                  pub let int count = 0;
+                  pub sneaky(): void {
+                    self.count = self.count + 1;
+                    return;
+                  }
+                end
+                """)));
+    }
+
 }
