@@ -91,6 +91,41 @@ fi
 
 The `in` infix is **key membership only**, not an identity, substring, sequence-value, prototype or property-inheritance test. Keep it distinct from the existing `for ... of` iteration syntax. Prefer a *contextual* operator token if necessary to avoid breaking existing identifiers; parse at comparison/membership precedence and reject ambiguous unparenthesized predicate chains.
 
+### Three distinct outcomes for optional map values
+
+The extra state belongs to the **stored value type**, not to the map itself.
+A `Map<K, V>` lookup has two variants; `Map<K, Option<V>>` has three
+possible shapes because the outer and inner Option values are independent:
+
+```ores
+match pending.take(key) over
+  Some(Some(value)) -> { process(value); }  // key present; value present
+  Some(None) -> { handleEmptyValue(); }     // key present; stored None
+  None -> { handleMissingKey(); }           // key missing
+end
+
+// Equivalent braced match. Braces replace 'over ... end' around the match.
+match pending.get(key) {
+  Some(Some(value)) -> { process(value); }
+  Some(None) -> { handleEmptyValue(); }
+  None -> { handleMissingKey(); }
+}
+```
+
+`Some(value)` over `Option<Option<V>>` is legal: it matches both
+`Some(None)` and `Some(Some(v))` and binds `value: Option<V>`. It does
+**not** implicitly unwrap the inner Option. The three-arm form above is
+exhaustive, and a trailing `_`/`Symbol.default` fallback would be
+unreachable. If you intentionally leave variants unhandled, use a final
+unguarded `_`, `default`, `else` or `Symbol.default` fallback. `||`
+is a lambda delimiter, **not** a fallback match pattern and must fail
+parsing. This behavior is checked recursively for nested `Result` as well.
+
+`over` is a contextual match delimiter; legacy `match value ... end`
+also remains accepted. Function-clause pattern matching is distinct from
+value matching: do not reinterpret `||` as an arm or overload the existing
+`for ... of` iteration syntax without a separate function-match RFC.
+
 ### Absence and optional values
 
 For `Map<K, V>`: `get(key): Option<V>` (subject to borrowing restriction below).
