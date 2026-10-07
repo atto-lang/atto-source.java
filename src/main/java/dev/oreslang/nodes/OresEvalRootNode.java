@@ -5414,7 +5414,7 @@ public final class OresEvalRootNode extends RootNode {
                 return dynamicKeys ? new DynamicStructValue(result) : Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
-                boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
+                boolean nonLexical = lambda.nonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
