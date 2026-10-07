@@ -62,6 +62,8 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private int loopDepth;
+    /** The one explicit struct literal currently permitted to omit declared fields. */
+    private Ast.ObjectExpr permittedPartialStructInitializer;
 
     public static Ast.Program check(Ast.Program program) {
         program = checkTypes(program);
@@ -1068,11 +1070,39 @@ public final class TypeChecker {
             if (binding.initializer() instanceof Ast.LambdaExpr lambda && declaredAhead instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
-            Type actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
+
+            Ast.ObjectExpr explicitInitializer =
+                    binding.initializer() instanceof Ast.ObjectExpr object && object.explicitStruct()
+                            ? object
+                            : null;
+            Set<String> missingExplicitFields = explicitInitializer == null
+                    ? Set.of()
+                    : explicitStructMissingFields(explicitInitializer);
+            if (!missingExplicitFields.isEmpty() && !binding.mutableReferent()) {
+                throw new IllegalArgumentException(
+                        "explicit struct bound read-only must initialize every declared field; missing "
+                                + missingExplicitFields);
+            }
+
+            Ast.ObjectExpr previousPartial = permittedPartialStructInitializer;
+            if (explicitInitializer != null && binding.mutableReferent()) {
+                permittedPartialStructInitializer = explicitInitializer;
+            }
+            Type actual;
+            try {
+                actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
+            } finally {
+                permittedPartialStructInitializer = previousPartial;
+            }
+            if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()) {
+                throw new IllegalArgumentException(
+                        "struct infer values are closed and readonly; they cannot be bound with mutable referent access");
+            }
+
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
-            else env.define(binding.name(), declared, binding.kind());
+            else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -1276,6 +1306,16 @@ public final class TypeChecker {
         }
     }
 
+    private Set<String> explicitStructMissingFields(Ast.ObjectExpr object) {
+        if (!object.explicitStruct()) return Set.of();
+        Set<String> declared = new LinkedHashSet<>();
+        for (Ast.StructFieldSpec field : object.declaredFields()) declared.add(field.name());
+        for (Ast.ObjectField field : object.fields()) {
+            if (!field.isDynamic()) declared.remove(field.name());
+        }
+        return java.util.Collections.unmodifiableSet(declared);
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
@@ -1289,7 +1329,15 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
-            if (local != null) return local.type();
+            if (local != null) {
+                if (local.hasUninitializedFields()) {
+                    throw new IllegalArgumentException(
+                            "explicit struct binding '" + name.name()
+                                    + "' cannot be used before declared fields are initialized: "
+                                    + local.uninitializedFields());
+                }
+                return local.type();
+            }
             if (name.name().equals("stdio")
                     || name.name().equals("process")
                     || name.name().equals("actor")
@@ -1344,7 +1392,7 @@ public final class TypeChecker {
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
-                targetType = memberType(member, env, generics, self);
+                targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
@@ -1365,6 +1413,10 @@ public final class TypeChecker {
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
             requireAssignable(value, targetType, "assignment to " + where);
+            if (assignment.target() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr owner) {
+                env.markInitialized(owner.name(), member.member());
+            }
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
@@ -2368,6 +2420,52 @@ public final class TypeChecker {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }
         if (expr instanceof Ast.ObjectExpr object) {
+            if (object.explicitStruct()) {
+                Map<String, Type> members = new LinkedHashMap<>();
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    Type declared = resolve(field.type(), generics, self);
+                    if (declared == Primitive.VOID) {
+                        throw new IllegalArgumentException(
+                                "explicit struct field '" + field.name() + "' cannot have type void");
+                    }
+                    if (members.putIfAbsent(field.name(), declared) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate explicit struct field '" + field.name() + "'");
+                    }
+                }
+
+                Set<String> initialized = new LinkedHashSet<>();
+                for (Ast.ObjectField field : object.fields()) {
+                    if (field.isDynamic()) {
+                        throw new IllegalArgumentException(
+                                "explicit struct initializers require statically named declared fields");
+                    }
+                    Type expected = members.get(field.name());
+                    if (expected == null) {
+                        throw new IllegalArgumentException(
+                                "explicit struct initializer contains undeclared field '" + field.name() + "'");
+                    }
+                    if (!initialized.add(field.name())) {
+                        throw new IllegalArgumentException(
+                                "duplicate explicit struct initializer field '" + field.name() + "'");
+                    }
+                    requireAssignable(
+                            typeOf(field.value(), env, generics, self),
+                            expected,
+                            "explicit struct field '" + field.name() + "'");
+                }
+
+                Set<String> missing = new LinkedHashSet<>(members.keySet());
+                missing.removeAll(initialized);
+                if (!missing.isEmpty() && object != permittedPartialStructInitializer) {
+                    throw new IllegalArgumentException(
+                            "explicit struct literal is missing declared fields " + missing
+                                    + "; partial initialization is only allowed as the direct initializer "
+                                    + "of a mutable binding");
+                }
+                return new Record(members, false);
+            }
+
             Map<String, Type> members = new LinkedHashMap<>();
             boolean dynamicKeys = false;
             Type dynamicValue = null;
@@ -2392,7 +2490,7 @@ public final class TypeChecker {
                 return new Named("DynamicStruct", List.of(
                         dynamicValue == null ? Unknown.INSTANCE : dynamicValue));
             }
-            return new Record(members);
+            return new Record(members, object.inferredStruct());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -2917,7 +3015,7 @@ public final class TypeChecker {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder);
+            return new Record(remainder, record.readOnly());
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
@@ -3031,14 +3129,39 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
-            return new Record(members);
+            return new Record(members, record.readOnly());
         }
         return type;
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
+        return memberType(member, env, generics, self, false);
+    }
+
+    private Type memberType(
+            Ast.MemberExpr member,
+            Env env,
+            Set<String> generics,
+            Type self,
+            boolean writing) {
+        Type rawReceiver;
+        if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
+            Env.Binding binding = env.lookup(name.name());
+            if (!writing && binding.isUninitialized(member.member())) {
+                throw new IllegalArgumentException(
+                        "explicit struct field '" + member.member()
+                                + "' is read before initialization on '" + name.name() + "'");
+            }
+            rawReceiver = binding.type();
+        } else {
+            rawReceiver = typeOf(member.receiver(), env, generics, self);
+        }
         Type receiver = receiverDispatchType(
-                unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self))));
+                unwrapMutexGuard(deref(rawReceiver)));
+        if (writing && receiver instanceof Record record && record.readOnly()) {
+            throw new IllegalArgumentException(
+                    "cannot mutate a struct infer value; inferred structs are closed and readonly");
+        }
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
@@ -3590,7 +3713,7 @@ public final class TypeChecker {
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
                 members.put(entry.getKey(), resolveSharedGeneric(entry.getValue(), bindings));
             }
-            return new Record(members);
+            return new Record(members, record.readOnly());
         }
         return type;
     }
@@ -4960,7 +5083,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
-            return new Record(members);
+            return new Record(members, record.readOnly());
         }
         return type;
     }
@@ -5342,7 +5465,7 @@ public final class TypeChecker {
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
                 members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
             }
-            return new Record(members);
+            return new Record(members, ref.isReadonlyRecordType());
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
 
@@ -5849,7 +5972,16 @@ public final class TypeChecker {
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Type type, Ast.BindingKind kind) {
-            if (bindings.putIfAbsent(name, new Binding(type, kind)) != null) throw new IllegalArgumentException("duplicate binding '" + name + "'");
+            define(name, type, kind, Set.of());
+        }
+        private void define(
+                String name,
+                Type type,
+                Ast.BindingKind kind,
+                Set<String> uninitializedFields) {
+            if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
+                throw new IllegalArgumentException("duplicate binding '" + name + "'");
+            }
         }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
@@ -5857,8 +5989,31 @@ public final class TypeChecker {
         }
         private void replace(String name, Type type, Ast.BindingKind kind) {
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
-            bindings.put(name, new Binding(type, kind));
+            bindings.put(name, new Binding(type, kind, Set.of()));
         }
-        private record Binding(Type type, Ast.BindingKind kind) { }
+        private void markInitialized(String name, String field) {
+            Binding binding = lookup(name);
+            if (binding != null) binding.markInitialized(field);
+        }
+
+        private static final class Binding {
+            private final Type type;
+            private final Ast.BindingKind kind;
+            private final Set<String> uninitializedFields;
+
+            private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
+                this.type = type;
+                this.kind = kind;
+                this.uninitializedFields = new LinkedHashSet<>(uninitializedFields);
+            }
+            private Type type() { return type; }
+            private Ast.BindingKind kind() { return kind; }
+            private boolean hasUninitializedFields() { return !uninitializedFields.isEmpty(); }
+            private boolean isUninitialized(String field) { return uninitializedFields.contains(field); }
+            private Set<String> uninitializedFields() {
+                return java.util.Collections.unmodifiableSet(uninitializedFields);
+            }
+            private void markInitialized(String field) { uninitializedFields.remove(field); }
+        }
     }
 }
