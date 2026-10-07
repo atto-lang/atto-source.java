@@ -133,7 +133,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
+        private record SelfImport(Ast.ImportKind kind, String name) { }
+
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
+        private final Set<SelfImport> selfImports = new LinkedHashSet<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
@@ -188,6 +191,12 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
+                if (ImportRules.isSelfPath(imported.path())) {
+                    for (String name : imported.names()) {
+                        selfImports.add(new SelfImport(imported.kind(), name));
+                    }
+                    continue;
+                }
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
                     continue;
@@ -4821,7 +4830,12 @@ public final class OresEvalRootNode extends RootNode {
             throw new ReturnSignal(eval(value, env));
         }
 
+        private boolean selfImported(Ast.ImportKind kind, String name) {
+            return selfImports.contains(new SelfImport(kind, name));
+        }
+
         private void requireExplicitClassCallableImport(Env env, String name) {
+            if (selfImported(Ast.ImportKind.FUNCTION, name)) return;
             if (env.lexicalContainerClass() != null) {
                 throw new IllegalArgumentException(
                         "class '" + env.lexicalContainerClass().name()
@@ -4840,6 +4854,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void requireLexicalNamespaceAccess(Env env, String namespace, String kind) {
+            if (kind.equals("module")
+                    && selfImported(Ast.ImportKind.MODULE, namespace)) return;
             if (env.lexicalContainerClass() != null) {
                 throw new IllegalArgumentException(
                         "class '" + env.lexicalContainerClass().name()
@@ -4854,6 +4870,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void requireLexicalClassAccess(Env env, Ast.ClassDecl target) {
+            Ast.ImportKind importKind = target.actorKind() == Ast.ActorKind.NONE
+                    ? Ast.ImportKind.CLASS
+                    : Ast.ImportKind.ACTOR;
+            if (selfImported(importKind, target.name())) return;
             if (env.lexicalContainerClass() != null
                     && env.lexicalContainerClass() != target) {
                 throw new IllegalArgumentException(
