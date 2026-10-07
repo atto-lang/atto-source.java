@@ -335,8 +335,17 @@ public final class Ast {
         }
     }
 
-    public record InterfaceFieldDecl(String name, TypeRef type, BindingKind bindingKind) implements InterfaceMember {
-        public InterfaceFieldDecl(String name, TypeRef type) { this(name, type, BindingKind.VAL); }
+    public record InterfaceFieldDecl(
+            String name,
+            TypeRef type,
+            BindingKind bindingKind,
+            boolean mutableReferent) implements InterfaceMember {
+        public InterfaceFieldDecl(String name, TypeRef type, BindingKind bindingKind) {
+            this(name, type, bindingKind, bindingKind == BindingKind.VAL);
+        }
+        public InterfaceFieldDecl(String name, TypeRef type) {
+            this(name, type, BindingKind.VAL, true);
+        }
     }
 
     public record InterfaceDecl(
