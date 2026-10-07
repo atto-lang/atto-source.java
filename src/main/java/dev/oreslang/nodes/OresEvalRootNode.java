@@ -5497,7 +5497,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
-                Env captured = nonLexical ? null : env.snapshot();
+                // nlex discards captured values and private-member authority,
+                // but MUST preserve declaration-origin lexical isolation.
+                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
@@ -7427,14 +7429,33 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ClassDecl accessClass,
                 OresObject constructingObject,
                 String lexicalModule) {
+            this(parent, descendantsNonLexical, accessClass, constructingObject,
+                    lexicalModule,
+                    accessClass == null
+                            ? (parent == null ? null : parent.lexicalContainerClass)
+                            : accessClass);
+        }
+
+        private Env(
+                Env parent,
+                boolean descendantsNonLexical,
+                Ast.ClassDecl accessClass,
+                OresObject constructingObject,
+                String lexicalModule,
+                Ast.ClassDecl lexicalContainerClass) {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
-            this.lexicalContainerClass = accessClass == null
-                    ? (parent == null ? null : parent.lexicalContainerClass)
-                    : accessClass;
+            this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+        }
+
+        private Env lexicalBoundaryOnly() {
+            // This frame contains no user values and no receiver authority.
+            // It preserves only compiler-approved declaration identity.
+            return new Env(null, true, null, null, lexicalModule,
+                    lexicalContainerClass);
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
