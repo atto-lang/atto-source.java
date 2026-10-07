@@ -838,8 +838,10 @@ public final class Ast {
         public boolean isDynamic() { return dynamicName != null; }
     }
 
-    public record ObjectExpr(List<ObjectField> fields) implements Expr {
+    /** Statically shaped inferred struct, distinct from an open/dynamic obj literal. */
+    public record ObjectExpr(List<ObjectField> fields, boolean inferredStruct) implements Expr {
         public ObjectExpr { fields = List.copyOf(fields); }
+        public ObjectExpr(List<ObjectField> fields) { this(fields, false); }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
