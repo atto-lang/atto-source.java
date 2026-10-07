@@ -389,6 +389,14 @@ public final class OwnershipChecker {
                         : new Scope(scope);
                 if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
                     hasDefault = true;
+                } else if (arm.operation() == Ast.ChannelOperation.WRITE) {
+                    // Only the winning arm commits the send. Analyze each arm
+                    // against the pre-select state and join all possible exits.
+                    // This safely treats the payload as possibly moved afterwards.
+                    ValueInfo outgoing = checkExpr(arm.value(), armScope, true);
+                    if (containsMutexGuardType(outgoing.type)) {
+                        throw error("writech cannot transport MutexGuard");
+                    }
                 } else if (arm.operation() == Ast.ChannelOperation.READ
                         && arm.bindingName() != null) {
                     Ast.TypeRef element = elementTypes.get(i);
@@ -804,7 +812,10 @@ public final class OwnershipChecker {
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
-                ValueInfo payload = checkExpr(channelOp.value(), scope, false);
+                // Channel enqueue/registration takes ownership of move-only payloads.
+                // Waiting writers and failed immediate probes conservatively retain
+                // transferred ownership until the runtime supplies a recoverable send.
+                ValueInfo payload = checkExpr(channelOp.value(), scope, true);
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
                 }
