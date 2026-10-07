@@ -38,4 +38,15 @@ final class InferredStructReadonlyBoundaryTest {
                 }
                 """)));
     }
+    @Test void structuralCastCannotUpgradeReadonlyRecord() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                  const source = struct infer{foo: "a"};
+                  let mut alias = source as {foo: string};
+                  alias.foo = "b";
+                  return;
+                }
+                """)));
+    }
+
 }
