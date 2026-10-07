@@ -2895,6 +2895,21 @@ public final class ActorRuntime implements AutoCloseable {
             parentForPolicy.policy.require(
                     IsolatePolicy.Capability.ACTOR_SPAWN,
                     "actor spawn");
+
+            // Actor kind is itself an isolation boundary, not merely a bundle
+            // of capabilities. Descendants may stay at the same confinement
+            // level or become more confined, but they cannot escape upward.
+            if (parentForPolicy.kind == ActorKind.UNTRUSTED
+                    && kind != ActorKind.UNTRUSTED) {
+                throw new SecurityException(
+                        "UNTRUSTED actor cannot spawn a less-confined "
+                                + kind + " child");
+            }
+            if (parentForPolicy.kind == ActorKind.PRIVATE
+                    && kind == ActorKind.SHARED) {
+                throw new SecurityException(
+                        "PRIVATE actor cannot spawn a less-confined SHARED child");
+            }
         }
 
         IsolatePolicy effectivePolicy;
@@ -3899,9 +3914,13 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof SyncCell<?> cell) {
-            if (!cell.ownedBy(this) || cell.closed()) {
+            if (!cell.ownedBy(this)) {
+                throw new SecurityException(
+                        "SyncCell belongs to a different ActorRuntime");
+            }
+            if (cell.closed()) {
                 throw new IllegalArgumentException(
-                        "SyncCell belongs to a different/closed ActorRuntime");
+                        "SyncCell is closed");
             }
             if (target.kind != ActorKind.SHARED) {
                 throw new SecurityException(
