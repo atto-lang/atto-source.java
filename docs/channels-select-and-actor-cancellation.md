@@ -63,7 +63,7 @@ Runtime-only continuation envelopes use the same mailbox channel but are never
 visible as guest messages. They have bounded reserved headroom so a full user
 mailbox cannot silently discard a resumed `nb select` arm.
 
-Public `Channel<T>`, `SelectCase`, and `SelectSet` values are
+Public `Channel<T>`, `SelectCase`, `SelectSet`, and `SelectPlan` values are
 **execution-domain-local capabilities** in this version. They cannot be sent
 through an actor mailbox or used as actor-callable parameters/results.
 Actor-to-actor communication remains `ActorRef`/mailbox transport. This avoids
@@ -328,7 +328,8 @@ cancellation, ownership, or fairness guarantees.
 
 ## Dynamic select
 
-Static and dynamic select lower to the same runtime `SelectSet` primitive.
+Static select, dynamic `SelectSet`, and reusable `SelectPlan` all lower to the
+same runtime arbitration machinery.
 
 Cases can be assembled at runtime:
 
