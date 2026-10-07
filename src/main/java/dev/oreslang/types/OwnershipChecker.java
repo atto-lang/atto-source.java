@@ -718,7 +718,14 @@ public final class OwnershipChecker {
                 for (Ast.FieldDecl field : staticClass.fields()) {
                     if (!field.isStatic() || !field.name().equals(member.member())) continue;
                     Ast.TypeRef fieldType = ownershipFieldType(field);
-                    return new ValueInfo(fieldType, kindOfType(fieldType), null);
+                    ValueKind fieldKind = kindOfType(fieldType);
+                    if (consuming && fieldKind != ValueKind.COPY) {
+                        throw error(
+                                "cannot move move-only static field '" + staticClass.name() + "."
+                                        + field.name()
+                                        + "' out of class storage; keep global state copy-safe or behind an explicit synchronized/shared wrapper");
+                    }
+                    return new ValueInfo(fieldType, fieldKind, null);
                 }
             }
 
