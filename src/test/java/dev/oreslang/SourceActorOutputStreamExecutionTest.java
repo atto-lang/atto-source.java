@@ -64,6 +64,38 @@ final class SourceActorOutputStreamExecutionTest {
                 run(program, "source-actor-output-stream.ores"));
     }
 
+    @Test
+    void forAwaitConsumesActorOutputsUntilActorFinalization() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send("hello");
+                    self.send("world");
+                    self.send("!");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send("go");
+
+                  for await const output of worker.outputs {
+                    stdio.stdout.write(output.value);
+                  }
+
+                  await worker.done;
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "helloworld!",
+                run(program, "source-actor-output-for-await.ores"));
+    }
+
     private static String run(String program, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
