@@ -3873,7 +3873,11 @@ public final class TypeChecker {
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = new SelfType(nominalClassType(klass));
-        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (!field.isStatic()) {
+                mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+            }
+        }
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members,
@@ -3903,7 +3907,9 @@ public final class TypeChecker {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+            if (!field.isStatic() && field.visibility() == Ast.Visibility.PUBLIC) {
+                mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+            }
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
@@ -3923,11 +3929,11 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            if (iface.moduleContract() != parent.moduleContract()) {
+            if (iface.moduleContract() != parent.moduleContract()
+                    || (iface.moduleContract() && iface.staticContract() != parent.staticContract())) {
                 throw new IllegalArgumentException(
-                        (iface.moduleContract() ? "module contract '" : "interface '") + iface.name()
-                                + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
-                                + parent.name() + "' across the interface/contract boundary");
+                        "declaration '" + iface.name() + "' cannot extend '" + parent.name()
+                                + "' across the interface/module-contract/static-contract boundary");
             }
             Type resolvedParent = iface.moduleContract() ? resolveModuleContractRef(parentRef, parent, generics) : resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
@@ -3940,7 +3946,9 @@ public final class TypeChecker {
                         "interface inheritance of " + iface.name());
             }
         }
-        Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
+        Type interfaceSelf = iface.moduleContract()
+                ? null
+                : new SelfType(nominalInterfaceType(iface));
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
                 mergeMember(members,
@@ -4051,7 +4059,9 @@ public final class TypeChecker {
     }
 
     private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
-        Set<String> generics = Set.copyOf(klass.genericParameters());
+        Set<String> generics = field.isStatic()
+                ? Set.of()
+                : Set.copyOf(klass.genericParameters());
         if (field.type() != null) {
             // A field declaration has no receiver-polymorphic type variable at
             // the declaration site. Keep `self` as a receiver-bearing method type rather than
