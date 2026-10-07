@@ -6738,6 +6738,26 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
+            if (pattern instanceof Ast.StructuralPattern structural) {
+                if (!structuralPatternMatches(value, structural.target())) return false;
+                if (structural.binding() != null
+                        && bindings.putIfAbsent(structural.binding(), value) != null) {
+                    throw new IllegalStateException(
+                            "pattern binds '" + structural.binding() + "' more than once");
+                }
+                return true;
+            }
+            if (pattern instanceof Ast.TuplePattern tuplePattern) {
+                if (!(value instanceof List<?> tuple)
+                        || tuple.size() != tuplePattern.elements().size()) return false;
+                for (int i = 0; i < tuplePattern.elements().size(); i++) {
+                    if (!patternMatches(
+                            tuplePattern.elements().get(i),
+                            tuple.get(i),
+                            bindings)) return false;
+                }
+                return true;
+            }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
                 if (name.equals("Some")) {
@@ -6760,6 +6780,152 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        private boolean structuralPatternMatches(Object value, Ast.TypeRef target) {
+            if (target.isRecordType()) return structuralRecordMatches(value, target);
+
+            Ast.TypeAliasDecl alias = findTypeAlias(target.name());
+            if (alias != null && alias.genericParameters().isEmpty()) {
+                return structuralPatternMatches(value, alias.target());
+            }
+
+            Ast.InterfaceDecl iface = findInterface(target.name());
+            if (iface == null || iface.moduleContract()) return false;
+            if (iface.genericParameters().size() != target.arguments().size()) return false;
+
+            Map<String, Ast.TypeRef> bindings = new LinkedHashMap<>();
+            for (int i = 0; i < iface.genericParameters().size(); i++) {
+                bindings.put(iface.genericParameters().get(i), target.arguments().get(i));
+            }
+            return structuralInterfaceMatches(
+                    value,
+                    iface,
+                    bindings,
+                    new LinkedHashSet<>());
+        }
+
+        private boolean structuralRecordMatches(Object value, Ast.TypeRef recordType) {
+            for (Map.Entry<String, Ast.TypeRef> required : recordType.recordMembers().entrySet()) {
+                Object member = publicStructuralMember(value, required.getKey());
+                if (member == Env.MISSING || !oresTypeMatches(member, required.getValue())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private Object publicStructuralMember(Object value, String name) {
+            if (value instanceof DynamicStructValue dynamic) {
+                return dynamic.fields.containsKey(name)
+                        ? dynamic.fields.get(name)
+                        : Env.MISSING;
+            }
+            if (value instanceof Map<?, ?> map) {
+                return map.containsKey(name) ? map.get(name) : Env.MISSING;
+            }
+            if (value instanceof OresObject object) {
+                // Actors are mailbox/capability identities and must never be
+                // erased into an ordinary structural object view.
+                if (object.klass.actorKind() != Ast.ActorKind.NONE) return Env.MISSING;
+                OwnedField owned = object.owner.findField(
+                        object.klass, name, new LinkedHashSet<>());
+                if (owned == null
+                        || owned.field().visibility() != Ast.Visibility.PUBLIC) {
+                    return Env.MISSING;
+                }
+                Object member = object.fields.get(name);
+                return member == null || member == UNINITIALIZED_FIELD
+                        ? Env.MISSING
+                        : member;
+            }
+            return Env.MISSING;
+        }
+
+        private boolean structuralInterfaceMatches(
+                Object value,
+                Ast.InterfaceDecl iface,
+                Map<String, Ast.TypeRef> bindings,
+                Set<Ast.InterfaceDecl> seen) {
+            if (!seen.add(iface)) return true;
+
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Ast.TypeRef concreteParent = substituteStructuralType(parentRef, bindings);
+                Ast.InterfaceDecl parent = findInterface(concreteParent.name());
+                if (parent == null || parent.moduleContract()
+                        || parent.genericParameters().size() != concreteParent.arguments().size()) {
+                    return false;
+                }
+                Map<String, Ast.TypeRef> parentBindings = new LinkedHashMap<>();
+                for (int i = 0; i < parent.genericParameters().size(); i++) {
+                    parentBindings.put(
+                            parent.genericParameters().get(i),
+                            concreteParent.arguments().get(i));
+                }
+                if (!structuralInterfaceMatches(value, parent, parentBindings, seen)) {
+                    return false;
+                }
+            }
+
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (member instanceof Ast.InterfaceFieldDecl field) {
+                    Object actual = publicStructuralMember(value, field.name());
+                    Ast.TypeRef expected = substituteStructuralType(field.type(), bindings);
+                    if (actual == Env.MISSING || !oresTypeMatches(actual, expected)) {
+                        return false;
+                    }
+                    continue;
+                }
+
+                Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) member;
+                if (!(value instanceof OresObject object)
+                        || object.klass.actorKind() != Ast.ActorKind.NONE) {
+                    return false;
+                }
+                Ast.MethodDecl method = object.owner.findMethod(
+                        object.klass,
+                        CallableSelector.instance(fn.name(), fn.parameters().size()),
+                        new LinkedHashSet<>());
+                if (method == null
+                        || method.visibility() != Ast.Visibility.PUBLIC
+                        || method.isStatic()
+                        || method.isAbstract()
+                        || method.async()
+                        || method.genericParameters().size() != fn.genericParameters().size()) {
+                    return false;
+                }
+                for (int i = 0; i < fn.parameters().size(); i++) {
+                    Ast.Param required = fn.parameters().get(i);
+                    Ast.Param actual = method.parameters().get(i);
+                    if (required.mutable() != actual.mutable()) return false;
+                    Ast.TypeRef expectedType =
+                            substituteStructuralType(required.type(), bindings);
+                    if (!actual.type().equals(expectedType)) return false;
+                }
+                Ast.TypeRef expectedReturn =
+                        substituteStructuralType(fn.returnType(), bindings);
+                if (!method.returnType().equals(expectedReturn)) return false;
+            }
+            return true;
+        }
+
+        private Ast.TypeRef substituteStructuralType(
+                Ast.TypeRef type,
+                Map<String, Ast.TypeRef> bindings) {
+            Ast.TypeRef replacement = bindings.get(type.name());
+            if (replacement != null
+                    && type.arguments().isEmpty()
+                    && !type.inferArguments()) {
+                return replacement;
+            }
+            if (type.arguments().isEmpty()) return type;
+            return new Ast.TypeRef(
+                    type.name(),
+                    type.arguments().stream()
+                            .map(argument ->
+                                    substituteStructuralType(argument, bindings))
+                            .toList(),
+                    type.inferArguments());
+        }
+
         /**
          * Host-neutral Oreslang type relation. The Truffle bootstrap evaluator reads Oreslang
          * metadata here; native lowering must use the same relation against native type tags
@@ -6771,6 +6937,19 @@ public final class OresEvalRootNode extends RootNode {
                     if (oresTypeMatches(value, option)) return true;
                 }
                 return false;
+            }
+            if (target.isTupleType()) {
+                if (!(value instanceof List<?> tuple)
+                        || tuple.size() != target.arguments().size()) return false;
+                for (int i = 0; i < tuple.size(); i++) {
+                    if (!oresTypeMatches(tuple.get(i), target.arguments().get(i))) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if (target.isRecordType()) {
+                return structuralRecordMatches(value, target);
             }
             String name = target.name();
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
