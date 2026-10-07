@@ -2663,6 +2663,7 @@ public final class TypeChecker {
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             Type result;
             try {
@@ -2673,6 +2674,10 @@ public final class TypeChecker {
                     result = Unknown.INSTANCE;
                 }
             } finally {
+                // Lambda bodies are checked now but execute later. Never let
+                // assignments inside a closure establish definite-init facts
+                // for the enclosing flow merely because the closure exists.
+                env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
             }
             return new Function(parameters, result);
