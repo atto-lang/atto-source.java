@@ -363,4 +363,51 @@ final class RhsLambdaScopeTest {
                 """));
     }
 
+
+    @Test
+    void pureAsyncRhsTypechecksOnlyThroughPureAwaitedEffects() {
+        assertDoesNotThrow(() -> check("""
+                pub pure async fnc answer(): int {
+                    return 42;
+                }
+
+                pub fnc example(): void {
+                    const create = nlex pure async || -> int {
+                        return await answer();
+                    };
+                    val result = await create();
+                    return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> check("""
+                pub async fnc impure_answer(): int {
+                    stdio.stdout.write("side effect");
+                    return 42;
+                }
+
+                pub fnc example(): void {
+                    const create = pure async || -> int {
+                        return await impure_answer();
+                    };
+                    val result = await create();
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void pureExpressionBodyAndTypedTrapCallableContractsTypecheck() {
+        assertDoesNotThrow(() -> check("""
+                pub fnc example(): void {
+                    const twice = pure |int value| -> value * 2;
+                    const Fnc<Option<int>> protected = pure trap || -> int {
+                        return twice(21);
+                    };
+                    val answer = protected().unwrap();
+                    return;
+                }
+                """));
+    }
+
 }
