@@ -4258,10 +4258,12 @@ public final class TypeChecker {
     }
 
     private Type capabilitySafeEquivalentJoin(Type a, Type b) {
-        if (a instanceof Record left && b instanceof Record right
-                && structuralRecordAssignable(left, right)
-                && structuralRecordAssignable(right, left)) {
-            return new Record(left.members(), left.readOnly() || right.readOnly());
+        if (assignable(b, a) && assignable(a, b)) {
+            // Keep the left-hand shape while overlaying any stronger readonly
+            // capability carried by the equivalent right-hand value. This is
+            // recursive, so List<Record>, Tuple<Record>, Option<Record>, etc.
+            // cannot erase nested inferred-struct readonly state during joins.
+            return overlayReadonlyCapabilities(b, a);
         }
         return null;
     }
@@ -4269,7 +4271,6 @@ public final class TypeChecker {
     private Type collectionElementJoin(Type a, Type b) {
         Type safe = capabilitySafeEquivalentJoin(a, b);
         if (safe != null) return safe;
-        if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
         return Types.unionOf(a, b);
@@ -4278,7 +4279,6 @@ public final class TypeChecker {
     private Type commonType(Type a, Type b) {
         Type safe = capabilitySafeEquivalentJoin(a, b);
         if (safe != null) return safe;
-        if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
         return Unknown.INSTANCE;
