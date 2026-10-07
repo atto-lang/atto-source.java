@@ -5203,7 +5203,7 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeTurns;
         private boolean carrierActive;
         private OresScheduler sourceScheduler;
-        /** self.end(...) lifecycle state; guarded by lifecycleLock. */
+        /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
         private boolean finalCleanupStarted;
@@ -5343,7 +5343,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (endRequested) {
                     if (cleanup != null && cleanup != finalCleanup) {
                         throw new IllegalStateException(
-                                "self.end cleanup is already fixed for actor "
+                                "actor final cleanup is already fixed for actor "
                                         + ref.id());
                     }
                     return;
