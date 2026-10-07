@@ -770,9 +770,6 @@ public final class OwnershipChecker {
                 Ast.TypeRef valueType = concreteReceiver.arguments().getFirst();
                 ValueKind valueKind = valueType.name().equals("$infer$")
                         ? ValueKind.MOVE_ONLY : kindOfType(valueType);
-                if (consuming && valueKind != ValueKind.COPY) {
-                    throw error("cannot move a move-only DynamicStruct field out by projection; use an explicit container take operation when partial moves are supported");
-                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             if (concreteReceiver != null && concreteReceiver.isRecordType()) {
@@ -781,10 +778,6 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
-                if (consuming && valueKind != ValueKind.COPY) {
-                    throw error("cannot move move-only record field '" + member.member()
-                            + "' out by projection; partial moves require an explicit container take operation");
-                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -798,10 +791,6 @@ public final class OwnershipChecker {
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
-                    }
-                    if (consuming && fieldKind != ValueKind.COPY) {
-                        throw error("cannot move move-only field '" + target.owner().name() + "." + member.member()
-                                + "' out by projection; partial moves require an explicit container take operation");
                     }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
@@ -820,9 +809,6 @@ public final class OwnershipChecker {
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
-            }
-            if (consuming && elementKind != ValueKind.COPY) {
-                throw error("cannot move a move-only indexed element out of its container; partial moves require an explicit container take operation");
             }
             return new ValueInfo(elementType, elementKind, null);
         }
