@@ -51,6 +51,20 @@ public final class OresContext implements AutoCloseable {
         return env.asGuestValue(value);
     }
 
+    /** Recover only supported runtime handles from an allowlisted host call. */
+    public Object unwrapHostRuntimeValue(Object value) {
+        requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java runtime handle conversion");
+        if (env.isHostObject(value)) {
+            Object host = env.asHostObject(value);
+            if (host instanceof ChannelRuntime.Channel<?>
+                    || host instanceof OresFuture<?>
+                    || host instanceof CompletionStage<?>) {
+                return host;
+            }
+        }
+        return value;
+    }
+
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
         this.env = env;
