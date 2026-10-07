@@ -298,4 +298,111 @@ final class ActorDeclarationLexicalBoundaryTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void spawnActorTypechecksAsActorRefWithReadyDoneAndMailboxSend() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  on_start(): void {
+                    return;
+                  }
+
+                  pub work(): void {
+                    self.send("hello");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send("start");
+                  await worker.done;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void spawnRejectsOrdinaryClassesAndConstructorStyleArguments() {
+        IllegalArgumentException ordinary = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Worker as
+                        end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          return;
+                        }
+                        """)));
+        assertTrue(ordinary.getMessage().contains("spawn requires an actor class"),
+                ordinary.getMessage());
+
+        IllegalArgumentException arguments = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                        end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(arguments.getMessage().contains("does not accept constructor/startup arguments"),
+                arguments.getMessage());
+    }
+
+    @Test
+    void actorTransportMembersAreReservedAndMailboxRejectsClosures() {
+        IllegalArgumentException overrideSend = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub send(value: String): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(overrideSend.getMessage().contains("reserved"),
+                overrideSend.getMessage());
+
+        IllegalArgumentException functionPayload = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                        end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          worker.send(|| -> { return 1; });
+                          return;
+                        }
+                        """)));
+        assertTrue(functionPayload.getMessage().contains("concrete owned/sendable"),
+                functionPayload.getMessage());
+    }
+
+    @Test
+    void onStartCannotBeInvokedDirectlyFromActorCode() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          on_start(): void {
+                            return;
+                          }
+
+                          pub run(): void {
+                            self.on_start();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("cannot be called directly"),
+                failure.getMessage());
+    }
+
 }
