@@ -436,6 +436,125 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void storedBorrowOfLocalCannotEscapeFunction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar as
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad(): &Bar {
+                          let Bar b = new Bar();
+                          val &Bar view = rt borrow b;
+                          return view;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("returned borrows")
+                || error.getMessage().contains("outlive"), error::getMessage);
+    }
+
+    @Test
+    void borrowOfOwnedParameterCannotEscapeFunction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar as
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad(Bar b): &Bar {
+                          return &b;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("returned borrows")
+                || error.getMessage().contains("outlive"), error::getMessage);
+    }
+
+    @Test
+    void borrowCannotBeStoredInOwnedArray() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar as
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad(): void {
+                          let Bar b = new Bar();
+                          val values = [rt borrow b];
+                          stdio.println(values);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("borrowed references cannot be stored"), error::getMessage);
+    }
+
+    @Test
+    void classFieldCannotHaveBorrowedType() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar as
+                          pub let String foo = "start";
+                        end
+
+                        define class Holder as
+                          pub val &Bar value;
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("cannot store a borrowed reference"), error::getMessage);
+    }
+
+    @Test
+    void awaitRejectsLiveOrdinaryBorrow() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar as
+                          pub let String foo = "start";
+                        end
+
+                        async fnc answer(): int {
+                          return 42;
+                        }
+
+                        async fnc bad(): int {
+                          let Bar b = new Bar();
+                          val &Bar view = rt borrow b;
+                          val result = await answer();
+                          stdio.println(view.foo);
+                          return result;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("cannot await while an ordinary borrow is live"), error::getMessage);
+    }
+
+    @Test
+    void immutableBorrowAliasesDoNotCorruptOwnerBorrowCount() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar as
+                          pub let String foo = "start";
+                        end
+
+                        fnc mutate(&mut Bar b): void {
+                          b.foo = "changed";
+                          return;
+                        }
+
+                        fnc bad(): void {
+                          let Bar b = new Bar();
+                          if true; do
+                            val &Bar first = rt borrow b;
+                            val &Bar second = first;
+                            stdio.println(second.foo);
+                          fi
+                          val &Bar third = rt borrow b;
+                          mutate(&mut b);
+                          stdio.println(third.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error::getMessage);
+    }
+
+    @Test
     void actorSelfBoundMethodCannotEscapeMailboxTurn() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
