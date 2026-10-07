@@ -1,4 +1,5 @@
 import fnc {actor_label} from "./actor-isolation-support.ores";
+import class CounterState from "@self";
 
 define class CounterState as
   pub let int value = 10;
