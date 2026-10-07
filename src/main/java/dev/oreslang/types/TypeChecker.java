@@ -1487,6 +1487,41 @@ public final class TypeChecker {
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
+                case "proxy" -> {
+                    Type target = deref(operand);
+                    if (target instanceof Primitive
+                            || target instanceof StringLiteral
+                            || target instanceof Borrow
+                            || target instanceof Function
+                            || target instanceof ClassNamespace
+                            || target == Unknown.INSTANCE
+                            || target instanceof Generic
+                            || target instanceof SelfType) {
+                        throw new IllegalArgumentException(
+                                "rt proxy requires a concrete owned class/struct value; got " + target);
+                    }
+                    if (target instanceof Named named
+                            && named.name().equals("Proxy")) {
+                        throw new IllegalArgumentException(
+                                "rt proxy cannot wrap an existing Proxy<T>");
+                    }
+                    boolean dynamicStruct = target instanceof Named named
+                            && named.name().equals("DynamicStruct")
+                            && named.arguments().size() == 1;
+                    boolean classInstance = target instanceof Named named
+                            && findClass(named.name()) != null;
+                    if (!dynamicStruct && !classInstance) {
+                        throw new IllegalArgumentException(
+                                "rt proxy currently accepts class instances or DynamicStruct<T>; got "
+                                        + target);
+                    }
+                    if (!isSharedSafe(target, new LinkedHashSet<>(), Map.of())) {
+                        throw new IllegalArgumentException(
+                                "rt proxy payload must be transport-safe data; "
+                                        + "actor-local/suspending/shared-mutable capabilities cannot be hidden behind Proxy<T>");
+                    }
+                    yield new Named("Proxy", List.of(target));
+                }
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
             };
