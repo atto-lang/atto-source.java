@@ -18,6 +18,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.CancellationToken;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.OresFutures;
@@ -2179,7 +2180,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.SelectOperation.READ
+                            || arm.operation() == Ast.SelectOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
@@ -4845,10 +4847,28 @@ public final class OresEvalRootNode extends RootNode {
                 switch (arm.operation()) {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
-                            requireChannel(eval(arm.channel(), env), "readch select case")));
+                            requireChannel(eval(arm.source(), env), "readch select arm")));
                     case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(eval(arm.channel(), env), "writech select case"),
+                            requireChannel(eval(arm.source(), env), "writech select arm"),
                             eval(arm.value(), env)));
+                    case AWAIT -> {
+                        Object value = eval(arm.source(), env);
+                        if (!(value instanceof OresFuture<?> future)) {
+                            throw new IllegalArgumentException(
+                                    "await select arm requires Future<T>; got " + value);
+                        }
+                        cases.add(ChannelRuntime.await(future));
+                    }
+                    case TIMEOUT -> cases.add(
+                            ChannelRuntime.timeout(arm.timeoutNanos()));
+                    case CANCELLED -> {
+                        Object value = eval(arm.source(), env);
+                        if (!(value instanceof CancellationToken token)) {
+                            throw new IllegalArgumentException(
+                                    "cancelled select arm requires CancellationToken; got " + value);
+                        }
+                        cases.add(ChannelRuntime.cancelled(token));
+                    }
                 }
             }
             return new ChannelRuntime.SelectSet(
@@ -4886,7 +4906,8 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.SelectOperation.READ
+                            || arm.operation() == Ast.SelectOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(
                         arm.bindingName(),
@@ -5031,6 +5052,12 @@ public final class OresEvalRootNode extends RootNode {
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof ChannelRuntime.SelectPlan plan) {
+                return new ChannelRuntime.SelectSet(plan.cases());
+            }
+            if (value instanceof ChannelRuntime.SelectCase selectCase) {
+                return new ChannelRuntime.SelectSet(List.of(selectCase));
+            }
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
@@ -5042,7 +5069,7 @@ public final class OresEvalRootNode extends RootNode {
                 return new ChannelRuntime.SelectSet(cases);
             }
             throw new IllegalArgumentException(
-                    "dynamic select requires SelectSet or list/map of SelectCase values");
+                    "dynamic select requires SelectCase, SelectPlan, SelectSet, or list/map of SelectCase values");
         }
 
         private ChannelRuntime.SelectCase requireSelectCase(Object value) {
