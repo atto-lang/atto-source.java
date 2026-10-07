@@ -153,6 +153,24 @@ final class MatchAndReturnTest {
     }
 
     @Test
+    void rejectsNestedEarlyReturnsInsteadOfEscapingCallable() {
+        assertTrue(reject("""
+                fnc bad(bool outer, bool inner): int {
+                  val int x = match-and-return outer over
+                    true -> {
+                      if inner then
+                        return 99;
+                      fi
+                      return 1;
+                    }
+                    false -> { return 2; }
+                  end;
+                  return x;
+                }
+                """).getMessage().contains("nested callable returns"));
+    }
+
+    @Test
     void rejectsUnreachableFallbackAndOverlappingNestedPatterns() {
         assertTrue(reject("""
                 fnc bad(Option<Option<int>> value): int {
