@@ -1212,7 +1212,11 @@ public final class Parser {
             match(SEMICOLON);
             return statement;
         }
-        if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement(false);
+        if (looksLikeStaticSelectStatement()) {
+            Ast.SelectStmt statement = parseStaticSelectStatement(false);
+            match(SEMICOLON); // Additive syntax only; historical bare selects remain unchanged.
+            return statement;
+        }
         if (looksLikeImmediateChannelExpression()) {
             Ast.Expr expression = parseExpression();
             consumeStatementTerminator("channel probe expression should end with ';'");
