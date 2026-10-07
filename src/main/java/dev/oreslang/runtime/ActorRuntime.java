@@ -1150,6 +1150,17 @@ public final class ActorRuntime implements AutoCloseable {
      * initializeActor after the ActorContext is installed, and subsequent
      * mailbox turns receive that actor-owned state explicitly.</p>
      */
+    /**
+     * Runtime-visible immutable source data shape that can cross an actor
+     * boundary without exposing evaluator-private implementation classes.
+     * Implementations must rebuild a fresh value from already-transported
+     * children; they may not retain the original mutable child graph.
+     */
+    public interface ActorTransportValue {
+        List<?> actorTransportChildren();
+        Object rebuildActorTransportValue(List<Object> transportedChildren);
+    }
+
     public record ActorDispatchRequest(
             String methodName,
             List<Object> arguments,
