@@ -3751,6 +3751,17 @@ public final class OresEvalRootNode extends RootNode {
                     dynamic.fields.put(member.member(), value);
                     return value;
                 }
+                if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
+                    @SuppressWarnings("unchecked")
+                    LinkedHashMap<String, Object> record =
+                            (LinkedHashMap<String, Object>) rawRecord;
+                    if (!record.containsKey(member.member())) {
+                        throw new IllegalArgumentException(
+                                "unknown inferred struct field " + member.member());
+                    }
+                    record.put(member.member(), value);
+                    return value;
+                }
                 throw new IllegalArgumentException(
                         "member assignment requires mutable object state");
             }
