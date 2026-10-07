@@ -378,7 +378,8 @@ public final class TreeShaker {
                         substitute(lambda.expressionBody(), substitutions, nestedShadowed),
                         lambda.blockBody(),
                         lambda.nonLexical(),
-                        lambda.returnType());
+                        lambda.returnType(),
+                        lambda.async());
             }
             throw new IllegalStateException(
                     "unhandled expression during specialization " + expression.getClass().getSimpleName());
@@ -957,7 +958,8 @@ public final class TreeShaker {
                                 ? null
                                 : rewriteStatements(lambda.blockBody(), module, lambdaLocals),
                         lambda.nonLexical(),
-                        lambda.returnType());
+                        lambda.returnType(),
+                        lambda.async());
             }
             throw new IllegalStateException("unhandled expression " + expression.getClass().getSimpleName());
         }
