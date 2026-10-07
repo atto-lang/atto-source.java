@@ -116,11 +116,14 @@ final class MixedSourceInteropTest {
                   final class StructProbe {
                     @SuppressWarnings({"rawtypes", "unchecked"})
                     public static boolean shapeIsProtected(java.util.Map value) {
+                      if (value.size() != 1 || !java.util.Objects.equals(value.get("foo"), 7L)) {
+                        return false;
+                      }
                       try {
                         value.put("injected", 99);
                         return false;
                       } catch (UnsupportedOperationException expected) {
-                        return true;
+                        return value.size() == 1 && !value.containsKey("injected");
                       }
                     }
                   }
@@ -129,7 +132,6 @@ final class MixedSourceInteropTest {
                 pub fnc main(): void {
                   val value = struct{foo: int}{foo: 7};
                   stdio.println(StructProbe.shapeIsProtected(value));
-                  stdio.println(value.foo);
                   return;
                 }
                 """);
@@ -144,7 +146,7 @@ final class MixedSourceInteropTest {
                 new ByteArrayOutputStream());
 
         String output = out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
-        assertTrue(output.contains("true\n7\n"), output);
+        assertTrue(output.contains("true\n"), output);
     }
 
     @Test
