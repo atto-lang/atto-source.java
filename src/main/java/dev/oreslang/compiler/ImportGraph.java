@@ -35,6 +35,9 @@ final class ImportGraph {
             Set<String> available,
             Map<String, Map<String, String>> importResolutions) {
         ImportRules.validate(imported);
+        // @self is a lexical permission inside the already-loaded immutable
+        // code unit, not an import-graph edge and never a filesystem lookup.
+        if (ImportRules.isSelfPath(imported.path())) return null;
         if (ImportRules.isJavaPath(imported.path())) return null;
 
         String normalizedUnitId = normalizeUnitId(unitId);
