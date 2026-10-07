@@ -4892,33 +4892,84 @@ public final class TypeChecker {
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
-            boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
-            }
-            return some && none;
-        }
-        if (subject instanceof Named named && named.name().equals("Result")) {
-            boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
-            }
-            return ok && err;
-        }
-        if (subject instanceof Named named && named.name().equals("Select")) {
-            Set<String> constructors = new HashSet<>();
+        if (subject instanceof Named named
+                && named.name().equals("Option")
+                && named.arguments().size() == 1) {
+            boolean none = false;
+            ArrayList<Ast.MatchArm> someArms = new ArrayList<>();
             for (Ast.MatchArm arm : arms) {
-                if (arm.guard() == null
-                        && arm.pattern() instanceof Ast.ConstructorPattern c
-                        && isSelectConstructor(c.constructor())) {
-                    constructors.add(c.constructor());
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
+                if (c.constructor().equals("None") && c.arguments().isEmpty()) {
+                    none = true;
+                } else if (c.constructor().equals("Some") && c.arguments().size() == 1) {
+                    someArms.add(new Ast.MatchArm(
+                            c.arguments().getFirst(),
+                            null,
+                            List.of()));
                 }
             }
-            return constructors.containsAll(
-                    Set.of("Read", "Write", "Await", "Timeout", "Cancelled", "Default"));
+            boolean some = !someArms.isEmpty()
+                    && matchProvablyExhaustive(
+                            someArms,
+                            named.arguments().getFirst(),
+                            generics,
+                            self);
+            return some && none;
+        }
+        if (subject instanceof Named named
+                && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            ArrayList<Ast.MatchArm> okArms = new ArrayList<>();
+            ArrayList<Ast.MatchArm> errArms = new ArrayList<>();
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)
+                        || c.arguments().size() != 1) continue;
+                if (c.constructor().equals("Ok")) {
+                    okArms.add(new Ast.MatchArm(c.arguments().getFirst(), null, List.of()));
+                }
+                if (c.constructor().equals("Err")) {
+                    errArms.add(new Ast.MatchArm(c.arguments().getFirst(), null, List.of()));
+                }
+            }
+            boolean ok = !okArms.isEmpty()
+                    && matchProvablyExhaustive(
+                            okArms,
+                            named.arguments().get(0),
+                            generics,
+                            self);
+            boolean err = !errArms.isEmpty()
+                    && matchProvablyExhaustive(
+                            errArms,
+                            named.arguments().get(1),
+                            generics,
+                            self);
+            return ok && err;
+        }
+        if (subject instanceof Named named
+                && named.name().equals("Select")
+                && named.arguments().size() == 1) {
+            Type payload = named.arguments().getFirst();
+            boolean read = false;
+            boolean write = false;
+            boolean await = false;
+            boolean timeout = false;
+            boolean cancelled = false;
+            boolean defaultCase = false;
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
+                switch (c.constructor()) {
+                    case "Read" -> read |= c.arguments().size() == 1
+                            && patternCoversType(c.arguments().getFirst(), payload, generics, self);
+                    case "Await" -> await |= c.arguments().size() == 1
+                            && patternCoversType(c.arguments().getFirst(), payload, generics, self);
+                    case "Write" -> write |= c.arguments().isEmpty();
+                    case "Timeout" -> timeout |= c.arguments().isEmpty();
+                    case "Cancelled" -> cancelled |= c.arguments().isEmpty();
+                    case "Default" -> defaultCase |= c.arguments().isEmpty();
+                    default -> { }
+                }
+            }
+            return read && write && await && timeout && cancelled && defaultCase;
         }
         return false;
     }
@@ -4952,6 +5003,19 @@ public final class TypeChecker {
                         self)) return false;
             }
             return true;
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor
+                && subject instanceof Named named) {
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                if (constructor.constructor().equals("Some")
+                        && constructor.arguments().size() == 1) {
+                    return false;
+                }
+                return false;
+            }
+            if (named.name().equals("Select") && named.arguments().size() == 1) {
+                return false;
+            }
         }
         if (pattern instanceof Ast.LiteralPattern literal
                 && subject instanceof StringLiteral stringLiteral
