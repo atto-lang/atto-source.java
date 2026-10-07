@@ -1,6 +1,6 @@
 # Actor class lifecycle and parent-facing output streams (design + implementation status)
 
-**Status (2026-10-06): parser/lexical-boundary groundwork plus host-side actor ready/done Futures; NOT an executable source-level actor-class API.**
+**Status (2026-10-06): parser/lexical-boundary groundwork, host-side actor ready/done Futures, and shared-code image registry; NOT an executable source-level actor-class API.**
 
 The existing `ActorRuntime` already has `ActorRef.send/stop/cancel/forceCancel`,
 bounded channel-backed mailboxes, actor identity, child supervision, and
@@ -14,8 +14,9 @@ repurpose it as a class actor's inbound message.
 // The compiler must eventually lower this class and its lifecycle hooks.
 // This is a contract example and must NOT be treated as an executable fixture.
 define actor Worker as
-  pub constructor() {
-    // Runs in the worker's own execution/isolation domain.
+  pub on_start(): void {
+    // Actor-local startup hook; actor constructors stay forbidden.
+    return;
   }
 
   pub receive(ActorMail<String> mail): void {
@@ -64,7 +65,7 @@ of output strings.
 
 | Surface | Signature (conceptual) | Contract |
 | --- | --- | --- |
-| `spawn Worker(args)` | `ActorRef<Worker>` | Allocates actor identity; constructor runs in actor execution context, not the caller |
+| `spawn Worker()` | `ActorRef<Worker>` | Allocates actor identity; reserved on_start hook runs in actor execution context, not the caller |
 | `w.id`, `w.kind` | `ActorId`, `ActorKind` | Immutable identity/diagnostics |
 | `w.ready` | `Future<void>` | Completes once constructor and initialization succeed, fails if initialization fails/stops |
 | `w.send(mail)` | `void` or explicit nonblocking variant | **Inbound**, serialized, bounded actor mailbox; reject capability/pointer/function payloads |
@@ -126,9 +127,10 @@ weakens isolate policy.
 
 1. **This branch:** parse `define actor ... as ... end`, enforce first-pass
    implicit class-to-file callable boundary, and add regression tests.
-2. Extend AST/parser/type checker with actor constructors, `spawn` expressions,
-   reserved lifecycle hooks, `ActorRef<Worker>` and envelope/stream types.
-   Keep constructor execution actor-local; reject `new Worker()`.
+2. Keep actor class constructors **rejected**. Extend AST/parser/type checker
+   with `spawn` expressions, reserved `on_start()` hook,
+   `ActorRef<Worker>` and envelope/stream types; reject `new Worker()`.
+   A startup hook executes on the actor's own execution domain.
 3. **Host substrate implemented in this branch:** `ActorRef.ready()` and
    `ActorRef.done()` expose runtime-only completion Futures. `ready()` schedules
    actor initialization even with no first message; stop-before-start and
@@ -148,5 +150,30 @@ weakens isolate policy.
    tree** into a funded test org's temporary branch, verify blob/tree identity,
    and run Actions locally to that repo without cross-org secrets.
 
-Do not mark this milestone as implementing `spawn Worker()`, `w.ready`,
-`self.send`, `self.end`, or streamed worker output: they remain future gates.
+The source-level `async || -> { ... }` lambda spelling is the required slim-arrow
+form. Parser and runtime support for async RHS lambdas and the full worker-stream
+example are separate gates; do not silently substitute fat arrows.
+
+```ores
+// Proposed syntax; not executable until async RHS lambda/spawn lowering.
+const create = async || -> {
+  const worker = spawn Worker();
+  await worker.ready;
+  return worker;
+};
+```
+
+Returning `await worker.ready` would return the readiness result (void), not the
+actor reference. For a runnable acceptance fixture target, see
+`docs/proposals/actor-worker-streaming/main.ores` (design-only today).
+
+`SharedCodeImageStore` and `OresContext` now hold one immutable `Ast.Program`
+reference per linked source unit for the same OresVM, and `Evaluator.link()`
+publishes it once. Existing linked-import lookup returns the shared evaluator.
+This is a real same-process JVM code-image reference invariant, not proof that
+Graal native/JIT machine-code pages are shared among independent Truffle engines
+or OS processes. Actor state and mailbox payloads stay outside the code store.
+
+Do not mark this milestone as implementing source-level `spawn Worker()`,
+`w.ready`, `self.send`, `self.end`, or streamed worker output: they remain
+future gates.
