@@ -109,7 +109,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexSubstitutesGenericsInsideUnionFields() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                import class Box from "@self";
                 
                 define module model
                   define class Box<T> as
@@ -127,7 +126,6 @@ final class MutexLanguageTest {
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                import class Box from "@self";
                 
                 define module model
                   define class Box<T> as
@@ -145,7 +143,6 @@ final class MutexLanguageTest {
                 """)));
 
         var unsafe = Parser.parse("""
-                import class Box from "@self";
                 
                 define module model
                   define class Box<T> as
@@ -236,7 +233,6 @@ final class MutexLanguageTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(closureProgram));
 
         var futureProgram = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -260,8 +256,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexPreservesParentGenericBindingsDuringSafetyCheck() {
         var program = Parser.parse("""
-                import class Parent from "@self";
-                import class Child from "@self";
                 
                 define module model
                   define class Parent<T> as
@@ -288,7 +282,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexRecursivelyChecksClassFields() {
         var program = Parser.parse("""
-                import class UnsafeBox from "@self";
                 
                 define module model
                   define class UnsafeBox as
@@ -328,7 +321,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexAcceptsOrdinaryOwnedClassState() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -349,7 +341,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexRejectsActorLocalStateGraph() {
         var program = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -374,7 +365,6 @@ final class MutexLanguageTest {
     @Test
     void mutexGuardTransparentlyProtectsClassStateAndReleasesLexically() throws Exception {
         String program = """
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -416,7 +406,6 @@ final class MutexLanguageTest {
     @Test
     void awaitWhileHoldingGuardIsRejectedStatically() {
         var program = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -442,7 +431,6 @@ final class MutexLanguageTest {
     @Test
     void withLockProvidesMutableProtectedValue() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -466,7 +454,6 @@ final class MutexLanguageTest {
     @Test
     void withLockAcceptsVoidExpressionBodyLambda() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -489,7 +476,6 @@ final class MutexLanguageTest {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        import class Counter from "@self";
                         
                         define module model
                           define class Counter as
@@ -513,7 +499,6 @@ final class MutexLanguageTest {
     @Test
     void awaitInsideWithLockCriticalSectionIsRejected() {
         var program = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -540,7 +525,6 @@ final class MutexLanguageTest {
     @Test
     void guardBearingResultsMustBeBoundAndCannotBeOverwritten() {
         var discarded = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -560,7 +544,6 @@ final class MutexLanguageTest {
         assertTrue(discardedError.getMessage().contains("cannot be discarded"));
 
         var mutableBinding = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -584,7 +567,6 @@ final class MutexLanguageTest {
     @Test
     void guardBearingValuesCannotCrossArbitraryCallsOrNestedMutexes() {
         var callProgram = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -604,7 +586,6 @@ final class MutexLanguageTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(callProgram));
 
         var nestedProgram = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -627,8 +608,6 @@ final class MutexLanguageTest {
     @Test
     void guardedMoveOnlyFieldsAndMethodValuesCannotEscape() {
         var fieldProgram = Parser.parse("""
-                import class Child from "@self";
-                import class Holder from "@self";
                 
                 define module model
                   define class Child as
@@ -653,7 +632,6 @@ final class MutexLanguageTest {
         assertTrue(fieldError.getMessage().contains("cannot extract move-only field"));
 
         var methodProgram = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -678,7 +656,6 @@ final class MutexLanguageTest {
     @Test
     void directGuardedCopyReturningMethodCallIsAllowed() throws Exception {
         String program = """
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -715,7 +692,6 @@ final class MutexLanguageTest {
     @Test
     void withLockProtectedBorrowCannotMoveOrReturnState() {
         var moved = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -739,7 +715,6 @@ final class MutexLanguageTest {
         assertTrue(movedError.getMessage().contains("protected with_lock/recover state cannot be moved"));
 
         var returned = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -762,7 +737,6 @@ final class MutexLanguageTest {
     @Test
     void withLockRequiresInlineLambda() {
         var program = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -790,7 +764,6 @@ final class MutexLanguageTest {
     @Test
     void guardCannotBeStoredInAggregate() {
         var program = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -816,7 +789,6 @@ final class MutexLanguageTest {
     @Test
     void guardCannotEscapeThroughClosureCapture() {
         var program = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -892,8 +864,6 @@ final class MutexLanguageTest {
     @Test
     void guardBearingValuesCannotBeHiddenInConstructedObjects() {
         var direct = Parser.parse("""
-                import class Box from "@self";
-                import class Counter from "@self";
                 
                 define module model
                   define class Box<T> as
@@ -923,8 +893,6 @@ final class MutexLanguageTest {
                 "MutexGuard cannot be stored in a constructed object"));
 
         var pending = Parser.parse("""
-                import class Box from "@self";
-                import class Counter from "@self";
                 
                 define module model
                   define class Box<T> as
@@ -954,8 +922,6 @@ final class MutexLanguageTest {
                 "MutexGuard cannot be stored in a constructed object"));
 
         var borrowed = Parser.parse("""
-                import class Box from "@self";
-                import class Counter from "@self";
                 
                 define module model
                   define class Box<T> as
@@ -1028,7 +994,6 @@ final class MutexLanguageTest {
         IllegalArgumentException declaredError = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        import class Counter from "@self";
                         
                         define module model
                           define class Counter as
@@ -1049,7 +1014,6 @@ final class MutexLanguageTest {
     @Test
     void conditionalExpressionsCannotEraseGuardLinearity() {
         var awaitProgram = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
@@ -1075,7 +1039,6 @@ final class MutexLanguageTest {
                 "cannot await while holding a MutexGuard"));
 
         var returnProgram = Parser.parse("""
-                import class Counter from "@self";
                 
                 define module model
                   define class Counter as
