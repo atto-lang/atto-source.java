@@ -1472,18 +1472,11 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-                    if (dynamic.arguments().size() != 1) {
-                        throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
-                    }
-                    requireAssignable(index, Primitive.STRING, "DynamicStruct key");
-                    targetType = dynamic.arguments().getFirst();
-                } else {
-                    requireAssignable(index, Primitive.INT, "array/list index");
-                    if (receiver instanceof ListType list) targetType = list.element();
-                    else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                    else throw new IllegalArgumentException("indexed assignment requires an array/list, tuple, or DynamicStruct");
-                }
+                requireAssignable(index, Primitive.INT, "array/list index");
+                if (receiver instanceof ListType list) targetType = list.element();
+                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                else throw new IllegalArgumentException(
+                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -2405,15 +2398,14 @@ public final class TypeChecker {
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-            throw new IllegalArgumentException("indexing requires an array/list, tuple, or DynamicStruct");
+            throw new IllegalArgumentException(
+                    "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
             if (created.type().name().equals("DynamicStruct")) {
-                Type dynamic = resolve(created.type(), generics, self);
-                if (!created.arguments().isEmpty()) {
-                    throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
-                }
-                return dynamic;
+                throw new IllegalArgumentException(
+                        "DynamicStruct has been removed; use struct infer{...}, "
+                                + "struct{field: Type,...}{...}, or an explicit Map<K,V> collection");
             }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
@@ -2628,28 +2620,21 @@ public final class TypeChecker {
             }
 
             Map<String, Type> members = new LinkedHashMap<>();
-            boolean dynamicKeys = false;
-            Type dynamicValue = null;
             for (Ast.ObjectField field : object.fields()) {
-                Type exactValueType = typeOf(field.value(), env, generics, self);
-                Type dynamicValueType = widenCollectionElement(exactValueType);
-                dynamicValue = dynamicValue == null
-                        ? dynamicValueType
-                        : collectionElementJoin(dynamicValue, dynamicValueType);
                 if (field.isDynamic()) {
-                    dynamicKeys = true;
-                    requireAssignable(
-                            typeOf(field.dynamicName(), env, generics, self),
-                            Primitive.STRING,
-                            "dynamic obj key");
-                } else if (members.putIfAbsent(field.name(), object.inferredStruct()
-                        ? widenCollectionElement(exactValueType) : exactValueType) != null) {
-                    throw new IllegalArgumentException("duplicate obj field '" + field.name() + "'");
+                    throw new IllegalArgumentException(
+                            "struct fields must be statically named for AOT compilation; "
+                                    + "computed/dynamic struct keys are not supported");
                 }
-            }
-            if (dynamicKeys) {
-                return new Named("DynamicStruct", List.of(
-                        dynamicValue == null ? Unknown.INSTANCE : dynamicValue));
+                Type exactValueType = typeOf(field.value(), env, generics, self);
+                if (members.putIfAbsent(
+                        field.name(),
+                        object.inferredStruct()
+                                ? widenCollectionElement(exactValueType)
+                                : exactValueType) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate struct field '" + field.name() + "'");
+                }
             }
             return new Record(members, object.inferredStruct());
         }
@@ -3506,12 +3491,6 @@ public final class TypeChecker {
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
         }
-        if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-            if (dynamic.arguments().size() != 1) {
-                throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
-            }
-            return dynamic.arguments().getFirst();
-        }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -3588,17 +3567,6 @@ public final class TypeChecker {
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
-        if (named.name().equals("DynamicStruct")) {
-            if (named.arguments().size() != 1) {
-                throw new IllegalArgumentException(where + " requires DynamicStruct<T> with one value type");
-            }
-            validateActorCallableBoundaryType(
-                    named.arguments().getFirst(),
-                    actorKind,
-                    false,
-                    where + " value");
-            return;
-        }
         if (named.name().equals("SharedMutex")) {
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
@@ -3668,10 +3636,6 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
-        if (named.name().equals("DynamicStruct")) {
-            return named.arguments().size() == 1
-                    && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
-        }
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -4355,7 +4319,6 @@ public final class TypeChecker {
         boolean valueSemanticNamed = value instanceof Named named
                 && (named.name().equals("Option")
                     || named.name().equals("Result")
-                    || named.name().equals("DynamicStruct")
                     || named.name().equals("IteratorResult"));
 
         if (value instanceof Primitive || value instanceof StringLiteral
@@ -5883,14 +5846,10 @@ public final class TypeChecker {
                 }
                 yield resolveCollectionType(ref, generics, self, allowNullMarker);
             }
-            case "DynamicStruct" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) {
-                    throw new IllegalArgumentException("DynamicStruct requires exactly one explicit value type");
-                }
-                Type value = resolve(ref.arguments().getFirst(), generics, self);
-                if (value == Primitive.VOID) throw new IllegalArgumentException("DynamicStruct<void> is invalid");
-                yield new Named("DynamicStruct", List.of(value));
-            }
+            case "DynamicStruct" -> throw new IllegalArgumentException(
+                    "DynamicStruct has been removed for AOT-safe static shape semantics; "
+                            + "use struct infer{...}, struct{field: Type,...}{...}, "
+                            + "or an explicit Map<K,V> collection");
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
