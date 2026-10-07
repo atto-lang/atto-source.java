@@ -5491,8 +5491,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("CancellationToken")) return CancellationTokenFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -5808,8 +5810,29 @@ public final class OresEvalRootNode extends RootNode {
                 return evalChannelOperation(channelOp, env);
             }
             if (expr instanceof Ast.DynamicSelectExpr selected) {
-                ChannelRuntime.SelectSet set = asSelectSet(eval(selected.cases(), env));
-                ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
+                Object source = eval(selected.cases(), env);
+                ChannelRuntime.SelectPolicy policy =
+                        runtimeSelectPolicy(selected.policy());
+                if (source instanceof ChannelRuntime.SelectPlan plan) {
+                    if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
+                        java.util.Optional<ChannelRuntime.SelectResult> result =
+                                plan.trySelect(policy);
+                        return result.isPresent()
+                                ? new OptionValue(true, result.get())
+                                : new OptionValue(false, null);
+                    }
+                    OresFuture<ChannelRuntime.SelectResult> future =
+                            plan.selectAsync(policy);
+                    if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                        return wrapFutureSome(future);
+                    }
+                    return new OptionValue(
+                            true,
+                            awaitBlockingChannelFuture(
+                                    future, "dynamic select plan"));
+                }
+
+                ChannelRuntime.SelectSet set = asSelectSet(source);
                 if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
                     java.util.Optional<ChannelRuntime.SelectResult> result =
                             set.trySelect(policy);
@@ -5826,8 +5849,7 @@ public final class OresEvalRootNode extends RootNode {
                 return new OptionValue(
                         true,
                         awaitBlockingChannelFuture(
-                                future,
-                                "dynamic select"));
+                                future, "dynamic select"));
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
@@ -6021,10 +6043,37 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof CancellationToken token) {
+                return switch (name) {
+                    case "cancel" -> (Invokable) args -> {
+                        requireZero(args, "CancellationToken.cancel");
+                        return token.cancel();
+                    };
+                    case "is_cancelled" -> (Invokable) args -> {
+                        requireZero(args, "CancellationToken.is_cancelled");
+                        return token.isCancelled();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown CancellationToken member " + name);
+                };
+            }
+            if (receiver instanceof CancellationTokenFactory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException(
+                            "unknown CancellationToken factory member " + name);
+                }
+                return (Invokable) args -> {
+                    requireZero(args, "CancellationToken.new");
+                    return new CancellationToken();
+                };
+            }
             if (receiver instanceof SelectCaseFactory factory) {
                 return switch (name) {
                     case "read" -> (Invokable) factory::read;
                     case "write" -> (Invokable) factory::write;
+                    case "await" -> (Invokable) factory::awaitFuture;
+                    case "timeout" -> (Invokable) factory::timeout;
+                    case "cancelled" -> (Invokable) factory::cancelled;
                     case "default" -> (Invokable) factory::defaultCase;
                     default -> throw new IllegalArgumentException(
                             "unknown SelectCase factory member " + name);
@@ -6036,20 +6085,31 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof SelectPlanFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException("unknown SelectPlan factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
             if (receiver instanceof SelectResultValue selected) {
                 return switch (name) {
                     case "index" -> (long) selected.index();
                     case "operation" -> selected.operation();
                     case "value" -> selected.value();
+                    case "payload" -> selectPayloadOption(
+                            selected.operation(), selected.value());
                     default -> throw new IllegalArgumentException(
                             "unknown SelectResult member " + name);
                 };
             }
             if (receiver instanceof ChannelRuntime.SelectResult selected) {
+                String operation = selected.operation().name()
+                        .toLowerCase(java.util.Locale.ROOT);
                 return switch (name) {
                     case "index" -> (long) selected.index();
-                    case "operation" -> selected.operation().name().toLowerCase(java.util.Locale.ROOT);
+                    case "operation" -> operation;
                     case "value" -> selected.value();
+                    case "payload" -> selectPayloadOption(operation, selected.value());
                     default -> throw new IllegalArgumentException(
                             "unknown SelectResult member " + name);
                 };
