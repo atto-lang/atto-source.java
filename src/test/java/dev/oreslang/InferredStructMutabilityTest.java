@@ -147,10 +147,9 @@ final class InferredStructMutabilityTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc consume(structural { foo: string; bar: bool; } point): void { return; }
                 fnc bad(): void {
                   const mut point = struct{foo: string, bar: bool}{foo: "before"};
-                  consume(point);
+                  const escaped = point;
                   return;
                 }
                 """)));
@@ -189,12 +188,11 @@ final class InferredStructMutabilityTest {
 
     @Test void explicitStructCompletesBeforeWholeValueUse() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc consume(structural { foo: string; bar: bool; } point): void { return; }
-                fnc ok(): void {
+                fnc ok(): string {
                   const mut point = struct{foo: string, bar: bool}{foo: "before"};
                   point.bar = true;
-                  consume(point);
-                  return;
+                  const complete = point;
+                  return complete.foo;
                 }
                 """)));
     }
