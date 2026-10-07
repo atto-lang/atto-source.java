@@ -16,7 +16,7 @@ final class SourceActorSpawnExecutionTest {
     void spawnRunsOnStartReceiveAndDoneAcrossActorKinds() throws Exception {
         String program = """
                 define actor SharedWorker as
-                  val int started;
+                  let int started;
 
                   on_start(): void {
                     self.started = 1;
