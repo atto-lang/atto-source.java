@@ -5156,7 +5156,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot be frozen");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                for (Object child : transported.actorTransportChildren()) {
+                    rejectDataFreezeCapabilities(child, visiting, depth + 1);
+                }
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1);
@@ -5198,6 +5202,15 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
+            if (value instanceof ActorTransportValue transported) {
+                List<?> children = transported.actorTransportChildren();
+                List<Object> frozenChildren = new ArrayList<>(children.size());
+                for (Object child : children) {
+                    frozenChildren.add(freeze(child, visiting, depth + 1));
+                }
+                return transported.rebuildActorTransportValue(
+                        List.copyOf(frozenChildren));
+            }
             if (value instanceof List<?> list) {
                 List<Object> frozen = new ArrayList<>(list.size());
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
@@ -5261,6 +5274,15 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
         }
         try {
+            if (value instanceof ActorTransportValue transported) {
+                List<?> children = transported.actorTransportChildren();
+                List<Object> copiedChildren = new ArrayList<>(children.size());
+                for (Object child : children) {
+                    copiedChildren.add(isolateCopy(child, visiting, depth + 1));
+                }
+                return transported.rebuildActorTransportValue(
+                        List.copyOf(copiedChildren));
+            }
             if (value instanceof List<?> list) {
                 List<Object> copy = new ArrayList<>(list.size());
                 for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
@@ -5316,6 +5338,19 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
+            if (value instanceof ActorTransportValue transported) {
+                List<?> children = transported.actorTransportChildren();
+                long total = requireWithinLimit(
+                        containerBase(24L, 8L, children.size()), limit);
+                for (Object child : children) {
+                    total = addWithinLimit(
+                            total,
+                            estimateSharedTransportBytes(
+                                    child, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
             if (value instanceof List<?> list) {
                 long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
                 for (Object item : list) {
@@ -5382,6 +5417,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
+        if (value instanceof ActorTransportValue transported) {
+            List<?> children = transported.actorTransportChildren();
+            bytes = Math.addExact(bytes, 8L * children.size());
+            for (Object child : children) {
+                bytes = Math.addExact(
+                        bytes,
+                        estimateSharedMailboxBytes(child, seen, depth + 1));
+            }
+            return bytes;
+        }
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) {
@@ -5436,6 +5481,19 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
         }
         try {
+            if (value instanceof ActorTransportValue transported) {
+                List<?> children = transported.actorTransportChildren();
+                long total = requireWithinLimit(
+                        containerBase(24L, 8L, children.size()), limit);
+                for (Object child : children) {
+                    total = addWithinLimit(
+                            total,
+                            estimatePrivateTransportBytes(
+                                    child, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
             if (value instanceof List<?> list) {
                 long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
                 for (Object item : list) {
@@ -5557,6 +5615,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
+        if (value instanceof ActorTransportValue transported) {
+            List<?> children = transported.actorTransportChildren();
+            bytes = Math.addExact(bytes, 8L * children.size());
+            for (Object child : children) {
+                bytes = Math.addExact(
+                        bytes,
+                        estimateFrozenBytes(child, seen, depth + 1));
+            }
+            return bytes;
+        }
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
