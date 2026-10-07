@@ -4131,6 +4131,14 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    private static final ExecutorService BLOCKING_IMPLEMENTATION_THREADS =
+            java.util.concurrent.Executors.newThreadPerTaskExecutor(
+                    Thread.ofVirtual()
+                            .name("ores-blocking-source-", 0)
+                            .factory());
+
+
+
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
         private final ActorKind kind;
