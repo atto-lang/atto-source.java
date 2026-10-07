@@ -93,6 +93,7 @@ public final class TypeChecker {
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "ActorMail", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -983,6 +984,8 @@ public final class TypeChecker {
             }
 
             boolean actorStartupHook = method.name().equals("on_start");
+            boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("receive");
             if (actorStartupHook) {
                 if (klass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
@@ -1012,6 +1015,35 @@ public final class TypeChecker {
                 if (!method.parameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must take zero arguments");
+                }
+            }
+
+            if (actorReceiveHook) {
+                if (method.isStatic()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' must be an instance method");
+                }
+                if (method.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' is actor-local and cannot be public");
+                }
+                if (method.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' must have an implementation");
+                }
+                if (method.async()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' uses actor-turn suspension; "
+                                    + "declare it synchronously and use explicit await/rt cooperate safepoints");
+                }
+                if (!method.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' cannot declare generic parameters");
+                }
+                if (method.parameters().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name()
+                                    + ".receive' must take exactly one ActorMail<T> parameter");
                 }
             }
 
@@ -1088,12 +1120,30 @@ public final class TypeChecker {
                             false,
                             "parameter '" + param.name() + "' of async static function '" + klass.name() + "." + method.name() + "'");
                 }
+                if (actorReceiveHook) {
+                    if (!(parameterType instanceof Named mail)
+                            || !mail.name().equals("ActorMail")
+                            || mail.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "actor mailbox handler '" + klass.name()
+                                        + ".receive' parameter must be ActorMail<T>");
+                    }
+                    validateActorCallableBoundaryType(
+                            mail.arguments().getFirst(),
+                            klass.actorKind(),
+                            false,
+                            "mailbox payload of actor '" + klass.name() + ".receive'");
+                }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
                         "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
+            }
+            if (actorReceiveHook && returns != Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "actor mailbox handler '" + klass.name() + ".receive' must return void");
             }
             if (method.async()) {
                 validateAsyncBoundaryType(
@@ -1969,9 +2019,11 @@ public final class TypeChecker {
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
-                if (actorSelf && member.member().equals("on_start")) {
+                if (actorSelf && (member.member().equals("on_start")
+                        || member.member().equals("receive"))) {
                     throw new IllegalArgumentException(
-                            "on_start is a reserved actor lifecycle hook and cannot be called directly");
+                            member.member()
+                                    + " is a reserved actor lifecycle hook and cannot be called directly");
                 }
                 if (actorSelf
                         && (member.member().equals("send") || member.member().equals("end"))) {
@@ -2021,6 +2073,11 @@ public final class TypeChecker {
                                     actorClass.actorKind(),
                                     false,
                                     "ActorRef.send mailbox value");
+                            Type expectedPayload = actorMailboxPayloadType(actorRef);
+                            requireAssignable(
+                                    payload,
+                                    expectedPayload,
+                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
                             yield Primitive.VOID;
                         }
                         case "stop" -> {
@@ -2401,6 +2458,22 @@ public final class TypeChecker {
                                             + " is direct-call-only; invoke it with (...)");
                     default -> throw new IllegalArgumentException(
                             "unknown ActorRef member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named mail
+                    && mail.name().equals("ActorMail")) {
+                if (mail.arguments().size() != 1) {
+                    throw new IllegalArgumentException("ActorMail<T> requires exactly one payload type");
+                }
+                return switch (member.member()) {
+                    case "value" -> mail.arguments().getFirst();
+                    case "recipient" -> new Named("ActorId", List.of());
+                    case "sender" -> new Named(
+                            "Option",
+                            List.of(new Named("ActorId", List.of())));
+                    case "sequence" -> Primitive.INT;
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorMail member '" + member.member() + "'");
                 };
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
@@ -3293,6 +3366,55 @@ public final class TypeChecker {
             return new Record(members);
         }
         return type;
+    }
+
+    private Type actorMailboxPayloadType(Named actorRef) {
+        if (actorRef.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "ActorRef requires exactly one actor type argument");
+        }
+        Type target = receiverDispatchType(deref(actorRef.arguments().getFirst()));
+        if (!(target instanceof Named concreteActor)) {
+            throw new IllegalArgumentException(
+                    "ActorRef target must be a concrete actor class; got " + target);
+        }
+        Ast.ClassDecl actorClass = findClass(concreteActor.name());
+        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "ActorRef target '" + concreteActor.name() + "' is not a known actor class");
+        }
+        ResolvedMethod receive = findMethodTarget(
+                actorClass,
+                concreteActor,
+                "receive",
+                1,
+                new LinkedHashSet<>());
+        if (receive == null) {
+            throw new IllegalArgumentException(
+                    "actor '" + actorClass.name()
+                            + "' has no receive(ActorMail<T>) mailbox handler");
+        }
+        Ast.MethodDecl handler = receive.method();
+        if (handler.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + actorClass.name() + ".receive' has invalid mailbox arity");
+        }
+        Set<String> ownerGenerics = Set.copyOf(receive.owner().genericParameters());
+        Type mailType = resolve(
+                handler.parameters().getFirst().type(),
+                ownerGenerics,
+                receive.ownerType());
+        mailType = substituteGenerics(
+                mailType,
+                classGenericBindings(receive.owner(), receive.ownerType()));
+        if (!(mailType instanceof Named mail)
+                || !mail.name().equals("ActorMail")
+                || mail.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + actorClass.name()
+                            + ".receive' must accept ActorMail<T>");
+        }
+        return mail.arguments().getFirst();
     }
 
     private Ast.ClassDecl actorClassForRef(Named actorRef) {
@@ -5673,6 +5795,24 @@ public final class TypeChecker {
                 Type value = resolve(ref.arguments().getFirst(), generics, self);
                 if (value == Primitive.VOID) throw new IllegalArgumentException("DynamicStruct<void> is invalid");
                 yield new Named("DynamicStruct", List.of(value));
+            }
+            case "ActorId", "ActorKind" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " does not accept type arguments");
+                }
+                yield new Named(ref.name(), List.of());
+            }
+            case "ActorMail" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorMail requires exactly one explicit payload type");
+                }
+                Type payload = resolve(ref.arguments().getFirst(), generics, self);
+                if (payload == Primitive.VOID) {
+                    throw new IllegalArgumentException("ActorMail<void> is invalid");
+                }
+                yield new Named("ActorMail", List.of(payload));
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
