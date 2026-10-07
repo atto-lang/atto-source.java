@@ -2570,15 +2570,23 @@ public final class TypeChecker {
                                             "field '" + member.member() + "' on " + named.name()
                                                     + " is not callable");
                                 }
-                                if (fn.parameters().size() != call.arguments().size()) {
+                                List<ExpandedCallArgument> fieldArguments =
+                                        expandFixedCallArguments(
+                                                call.arguments(), env, generics, self,
+                                                "function-valued field " + member.member());
+                                if (fn.parameters().size() != fieldArguments.size()) {
                                     throw new IllegalArgumentException(
                                             "function-valued field '" + member.member() + "' call arity mismatch");
                                 }
                                 for (int i = 0; i < fn.parameters().size(); i++) {
-                                    validateLambdaArgument(
-                                            call.arguments().get(i), fn.parameters().get(i), env, generics, self);
+                                    ExpandedCallArgument argument = fieldArguments.get(i);
+                                    if (argument.expression() != null) {
+                                        validateLambdaArgument(
+                                                argument.expression(), fn.parameters().get(i), env, generics, self);
+                                    }
                                     Type actualArgument =
-                                            typeOf(call.arguments().get(i), env, generics, self);
+                                            expandedCallArgumentType(
+                                                    argument, fn.parameters().get(i), env, generics, self);
                                     requireReadonlyCapabilityPreserved(
                                             actualArgument,
                                             fn.parameters().get(i),
