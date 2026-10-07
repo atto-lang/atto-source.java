@@ -278,7 +278,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, 64, 16_384);
+            int shared = Integer.getInteger("ores.runtime.actor.shared.parallelism", cpus);
+            return new DispatcherConfig(cpus, shared, 64, 16_384);
         }
     }
 
