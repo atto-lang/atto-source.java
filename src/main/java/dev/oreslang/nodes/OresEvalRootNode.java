@@ -517,9 +517,19 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' has no receive(ActorMail<T>) handler");
             }
             if (methodContainsPotentialSuspension(receive)) {
-                throw new IllegalStateException(
-                        "suspending actor receive is not executable yet; "
-                                + "mailbox-turn suspension must serialize later user messages before rt cooperate/await is enabled");
+                /*
+                 * The source scheduler unwinds every cooperate/await into a
+                 * heap-owned continuation. ActorRuntime then gates later user
+                 * mail until this Future completes, while prioritizing only
+                 * this actor's bounded internal continuation lane.
+                 */
+                OresFuture<Object> completion =
+                        startSourceMethodTask(
+                                receive,
+                                state.object(),
+                                List.of(mail));
+                context.actors().suspendCurrentUserMailboxUntil(completion);
+                return;
             }
 
             Object result =
