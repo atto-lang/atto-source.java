@@ -55,6 +55,50 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
+    void doSelectTerminalReturnsAreArmLocalAndNeverEscapeCallable() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                fnc choose(Channel<int> input): int {
+                  do select {
+                  case readch input: val value
+                    return value;
+                  default:
+                    return 7;
+                  }
+                  return 19;
+                }
+                actor fnc deferred(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  do nb select {
+                  case readch input: val value
+                    return value + 1;
+                  }
+                  return;
+                }
+                """));
+        Ast.FunctionDecl choose = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(0);
+        Ast.SelectStmt blocking = assertInstanceOf(Ast.SelectStmt.class, choose.body().getFirst());
+        assertInstanceOf(Ast.ExprStmt.class, blocking.arms().getFirst().body().getLast());
+        assertInstanceOf(Ast.ExprStmt.class, blocking.arms().get(1).body().getLast());
+        assertInstanceOf(Ast.ReturnStmt.class, choose.body().get(1));
+        Ast.FunctionDecl deferred = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
+        Ast.SelectStmt nb = assertInstanceOf(Ast.SelectStmt.class, deferred.body().get(1));
+        assertInstanceOf(Ast.ExprStmt.class, nb.arms().getFirst().body().getLast());
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(Channel<int> input): void {
+                  do select {
+                  case readch input: val value
+                    if value > 0 then
+                      return 1;
+                    fi
+                    stdio.println(value);
+                  }
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void doSelectCannotSilentlyDropDynamicNonblockingFuture() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc discard(Array<SelectCase> cases): void {
