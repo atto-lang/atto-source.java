@@ -5361,10 +5361,12 @@ public final class TypeChecker {
             validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
             Type actual = typeOfAgainstExpected(
                     arguments.get(i), expected, env, callerGenerics, callerSelf);
-            requireReadonlyCapabilityPreserved(
-                    actual,
-                    expected,
-                    "argument " + (i + 1) + " to " + label);
+            if (!params.get(i).structural()) {
+                requireReadonlyCapabilityPreserved(
+                        actual,
+                        expected,
+                        "argument " + (i + 1) + " to " + label);
+            }
             requireMutableReferentCompatible(
                     actual, params.get(i).mutable(),
                     "argument " + (i + 1) + " to mutable parameter");
