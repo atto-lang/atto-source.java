@@ -236,4 +236,66 @@ final class ActorDeclarationLexicalBoundaryTest {
                 """));
     }
 
+
+    @Test
+    void actorOnStartIsReservedActorLocalZeroArgVoidHook() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  on_start(): void {
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException publicHook = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub on_start(): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(publicHook.getMessage().contains("actor-local"), publicHook.getMessage());
+
+        IllegalArgumentException parameterizedHook = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          on_start(value: int): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(parameterizedHook.getMessage().contains("zero arguments"),
+                parameterizedHook.getMessage());
+
+        IllegalArgumentException nonVoidHook = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          on_start(): int {
+                            return 1;
+                          }
+                        end
+                        """)));
+        assertTrue(nonVoidHook.getMessage().contains("return void"),
+                nonVoidHook.getMessage());
+    }
+
+    @Test
+    void ordinaryClassCannotDeclareReservedActorOnStartHook() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Worker as
+                          on_start(): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("only be declared by an actor class"),
+                failure.getMessage());
+    }
+
 }
