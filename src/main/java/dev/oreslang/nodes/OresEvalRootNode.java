@@ -5104,40 +5104,70 @@ public final class OresEvalRootNode extends RootNode {
             throw new ReturnSignal(eval(value, env));
         }
 
-        private Ast.ClassDecl actorLexicalContainer(Env env) {
-            Ast.ClassDecl container = env.lexicalContainerClass();
-            return container != null && container.actorKind() != Ast.ActorKind.NONE
-                    ? container
-                    : null;
-        }
-
         private void requireExplicitClassCallableImport(Env env, String name) {
-            Ast.ClassDecl actor = actorLexicalContainer(env);
-            if (actor == null) return;
-            throw new IllegalArgumentException(
-                    "actor '" + actor.name()
-                            + "' cannot implicitly access file/module callable '"
-                            + name + "'; actor dependencies must come from explicit imports");
+            Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
+            if (lexicalClass != null) {
+                throw new IllegalArgumentException(
+                        "class '" + lexicalClass.name()
+                                + "' cannot implicitly access file/module callable '"
+                                + name + "'; move the dependency to another source unit and import it explicitly");
+            }
+            String owner = unqualifiedFunctionOwners.get(name);
+            if (owner != null && env.isInsideExplicitModule()
+                    && !owner.equals(env.lexicalModule())) {
+                throw new IllegalArgumentException(
+                        "module '" + env.lexicalModule()
+                                + "' cannot implicitly access callable '" + name
+                                + "' from module '" + owner + "'; use an explicit import");
+            }
         }
 
         private void requireLexicalNamespaceAccess(Env env, String namespace, String kind) {
-            Ast.ClassDecl actor = actorLexicalContainer(env);
-            if (actor == null) return;
-            throw new IllegalArgumentException(
-                    "actor '" + actor.name()
-                            + "' cannot implicitly access same-file " + kind + " '"
-                            + namespace + "'; actor dependencies must come from explicit imports");
+            Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
+            if (lexicalClass != null) {
+                throw new IllegalArgumentException(
+                        "class '" + lexicalClass.name()
+                                + "' cannot implicitly access " + kind + " '" + namespace
+                                + "'; same-file placement does not grant lexical access");
+            }
+            if (env.isInsideExplicitModule() && !namespace.equals(env.lexicalModule())) {
+                throw new IllegalArgumentException(
+                        "module '" + env.lexicalModule()
+                                + "' cannot implicitly access " + kind + " '" + namespace
+                                + "'; use an explicit import");
+            }
         }
 
         private void requireLexicalClassAccess(Env env, Ast.ClassDecl target) {
-            Ast.ClassDecl actor = actorLexicalContainer(env);
-            if (actor == null || actor == target) return;
-            throw new IllegalArgumentException(
-                    "actor '" + actor.name()
-                            + "' cannot implicitly access same-file "
-                            + (target.actorKind() == Ast.ActorKind.NONE ? "class '" : "actor '")
-                            + target.name()
-                            + "'; actor dependencies must come from explicit imports");
+            Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
+            if (lexicalClass != null && lexicalClass != target) {
+                throw new IllegalArgumentException(
+                        "class '" + lexicalClass.name()
+                                + "' cannot implicitly access sibling "
+                                + (target.actorKind() == Ast.ActorKind.NONE ? "class '" : "actor '")
+                                + target.name()
+                                + "'; move the dependency to another source unit and import it explicitly");
+            }
+            String owner = classOwner(target);
+            if (env.isInsideExplicitModule() && owner != null
+                    && !owner.equals(env.lexicalModule())) {
+                throw new IllegalArgumentException(
+                        "module '" + env.lexicalModule()
+                                + "' cannot implicitly access class '" + target.name()
+                                + "' from module '" + owner + "'; use an explicit import");
+            }
+        }
+
+        private String classOwner(Ast.ClassDecl target) {
+            for (Map.Entry<String, Ast.ClassDecl> entry : classes.entrySet()) {
+                if (entry.getValue() != target) continue;
+                String key = entry.getKey();
+                String suffix = "." + target.name();
+                if (key.endsWith(suffix)) {
+                    return key.substring(0, key.length() - suffix.length());
+                }
+            }
+            return Parser.ROOT_MODULE;
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
