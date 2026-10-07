@@ -903,6 +903,14 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic()
+                    && (method.name().equals("send") || method.name().equals("end"))) {
+                throw new IllegalArgumentException(
+                        "actor method name '" + method.name()
+                                + "' is reserved by the non-overridable actor transport/lifecycle API");
+            }
+
             boolean actorStartupHook = method.name().equals("on_start");
             if (actorStartupHook) {
                 if (klass.actorKind() == Ast.ActorKind.NONE) {
@@ -1580,6 +1588,37 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals("spawn")) {
+                if (runtime.arguments().size() != 1
+                        || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
+                    throw new IllegalArgumentException(
+                            "internal spawn intrinsic requires exactly one actor target");
+                }
+                Ast.ClassDecl actorClass = findClass(created.type().name());
+                if (actorClass == null) {
+                    throw new IllegalArgumentException(
+                            "spawn target '" + created.type().name()
+                                    + "' is not a source actor visible to this compilation unit");
+                }
+                rejectUnimportedClassNamespace(actorClass);
+                if (actorClass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "spawn requires an actor class; '" + actorClass.name()
+                                    + "' is an ordinary class");
+                }
+                if (actorClass.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "cannot spawn abstract actor '" + actorClass.name() + "'");
+                }
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + actorClass.name()
+                                    + "' does not accept constructor/startup arguments; "
+                                    + "initialize actor-local state with fields and on_start()");
+                }
+                Type actorType = resolve(created.type(), generics, self);
+                return new Named("ActorRef", List.of(actorType));
+            }
             if (runtime.operation().equals("cooperate")) {
                 if (!runtime.arguments().isEmpty()) {
                     throw new IllegalArgumentException("rt cooperate takes no arguments");
@@ -1849,6 +1888,88 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+
+                boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
+                        && member.receiver() instanceof Ast.NameExpr selfName
+                        && selfName.name().equals("self");
+                if (actorSelf && member.member().equals("on_start")) {
+                    throw new IllegalArgumentException(
+                            "on_start is a reserved actor lifecycle hook and cannot be called directly");
+                }
+                if (actorSelf
+                        && (member.member().equals("send") || member.member().equals("end"))) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "self." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    if (member.member().equals("send")) {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "self.send expects exactly one outbound value");
+                        }
+                        Type payload = typeOf(call.arguments().getFirst(), env, generics, self);
+                        validateActorCallableBoundaryType(
+                                payload,
+                                currentActorKind,
+                                false,
+                                "self.send outbound value");
+                        return Primitive.VOID;
+                    }
+                    if (!call.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "self.end expects no arguments");
+                    }
+                    return Primitive.VOID;
+                }
+
+                if (receiver instanceof Named actorRef
+                        && actorRef.name().equals("ActorRef")) {
+                    Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "ActorRef." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    return switch (member.member()) {
+                        case "send" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.send expects exactly one mailbox value");
+                            }
+                            Type payload = typeOf(
+                                    call.arguments().getFirst(), env, generics, self);
+                            validateActorCallableBoundaryType(
+                                    payload,
+                                    actorClass.actorKind(),
+                                    false,
+                                    "ActorRef.send mailbox value");
+                            yield Primitive.VOID;
+                        }
+                        case "stop" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.stop expects no arguments");
+                            }
+                            yield Primitive.VOID;
+                        }
+                        case "cancel", "kill" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " expects no arguments");
+                            }
+                            yield Primitive.BOOL;
+                        }
+                        case "ready", "done", "id", "kind" ->
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " is a property and is not callable");
+                        default -> throw new IllegalArgumentException(
+                                "unknown ActorRef callable member '"
+                                        + member.member() + "'");
+                    };
+                }
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
@@ -2190,6 +2311,21 @@ public final class TypeChecker {
             Type sumReceiver = receiverDispatchType(deref(receiver));
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            if (sumReceiver instanceof Named actorRef
+                    && actorRef.name().equals("ActorRef")) {
+                actorClassForRef(actorRef);
+                return switch (member.member()) {
+                    case "ready", "done" -> new Named("Future", List.of(Primitive.VOID));
+                    case "id" -> new Named("ActorId", List.of());
+                    case "kind" -> new Named("ActorKind", List.of());
+                    case "send", "stop", "cancel", "kill" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef." + member.member()
+                                            + " is direct-call-only; invoke it with (...)");
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorRef member '" + member.member() + "'");
+                };
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
@@ -3080,6 +3216,25 @@ public final class TypeChecker {
             return new Record(members);
         }
         return type;
+    }
+
+    private Ast.ClassDecl actorClassForRef(Named actorRef) {
+        if (!actorRef.name().equals("ActorRef") || actorRef.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "ActorRef requires exactly one actor type argument");
+        }
+        Type target = receiverDispatchType(deref(actorRef.arguments().getFirst()));
+        if (!(target instanceof Named namedTarget)) {
+            throw new IllegalArgumentException(
+                    "ActorRef target must be a concrete actor class; got " + target);
+        }
+        Ast.ClassDecl actorClass = findClass(namedTarget.name());
+        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "ActorRef target '" + namedTarget.name()
+                            + "' is not a known actor class");
+        }
+        return actorClass;
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
