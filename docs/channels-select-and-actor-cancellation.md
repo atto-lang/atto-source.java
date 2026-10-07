@@ -196,13 +196,13 @@ Canonical explicit no-result static syntax:
 
 ```ores
 do select {
-  case readch incoming: let msg {
+  when readch incoming: let msg {
     stdio.println("Received:", msg);
   }
-  case writech outgoing, payload: {
+  when writech outgoing, payload: {
     stdio.println("Sent payload successfully");
   }
-  case readch shutdown: const signal {
+  when readch shutdown: const signal {
     return;
   }
 }
@@ -212,7 +212,7 @@ A read arm may bind with `let`, `val`, or `const`. `const` means the
 selected runtime value is bound immutably; it does not imply the message was a
 compile-time constant.
 
-Every `case` and `default` arm requires its own `{ ... }` body, including
+Every `when` (or legacy `case`) and `default` arm requires its own `{ ... }` body, including
 empty arms. Canonical source uses two spaces per indentation level and no tabs
 for indentation: arms sit one level inside `select`, and their statements sit
 one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`.
@@ -247,10 +247,10 @@ Explicit strict priority:
 
 ```ores
 select first {
-  case readch control: const command {
+  when readch control: const command {
     ...
   }
-  case readch data: let value {
+  when readch data: let value {
     ...
   }
 }
@@ -271,13 +271,13 @@ It cannot reverse a case that has already atomically won a readiness race.
 
 ```ores
 do nb select {
-  case readch incoming: let msg {
+  when readch incoming: let msg {
     stdio.println("Received:", msg);
   }
-  case readch payload: const body {
+  when readch payload: const body {
     stdio.println("Received payload:", body);
   }
-  case readch shutdown: const signal {
+  when readch shutdown: const signal {
     return;
   }
 }
