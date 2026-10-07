@@ -473,4 +473,57 @@ final class ActorDeclarationLexicalBoundaryTest {
                 missing.getMessage());
     }
 
+
+    @Test
+    void actorEndAndEndWithCleanupAreDistinctNonOverridableApis() {
+        IllegalArgumentException overloadedEnd = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<String> mail): void {
+                            self.end(|| -> { return; });
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                overloadedEnd.getMessage().contains("use self.endWithCleanup"),
+                overloadedEnd.getMessage());
+
+        IllegalArgumentException missingCleanup = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<String> mail): void {
+                            self.endWithCleanup();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                missingCleanup.getMessage().contains("exactly one"),
+                missingCleanup.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.endWithCleanup(|| -> { return; });
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException override = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub endWithCleanup(): void { return; }
+                          receive(ActorMail<String> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                override.getMessage().contains("reserved"),
+                override.getMessage());
+    }
+
 }
