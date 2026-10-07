@@ -266,7 +266,7 @@ final class TreeShakerTest {
     void treeShakingPreservesLocalSelectAndForOfMutability() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 pub routine main(): void {
-                  const mut local = struct infer{foo: "a"};
+                  const mut local = struct{foo: string}{foo: "a"};
                   local.foo = "b";
 
                   for let mut item of arr[1] do
