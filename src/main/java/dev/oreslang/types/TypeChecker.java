@@ -93,7 +93,7 @@ public final class TypeChecker {
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
-                "ActorMail", "ActorId", "ActorKind",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -2095,7 +2095,7 @@ public final class TypeChecker {
                             }
                             yield Primitive.BOOL;
                         }
-                        case "ready", "done", "id", "kind" ->
+                        case "ready", "done", "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
                                         "ActorRef." + member.member()
                                                 + " is a property and is not callable");
@@ -2103,6 +2103,36 @@ public final class TypeChecker {
                                 "unknown ActorRef callable member '"
                                         + member.member() + "'");
                     };
+                }
+
+                if (receiver instanceof Named outputStream
+                        && outputStream.name().equals("ActorOutputStream")) {
+                    if (outputStream.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "ActorOutputStream<T> requires exactly one payload type");
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "ActorOutputStream." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    if (member.member().equals("next")) {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "ActorOutputStream.next expects no arguments");
+                        }
+                        Type output = new Named(
+                                "ActorOutput",
+                                List.of(outputStream.arguments().getFirst()));
+                        return new Named(
+                                "Future",
+                                List.of(new Named(
+                                        "IteratorResult",
+                                        List.of(output))));
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown ActorOutputStream callable member '"
+                                    + member.member() + "'");
                 }
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
@@ -2450,6 +2480,9 @@ public final class TypeChecker {
                 actorClassForRef(actorRef);
                 return switch (member.member()) {
                     case "ready", "done" -> new Named("Future", List.of(Primitive.VOID));
+                    case "outputs" -> new Named(
+                            "ActorOutputStream",
+                            List.of(Unknown.INSTANCE));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
                     case "send", "stop", "cancel", "kill" ->
@@ -2458,6 +2491,35 @@ public final class TypeChecker {
                                             + " is direct-call-only; invoke it with (...)");
                     default -> throw new IllegalArgumentException(
                             "unknown ActorRef member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named outputStream
+                    && outputStream.name().equals("ActorOutputStream")) {
+                if (outputStream.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorOutputStream<T> requires exactly one payload type");
+                }
+                return switch (member.member()) {
+                    case "is_done" -> Primitive.BOOL;
+                    case "next" -> throw new IllegalArgumentException(
+                            "ActorOutputStream.next is direct-call-only; invoke it with ()");
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorOutputStream member '"
+                                    + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named output
+                    && output.name().equals("ActorOutput")) {
+                if (output.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorOutput<T> requires exactly one payload type");
+                }
+                return switch (member.member()) {
+                    case "actor_id" -> new Named("ActorId", List.of());
+                    case "sequence" -> Primitive.INT;
+                    case "value" -> output.arguments().getFirst();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorOutput member '" + member.member() + "'");
                 };
             }
             if (sumReceiver instanceof Named mail
@@ -5803,16 +5865,21 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of());
             }
-            case "ActorMail" -> {
+            case "ActorMail", "ActorOutput", "ActorOutputStream" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
-                            "ActorMail requires exactly one explicit payload type");
+                            ref.name()
+                                    + " requires exactly one explicit payload type");
                 }
-                Type payload = resolve(ref.arguments().getFirst(), generics, self);
+                Type payload = resolve(
+                        ref.arguments().getFirst(),
+                        generics,
+                        self);
                 if (payload == Primitive.VOID) {
-                    throw new IllegalArgumentException("ActorMail<void> is invalid");
+                    throw new IllegalArgumentException(
+                            ref.name() + "<void> is invalid");
                 }
-                yield new Named("ActorMail", List.of(payload));
+                yield new Named(ref.name(), List.of(payload));
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
