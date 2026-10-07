@@ -1,7 +1,7 @@
 // Proposed Oreslang actor-class acceptance fixture.
 // STATUS: PARTIALLY TYPECHECKABLE DESIGN. `spawn Actor()`/ActorRef lifecycle
-// semantics are now parsed/typechecked, but executable spawn lowering, ActorMail<T>,
-// async RHS lambdas, and parent output streams are not complete.
+// semantics and ActorMail<T>/receive contracts are now parsed/typechecked, but
+// executable spawn lowering, async RHS lambdas, and parent output streams are not complete.
 //
 // Important language invariants:
 // - Actor constructors are FORBIDDEN; initialize through actor-local fields
@@ -19,7 +19,7 @@ define actor Worker as
     return;
   }
 
-  pub receive(ActorMail<String> mail): void {
+  receive(ActorMail<String> mail): void {
     if mail.value != "start"; do
       return;
     fi
