@@ -356,25 +356,55 @@ public final class OwnershipChecker {
                 throw error("cannot suspend or arm nb select while holding a MutexGuard");
             }
 
-            // Case operands are evaluated once when the selection is armed.
-            // Public Channel/SelectSet capabilities are execution-domain local
-            // in the current model, so channel references are borrowed for the
-            // registration lifetime and cannot cross an actor boundary. This
-            // prevents writech from becoming an implicit shared-memory escape
-            // hatch while preserving ordinary actor-local channel use.
-            List<Ast.TypeRef> elementTypes = new ArrayList<>(selected.arms().size());
+            // Readiness operands are evaluated once when selection is armed.
+            // Detached nb-select owns a move-only Future for the registration
+            // lifetime; channels and CancellationToken are copyable handles.
+            List<Ast.TypeRef> resultTypes = new ArrayList<>(selected.arms().size());
             for (Ast.SelectArm arm : selected.arms()) {
-                if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
-                    elementTypes.add(Ast.TypeRef.inferred());
-                    continue;
-                }
-                ValueInfo channel = checkExpr(arm.channel(), scope, false);
-                Ast.TypeRef element = channelElementType(channel.type);
-                elementTypes.add(element);
-                if (arm.operation() == Ast.ChannelOperation.WRITE) {
-                    ValueInfo payload = checkExpr(arm.value(), scope, false);
-                    if (containsMutexGuardType(payload.type)) {
-                        throw error("writech cannot transport MutexGuard");
+                switch (arm.operation()) {
+                    case DEFAULT, TIMEOUT -> resultTypes.add(Ast.TypeRef.inferred());
+                    case READ -> {
+                        ValueInfo channel = checkExpr(arm.source(), scope, false);
+                        resultTypes.add(channelElementType(channel.type));
+                    }
+                    case WRITE -> {
+                        ValueInfo channel = checkExpr(arm.source(), scope, false);
+                        Ast.TypeRef element = channelElementType(channel.type);
+                        resultTypes.add(Ast.TypeRef.inferred());
+                        ValueInfo payload = checkExpr(arm.value(), scope, false);
+                        if (containsMutexGuardType(payload.type)) {
+                            throw error("writech cannot transport MutexGuard");
+                        }
+                    }
+                    case AWAIT -> {
+                        ValueInfo future = checkExpr(
+                                arm.source(),
+                                scope,
+                                selected.mode() == Ast.WaitMode.NONBLOCKING);
+                        Ast.TypeRef concrete = future.type.isBorrow()
+                                ? future.type.borrowedTarget()
+                                : future.type;
+                        if (!concrete.name().equals("Future")
+                                || concrete.arguments().size() != 1) {
+                            throw error("select await arm requires Future<T>");
+                        }
+                        Ast.TypeRef result = concrete.arguments().getFirst();
+                        if (arm.bindingName() != null
+                                && result.name().equals("void")) {
+                            throw error("select await Future<void> cannot bind a result value");
+                        }
+                        resultTypes.add(result);
+                    }
+                    case CANCELLED -> {
+                        ValueInfo token = checkExpr(arm.source(), scope, false);
+                        Ast.TypeRef concrete = token.type.isBorrow()
+                                ? token.type.borrowedTarget()
+                                : token.type;
+                        if (!concrete.name().equals("CancellationToken")
+                                || !concrete.arguments().isEmpty()) {
+                            throw error("select cancelled arm requires CancellationToken");
+                        }
+                        resultTypes.add(Ast.TypeRef.inferred());
                     }
                 }
             }
@@ -395,17 +425,18 @@ public final class OwnershipChecker {
                 Scope armScope = selected.mode() == Ast.WaitMode.NONBLOCKING
                         ? deferredSelectArmScope(deferredArmCaptures.get(i))
                         : new Scope(scope);
-                if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
+                if (arm.operation() == Ast.SelectOperation.DEFAULT) {
                     hasDefault = true;
-                } else if (arm.operation() == Ast.ChannelOperation.READ
+                } else if ((arm.operation() == Ast.SelectOperation.READ
+                                || arm.operation() == Ast.SelectOperation.AWAIT)
                         && arm.bindingName() != null) {
-                    Ast.TypeRef element = elementTypes.get(i);
+                    Ast.TypeRef result = resultTypes.get(i);
                     armScope.define(
                             arm.bindingName(),
                             new VarState(
-                                    element,
+                                    result,
                                     arm.bindingKind() == Ast.BindingKind.LET,
-                                    kindOfType(element),
+                                    kindOfType(result),
                                     Origin.LOCAL));
                 }
 
@@ -435,9 +466,6 @@ public final class OwnershipChecker {
             }
 
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                // Captures were transferred before base was snapshotted.
-                // Arm-local moves happen in detached capture scopes and do not
-                // mutate the continuing outer ownership state.
                 restoreState(base);
             } else {
                 if (selected.mode() == Ast.WaitMode.IMMEDIATE && !hasDefault) {
@@ -2432,7 +2460,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","CancellationToken","SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
