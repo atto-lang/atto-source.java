@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -131,6 +132,38 @@ final class InferredStructReadonlyBoundaryTest {
                   end
                 }
                 """)));
+    }
+
+    @Test void ownershipTypeTestBindingPreservesReadonlyCapability() {
+        var program = Parser.parse("""
+                fnc bad(): void {
+                  const source = struct infer{foo: "a"};
+                  if source is type {foo: string} narrowed then
+                    let mut alias = narrowed;
+                    return;
+                  fi
+                  return;
+                }
+                """);
+
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(program));
+    }
+
+    @Test void ownershipTypedMatchBindingPreservesReadonlyCapability() {
+        var program = Parser.parse("""
+                fnc bad(): void {
+                  const source = struct infer{foo: "a"};
+                  match source
+                    is {foo: string} narrowed -> {
+                      let mut alias = narrowed;
+                      return;
+                    }
+                    else -> { return; }
+                  end
+                }
+                """);
+
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(program));
     }
 
 }
