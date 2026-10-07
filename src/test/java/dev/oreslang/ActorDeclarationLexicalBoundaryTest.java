@@ -13,7 +13,7 @@ final class ActorDeclarationLexicalBoundaryTest {
     void defineActorAsParsesAtFileAndModuleScope() {
         Ast.Program program = Parser.parse("""
                 define actor Worker as
-                  pub receive(): void {
+                  pub run(): void {
                     rt cooperate;
                     return;
                   }
@@ -64,7 +64,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<String> mail): void {
+                          pub run(): void {
                             main();
                             return;
                           }
@@ -402,28 +402,29 @@ final class ActorDeclarationLexicalBoundaryTest {
 
 
     @Test
-    void spawnActorTypechecksAsActorRefWithReadyDoneAndMailboxSend() {
+    void spawnActorTypechecksWithTypedSendAndCallProxies() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   on_start(): void {
                     return;
                   }
 
-                  receive(ActorMail<String> mail): void {
+                  pub notify(String value): void {
+                    self.send(value);
                     return;
                   }
 
-                  pub work(): void {
-                    self.send("hello");
-                    self.end();
-                    return;
+                  pub compute(int value): int {
+                    return value + 1;
                   }
                 end
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
                   await worker.ready;
-                  worker.send("start");
+                  worker.send.notify("hello");
+                  val result = await worker.call.compute(41);
+                  worker.stop();
                   await worker.done;
                   return;
                 }
@@ -462,7 +463,7 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void actorTransportMembersAreReservedAndMailboxRejectsClosures() {
+    void actorTransportMembersAreReservedAndTypedEndpointsRejectClosures() {
         IllegalArgumentException overrideSend = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -475,20 +476,85 @@ final class ActorDeclarationLexicalBoundaryTest {
         assertTrue(overrideSend.getMessage().contains("reserved"),
                 overrideSend.getMessage());
 
+        IllegalArgumentException overrideReceive = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(Object value): void { return; }
+                        end
+                        """)));
+        assertTrue(overrideReceive.getMessage().contains("reserved"),
+                overrideReceive.getMessage());
+
         IllegalArgumentException functionPayload = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
+                          pub consume(Object value): void { return; }
                         end
 
                         pub routine main(): void {
                           val worker = spawn Worker();
-                          worker.send(|| -> { return 1; });
+                          worker.send.consume(|| -> { return 1; });
                           return;
                         }
                         """)));
         assertTrue(functionPayload.getMessage().contains("concrete owned/sendable"),
                 functionPayload.getMessage());
+    }
+
+    @Test
+    void actorRefCannotInvokeEndpointLikeAnOrdinaryObject() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub run(int value): int { return value; }
+                        end
+
+                        pub async routine main(): void {
+                          val worker = spawn Worker();
+                          val result = await worker.run(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(
+                direct.getMessage().contains("unknown ActorRef")
+                        || direct.getMessage().contains("actor refs"),
+                direct.getMessage());
+    }
+
+    @Test
+    void oneWaySendRequiresVoidEndpointButCallAcceptsResultEndpoint() {
+        IllegalArgumentException wrongSend = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub compute(int value): int { return value + 1; }
+                        end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          worker.send.compute(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(wrongSend.getMessage().contains("worker.call.compute"),
+                wrongSend.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  pub compute(int value): int { return value + 1; }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val result = await worker.call.compute(1);
+                  worker.stop();
+                  await worker.done;
+                  return;
+                }
+                """)));
     }
 
     @Test
@@ -533,7 +599,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<String> mail): void {
+                          pub run(): void {
                             self.end(|| -> { return; });
                             return;
                           }
@@ -547,7 +613,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<String> mail): void {
+                          pub run(): void {
                             self.endWithCleanup();
                             return;
                           }
@@ -559,7 +625,7 @@ final class ActorDeclarationLexicalBoundaryTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                  receive(ActorMail<String> mail): void {
+                  pub run(): void {
                     self.endWithCleanup(|| -> { return; });
                     return;
                   }
@@ -571,7 +637,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
                           pub endWithCleanup(): void { return; }
-                          receive(ActorMail<String> mail): void { return; }
+                          pub run(): void { return; }
                         end
                         """)));
         assertTrue(
@@ -590,7 +656,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                         end
 
                         define actor Worker as
-                          receive(ActorMail<Object> mail): void {
+                          pub accept(Object payload): void {
                             self.end();
                             return;
                           }
@@ -598,7 +664,7 @@ final class ActorDeclarationLexicalBoundaryTest {
 
                         pub routine main(): void {
                           val worker = spawn Worker();
-                          worker.send(new Payload());
+                          worker.send.accept(new Payload());
                           return;
                         }
                         """)));
@@ -613,7 +679,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<String> mail): void {
+                          pub run(): void {
                             self.send(self);
                             self.end();
                             return;
@@ -636,11 +702,6 @@ final class ActorDeclarationLexicalBoundaryTest {
 
                         define actor Worker as
                           let int value = helper();
-
-                          receive(ActorMail<String> mail): void {
-                            self.end();
-                            return;
-                          }
                         end
                         """)));
         assertTrue(fieldInitializer.getMessage().contains("actor 'Worker'"),
