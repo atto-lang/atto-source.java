@@ -1143,10 +1143,15 @@ public final class TypeChecker {
                 && !Parser.ROOT_MODULE.equals(currentLexicalModule);
     }
 
+    private String lexicalContainerLabel() {
+        if (lexicalClassOrigin == null) return "class";
+        return lexicalClassOrigin.actorKind() == Ast.ActorKind.NONE ? "class" : "actor";
+    }
+
     private void rejectImplicitClassCallable(String name) {
         if (lexicalClassOrigin != null) {
             throw new IllegalArgumentException(
-                    "class '" + lexicalClassOrigin.name()
+                    "" + lexicalContainerLabel() + " '" + lexicalClassOrigin.name()
                             + "' cannot implicitly access file/module callable '" + name
                             + "'; move the dependency to another source unit and import it explicitly");
         }
@@ -1162,7 +1167,7 @@ public final class TypeChecker {
     private void rejectUnimportedModuleNamespace(String name) {
         if (lexicalClassOrigin != null) {
             throw new IllegalArgumentException(
-                    "class '" + lexicalClassOrigin.name()
+                    "" + lexicalContainerLabel() + " '" + lexicalClassOrigin.name()
                             + "' cannot implicitly access module '" + name
                             + "'; same-file placement does not grant lexical access");
         }
@@ -1177,7 +1182,7 @@ public final class TypeChecker {
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
         if (lexicalClassOrigin != null && lexicalClassOrigin != target) {
             throw new IllegalArgumentException(
-                    "class '" + lexicalClassOrigin.name()
+                    "" + lexicalContainerLabel() + " '" + lexicalClassOrigin.name()
                             + "' cannot implicitly access sibling "
                             + (target.actorKind() == Ast.ActorKind.NONE ? "class '" : "actor '")
                             + target.name()
@@ -1197,7 +1202,7 @@ public final class TypeChecker {
         if (localClass != null) {
             if (lexicalClassOrigin != null && localClass != lexicalClassOrigin) {
                 throw new IllegalArgumentException(
-                        "class '" + lexicalClassOrigin.name()
+                        "" + lexicalContainerLabel() + " '" + lexicalClassOrigin.name()
                                 + "' cannot use same-file type '" + name
                                 + "'; move the type to another source unit and import it explicitly");
             }
@@ -1215,7 +1220,7 @@ public final class TypeChecker {
         if (localInterface != null) {
             if (lexicalClassOrigin != null) {
                 throw new IllegalArgumentException(
-                        "class '" + lexicalClassOrigin.name()
+                        "" + lexicalContainerLabel() + " '" + lexicalClassOrigin.name()
                                 + "' cannot use same-file "
                                 + (localInterface.moduleContract() ? "module contract '" : "interface '")
                                 + name + "'; move the type to another source unit and import it explicitly");
@@ -1234,7 +1239,7 @@ public final class TypeChecker {
         if (localAlias != null) {
             if (lexicalClassOrigin != null) {
                 throw new IllegalArgumentException(
-                        "class '" + lexicalClassOrigin.name()
+                        "" + lexicalContainerLabel() + " '" + lexicalClassOrigin.name()
                                 + "' cannot use same-file type alias '" + name
                                 + "'; move the type to another source unit and import it explicitly");
             }
