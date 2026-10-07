@@ -133,6 +133,11 @@ final class SourceActorSpawnExecutionTest {
                     fi
                     return None;
                   }
+
+                  pub async delayed(int value): int {
+                    rt cooperate;
+                    return value + 2;
+                  }
                 end
 
                 pub async routine main(): void {
@@ -141,10 +146,13 @@ final class SourceActorSpawnExecutionTest {
 
                   val Result<int, String> result = await worker.call.compute(41);
                   val Option<String> maybe = await worker.call.maybe(true);
+                  val int delayed = await worker.call.delayed(40);
 
                   stdio.stdout.write(result.unwrap());
                   stdio.stdout.write("|");
                   stdio.stdout.write(maybe.unwrap());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(delayed);
 
                   worker.stop();
                   await worker.done;
@@ -153,7 +161,7 @@ final class SourceActorSpawnExecutionTest {
                 """;
 
         assertEquals(
-                "42|yes",
+                "42|yes|42",
                 run(program, "source-actor-call-result-option.ores"));
     }
 
