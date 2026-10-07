@@ -112,21 +112,34 @@ parameter is required.
 ## Lexical scope / no ambient file access
 
 Actor and ordinary class methods must not implicitly resolve sibling file-level
-`main`, `helper`, or other top-level callables. Their own methods/fields are
-accessed via `self`; dependencies must be explicitly imported. The initial
-branch enforces the **unqualified callable fallback** in both `TypeChecker`
-and the source evaluator. A future pass must also constrain same-file module
-and class namespace lookups, static/qualified references, module-to-module
-references, imported wildcard facades, and dynamic/linked-code-unit paths,
-with positive tests for genuine explicit imports.
+`main`, `helper`, modules, classes, or actor classes. Their own members are
+accessed through their lexical owner (normally `self`); dependencies must be
+explicitly imported.
 
-Built-ins are separately capability-checked; an explicit import never
-weakens isolate policy.
+For deliberate dependencies inside one already-loaded source unit, use a named
+same-unit import such as:
+
+```ores
+import module math from "@self";
+import class Helper from "@self";
+import fnc helper from "@self";
+```
+
+`@self` is a lexical permission only. It never opens the filesystem, creates a
+second evaluator, copies an import graph, or creates another code image.
+Wildcard/aliased `@self` imports are rejected. Cross-file imports retain the
+normal linker/export rules.
+
+The type checker and evaluator both enforce unqualified callable, qualified
+module, sibling-class, actor-class, async/nlex declaration-origin, and direct
+construction/spawn namespace boundaries. Built-ins remain separately
+capability-checked; an explicit import never weakens isolate policy.
 
 ## Implementation sequencing / acceptance gates
 
-1. **This branch:** parse `define actor ... as ... end`, enforce first-pass
-   implicit class-to-file callable boundary, and add regression tests.
+1. **This branch:** parse `define actor ... as ... end`; enforce class/module
+   lexical boundaries; support explicit named `@self` dependency permissions;
+   and add regression tests.
 2. **Parser/type checker now recognize `spawn Worker()`** as a distinct intrinsic and type it as `ActorRef<Worker>`; `new Worker()` and constructor-style spawn arguments remain rejected. `ready`/`done`, mailbox `send`, actor-local `self.send`/`self.end`, and the reserved non-public `on_start(): void` shape are statically checked. **Execution lowering is still pending**; a startup hook must execute on the actor's own execution domain before `ready` settles.
 3. **Host substrate implemented in this branch:** `ActorRef.ready()` and
    `ActorRef.done()` expose runtime-only completion Futures. `ready()` schedules
@@ -140,7 +153,7 @@ weakens isolate policy.
    interoperate with `select`/`nb select`, `Future.all`, and stream merge.
 6. Test actual source-level `main.ores` end-to-end with 3+ workers,
    `rt cooperate` interleavings, output order, overflow/backpressure,
-   cancellation, async constructor failures, object/pointer/closure rejection,
+   cancellation, actor startup/on_start failures, object/pointer/closure rejection,
    private/shared/untrusted policies, and module/import isolation.
 7. Only after green tests for the *exact* head SHA consider merging. If the
    source org cannot allocate a GitHub Actions runner, mirror the **exact Git
@@ -169,6 +182,11 @@ reference per linked source unit for the same OresVM, and `Evaluator.link()`
 publishes it once. Existing linked-import lookup returns the shared evaluator.
 This is a real same-process JVM code-image reference invariant, not proof that
 Graal native/JIT machine-code pages are shared among independent Truffle engines
-or OS processes. Actor state and mailbox payloads stay outside the code store.
+or OS processes. Actor state and mailbox payloads stay outside the code store. Static-select
+fairness is also actor-local: the shared AST supplies only the immutable select
+site identity, while each ActorCell owns its mutable cursor. This is the model
+to follow for any future inline cache or scheduler metadata—shared code may
+reference actor-local runtime state, but must not become a writable state bag
+shared by isolated actors.
 
 Do not mark this milestone as executing source-level `spawn Worker()` or streamed worker output. The source parser/type checker now admit and validate `spawn Worker()`, `w.ready`/`w.done`, `ActorRef.send`, `self.send`, and `self.end`, but evaluator lowering into `ActorRuntime` remains a separate acceptance gate.
