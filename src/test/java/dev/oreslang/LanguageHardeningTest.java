@@ -54,6 +54,9 @@ final class LanguageHardeningTest {
     @Test
     void modulesAreTypedNamespacesAndCanConformToContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                import module contracts from "@self";
+                import module math from "@self";
+
                 define module contracts
                   define contract MathApi as
                     fnc add(int a, int b) => int;
