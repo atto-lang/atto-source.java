@@ -1,6 +1,9 @@
 // Compile-valid but capability-invalid by design.
 // This file is a negative regression fixture for PRIVATE actor isolation.
 
+import fnc make_shared_cell from "@self";
+import class Helpers from "@self";
+
 type SharedCounterCell = SharedMutex<int>;
 
 fnc make_shared_cell(): void {
