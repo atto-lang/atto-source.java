@@ -67,6 +67,11 @@ public final class TypeChecker {
     private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
+    /**
+     * Active only while inferring one block lambda. Nested lambdas replace and
+     * restore this collector so their returns never leak into the outer lambda.
+     */
+    private List<Type> lambdaReturnCollector;
     private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
@@ -1377,6 +1382,9 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            if (lambdaReturnCollector != null) {
+                lambdaReturnCollector.add(actual);
+            }
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
@@ -2906,25 +2914,63 @@ public final class TypeChecker {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical);
             List<Type> parameters = new ArrayList<>();
+            List<Boolean> mutableParameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
-                lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                mutableParameters.add(param.mutable());
+                lambdaEnv.define(
+                        param.name(),
+                        type,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            boolean previousAsync = currentAsyncCallable;
+            boolean previousGenerator = currentGenerator;
+            int previousLoopDepth = loopDepth;
+            List<Type> previousCollector = lambdaReturnCollector;
             if (nonLexical) currentClassOwner = null;
+            currentAsyncCallable = lambda.async();
+            currentGenerator = false;
+            loopDepth = 0;
+
             Type result;
             try {
                 if (lambda.expressionBody() != null) {
+                    lambdaReturnCollector = null;
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
                 } else {
-                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-                    result = Unknown.INSTANCE;
+                    ArrayList<Type> returns = new ArrayList<>();
+                    lambdaReturnCollector = returns;
+                    checkBlock(
+                            lambda.blockBody(),
+                            lambdaEnv,
+                            generics,
+                            Unknown.INSTANCE,
+                            self);
+                    if (returns.isEmpty()) {
+                        result = Primitive.VOID;
+                    } else {
+                        result = returns.getFirst();
+                        for (int i = 1; i < returns.size(); i++) {
+                            result = commonType(result, returns.get(i));
+                        }
+                    }
                 }
             } finally {
+                lambdaReturnCollector = previousCollector;
+                loopDepth = previousLoopDepth;
+                currentGenerator = previousGenerator;
+                currentAsyncCallable = previousAsync;
                 currentClassOwner = previousClassOwner;
             }
-            return new Function(parameters, result);
+
+            return new Function(
+                    parameters,
+                    mutableParameters,
+                    lambda.async(),
+                    callableResult(lambda.async(), false, result));
         }
         return Unknown.INSTANCE;
     }
@@ -3390,10 +3436,34 @@ public final class TypeChecker {
         }
     }
 
-    private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+    private void validateLambdaAgainstExpected(
+            Ast.LambdaExpr lambda,
+            Function expected,
+            Env parent,
+            Set<String> generics,
+            Type self) {
         if (lambda.parameters().size() != expected.parameters().size()) {
-            throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
+            throw new IllegalArgumentException(
+                    "lambda arity " + lambda.parameters().size()
+                            + " does not match expected function arity "
+                            + expected.parameters().size());
         }
+        if (lambda.async() != expected.async()) {
+            throw new IllegalArgumentException(
+                    "lambda async modifier does not match expected callable contract");
+        }
+
+        Type bodyExpected = expected.result();
+        if (expected.async()) {
+            if (!(bodyExpected instanceof Named future)
+                    || !future.name().equals("Future")
+                    || future.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "async callable contract must return Future<T>");
+            }
+            bodyExpected = future.arguments().getFirst();
+        }
+
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
         for (int i = 0; i < lambda.parameters().size(); i++) {
@@ -3402,30 +3472,60 @@ public final class TypeChecker {
             boolean expectedMutable = expected.mutableParameters().get(i);
             if (param.mutable() != expectedMutable) {
                 throw new IllegalArgumentException(
-                        "lambda parameter '" + param.name() + "' mutability does not match expected callable contract");
+                        "lambda parameter '" + param.name()
+                                + "' mutability does not match expected callable contract");
             }
-            Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
+            Type declared = param.type().name().equals("$infer$")
+                    ? expectedParam
+                    : resolveParam(param, generics, self);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
-            lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            lambdaEnv.define(
+                    param.name(),
+                    declared,
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
+
         Ast.ClassDecl previousClassOwner = currentClassOwner;
+        boolean previousAsync = currentAsyncCallable;
+        boolean previousGenerator = currentGenerator;
+        int previousLoopDepth = loopDepth;
+        List<Type> previousCollector = lambdaReturnCollector;
         if (nonLexical) currentClassOwner = null;
+        currentAsyncCallable = lambda.async();
+        currentGenerator = false;
+        loopDepth = 0;
+        lambdaReturnCollector = null;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
-                requireAssignable(actual, expected.result(), "lambda expression body");
+                        lambda.expressionBody(),
+                        bodyExpected,
+                        lambdaEnv,
+                        generics,
+                        self);
+                requireAssignable(actual, bodyExpected, "lambda expression body");
             } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+                checkBlock(
+                        lambda.blockBody(),
+                        lambdaEnv,
+                        generics,
+                        bodyExpected,
+                        self);
             }
         } finally {
+            lambdaReturnCollector = previousCollector;
+            loopDepth = previousLoopDepth;
+            currentGenerator = previousGenerator;
+            currentAsyncCallable = previousAsync;
             currentClassOwner = previousClassOwner;
         }
+
         if (lambda.blockBody() != null
-                && expected.result() != Primitive.VOID
+                && bodyExpected != Primitive.VOID
                 && !definitelyReturns(lambda.blockBody())) {
-            throw new IllegalArgumentException("non-void block lambda must explicitly return on every path");
+            throw new IllegalArgumentException(
+                    "non-void block lambda must explicitly return on every path");
         }
     }
 
