@@ -3924,6 +3924,105 @@ public final class TypeChecker {
         return new Record(members);
     }
 
+    private Record publicStaticClassShape(Ast.ClassDecl klass) {
+        Map<String, Type> members = new LinkedHashMap<>();
+        collectPublicStaticMethods(klass, members, new LinkedHashSet<>());
+
+        // Static fields belong to the declaring class namespace and are not
+        // inherited as storage slots.
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (!field.isStatic() || field.visibility() != Ast.Visibility.PUBLIC) continue;
+            mergeMember(
+                    members,
+                    field.name(),
+                    classFieldType(klass, field),
+                    "static class namespace " + klass.name());
+        }
+        return new Record(members);
+    }
+
+    private void collectPublicStaticMethods(
+            Ast.ClassDecl klass,
+            Map<String, Type> members,
+            Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) {
+            throw new IllegalArgumentException(
+                    "inheritance cycle involving class '" + klass.name() + "'");
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null) collectPublicStaticMethods(parent, members, stack);
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) continue;
+            mergeMember(
+                    members,
+                    methodContractKey(
+                            method.name(),
+                            method.arity(),
+                            method.genericParameters().size()),
+                    callableContractType(
+                            method.genericParameters(),
+                            method.parameters(),
+                            method.returnType(),
+                            method.async(),
+                            false,
+                            Set.of(),
+                            null),
+                    "static class namespace " + klass.name());
+        }
+        stack.remove(klass);
+    }
+
+    private void validateStaticContractFields(
+            Ast.ClassDecl klass,
+            Ast.InterfaceDecl contract,
+            Set<Ast.InterfaceDecl> stack) {
+        if (!stack.add(contract)) {
+            throw new IllegalArgumentException(
+                    "static contract inheritance cycle involving '" + contract.name() + "'");
+        }
+
+        for (Ast.TypeRef parentRef : contract.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null || !parent.moduleContract() || !parent.staticContract()) {
+                throw new IllegalArgumentException(
+                        "static contract '" + contract.name()
+                                + "' has invalid parent '" + parentRef.name()
+                                + "'; static contracts may extend only static contracts");
+            }
+            validateStaticContractFields(klass, parent, stack);
+        }
+
+        Map<String, Ast.FieldDecl> actualFields = new LinkedHashMap<>();
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic() && field.visibility() == Ast.Visibility.PUBLIC) {
+                actualFields.put(field.name(), field);
+            }
+        }
+
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
+            Ast.FieldDecl actual = actualFields.get(required.name());
+            if (actual == null) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name()
+                                + "' is missing required static contract field '"
+                                + contract.name() + "." + required.name() + "'");
+            }
+            if (required.bindingKind() != null
+                    && actual.bindingKind() != required.bindingKind()) {
+                throw new IllegalArgumentException(
+                        "static field '" + klass.name() + "." + actual.name()
+                                + "' has binding kind " + actual.bindingKind()
+                                + " but static contract '" + contract.name()
+                                + "' requires " + required.bindingKind());
+            }
+        }
+
+        stack.remove(contract);
+    }
+
     private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
         if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
