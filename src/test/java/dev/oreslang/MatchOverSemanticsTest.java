@@ -67,10 +67,10 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void noReturnDiscardsIncompatibleBranchResultTypes() throws Exception {
+    void doMatchDiscardsIncompatibleBranchResultTypes() throws Exception {
         assertEquals("done\n", run("""
                 pub fnc main(): void {
-                  match true no-return over
+                  do match true over
                     true -> { return 4; }
                     false -> { return "different"; }
                   end
@@ -134,7 +134,7 @@ final class MatchOverSemanticsTest {
     void ordinaryStatementMatchSupportsVoidCallbacksAndKeepsExecuting() throws Exception {
         assertEquals("hit\ncontinued\n", run("""
                 pub fnc main(): void {
-                  match Some(5) no-return over
+                  do match Some(5) over
                     Some(value) -> { stdio.println("hit"); }
                     None -> { stdio.println("miss"); }
                   end
@@ -161,10 +161,10 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void noReturnMatchDiscardsArmLocalResultAndContinues() throws Exception {
+    void doMatchMatchDiscardsArmLocalResultAndContinues() throws Exception {
         assertEquals("continued\n", run("""
                 pub fnc main(): void {
-                  match Some(5) no-return over
+                  do match Some(5) over
                     Some(value) -> { return value + 10; }
                     None -> { return 0; }
                   end
@@ -175,10 +175,10 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void noReturnAllowsCallbackArmsWithoutReturn() throws Exception {
+    void doMatchAllowsCallbackArmsWithoutReturn() throws Exception {
         assertEquals("side-effect\ncontinued\n", run("""
                 pub fnc main(): void {
-                  match true no-return over
+                  do match true over
                     true -> { stdio.println("side-effect"); }
                     false -> { stdio.println("other"); }
                   end
@@ -189,7 +189,7 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void rejectsBareStatementOverWithoutExplicitNoReturn() {
+    void rejectsBareStatementOverWithoutExplicitDoMatch() {
         assertTrue(reject("""
                 pub fnc main(): void {
                   match true over
@@ -198,20 +198,42 @@ final class MatchOverSemanticsTest {
                   end
                   return;
                 }
-                """).getMessage().contains("no-return"));
+                """).getMessage().contains("do match"));
     }
 
     @Test
-    void rejectsUsingNoReturnAsExpression() {
+    void rejectsUsingDoMatchAsExpression() {
         assertTrue(reject("""
                 pub fnc main(): void {
-                  val x = match true no-return over
+                  val x = do match true over
                     true -> { return 1; }
                     false -> { return 2; }
                   end;
                   return;
                 }
-                """).getMessage().contains("cannot be used as a value"));
+                """));
+    }
+
+    @Test
+    void rejectsLegacyHyphenatedNoReturnAndDoMatchWithoutOver() {
+        reject("""
+                pub fnc main(): void {
+                  match true no-return over
+                    true -> { stdio.println("obsolete"); }
+                    false -> { stdio.println("obsolete"); }
+                  end
+                  return;
+                }
+                """);
+        assertTrue(reject("""
+                pub fnc main(): void {
+                  do match true
+                    true -> { stdio.println("missing separator"); }
+                    false -> { stdio.println("missing separator"); }
+                  end
+                  return;
+                }
+                """).getMessage().contains("requires 'over'"));
     }
 
     @Test
