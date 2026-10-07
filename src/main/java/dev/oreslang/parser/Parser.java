@@ -2827,13 +2827,26 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
-        // Only an immediate '{' denotes the statement-block form. Everything
-        // else starts a normal expression body. This is intentionally lexical:
-        // future prefix expressions such as `struct{...}{...}` must remain
-        // expression bodies rather than being confused with a lambda block.
-        if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        // Typed block lambdas use '|args| -> ReturnType { ... }'. Probe the
+        // type grammar and roll back unless it is immediately followed by a
+        // block: '|x| -> x + 1' must remain an expression-bodied lambda.
+        Ast.TypeRef returnType = null;
+        if (!check(LBRACE) && (check(IDENT) || check(VOID) || check(LBRACKET)
+                || check(TYPEOF) || check(LPAREN))) {
+            int checkpoint = current;
+            try {
+                Ast.TypeRef candidate = parseTypeRef();
+                if (check(LBRACE)) returnType = candidate;
+            } catch (IllegalArgumentException ignored) {
+                // The expression grammar owns this sequence unless a complete
+                // type is followed by a block.
+            }
+            if (returnType == null) current = checkpoint;
         }
+        if (check(LBRACE)) {
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, returnType);
+        }
+        // Braces are mandatory when declaring a lambda return type.
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
     }
 
