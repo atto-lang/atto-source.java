@@ -3784,38 +3784,54 @@ public final class TypeChecker {
         if (subject instanceof Named named
                 && named.name().equals("Option")
                 && named.arguments().size() == 1) {
-            boolean some = false;
             boolean none = false;
-            Type element = named.arguments().getFirst();
+            ArrayList<Ast.MatchArm> someArms = new ArrayList<>();
             for (Ast.MatchArm arm : arms) {
                 if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
                 if (c.constructor().equals("None") && c.arguments().isEmpty()) {
                     none = true;
-                } else if (c.constructor().equals("Some")
-                        && c.arguments().size() == 1
-                        && patternCoversType(c.arguments().getFirst(), element, generics, self)) {
-                    some = true;
+                } else if (c.constructor().equals("Some") && c.arguments().size() == 1) {
+                    someArms.add(new Ast.MatchArm(
+                            c.arguments().getFirst(),
+                            null,
+                            List.of()));
                 }
             }
+            boolean some = !someArms.isEmpty()
+                    && matchProvablyExhaustive(
+                            someArms,
+                            named.arguments().getFirst(),
+                            generics,
+                            self);
             return some && none;
         }
         if (subject instanceof Named named
                 && named.name().equals("Result")
                 && named.arguments().size() == 2) {
-            boolean ok = false;
-            boolean err = false;
+            ArrayList<Ast.MatchArm> okArms = new ArrayList<>();
+            ArrayList<Ast.MatchArm> errArms = new ArrayList<>();
             for (Ast.MatchArm arm : arms) {
                 if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)
                         || c.arguments().size() != 1) continue;
-                if (c.constructor().equals("Ok")
-                        && patternCoversType(c.arguments().getFirst(), named.arguments().get(0), generics, self)) {
-                    ok = true;
+                if (c.constructor().equals("Ok")) {
+                    okArms.add(new Ast.MatchArm(c.arguments().getFirst(), null, List.of()));
                 }
-                if (c.constructor().equals("Err")
-                        && patternCoversType(c.arguments().getFirst(), named.arguments().get(1), generics, self)) {
-                    err = true;
+                if (c.constructor().equals("Err")) {
+                    errArms.add(new Ast.MatchArm(c.arguments().getFirst(), null, List.of()));
                 }
             }
+            boolean ok = !okArms.isEmpty()
+                    && matchProvablyExhaustive(
+                            okArms,
+                            named.arguments().get(0),
+                            generics,
+                            self);
+            boolean err = !errArms.isEmpty()
+                    && matchProvablyExhaustive(
+                            errArms,
+                            named.arguments().get(1),
+                            generics,
+                            self);
             return ok && err;
         }
         if (subject instanceof Named named
