@@ -95,7 +95,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "CancellationToken", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -1223,29 +1223,62 @@ public final class TypeChecker {
             }
             for (Ast.SelectArm arm : selected.arms()) {
                 Env armEnv = new Env(env);
-                if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
-                    Type element = channelElementType(
-                            typeOf(arm.channel(), env, generics, self),
-                            "select " + arm.operation().name().toLowerCase());
-                    if (arm.operation() == Ast.ChannelOperation.WRITE) {
+                switch (arm.operation()) {
+                    case DEFAULT, TIMEOUT -> { }
+                    case READ -> {
+                        Type element = channelElementType(
+                                typeOf(arm.source(), env, generics, self),
+                                "select readch");
+                        if (arm.bindingName() != null) {
+                            armEnv.define(
+                                    arm.bindingName(),
+                                    element,
+                                    arm.bindingKind());
+                        }
+                    }
+                    case WRITE -> {
+                        Type element = channelElementType(
+                                typeOf(arm.source(), env, generics, self),
+                                "select writech");
                         requireAssignable(
                                 typeOf(arm.value(), env, generics, self),
                                 element,
                                 "writech select value");
-                    } else if (arm.bindingName() != null) {
-                        armEnv.define(
-                                arm.bindingName(),
-                                element,
-                                arm.bindingKind());
+                    }
+                    case AWAIT -> {
+                        Type awaited = deref(typeOf(arm.source(), env, generics, self));
+                        if (!(awaited instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "select await arm requires Future<T>; got " + awaited);
+                        }
+                        Type result = future.arguments().getFirst();
+                        if (arm.bindingName() != null) {
+                            if (result == Primitive.VOID) {
+                                throw new IllegalArgumentException(
+                                        "select await Future<void> cannot bind a result value");
+                            }
+                            armEnv.define(
+                                    arm.bindingName(),
+                                    result,
+                                    arm.bindingKind());
+                        }
+                    }
+                    case CANCELLED -> {
+                        Type token = deref(typeOf(arm.source(), env, generics, self));
+                        if (!(token instanceof Named named)
+                                || !named.name().equals("CancellationToken")
+                                || !named.arguments().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "select cancelled arm requires CancellationToken; got " + token);
+                        }
                     }
                 }
                 if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                    // Compatibility: detached legacy nb select arms cannot return a value.
                     checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
                 } else {
                     checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
@@ -1328,6 +1361,7 @@ public final class TypeChecker {
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+            if (name.name().equals("CancellationToken")) return new Named("$CancellationTokenFactory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -1621,12 +1655,27 @@ public final class TypeChecker {
                 return new Named("Channel", List.of(element));
             }
 
+            if (call.callee() instanceof Ast.MemberExpr cancellationCall
+                    && cancellationCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("CancellationToken")
+                    && cancellationCall.member().equals("new")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "CancellationToken.new does not accept type arguments");
+                }
+                if (!call.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "CancellationToken.new expects no arguments");
+                }
+                return new Named("CancellationToken", List.of());
+            }
+
             if (call.callee() instanceof Ast.MemberExpr selectCaseCall
                     && selectCaseCall.receiver() instanceof Ast.NameExpr factory
                     && factory.name().equals("SelectCase")) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
-                            "SelectCase constructors infer channel element types");
+                            "SelectCase constructors infer their source types");
                 }
                 return switch (selectCaseCall.member()) {
                     case "read" -> {
@@ -1650,6 +1699,44 @@ public final class TypeChecker {
                                 typeOf(call.arguments().get(1), env, generics, self),
                                 element,
                                 "SelectCase.write value");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "await" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.await expects Future<T>");
+                        }
+                        Type awaited = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                        if (!(awaited instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.await expects Future<T>; got " + awaited);
+                        }
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "timeout" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.timeout expects a nanosecond count");
+                        }
+                        requireAssignable(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.INT,
+                                "SelectCase.timeout nanoseconds");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "cancelled" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.cancelled expects CancellationToken");
+                        }
+                        Type token = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                        if (!(token instanceof Named named)
+                                || !named.name().equals("CancellationToken")) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.cancelled expects CancellationToken; got " + token);
+                        }
                         yield new Named("SelectCase", List.of());
                     }
                     case "default" -> {
@@ -2096,6 +2183,16 @@ public final class TypeChecker {
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named token
+                    && token.name().equals("CancellationToken")
+                    && token.arguments().isEmpty()) {
+                return switch (member.member()) {
+                    case "cancel", "is_cancelled" ->
+                            new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException(
+                            "unknown CancellationToken member '" + member.member() + "'");
                 };
             }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
@@ -5615,9 +5712,14 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                // Future<void> is the canonical completion type for nb writech.
-                // OresFuture supports a null terminal payload, so void is valid here.
                 yield new Named("Future", List.of(element));
+            }
+            case "CancellationToken" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "CancellationToken does not accept type arguments");
+                }
+                yield new Named("CancellationToken", List.of());
             }
             case "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
