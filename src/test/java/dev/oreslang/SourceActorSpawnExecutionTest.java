@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class SourceActorSpawnExecutionTest {
 
     @Test
-    void spawnRunsOnStartReceiveAndDoneAcrossActorKinds() throws Exception {
+    void spawnRunsOnStartTypedEndpointsAndDoneAcrossActorKinds() throws Exception {
         String program = """
                 define actor SharedWorker as
                   let int started;
@@ -23,26 +23,24 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
 
-                  receive(ActorMail<String> mail): void {
+                  pub stop(): void {
                     if self.started != 1; do
                       return;
                     fi
-                    if mail.value == "stop"; do
-                      self.end();
-                    fi
+                    self.end();
                     return;
                   }
                 end
 
                 define isoactor PrivateWorker as
-                  receive(ActorMail<String> mail): void {
+                  pub stop(): void {
                     self.end();
                     return;
                   }
                 end
 
                 define untrusted actor SandboxedWorker as
-                  receive(ActorMail<String> mail): void {
+                  pub stop(): void {
                     self.end();
                     return;
                   }
@@ -57,9 +55,9 @@ final class SourceActorSpawnExecutionTest {
                   await privateWorker.ready;
                   await sandboxed.ready;
 
-                  shared.send("stop");
-                  privateWorker.send("stop");
-                  sandboxed.send("stop");
+                  shared.send.stop();
+                  privateWorker.send.stop();
+                  sandboxed.send.stop();
 
                   await shared.done;
                   await privateWorker.done;
@@ -84,7 +82,7 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
 
-                  receive(ActorMail<String> mail): void {
+                  pub tick(): void {
                     self.count = self.count + 1;
                     self.send(self.count);
                     self.end();
@@ -99,8 +97,8 @@ final class SourceActorSpawnExecutionTest {
                   await left.ready;
                   await right.ready;
 
-                  left.send("go");
-                  right.send("go");
+                  left.send.tick();
+                  right.send.tick();
 
                   val leftOut = (await left.outputs.next()).value.unwrap();
                   val rightOut = (await right.outputs.next()).value.unwrap();
@@ -131,7 +129,7 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
 
-                  receive(ActorMail<String> mail): void {
+                  pub stop(): void {
                     self.end();
                     return;
                   }
@@ -154,7 +152,7 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
-    void suspendingReceiveResumesBeforeLaterUserMail() throws Exception {
+    void suspendingEndpointResumesBeforeLaterUserDispatch() throws Exception {
         String program = """
                 define actor Worker as
                   let int phase;
@@ -164,30 +162,28 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
 
-                  receive(ActorMail<String> mail): void {
-                    if mail.value == "first"; do
-                      self.phase = 1;
-                      self.send("before");
-                      rt cooperate;
+                  pub first(): void {
+                    self.phase = 1;
+                    self.send("before");
+                    rt cooperate;
 
-                      if self.phase != 1; do
-                        self.send("interleaved");
-                        return;
-                      fi
-
-                      self.phase = 2;
-                      self.send("after");
+                    if self.phase != 1; do
+                      self.send("interleaved");
                       return;
                     fi
 
-                    if mail.value == "second"; do
-                      if self.phase == 2; do
-                        self.send("second");
-                      else
-                        self.send("interleaved");
-                      fi
-                      self.end();
+                    self.phase = 2;
+                    self.send("after");
+                    return;
+                  }
+
+                  pub second(): void {
+                    if self.phase == 2; do
+                      self.send("second");
+                    else
+                      self.send("interleaved");
                     fi
+                    self.end();
                     return;
                   }
                 end
@@ -196,9 +192,9 @@ final class SourceActorSpawnExecutionTest {
                   val worker = spawn Worker();
                   await worker.ready;
 
-                  // Queue both messages before the first receive cooperates.
-                  worker.send("first");
-                  worker.send("second");
+                  // Queue both endpoint dispatches before the first one cooperates.
+                  worker.send.first();
+                  worker.send.second();
 
                   val a = (await worker.outputs.next()).value.unwrap();
                   val b = (await worker.outputs.next()).value.unwrap();
