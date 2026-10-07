@@ -2,6 +2,8 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Field;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -86,6 +88,53 @@ final class ActorCarrierIdentityCleanupTest {
             Throwable cause = ref.failure().orElseThrow(
                     () -> new AssertionError("overlapping turn must fail-stop the actor"));
             assertTrue(cause.getMessage().contains("single-writer execution lease"),
+                    () -> "unexpected termination cause: " + cause);
+        }
+    }
+
+    @Test
+    void leaseReleaseFailureStillClearsCarrierIdentity() throws Exception {
+        AtomicBoolean leakedAfterReleaseFailure = new AtomicBoolean(true);
+        ActorRuntime.TurnExecutor executor = turn -> {
+            try {
+                turn.run();
+            } finally {
+                leakedAfterReleaseFailure.set(
+                        ActorRuntime.inActorExecution()
+                                || ActorRuntime.currentActorId().isPresent()
+                                || ActorRuntime.currentActorKind() != null
+                                || ActorRuntime.currentActorPolicy() != null
+                                || ActorRuntime.currentActorExecutionDomain() != null);
+            }
+        };
+
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config, executor)) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                // Inject the otherwise-impossible accounting corruption through
+                // host-side reflection. Production code has no API for this.
+                // This specifically tests endTurn() throwing in finally.
+                try {
+                    Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+                    actorsField.setAccessible(true);
+                    Object actor = ((Map<?, ?>) actorsField.get(context.runtime()))
+                            .get(context.self().id());
+                    assertNotNull(actor);
+                    Field activeTurns = actor.getClass().getDeclaredField("activeTurns");
+                    activeTurns.setAccessible(true);
+                    assertEquals(1, activeTurns.getInt(actor));
+                    activeTurns.setInt(actor, 0);
+                } catch (ReflectiveOperationException failure) {
+                    throw new AssertionError("test failed to inject lease violation", failure);
+                }
+            });
+            ref.send(1);
+            assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
+            assertFalse(leakedAfterReleaseFailure.get(),
+                    "failed endTurn must not strand the actor's ThreadLocal identity");
+            Throwable cause = ref.failure().orElseThrow(
+                    () -> new AssertionError("endTurn accounting failure must fail-stop actor"));
+            assertTrue(cause.getMessage().contains("execution lease accounting violation"),
                     () -> "unexpected termination cause: " + cause);
         }
     }
