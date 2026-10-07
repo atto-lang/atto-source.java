@@ -211,13 +211,14 @@ select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
                   "{" select_arm { select_arm } [ select_default ] "}" ;
 select_wait_mode= "nb" | "try" ;
 select_policy   = "first" | "fair" | "random" ;
-select_arm      = "case" "readch" expression ":"
+select_arm      = select_arm_keyword "readch" expression ":"
                   [ binding_kind IDENT ] { statement }
-                | "case" "writech" expression "," expression ":"
+                | select_arm_keyword "writech" expression "," expression ":"
                   { statement } ;
+select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 select_default  = "default" ":" { statement } ;
 
-(* In select_arm/select_default bodies, the next case/default or the closing
+(* In select_arm/select_default bodies, the next when/case/default or the closing
    brace is a structural arm boundary and is not consumed as a nested
    statement. At most one default arm is permitted. *)
 
