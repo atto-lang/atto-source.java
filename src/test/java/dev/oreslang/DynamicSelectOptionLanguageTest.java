@@ -48,6 +48,43 @@ final class DynamicSelectOptionLanguageTest {
         assertEquals("true:7:true:9", run(program));
     }
 
+    @Test
+    void explicitDoStaticSelectCommitsOneCaseAndDefaultDoesNotConsume() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> ready = Channel.new<int>(1);
+                  val Channel<int> empty = Channel.new<int>(1);
+                  writech ready, 3;
+
+                  do select first {
+                    case readch ready: const value {
+                      stdio.stdout.write(value);
+                    }
+                    case readch empty: const ignored {
+                      stdio.stdout.write(99);
+                    }
+                    default: {
+                      stdio.stdout.write(0);
+                    }
+                  }
+
+                  stdio.stdout.write(":");
+
+                  do select first {
+                    case readch empty: const ignored {
+                      stdio.stdout.write(2);
+                    }
+                    default: {
+                      stdio.stdout.write(9);
+                    }
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("3:9", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "select-option.ores")
