@@ -52,15 +52,14 @@ final class SourceActorOutputStreamExecutionTest {
                   await worker.done;
 
                   val terminal = await worker.outputs.next();
-                  if terminal.done {
-                    stdio.stdout.write("|done");
-                  }
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(terminal.done);
                   return;
                 }
                 """;
 
         assertEquals(
-                "hello:0|world:1|!:2|done",
+                "hello:0|world:1|!:2|true",
                 run(program, "source-actor-output-stream.ores"));
     }
 
