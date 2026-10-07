@@ -314,7 +314,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                         fnc helper(): int { return 4; }
 
                         define actor Worker as
-                          pub callback(): (() => int) {
+                          callback(): (() => int) {
                             return nlex || -> { return helper(); };
                           }
                         end
