@@ -86,6 +86,7 @@ public final class OwnershipChecker {
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
         }
+        defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
         currentAsyncGenerator = fn.generator() && fn.async();
         try {
@@ -118,6 +119,7 @@ public final class OwnershipChecker {
             for (Ast.Param param : constructor.parameters()) {
                 scope.define(param.name(), stateForParam(param));
             }
+            defineImplicitArguments(scope, constructor.parameters());
             initializingClass = klass;
             try {
                 checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
@@ -170,9 +172,33 @@ public final class OwnershipChecker {
                 }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
+            defineImplicitArguments(scope, method.parameters());
             checkBlock(method.body(), scope, method.returnType());
             scope.close();
         }
+    }
+
+    private void defineImplicitArguments(Scope scope, List<Ast.Param> parameters) {
+        List<Ast.TypeRef> elementTypes = parameters.stream().map(Ast.Param::type).toList();
+        Ast.TypeRef tupleType = Ast.TypeRef.tupleType(elementTypes);
+        VarState arguments = new VarState(
+                tupleType,
+                false,
+                false,
+                kindOfType(tupleType),
+                Origin.PARAM);
+
+        ArrayList<VarState> sources = new ArrayList<>(parameters.size());
+        for (Ast.Param parameter : parameters) {
+            VarState source = scope.lookup(parameter.name());
+            if (source == null) {
+                throw new IllegalStateException(
+                        "parameter '" + parameter.name() + "' is missing before arguments tuple binding");
+            }
+            sources.add(source);
+        }
+        arguments.aggregateSources = List.copyOf(sources);
+        scope.define("arguments", arguments);
     }
 
     private VarState stateForParam(Ast.Param param) {
@@ -1404,52 +1430,89 @@ public final class OwnershipChecker {
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
-        if (arguments.size() != params.size()) return; // arity is TypeChecker's responsibility
-        for (int i = 0; i < arguments.size(); i++) {
-            Ast.Expr arg = arguments.get(i);
-            Ast.Param param = params.get(i);
-            if (param.structural() && !param.type().isBorrow()) {
-                ValueInfo argument = checkExpr(arg, scope, false);
-                if (containsMutexGuardType(argument.type)
-                        || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
-                    throw error(callable + " argument " + (i + 1)
-                            + " cannot consume protected mutex state through a structural by-value parameter");
+        int parameterIndex = 0;
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
+                if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
+                if (!spreadType.isTupleType()) {
+                    throw error(callable
+                            + " spread requires a statically known tuple; runtime-length collections "
+                            + "need an explicitly variadic callable");
                 }
+
+                int width = spreadType.arguments().size();
+                if (parameterIndex + width > params.size()) return; // TypeChecker reports arity.
+                for (int i = 0; i < width; i++) {
+                    Ast.Param target = params.get(parameterIndex + i);
+                    if (target.structural() || target.type().isBorrow()) {
+                        throw error(callable + " argument " + (parameterIndex + i + 1)
+                                + " cannot currently receive tuple spread into a structural/borrowed parameter; "
+                                + "pass that argument explicitly");
+                    }
+                }
+
+                ValueInfo aggregate = checkExpr(spread.expression(), scope, true);
+                if (containsMutexGuardType(aggregate.type)) {
+                    throw error(callable + " spread cannot consume a guard-bearing tuple");
+                }
+                parameterIndex += width;
                 continue;
             }
-            if (param.type().isBorrow()) {
-                boolean mutable = param.type().mutableBorrow();
-                if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-                    if (mutable && !unary.operator().equals("&mut")) {
-                        throw error(callable + " argument " + (i + 1) + " requires &mut borrow");
-                    }
-                    VarState owner = borrowOwner(unary.operand(), scope);
-                    validateBorrow(owner, mutable);
-                    if (isActorConfinedBorrow(owner)) {
-                        throw error("actor self borrow cannot cross an ordinary callable boundary");
-                    }
-                    continue; // temporary borrow ends at call boundary
-                }
-                if (arg instanceof Ast.NameExpr name) {
-                    VarState state = requireState(scope, name.name());
-                    requireUsable(state, name.name(), false);
-                    if (isActorConfinedBorrow(state)) {
-                        throw error("actor self borrow cannot cross an ordinary callable boundary");
-                    }
-                    if (mutable && state.kind != ValueKind.MUT_BORROW) {
-                        throw error(callable + " argument " + (i + 1) + " requires &mut value");
-                    }
-                    if (!mutable && state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW) {
-                        throw error(callable + " argument " + (i + 1) + " requires borrowed value; pass &" + name.name());
-                    }
-                    continue;
-                }
-                throw error(callable + " argument " + (i + 1) + " must be an explicit borrow");
+
+            if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
+            checkArgument(argument, params.get(parameterIndex), scope, callable, parameterIndex + 1);
+            parameterIndex++;
+        }
+    }
+
+    private void checkArgument(
+            Ast.Expr arg,
+            Ast.Param param,
+            Scope scope,
+            String callable,
+            int position) {
+        if (param.structural() && !param.type().isBorrow()) {
+            ValueInfo argument = checkExpr(arg, scope, false);
+            if (containsMutexGuardType(argument.type)
+                    || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
+                throw error(callable + " argument " + position
+                        + " cannot consume protected mutex state through a structural by-value parameter");
             }
-            ValueInfo argument = checkExpr(arg, scope, true);
-            if (containsMutexGuardType(argument.type)) {
-                throw error(callable + " argument " + (i + 1) + " cannot consume a guard-bearing value");
+            return;
+        }
+        if (param.type().isBorrow()) {
+            boolean mutable = param.type().mutableBorrow();
+            if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+                if (mutable && !unary.operator().equals("&mut")) {
+                    throw error(callable + " argument " + position + " requires &mut borrow");
+                }
+                VarState owner = borrowOwner(unary.operand(), scope);
+                validateBorrow(owner, mutable);
+                if (isActorConfinedBorrow(owner)) {
+                    throw error("actor self borrow cannot cross an ordinary callable boundary");
+                }
+                return;
             }
+            if (arg instanceof Ast.NameExpr name) {
+                VarState state = requireState(scope, name.name());
+                requireUsable(state, name.name(), false);
+                if (isActorConfinedBorrow(state)) {
+                    throw error("actor self borrow cannot cross an ordinary callable boundary");
+                }
+                if (mutable && state.kind != ValueKind.MUT_BORROW) {
+                    throw error(callable + " argument " + position + " requires &mut value");
+                }
+                if (!mutable && state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW) {
+                    throw error(callable + " argument " + position + " requires borrowed value; pass &" + name.name());
+                }
+                return;
+            }
+            throw error(callable + " argument " + position + " must be an explicit borrow");
+        }
+        ValueInfo argument = checkExpr(arg, scope, true);
+        if (containsMutexGuardType(argument.type)) {
+            throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
     }
 
@@ -1659,6 +1722,7 @@ public final class OwnershipChecker {
         }
 
         for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
+        defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
         loopDepth = 0;
@@ -1688,6 +1752,7 @@ public final class OwnershipChecker {
         CaptureSet captures = new CaptureSet();
         Set<String> locals = new HashSet<>();
         for (Ast.Param param : lambda.parameters()) locals.add(param.name());
+        locals.add("arguments");
         if (lambda.expressionBody() != null) {
             scanExpr(lambda.expressionBody(), locals, outer, recursiveBinding, captures, false);
         } else {
@@ -1870,6 +1935,7 @@ public final class OwnershipChecker {
             for (Ast.Param parameter : lambda.parameters()) {
                 nestedLocals.add(parameter.name());
             }
+            nestedLocals.add("arguments");
             if (lambda.expressionBody() != null) {
                 scanExpr(
                         lambda.expressionBody(),
@@ -2272,6 +2338,26 @@ public final class OwnershipChecker {
         }
     }
 
+    private List<Ast.TypeRef> syntacticCallArgumentTypes(
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        ArrayList<Ast.TypeRef> result = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
+                if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
+                if (spreadType.isTupleType()) {
+                    result.addAll(spreadType.arguments());
+                } else {
+                    result.add(Ast.TypeRef.inferred());
+                }
+            } else {
+                result.add(syntacticType(argument, scope));
+            }
+        }
+        return List.copyOf(result);
+    }
+
     private CallSignature specializeCall(
             List<String> allGenericNames,
             List<String> explicitGenericNames,
@@ -2288,8 +2374,9 @@ public final class OwnershipChecker {
                 fixed.add(explicitGenericNames.get(i));
             }
         }
-        for (int i = 0; i < Math.min(parameters.size(), call.arguments().size()); i++) {
-            inferGenericBindings(parameters.get(i).type(), syntacticType(call.arguments().get(i), scope),
+        List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
+        for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
+            inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
                     Set.copyOf(allGenericNames), bindings, fixed);
         }
         List<Ast.Param> specialized = parameters.stream()
@@ -2372,7 +2459,36 @@ public final class OwnershipChecker {
     private void move(VarState state, String name) {
         VarState root = ownershipRoot(state);
         requireUsable(root, name, false);
-        if (root.immutableBorrows > 0 || root.mutableBorrowed) throw error("cannot move '" + name + "' while it is borrowed");
+        if (root.immutableBorrows > 0 || root.mutableBorrowed) {
+            throw error("cannot move '" + name + "' while it is borrowed");
+        }
+
+        if (!root.aggregateSources.isEmpty()) {
+            for (VarState source : root.aggregateSources) {
+                VarState sourceRoot = ownershipRoot(source);
+                if (sourceRoot.kind == ValueKind.IMM_BORROW
+                        || sourceRoot.kind == ValueKind.MUT_BORROW
+                        || sourceRoot.type.isBorrow()) {
+                    throw error("cannot consume '" + name
+                            + "' as an aggregate while it contains borrowed parameter '"
+                            + source.debugName + "'; pass borrowed arguments explicitly");
+                }
+                if (sourceRoot.kind == ValueKind.MOVE_ONLY) {
+                    requireUsable(sourceRoot, source.debugName, false);
+                    if (sourceRoot.immutableBorrows > 0 || sourceRoot.mutableBorrowed) {
+                        throw error("cannot move parameter '" + source.debugName
+                                + "' through '" + name + "' while it is borrowed");
+                    }
+                }
+            }
+            for (VarState source : root.aggregateSources) {
+                VarState sourceRoot = ownershipRoot(source);
+                if (sourceRoot.kind == ValueKind.MOVE_ONLY) {
+                    move(sourceRoot, source.debugName);
+                }
+            }
+        }
+
         root.moved = true;
     }
 
@@ -2760,6 +2876,7 @@ public final class OwnershipChecker {
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
@@ -2855,6 +2972,8 @@ public final class OwnershipChecker {
         private boolean borrowLease;
         /** Narrowing/pattern alias: ownership operations are forwarded to this root place. */
         private VarState aliasSource;
+        /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
+        private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
