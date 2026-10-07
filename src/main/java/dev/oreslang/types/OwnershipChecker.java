@@ -985,6 +985,23 @@ public final class OwnershipChecker {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
 
+            // Native collection mutations are effects on the receiver, not
+            // harmless reads. TypeChecker validates method availability/arity.
+            // A const/let read-only view must not gain mutation via .add/.set.
+            Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+            if (memberReceiverType != null) {
+                Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
+                        ? memberReceiverType.borrowedTarget() : memberReceiverType;
+                if ((concreteCollection.name().equals("Array")
+                        || concreteCollection.name().equals("List"))
+                        && (member.member().equals("add") || member.member().equals("set"))) {
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "collection method '" + member.member() + "'");
+                }
+            }
+
             Ast.ClassDecl staticClass = classNamespaceOf(member.receiver(), scope);
             if (staticClass != null) {
                 Ast.MethodDecl staticFunction = findStaticMethod(
