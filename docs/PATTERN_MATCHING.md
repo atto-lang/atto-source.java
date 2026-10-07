@@ -167,15 +167,16 @@ do match entry over
 end
 ```
 
-Within `do match`, a terminal `return value;` is **arm-local**:
+Within `do match`, terminal `return value;` is **arm-local**:
 its expression runs, its result is discarded, and the enclosing function
-continues. An arm may instead finish normally after side effects.
-`return;` without a value is not an arm result; omit it. Earlier or nested
+continues. Terminal `return;` also finishes only its selected arm.
+An arm may instead finish normally after side effects. Earlier or nested
 returns which could escape the containing callable are rejected.
 Nested lambda bodies retain their own lexical return scopes.
 
 `do match ... over` is a statement, never an expression: assigning it or
 returning it as a value is a compile error. `do match` requires `over`.
+A trailing semicolon after `end` is optional for statement-only matches.
 Standalone `match ... over` without `do` is rejected in statement position
 to prevent silent discarding. The retired `no-return` spelling is invalid.
 
@@ -201,7 +202,8 @@ do nb select {
 In `do select` / `do nb select` arms, a terminal
 `return value;` evaluates and discards its value **within that arm**,
 never returning from its enclosing function. Terminal `return;` simply
-finishes the arm. Earlier or nested returns are rejected. Unprefixed
+finishes the arm. Earlier or nested returns are rejected. A semicolon
+after the static `do select { ... }` closing brace is optional. Unprefixed
 legacy static selects preserve their historical return behavior.
 
 Static `select { ... }` and `nb select { ... }` also remain accepted
@@ -236,8 +238,8 @@ expression without a semicolon. Block-local variables stay local; defers and
 lexical guard cleanup execute when the block exits, after evaluating the result.
 For legacy brace-delimited expression matches, `return` in a block exits
 the enclosing callable; value-producing `match ... over` instead uses
-its terminal arm `return` as the match result, and `no-return` evaluates
-and discards any terminal arm-local return value. Braces never create an
+its terminal arm `return` as the match result, while `do match ... over`
+evaluates and discards terminal arm-local return expressions. Braces never create an
 implicit closure. Explicit closures use Oreslang's existing `|| -> { ... }`
 or `|parameters| -> { ... }` syntax and explicit return statements.
 
