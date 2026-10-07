@@ -116,4 +116,68 @@ final class ExplicitStructDefiniteInitializationTest {
                 """)));
     }
 
+    @Test
+    void nonblockingSelectCannotCapturePartialExplicitStruct() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  nb select {
+                    case readch input: val value {
+                      stdio.println(point.foo);
+                    }
+                  }
+                  point.ready = true;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void nonblockingSelectMayCaptureExplicitStructAfterCompletion() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                actor fnc ok(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  point.ready = true;
+                  nb select {
+                    case readch input: val value {
+                      stdio.println(point.foo);
+                    }
+                  }
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void nonblockingWriteCallbackCannotCapturePartialExplicitStruct() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  nb cb writech output, 42 || -> {
+                    stdio.println(point.foo);
+                  };
+                  point.ready = true;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void nonblockingWriteCallbackMayCaptureExplicitStructAfterCompletion() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                actor fnc ok(): void {
+                  val Channel<int> output = Channel.new<int>(1);
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  point.ready = true;
+                  nb cb writech output, 42 || -> {
+                    stdio.println(point.foo);
+                  };
+                  return;
+                }
+                """)));
+    }
+
 }
