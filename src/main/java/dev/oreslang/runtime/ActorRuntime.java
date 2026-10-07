@@ -3368,12 +3368,20 @@ public final class ActorRuntime implements AutoCloseable {
                                         + " is fenced while force cancellation is pending");
                     }
                     long sequence = cell.nextUserMessageSequence;
+                    long nextSequence;
+                    try {
+                        nextSequence = Math.addExact(sequence, 1L);
+                    } catch (ArithmeticException exhausted) {
+                        throw new IllegalStateException(
+                                "actor mailbox sequence exhausted for " + ref.id(),
+                                exhausted);
+                    }
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
-                    cell.nextUserMessageSequence = Math.addExact(sequence, 1L);
+                    cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
                     commitSharedMutexBindings(sharedMutexReservations);
