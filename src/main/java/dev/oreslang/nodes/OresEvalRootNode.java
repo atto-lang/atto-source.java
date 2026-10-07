@@ -5220,21 +5220,21 @@ public final class OresEvalRootNode extends RootNode {
                         dynamic.fields.put(target.member(), value);
                         return value;
                     }
-                    // Inferred structs have a closed static shape but mutable
-                    // storage when reached through an owning mutable binding.
+                    // Explicit anonymous structs use this mutable map path.
+                    // struct infer values use ReadonlyRecordValue instead.
                     if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
                         @SuppressWarnings("unchecked")
                         LinkedHashMap<String, Object> record =
                                 (LinkedHashMap<String, Object>) rawRecord;
                         if (!record.containsKey(target.member())) {
                             throw new IllegalArgumentException(
-                                    "unknown inferred struct field " + target.member());
+                                    "unknown explicit struct field " + target.member());
                         }
                         record.put(target.member(), value);
                         return value;
                     }
                     throw new IllegalArgumentException(
-                            "member assignment requires a mutable class, inferred struct, or DynamicStruct");
+                            "member assignment requires a mutable class, explicit struct, or DynamicStruct");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
