@@ -18,6 +18,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.CancellationToken;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.OresFutures;
@@ -1953,7 +1954,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if (arm.operation() == Ast.SelectOperation.READ
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
@@ -4575,10 +4576,27 @@ public final class OresEvalRootNode extends RootNode {
                 switch (arm.operation()) {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
-                            requireChannel(eval(arm.channel(), env), "readch select case")));
+                            requireChannel(eval(arm.source(), env), "readch select arm")));
                     case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(eval(arm.channel(), env), "writech select case"),
+                            requireChannel(eval(arm.source(), env), "writech select arm"),
                             eval(arm.value(), env)));
+                    case AWAIT -> {
+                        Object value = eval(arm.source(), env);
+                        if (!(value instanceof OresFuture<?> future)) {
+                            throw new IllegalArgumentException(
+                                    "await select arm requires Future<T>; got " + value);
+                        }
+                        cases.add(ChannelRuntime.await(future));
+                    }
+                    case TIMEOUT -> cases.add(ChannelRuntime.timeout(arm.timeoutNanos()));
+                    case CANCELLED -> {
+                        Object value = eval(arm.source(), env);
+                        if (!(value instanceof CancellationToken token)) {
+                            throw new IllegalArgumentException(
+                                    "cancelled select arm requires CancellationToken; got " + value);
+                        }
+                        cases.add(ChannelRuntime.cancelled(token));
+                    }
                 }
             }
             return new ChannelRuntime.SelectSet(
@@ -4608,7 +4626,7 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if (arm.operation() == Ast.SelectOperation.READ
                     && arm.bindingName() != null) {
                 armEnv.define(
                         arm.bindingName(),
@@ -5104,6 +5122,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("CancellationToken")) return CancellationTokenFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
@@ -5592,10 +5611,37 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof CancellationToken token) {
+                return switch (name) {
+                    case "cancel" -> (Invokable) args -> {
+                        requireZero(args, "CancellationToken.cancel");
+                        return token.cancel();
+                    };
+                    case "is_cancelled" -> (Invokable) args -> {
+                        requireZero(args, "CancellationToken.is_cancelled");
+                        return token.isCancelled();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown CancellationToken member " + name);
+                };
+            }
+            if (receiver instanceof CancellationTokenFactory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException(
+                            "unknown CancellationToken factory member " + name);
+                }
+                return (Invokable) args -> {
+                    requireZero(args, "CancellationToken.new");
+                    return new CancellationToken();
+                };
+            }
             if (receiver instanceof SelectCaseFactory factory) {
                 return switch (name) {
                     case "read" -> (Invokable) factory::read;
                     case "write" -> (Invokable) factory::write;
+                    case "await" -> (Invokable) factory::awaitFuture;
+                    case "timeout" -> (Invokable) factory::timeout;
+                    case "cancelled" -> (Invokable) factory::cancelled;
                     case "default" -> (Invokable) factory::defaultCase;
                     default -> throw new IllegalArgumentException(
                             "unknown SelectCase factory member " + name);
@@ -7826,6 +7872,37 @@ public final class OresEvalRootNode extends RootNode {
                     args.get(1));
         }
 
+        private Object awaitFuture(List<Object> args) {
+            requireOne(args, "SelectCase.await");
+            if (!(args.getFirst() instanceof OresFuture<?> future)) {
+                throw new IllegalArgumentException("SelectCase.await expects Future<T>");
+            }
+            return ChannelRuntime.await(future);
+        }
+
+        private Object timeout(List<Object> args) {
+            requireOne(args, "SelectCase.timeout");
+            if (!(args.getFirst() instanceof Number number)) {
+                throw new IllegalArgumentException(
+                        "SelectCase.timeout expects a non-negative nanosecond count");
+            }
+            long nanos = number.longValue();
+            if (nanos < 0L) {
+                throw new IllegalArgumentException(
+                        "SelectCase.timeout expects a non-negative nanosecond count");
+            }
+            return ChannelRuntime.timeout(nanos);
+        }
+
+        private Object cancelled(List<Object> args) {
+            requireOne(args, "SelectCase.cancelled");
+            if (!(args.getFirst() instanceof CancellationToken token)) {
+                throw new IllegalArgumentException(
+                        "SelectCase.cancelled expects CancellationToken");
+            }
+            return ChannelRuntime.cancelled(token);
+        }
+
         private Object defaultCase(List<Object> args) {
             requireZero(args, "SelectCase.default");
             return ChannelRuntime.defaultCase();
@@ -7849,6 +7926,7 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
     private enum FutureFactory { INSTANCE }
+    private enum CancellationTokenFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
     private record MutexFactory(boolean shared, OresContext context) {
