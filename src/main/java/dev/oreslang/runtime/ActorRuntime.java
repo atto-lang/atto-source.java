@@ -1122,6 +1122,22 @@ public final class ActorRuntime implements AutoCloseable {
         return future;
     }
 
+
+    /**
+     * Gracefully terminate the actor whose source turn is currently executing.
+     * This is the lowering target for actor-local `self.end()`; it carries no
+     * authority to stop siblings or unrelated actors.
+     */
+    public void endCurrentActor() {
+        requireCallerRuntimeAffinity("end current actor");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "self.end is only valid during an actor execution turn");
+        }
+        cell.stop();
+    }
+
     /**
      * Start one stackless source continuation in the current actor's logical
      * scheduler. The scheduler's executor is mailbox-backed, so every resume
