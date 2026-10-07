@@ -9,8 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -34,10 +37,60 @@ public final class SharedCodeRegistry {
     private static final SharedCodeRegistry PROCESS = new SharedCodeRegistry();
 
     private final Map<Key, Entry> images = new HashMap<>();
+    private final IdentityHashMap<Source, Entry> imagesBySource = new IdentityHashMap<>();
+    private final Set<Key> adversarialShareAllowlist = new HashSet<>();
 
     /** This registry is owned by the supervisor, never exposed to guest code. */
     public static SharedCodeRegistry process() {
         return PROCESS;
+    }
+
+    /**
+     * Trusted-supervisor admission for sharing an exact immutable image with
+     * adversarial actors. Every code unit/import is approved independently.
+     */
+    public synchronized void approveForAdversarialSharing(
+            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+        requireIdentity(codeUnitId, sourceText);
+        Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
+        if (supervisorPolicy.adversarial()) {
+            throw new SecurityException("adversarial policy cannot approve shared code");
+        }
+        supervisorPolicy.require(
+                IsolatePolicy.Capability.HOT_CODE_LOAD,
+                "approve adversarial shared code");
+        CapabilityChecker.check(
+                OresCompiler.parseAndTypeCheck(sourceText),
+                IsolatePolicy.untrustedActor());
+        adversarialShareAllowlist.add(new Key(codeUnitId, digest(sourceText)));
+    }
+
+    public synchronized void revokeForAdversarialSharing(
+            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+        requireIdentity(codeUnitId, sourceText);
+        Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
+        if (supervisorPolicy.adversarial()) {
+            throw new SecurityException("adversarial policy cannot revoke shared code");
+        }
+        supervisorPolicy.require(
+                IsolatePolicy.Capability.HOT_CODE_LOAD,
+                "revoke adversarial shared code");
+        adversarialShareAllowlist.remove(new Key(codeUnitId, digest(sourceText)));
+    }
+
+    public synchronized boolean approvedForAdversarialSharing(
+            String codeUnitId, String sourceText) {
+        requireIdentity(codeUnitId, sourceText);
+        return adversarialShareAllowlist.contains(
+                new Key(codeUnitId, digest(sourceText)));
+    }
+
+    private static void requireIdentity(String codeUnitId, String sourceText) {
+        Objects.requireNonNull(codeUnitId, "codeUnitId");
+        Objects.requireNonNull(sourceText, "sourceText");
+        if (codeUnitId.isBlank()) {
+            throw new IllegalArgumentException("codeUnitId cannot be blank");
+        }
     }
 
     /**
@@ -46,11 +99,7 @@ public final class SharedCodeRegistry {
      * must not inherit another unit's source identity.
      */
     public synchronized Lease acquire(String codeUnitId, String sourceText) {
-        Objects.requireNonNull(codeUnitId, "codeUnitId");
-        Objects.requireNonNull(sourceText, "sourceText");
-        if (codeUnitId.isBlank()) {
-            throw new IllegalArgumentException("codeUnitId cannot be blank");
-        }
+        requireIdentity(codeUnitId, sourceText);
         Key key = new Key(codeUnitId, digest(sourceText));
         Entry entry = images.get(key);
         if (entry == null) {
@@ -59,6 +108,7 @@ public final class SharedCodeRegistry {
                     .buildLiteral();
             entry = new Entry(key, source, sourceText);
             images.put(key, entry);
+            imagesBySource.put(source, entry);
         } else if (!entry.originalText.equals(sourceText)) {
             // Never accept digest equivalence as authority to execute different
             // text. A cryptographic collision must fail closed.
@@ -74,8 +124,7 @@ public final class SharedCodeRegistry {
      * The caller still must perform its destination-specific capability checks.
      */
     public Ast.Program checkedProgramIfLive(String codeUnitId, String sourceText) {
-        Objects.requireNonNull(codeUnitId, "codeUnitId");
-        Objects.requireNonNull(sourceText, "sourceText");
+        requireIdentity(codeUnitId, sourceText);
         Entry entry;
         synchronized (this) {
             entry = images.get(new Key(codeUnitId, digest(sourceText)));
@@ -83,6 +132,21 @@ public final class SharedCodeRegistry {
             if (!entry.originalText.equals(sourceText)) {
                 throw new SecurityException("different source text has the same code-image digest");
             }
+        }
+        return entry.checkedProgram();
+    }
+
+    /**
+     * Identity-based lookup is the safe parse hook: an unapproved adversarial
+     * load uses a fresh Source and therefore cannot attach to a trusted cached
+     * AST merely by matching the same path and bytes.
+     */
+    public Ast.Program checkedProgramIfLive(Source source) {
+        Objects.requireNonNull(source, "source");
+        Entry entry;
+        synchronized (this) {
+            entry = imagesBySource.get(source);
+            if (entry == null) return null;
         }
         return entry.checkedProgram();
     }
@@ -99,6 +163,7 @@ public final class SharedCodeRegistry {
         }
         if (--entry.references == 0) {
             images.remove(entry.key);
+            imagesBySource.remove(entry.source);
         }
     }
 
