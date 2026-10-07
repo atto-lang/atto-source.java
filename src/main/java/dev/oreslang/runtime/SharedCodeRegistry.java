@@ -151,6 +151,22 @@ public final class SharedCodeRegistry {
         return entry.checkedProgram();
     }
 
+    /**
+     * Called only from OresLanguage.parse. With one explicit Engine and
+     * ContextPolicy.SHARED, evaluating the same admitted Source in many
+     * contexts should increment this once, proving a single parse/call-target
+     * cache entry rather than one compiled tree per context.
+     */
+    public synchronized void recordParse(Source source) {
+        Entry entry = imagesBySource.get(source);
+        if (entry != null) entry.parseInvocations++;
+    }
+
+    public synchronized long parseInvocations(Source source) {
+        Entry entry = imagesBySource.get(source);
+        return entry == null ? 0L : entry.parseInvocations;
+    }
+
     /** Supervisor-only diagnostic; no handles or source contents are exposed. */
     public synchronized int liveImages() {
         return images.size();
@@ -183,6 +199,7 @@ public final class SharedCodeRegistry {
         private final String originalText;
         private Ast.Program checkedProgram;
         private int references;
+        private long parseInvocations;
 
         private Entry(Key key, Source source, String originalText) {
             this.key = key;
@@ -230,6 +247,15 @@ public final class SharedCodeRegistry {
                 throw new IllegalStateException("code-image lease is closed");
             }
             return entry.checkedProgram();
+        }
+
+        public long parseInvocations() {
+            if (closed.get()) {
+                throw new IllegalStateException("code-image lease is closed");
+            }
+            synchronized (owner) {
+                return entry.parseInvocations;
+            }
         }
 
         @Override
