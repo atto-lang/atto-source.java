@@ -143,7 +143,8 @@ final class FormalActorPreemptionModelCheckTest {
                         1, s.continuationEntries(), s.userEntries()));
             }
             case QUEUE_USER_MESSAGE -> {
-                if (s.terminal() || s.userQueued() || s.phase() == Phase.USER_RUNNING) yield Optional.empty();
+                if (s.terminal() || s.phase() == Phase.STOP_REQUESTED
+                        || s.userQueued() || s.phase() == Phase.USER_RUNNING) yield Optional.empty();
                 yield Optional.of(new State(
                         s.phase(), s.activeLeases(), s.carrierOwned(), s.continuationQueued(), true,
                         s.completedEffects(), s.continuationEntries(), s.userEntries()));
