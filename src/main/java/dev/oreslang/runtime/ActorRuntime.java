@@ -498,6 +498,25 @@ public final class ActorRuntime implements AutoCloseable {
 
     public int actorCount() { return actorCount.get(); }
 
+    /**
+     * Compiler/runtime hook for fair static-select sites.
+     *
+     * <p>The immutable select-site identity may live in the shared code image,
+     * but its mutable fairness cursor is actor-owned. This prevents shared,
+     * private, and untrusted actors executing the same AST from mutating one
+     * hidden cross-actor scheduler counter.</p>
+     */
+    public long nextActorLocalSelectTicket(Object selectSite) {
+        Objects.requireNonNull(selectSite, "selectSite");
+        requireCallerRuntimeAffinity("advance actor-local select fairness");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor-local select fairness is only available during an actor turn");
+        }
+        return cell.nextStaticSelectTicket(selectSite);
+    }
+
     /** Package-private proof hook: mailbox transport is the runtime Channel<T>. */
     boolean mailboxUsesChannelTransport(ActorRef<?> ref) {
         requireSupervisorContext("inspect mailbox transport");
@@ -4668,6 +4687,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /**
+         * Mutable scheduler metadata belongs to this actor, never to the shared
+         * AST/evaluator. Keys are immutable shared code-site identities.
+         */
+        private final IdentityHashMap<Object, Long> staticSelectCursors =
+                new IdentityHashMap<>();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
@@ -4713,6 +4738,15 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        private long nextStaticSelectTicket(Object selectSite) {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                long ticket = staticSelectCursors.getOrDefault(selectSite, 0L);
+                staticSelectCursors.put(selectSite, Math.addExact(ticket, 1L));
+                return ticket;
+            }
         }
 
         private int mailboxCapacityWithControlHeadroom() {
@@ -4825,6 +4859,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             drainMailboxReservations();
+            staticSelectCursors.clear();
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
