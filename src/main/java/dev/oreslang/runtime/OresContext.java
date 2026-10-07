@@ -5,6 +5,7 @@ import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.nodes.Node;
 import dev.oreslang.OresLanguage;
+import dev.oreslang.ast.Ast;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -40,6 +41,9 @@ public final class OresContext implements AutoCloseable {
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
+    // Exactly one immutable code image per linked source unit for all actor kinds.
+    // Per-actor mutable heaps/closures are never published into this store.
+    private final SharedCodeImageStore sharedCodeImages = new SharedCodeImageStore();
     private final Map<String, Map<String, String>> linkedImportResolutions = new HashMap<>();
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
@@ -182,6 +186,15 @@ public final class OresContext implements AutoCloseable {
      * units that the host has explicitly loaded into this context; import
      * syntax never grants filesystem access.
      */
+    public SharedCodeImageStore.CodeImage registerSharedCodeImage(
+            String codeUnitId, Ast.Program immutableProgram) {
+        return sharedCodeImages.publish(codeUnitId, immutableProgram);
+    }
+
+    public SharedCodeImageStore.CodeImage sharedCodeImage(String codeUnitId) {
+        return sharedCodeImages.get(codeUnitId);
+    }
+
     public synchronized void registerLinkedCodeUnit(String codeUnitId, Object unit) {
         if (codeUnitId == null || codeUnitId.isBlank()) {
             throw new IllegalArgumentException("linked code unit id cannot be blank");
@@ -390,6 +403,7 @@ public final class OresContext implements AutoCloseable {
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
+                sharedCodeImages.close();
             }
             garbageCollector.close();
             output.flush();
