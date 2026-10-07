@@ -209,4 +209,44 @@ final class RhsLambdaScopeTest {
                 }
                 """));
     }
+
+    @Test
+    void nlexCallableCannotResolveOuterFunctionsOrModuleState() {
+        assertThrows(IllegalArgumentException.class, () -> check("""
+                pub fnc bar(): int {
+                    return 7;
+                }
+                pub nlex fnc foo(): int {
+                    const xyz = 5;
+                    const f = || -> int {
+                        return xyz + bar();
+                    };
+                    return f();
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> check("""
+                const outside = 9;
+                pub nlex fnc foo(): int {
+                    const xyz = 5;
+                    const f = || -> int {
+                        return xyz + outside;
+                    };
+                    return f();
+                }
+                """));
+    }
+
+    @Test
+    void ordinaryNestedLambdaInsideNlexMayOnlyCaptureInsideBoundary() {
+        assertDoesNotThrow(() -> check("""
+                pub nlex fnc foo(): int {
+                    const xyz = 5;
+                    const Fnc<int> f = || -> int {
+                        return xyz;
+                    };
+                    return f();
+                }
+                """));
+    }
 }
