@@ -1619,36 +1619,60 @@ public final class Parser {
 
         consume(SELECT, "expected 'select'");
         Ast.SelectPolicy policy = parseSelectPolicy();
-        consume(LBRACE, "static select requires '{ ... }'; use 'select from cases' for dynamic select");
+        consume(LBRACE,
+                "static select requires '{ ... }'; use 'select from cases' for dynamic select");
 
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
             if (matchContextualKeyword("when", "case")) {
-                Ast.ChannelOperation operation;
-                Ast.Expr channel;
+                Ast.SelectOperation operation;
+                Ast.Expr source = null;
                 Ast.Expr value = null;
+                long timeoutNanos = 0L;
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
                 boolean mutableReferent = false;
 
                 if (match(READCH)) {
-                    operation = Ast.ChannelOperation.READ;
-                    channel = parseExpression();
+                    operation = Ast.SelectOperation.READ;
+                    source = parseExpression();
                     consume(COLON, "readch select arm requires ':'");
                     if (isBindingKind(peek().type())) {
                         bindingKind = parseBindingKind();
                         mutableReferent = parseReferentMutability(bindingKind);
-                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
+                        bindingName = consume(
+                                IDENT,
+                                "readch select arm binding requires a name").lexeme();
                         match(SEMICOLON);
                     }
                 } else if (match(WRITECH)) {
-                    operation = Ast.ChannelOperation.WRITE;
-                    channel = parseExpression();
+                    operation = Ast.SelectOperation.WRITE;
+                    source = parseExpression();
                     consume(COMMA, "writech select arm requires 'channel, value'");
                     value = parseExpression();
                     consume(COLON, "writech select arm requires ':'");
+                } else if (match(AWAIT)) {
+                    operation = Ast.SelectOperation.AWAIT;
+                    source = parseExpression();
+                    consume(COLON,
+                            "await select arm requires ':' before an optional binding");
+                    if (isBindingKind(peek().type())) {
+                        bindingKind = parseBindingKind();
+                        mutableReferent = parseReferentMutability(bindingKind);
+                        bindingName = consume(
+                                IDENT,
+                                "await select arm binding requires a name").lexeme();
+                        match(SEMICOLON);
+                    }
+                } else if (matchContextualIdentifier("timeout")) {
+                    operation = Ast.SelectOperation.TIMEOUT;
+                    timeoutNanos = parseSelectTimeoutNanos();
+                } else if (matchContextualIdentifier("cancelled")) {
+                    operation = Ast.SelectOperation.CANCELLED;
+                    source = parseExpression();
                 } else {
-                    // Binding-first select arm: when [const|val|let] [mut] msg = readch(ch) -> { ... }
+                    // Preserve main's binding-first read compatibility:
+                    // when [const|val|let] [mut] msg = readch(ch) -> { ... }
                     if (match(MUT)) {
                         bindingKind = Ast.BindingKind.LET;
                         mutableReferent = true;
@@ -1658,24 +1682,28 @@ public final class Parser {
                     } else {
                         bindingKind = Ast.BindingKind.CONST;
                     }
-                    bindingName = consume(IDENT, "select read case requires binding name").lexeme();
+                    bindingName = consume(
+                            IDENT,
+                            "select read case requires binding name").lexeme();
                     consume(EQUAL, "select case binding requires '='");
                     consume(READCH, "select case binding requires readch");
                     consume(LPAREN, "binding-first select readch requires '('");
-                    channel = parseExpression();
+                    source = parseExpression();
                     consume(RPAREN, "binding-first select readch requires ')'");
                     consume(ARROW, "binding-first select case requires '->'");
-                    operation = Ast.ChannelOperation.READ;
+                    operation = Ast.SelectOperation.READ;
                 }
 
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }'");
+                    throw error(peek(),
+                            "select arm requires a braced body '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
                         operation,
-                        channel,
+                        source,
                         value,
+                        timeoutNanos,
                         bindingKind,
                         bindingName,
                         body,
@@ -1686,16 +1714,19 @@ public final class Parser {
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select default arm requires a braced body '{ ... }'");
+                    throw error(peek(),
+                            "select default arm requires a braced body '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
-                        Ast.ChannelOperation.DEFAULT,
+                        Ast.SelectOperation.DEFAULT,
                         null,
                         null,
+                        0L,
                         null,
                         null,
-                        body));
+                        body,
+                        false));
                 continue;
             }
 
@@ -1704,6 +1735,49 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    private long parseSelectTimeoutNanos() {
+        if (!check(INT) && !check(FLOAT)) {
+            throw error(peek(),
+                    "timeout duration must be a numeric literal followed by ns, us, ms, s, m, or h");
+        }
+        Token amount = advance();
+        Token unit = consume(
+                IDENT,
+                "timeout duration requires a unit: ns, us, ms, s, m, or h");
+
+        java.math.BigDecimal value;
+        try {
+            value = new java.math.BigDecimal(amount.lexeme().replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(amount, "invalid timeout duration");
+        }
+        if (value.signum() < 0) {
+            throw error(amount, "timeout duration cannot be negative");
+        }
+
+        long nanosPerUnit = switch (unit.lexeme()) {
+            case "ns" -> 1L;
+            case "us" -> 1_000L;
+            case "ms" -> 1_000_000L;
+            case "s" -> 1_000_000_000L;
+            case "m" -> 60_000_000_000L;
+            case "h" -> 3_600_000_000_000L;
+            default -> throw error(
+                    unit,
+                    "unknown timeout unit '" + unit.lexeme()
+                            + "'; use ns, us, ms, s, m, or h");
+        };
+
+        try {
+            return value.multiply(java.math.BigDecimal.valueOf(nanosPerUnit))
+                    .longValueExact();
+        } catch (ArithmeticException invalid) {
+            throw error(
+                    amount,
+                    "timeout duration must resolve to an integral nanosecond value within int64 range");
+        }
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
