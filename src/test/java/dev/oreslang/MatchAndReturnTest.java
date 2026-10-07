@@ -25,7 +25,7 @@ final class MatchAndReturnTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (Context ctx = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(out).build()) {
-            ctx.eval(Source.newBuilder(OresLanguage.ID, source, "match-and-return.ores")
+            ctx.eval(Source.newBuilder(OresLanguage.ID, source, "match-over.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
         }
         return out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
@@ -35,7 +35,7 @@ final class MatchAndReturnTest {
     void localReturnSuppliesValueWithoutExitingEnclosingCallable() throws Exception {
         assertEquals("11\n12\n", run("""
                 fnc choose(bool flag): int {
-                  val int value = match-and-return flag over
+                  val int value = match flag over
                     true -> { return 1; }
                     false -> { return 2; }
                   end;
@@ -53,7 +53,7 @@ final class MatchAndReturnTest {
     void exhaustivelyHandlesPresentValuePresentEmptyAndMissing() throws Exception {
         assertEquals("42\n-1\n-2\n", run("""
                 fnc classify(Option<Option<int>> entry): int {
-                  val int result = match-and-return entry over
+                  val int result = match entry over
                     Some(Some(value)) -> { return value; }
                     Some(None) -> { return -1; }
                     None -> { return -2; }
@@ -70,13 +70,13 @@ final class MatchAndReturnTest {
     }
 
     @Test
-    void bracedMatchWorksAndArmMayRunStatementsBeforeReturning() throws Exception {
+    void matchOverArmsCanRunStatementsBeforeReturning() throws Exception {
         assertEquals("3\n", run("""
                 pub fnc main(): void {
-                  val int result = match-and-return true {
+                  val int result = match true over
                     true -> { val int base = 1; return base + 2; }
                     false -> { return 0; }
-                  };
+                  end;
                   stdio.println(result);
                   return;
                 }
@@ -120,7 +120,7 @@ final class MatchAndReturnTest {
                   return;
                 }
                 fnc bad(bool flag): void {
-                  val result = match-and-return flag over
+                  val result = match flag over
                     true -> { return noop(); }
                     false -> { return noop(); }
                   end;
@@ -133,28 +133,28 @@ final class MatchAndReturnTest {
     void rejectsMissingOrValuelessArmReturns() {
         assertTrue(reject("""
                 fnc bad(bool flag): int {
-                  val x = match-and-return flag over
+                  val x = match flag over
                     true -> { return 1; }
                     false -> { 2; }
                   end;
                   return x;
                 }
-                """).getMessage().contains("match-and-return"));
+                """).getMessage().contains("value-producing"));
         assertTrue(reject("""
                 fnc bad(bool flag): int {
-                  val x = match-and-return flag {
+                  val x = match flag over
                     true -> { return 1; }
                     false -> { return; }
-                  };
+                  end;
                   return x;
                 }
-                """).getMessage().contains("match-and-return"));
+                """).getMessage().contains("value-producing"));
         assertTrue(reject("""
                 fnc bad(bool flag): int {
-                  val x = match-and-return flag {
+                  val x = match flag over
                     true -> 1
                     false -> { return 2; }
-                  };
+                  end;
                   return x;
                 }
                 """).getMessage().contains("braced arms"));
@@ -164,7 +164,7 @@ final class MatchAndReturnTest {
     void rejectsNonExhaustiveAndMismatchedResults() {
         assertTrue(reject("""
                 fnc bad(Option<Option<int>> value): int {
-                  val x = match-and-return value over
+                  val x = match value over
                     Some(Some(inner)) -> { return inner; }
                     None -> { return 0; }
                   end;
@@ -173,7 +173,7 @@ final class MatchAndReturnTest {
                 """).getMessage().contains("non-exhaustive"));
         assertTrue(reject("""
                 fnc bad(bool flag): int {
-                  val x = match-and-return flag over
+                  val x = match flag over
                     true -> { return 1; }
                     false -> { return "wrong"; }
                   end;
@@ -186,7 +186,7 @@ final class MatchAndReturnTest {
     void rejectsNestedEarlyReturnsInsteadOfEscapingCallable() {
         assertTrue(reject("""
                 fnc bad(bool outer, bool inner): int {
-                  val int x = match-and-return outer over
+                  val int x = match outer over
                     true -> {
                       if inner then
                         return 99;
@@ -204,7 +204,7 @@ final class MatchAndReturnTest {
     void rejectsUnreachableFallbackAndOverlappingNestedPatterns() {
         assertTrue(reject("""
                 fnc bad(Option<Option<int>> value): int {
-                  val x = match-and-return value over
+                  val x = match value over
                     Some(Some(inner)) -> { return inner; }
                     Some(None) -> { return 0; }
                     None -> { return 0; }
@@ -215,7 +215,7 @@ final class MatchAndReturnTest {
                 """).getMessage().contains("unreachable"));
         assertTrue(reject("""
                 fnc bad(Option<Option<int>> value): int {
-                  val x = match-and-return value over
+                  val x = match value over
                     Some(inner) -> { return 1; }
                     Some(None) -> { return 2; }
                     None -> { return 3; }
@@ -226,19 +226,19 @@ final class MatchAndReturnTest {
     }
 
     @Test
-    void rejectsSeparatedOperatorOrLambdaPipeAsPattern() {
+    void rejectsInventedMatchAndReturnSpellingOrLambdaPipeAsPattern() {
         reject("""
                 fnc bad(bool flag): int {
-                  val x = match - and - return flag {
+                  val x = match-and-return flag over
                     true -> { return 1; }
                     false -> { return 2; }
-                  };
+                  end;
                   return x;
                 }
                 """);
         reject("""
                 fnc bad(Option<int> value): int {
-                  val x = match-and-return value over
+                  val x = match value over
                     Some(inner) -> { return inner; }
                     None -> { return 2; }
                     || -> { return 3; }
