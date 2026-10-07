@@ -2410,6 +2410,28 @@ public final class OresEvalRootNode extends RootNode {
 
         private GeneratorRuntime.AsyncGenerator<?> sourceAsyncGenerator(Object value, Env env) {
             if (value instanceof GeneratorRuntime.AsyncGenerator<?> generator) return generator;
+            if (value instanceof ActorRuntime.ActorOutputStream<?> rawOutputs) {
+                @SuppressWarnings("unchecked")
+                ActorRuntime.ActorOutputStream<Object> outputs =
+                        (ActorRuntime.ActorOutputStream<Object>) rawOutputs;
+                return GeneratorRuntime.asyncGenerator(
+                        context.asyncRuntime(),
+                        emitter -> {
+                            for (;;) {
+                                OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> pending =
+                                        outputs.next();
+                                GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> step;
+                                try {
+                                    step = AsyncRuntime.await(pending);
+                                } catch (java.util.concurrent.CancellationException cancelled) {
+                                    pending.cancel(false);
+                                    throw cancelled;
+                                }
+                                if (step.done()) return;
+                                emitter.emit(step.value());
+                            }
+                        });
+            }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass,
                         CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
