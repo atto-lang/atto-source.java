@@ -102,10 +102,12 @@ final class ActorInboxMailTest {
 
             ref.send("one");
             assertTrue(handled.await(5, TimeUnit.SECONDS));
-            assertTrue(saved.get().currentMail().isEmpty());
 
+            // Finalization is the externally observable barrier after the
+            // handler has unwound and activeMail has been cleared.
             ref.stop();
             ref.done().get(5, TimeUnit.SECONDS);
+            assertTrue(saved.get().currentMail().isEmpty());
         }
     }
 }
