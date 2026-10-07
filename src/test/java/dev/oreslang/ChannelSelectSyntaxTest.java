@@ -99,6 +99,84 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
+    void doSelectAllowsArmLocalBareReturnAndOptionalSemicolon() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                fnc probe(Channel<int> input): int {
+                  do try select {
+                  case readch input: val value
+                    return;
+                  default:
+                    return;
+                  };
+                  return 21;
+                }
+                actor fnc deferred(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  do nb select {
+                  case readch input: val value
+                    return;
+                  };
+                  return;
+                }
+                """));
+        Ast.FunctionDecl probe = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(0);
+        Ast.SelectStmt immediate = assertInstanceOf(Ast.SelectStmt.class, probe.body().getFirst());
+        assertTrue(immediate.arms().stream().allMatch(arm -> arm.body().isEmpty()));
+        assertInstanceOf(Ast.ReturnStmt.class, probe.body().get(1));
+
+        Ast.FunctionDecl deferred = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
+        Ast.SelectStmt nb = assertInstanceOf(Ast.SelectStmt.class, deferred.body().get(1));
+        assertTrue(nb.arms().getFirst().body().isEmpty());
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
+    void doSelectPreservesActorAndLexicalReturnSafety() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<int> input): void {
+                  do nb select {
+                  case readch input: val value
+                    stdio.println(value);
+                  }
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(Channel<int> input): void {
+                  do select {
+                  case readch input: val value
+                    if value > 1 then
+                      return;
+                    fi
+                  }
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(Channel<int> input): void {
+                  val result = do select {
+                  case readch input: val value
+                    return value;
+                  };
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                actor fnc bad(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  val result = do nb select {
+                  case readch input: val value
+                    return value;
+                  };
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void doSelectCannotSilentlyDropDynamicNonblockingFuture() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc discard(Array<SelectCase> cases): void {
