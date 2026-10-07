@@ -2762,6 +2762,12 @@ public final class TypeChecker {
                 };
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
+            if (isStringLike(sumReceiver)) {
+                if (member.member().equals("replace_literal")) {
+                    return new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
+                }
+                throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+            }
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
                 throw new IllegalArgumentException(
