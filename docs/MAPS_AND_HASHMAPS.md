@@ -41,15 +41,37 @@ Use a single generic representation with no implicit nullable values. The keys a
 | `size()`, `isEmpty()` | `int`, `bool` | Number of entries / emptiness. |
 | `keys()`, `values()`, `entries()` | iterators/views | Explicit iteration; entry iteration yields tuples `(K,V)` under safe borrowing rules. |
 
-Canonical safe single lookup using **already documented** Oreslang `matches` syntax:
+### Proposed explicit optional binding in conditions
+
+**Preferred new syntax** (requires parser/type-checker/runtime work; not currently implemented):
 
 ```ores
-if counts.get("widget") matches Some(count) then
+if val count = counts.get("widget") then
+  // count: int, newly declared only in this success branch
   stdio.println(count);
 else
+  // count is NOT in scope here
   stdio.println("missing");
 fi
 ```
+
+The `val` keyword is essential: it announces the introduction of a **new temporary lexical binding**, in the same spirit as `if x is type Foo f then`. This avoids accidentally treating `value` in `Some(value)` as a reference to a preexisting variable. It also avoids overload of `is` (which already has identity and nominal-type-test meanings).
+
+**Formal rule:** `if val name = expr then ... fi` requires `expr: Option<T>`; evaluate `expr` **exactly once**, enter the success branch iff it evaluates to `Some(x)`, and initialize `name: T` from that payload. `None` enters the `else` or following `elif` branch. The bound name exists **only** in the successful branch, not in `else`, other `elif` branches, or after `fi`. Do not interpret this as generalized truthiness or equality assignment, and reject non-`Option` expressions. The `let` spelling may later support explicit mutable local rebinding, but start with immutable `val`. Do not use `const`, whose ordinary initializer requirements differ.
+
+**Currently documented alternative** until the optional-binding condition syntax exists:
+
+```ores
+if counts.get("widget") matches Some(count) then
+  // 'count' is an implicitly declared pattern variable, NOT a prior variable
+  stdio.println(count);
+fi
+```
+
+Both forms perform one lookup and bind only on success. Their typing and scoping must be identical. The formatter should not claim the new syntax is active until the compiler actually supports it; once implemented, prefer the `if val` spelling for single-Option-binding map lookups.
+
+Note: Oreslang brace-form condition bodies **still require the final `fi`** under the current compiler contract, e.g. `if val count = map.get(key) { ... } fi` once optional-binding headers are implemented.
+
 
 The new `in` syntax should be:
 
@@ -72,7 +94,7 @@ For `Map<K, Option<V>>`: `get(key): Option<Option<V>>`:
 
 Never conflate `None` with missing just because the stored value is itself an `Option`. No bare `null` or `undefined` sentinel and no truthiness test.
 
-A `has(key)` branch does **not** change the declared return type of `get(key)`. It is generally a two-lookup idiom and may race with mutation or become invalid after an alias call. Prefer `if map.get(key) matches Some(value) then ... fi`. Optimizers may remove redundant lookups only when effect, ownership and version proofs justify doing so.
+A `has(key)` branch does **not** change the declared return type of `get(key)`. It is generally a two-lookup idiom and may race with mutation or become invalid after an alias call. Prefer `if val value = map.get(key) then ... fi` **after** the new optional-binding syntax is implemented (today the existing spelling is `if map.get(key) matches Some(value) then ... fi`). Optimizers may remove redundant lookups only when effect, ownership and version proofs justify doing so.
 
 ### Ownership: critical prerequisite before implementing `get` for all V
 
@@ -84,7 +106,7 @@ Implementation staging:
 1. First support safe owned `Option<V>` lookups for `Copy` values or explicitly permitted cheaply shareable handles. No implicit cloning of `V`.
 2. For move-only or mutable values, provide nonescaping, compiler-enforced scoped access (e.g. a `withValue(key, callback)` API whose callback gets a temporary `rt borrow` and cannot retain it, await, cross an actor boundary, or reenter/mutate the same map).
 3. Expand `get` to non-Copy values **only after** an explicit lifetime-aware borrowed-result carrier or equivalent proven ownership mechanism is implemented and tested. Keep the surface spelling `get(key)` if possible; do not pretend `Option<V>` magically owns an interior borrow.
-4. `remove(key)` and replacement are consuming operations and can return an *owned* prior `Option<V>` without cloning.
+4. `take(key)` / `remove(key)` and replacement are consuming operations and can return an *owned* prior `Option<V>` without cloning. The API must not hide a borrowed payload in an owned `Option`.
 5. Iterator entries and borrowed map keys/values must not outlive the map or its borrow, and may not survive unsafe mutation, suspension, or cross-actor transfer. `rt share` only on frozen/share-safe data.
 
 The type-system and standard-library implementation must settle the exact safe borrowed-result representation before claiming unrestricted `get` support.
@@ -94,10 +116,33 @@ The type-system and standard-library implementation must settle the exact safe b
 | Operation | Result | Contract |
 | --- | --- | --- |
 | `set(key, value)` | `Option<V>` | Insert or replace, returning **owned previous value** when present (Rust `insert`-style). No implicit lost copies. |
-| `remove(key)` | `Option<V>` | Remove and return **owned** previous value; `None` when absent. |
+| `take(key)` | `Option<V>` | **Canonical remove-and-return in one operation**. Move the old `V` out, erase the entry, and return owned `Some(value)`; `None` when absent. No clone or pre-lookup. |
+| `remove(key)` | `Option<V>` | Same semantics as `take(key)` for Rust/Java familiarity; not a boolean/delete-only operation. |
 | `clear()` | `void` | Remove all entries and dispose/release values under ownership rules. |
 | `getOrInsertWith(key, factory)` | ownership-safe read/entry view, TBD | One probe; invoke factory exactly once **when absent** in an ordinary actor-owned map; do not run arbitrary callbacks while exposing unsafe borrows. |
 | `entry(key)` | guarded entry, later | Advanced vacant/occupied API after borrow checker and lifetime-scoped entry view are available. |
+
+### Removal and retrieval in the same action
+
+```ores
+if val job = pending.take(jobId) then
+  // job: Job, now OWNED here; jobId no longer exists in pending
+  process(job);
+else
+  // No entry was removed.
+fi
+```
+
+Exactly one hash probe and one mutation (modulo implementation details); do **not** implement as `has` plus `get` plus `remove`. The returned `Some(job)` owns the removed value, so non-`Copy` values are legal if ownership transfer is permitted. `map.remove(key)` is also remove-and-return, with identical type/semantics. In an actor-owned mutable map the operation is indivisible with respect to that actor's serialized turns; a future concurrent map must define its own linearizability contract, not assume an actor guarantee.
+
+```ores
+val maybeJob: Option<Job> = pending.take(jobId);
+// Plain extraction is an Option; conditional binding is only syntactic sugar.
+```
+
+For `MutableMap<K, Option<V>>`, a successful removal of a stored `None` is `Some(None)`; it is *not* a missing key. A binding `if val v = map.take(k) then` succeeds for `Some(None)` and binds `v: Option<V>` equal to `None`.
+
+**Negative cases the compiler must reject:** (1) calling `take` on a read-only `Map`, (2) moving a value while an outstanding borrow/iterator references that slot, (3) letting a nonescaping borrow escape through an `if val` binding, (4) using the `val` binding in `else` or after `fi`, and (5) treating `Option<bool>` payload `false` as absence.
 
 Keep a clear distinction: mutable `HashMap.set` mutates, whereas future immutable/persistent `ImmutableMap.put` returns a **new** map leaving the old map unchanged. `Map` read-only interfaces must not accidentally expose mutation via aliases.
 
@@ -116,10 +161,10 @@ Do not advertise the conditional insert operation as globally atomic. For an act
 
 ### Parser / formatter / testing worklist
 
-1. Add `key in map` parsing, precedence, AST, static type checking, bytecode/native lowering and formatter, with tests for `for ... of` and identifiers named `in`.
+1. Add `key in map` parsing, precedence, AST, static type checking, bytecode/native lowering and formatter, with tests for `for ... of` and identifiers named `in`. Add **explicit Option conditional binding** (`if val name = expression then ... fi`) with dedicated scope/CFG handling, no truthiness and exactly-once expression evaluation.
 2. Add `Map`/ `MutableMap` interface resolution and `HashMap` intrinsic or stdlib implementation. Do not treat a host Java `Map` as the normative language behavior.
 3. Prove `get` returns `Option` and never takes ownership of a non-Copy map value accidentally. Explicitly negative-test escaping borrows and actors.
-4. Test absent/present, `Some(None)`, false/zero/empty-string stored values, replacement and removal ownership, hash collisions, unstable mutated keys, and custom `Eq/Hash`.
+4. Test absent/present, `Some(None)`, false/zero/empty-string stored values, replacement and removal ownership, hash collisions, unstable mutated keys, and custom `Eq/Hash`; specifically test `take`/`remove` as a single remove-and-return action and invalidated borrows.
 5. Test single evaluation of lookup/key expression, lazy fallback (called only when absent), callback failure and reentrancy, and iterator mutation invalidation.
 6. Exercise low-budget/memory limits, adversarial collisions, actor isolation, cancellation and runtime GC accounting.
 7. When changing ownership docs, reconcile legacy `&`/`&mut` examples with canonical `rt borrow`/ `rt take`/ `rt copy` spelling. This RFC does not silently rewrite their current semantics.
