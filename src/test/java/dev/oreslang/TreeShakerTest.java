@@ -219,4 +219,46 @@ final class TreeShakerTest {
                 }
                 """, BuildOptions.executable(Map.of("use_a", "true"))));
     }
+
+    @Test
+    void treeShakingPreservesExplicitReferentMutability() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Child as
+                  pub let int value = 0;
+                end
+
+                define class Holder as
+                  pub const mut Child stable = new Child();
+                  pub let mut Child replaceable = new Child();
+                end
+
+                pub routine main(): void {
+                  val Holder holder = new Holder();
+                  holder.stable.value = 1;
+                  holder.replaceable.value = 2;
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        Ast.ClassDecl holder = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(klass -> klass.name().equals("Holder"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.FieldDecl stable = holder.fields().stream()
+                .filter(field -> field.name().equals("stable"))
+                .findFirst().orElseThrow();
+        Ast.FieldDecl replaceable = holder.fields().stream()
+                .filter(field -> field.name().equals("replaceable"))
+                .findFirst().orElseThrow();
+
+        assertEquals(Ast.BindingKind.CONST, stable.bindingKind());
+        assertTrue(stable.mutableReferent(), "const mut must survive tree rewriting");
+        assertEquals(Ast.BindingKind.LET, replaceable.bindingKind());
+        assertTrue(replaceable.mutableReferent(), "let mut must survive tree rewriting");
+    }
+
 }
