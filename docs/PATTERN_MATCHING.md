@@ -128,56 +128,77 @@ type semantics.
 
 See `NATIVE_RUNTIME_ABI.md` for the native/JNI boundary.
 
-## Statement vs value-producing matches
+## Value-producing matches and explicit no-return matches
 
-There is **one `match` keyword**. The contextual delimiter is
-`over`, not `with`. Whether the construct produces a value is decided by
-the syntactic position in which `match` appears:
+The canonical, value-producing form is `match subject over ... end`.
+It can be used in a binding, as an argument, or directly after `return`:
 
 ```ores
-fnc classify(Option<Option<int>> entry): int {
-  // Statement match: side effects, no match value.
-  match entry over
-    Some(Some(value)) -> { stdio.println(value); }
-    Some(None) -> { stdio.println("empty"); }
-    None -> { stdio.println("missing"); }
-  end
+val Foo matched = match entry over
+  Some(value) -> { return new Foo(1); }
+  None -> { return new Foo(2); }
+end;
 
-  // Expression match: each arm returns a value to the enclosing binding.
-  val int answer = match entry over
-    Some(Some(value)) -> { return value; }
-    Some(None) -> { return -1; }
-    None -> { return -2; }
-  end;
-  return answer + 10;
-}
+return match entry over
+  Some(value) -> { return new Foo(1); }
+  None -> { return new Foo(2); }
+end;
 ```
 
-A standalone `match ... over ... end` is a **statement**; `return` in one of
-its branches retains ordinary enclosing-function return semantics. A `match`
-used as an expression (an initializer, argument or `return match ...`) must
-produce a compatible, non-`void` value on every completing path.
+In a **value-producing** `match ... over`, the last top-level
+`return value;` in each braced arm produces the **match expression's**
+value, not a function return. The enclosing `return match ...`
+performs the function return only after the match finishes. Results must
+be non-`void`, type compatible (or explicitly declared union), and
+exhaustive.
 
-**Only for expression-position `match ... over ... end`**, the top-level
-terminal `return value;` in each arm explicitly supplies that arm's **match
-result**, not the enclosing function's result. The body must be braced, and
-no earlier nested or unguarded function returns may bypass the terminal result.
-Missing results, `return;` and `void` results fail compilation. The runtime
-evaluates the scrutinee once, then only the selected arm; the value's ownership
-and type checking use the existing `Ast.MatchExpr` machinery.
+To execute branches without producing an overall match value, use the
+explicit contextual modifier **`no-return`**:
 
-Historical `match value { ... }` expression arms from #296 continue to allow
-plain expressions or an unterminated final expression. For compatibility, their
-existing ordinary function-level `return` meaning is unchanged. The
-`over` spelling is the explicit arm-value form. No `match-and-return` or
-`match ... with` syntax is introduced.
+```ores
+match entry no-return over
+  Some(value) -> { process(value); }
+  None -> { handleMissing(); }
+end
 
-The checker enforces recursive `Option`/`Result` exhaustiveness,
-disjointness, unreachable finite-constructor arms, type compatibility, and
-ownership/capability rules for both modes. `Some(inner)` covers both inner
-Option variants, whereas `Some(Some(value))` does not. Fallback patterns
-are `_`, `else`, `default` or `Symbol.default`; `||` is lambda syntax,
-not a fallback pattern.
+// An arm may produce a value, but the match discards it.
+match entry no-return over
+  Some(value) -> { return new Foo(1); }
+  None -> { return new Foo(2); }
+end
+```
+
+In a `no-return` match, a terminal `return value;` is an **arm-local
+return**: its expression is evaluated and discarded. An arm can
+instead simply finish after its side-effect statements. A
+`no-return` match has type `void`, and cannot be assigned, returned
+as a value, or used in any expression context. This avoids confusing
+"discarding a branch result" with returning from the enclosing function.
+
+`no-return` is a contextual, hyphenated modifier **after the match
+subject and before `over`**, not an expression operator or a global
+reserved identifier. `no - return` with spaces is not the modifier,
+and `no-return` requires `over`. Standalone `match ... over`
+without `no-return` is rejected to prevent silently discarding a value.
+Legacy bare statement matches (`match value ... end` without `over`)
+retain their original function-level `return` behavior for source
+compatibility; the new `no-return` form has deliberate arm-local behavior.
+
+Arms with a local `return value;` must place it at the end of the
+arm. Earlier or nested `return` statements that might exit the
+enclosing callable are rejected. Lambda bodies have their own
+lexical return scope. `return;` is not an arm result; for a
+`no-return` match, simply omit it. Branch decisions evaluate the
+scrutinee once, execute only one chosen arm, and retain existing
+ownership/capability checks.
+
+Both modes enforce recursive nested `Option`/`Result` coverage,
+exclusive pattern disjointness, and unreachable finite-constructor
+arm diagnostics. The pattern `Some(inner)` covers both inner
+`Option` variants; `Some(Some(value))` does not. Fallback
+patterns remain `_`, `else`, `default`, and `Symbol.default`.
+`||` remains lambda syntax, never a wildcard. No `match-and-return`
+or `match ... with` form is accepted.
 
 ## Value-producing matches
 
@@ -198,8 +219,9 @@ A plain expression supplies an arm's result. A block supplies its final
 expression without a semicolon. Block-local variables stay local; defers and
 lexical guard cleanup execute when the block exits, after evaluating the result.
 For legacy brace-delimited expression matches, `return` in a block exits
-the enclosing callable; expression-position `match ... over` instead uses
-its terminal arm `return` as the match result. Braces never create an
+the enclosing callable; value-producing `match ... over` instead uses
+its terminal arm `return` as the match result, and `no-return` evaluates
+and discards any terminal arm-local return value. Braces never create an
 implicit closure. Explicit closures use Oreslang's existing `|| -> { ... }`
 or `|parameters| -> { ... }` syntax and explicit return statements.
 
