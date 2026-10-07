@@ -226,7 +226,6 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.ObjectExpr object) {
                 for (Ast.ObjectField field : object.fields()) {
-                    if (field.isDynamic() && containsLambda(field.dynamicName())) return true;
                     if (containsLambda(field.value())) return true;
                 }
             }
@@ -360,13 +359,9 @@ public final class TreeShaker {
             if (expression instanceof Ast.ObjectExpr object) {
                 List<Ast.ObjectField> fields = new ArrayList<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    fields.add(field.isDynamic()
-                            ? Ast.ObjectField.dynamic(
-                                    substitute(field.dynamicName(), substitutions, shadowed),
-                                    substitute(field.value(), substitutions, shadowed))
-                            : Ast.ObjectField.named(
-                                    field.name(),
-                                    substitute(field.value(), substitutions, shadowed)));
+                    fields.add(Ast.ObjectField.named(
+                            field.name(),
+                            substitute(field.value(), substitutions, shadowed)));
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
@@ -944,13 +939,9 @@ public final class TreeShaker {
             if (expression instanceof Ast.ObjectExpr object) {
                 List<Ast.ObjectField> fields = new ArrayList<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    fields.add(field.isDynamic()
-                            ? Ast.ObjectField.dynamic(
-                                    rewriteExpression(field.dynamicName(), module, locals),
-                                    rewriteExpression(field.value(), module, locals))
-                            : Ast.ObjectField.named(
-                                    field.name(),
-                                    rewriteExpression(field.value(), module, locals)));
+                    fields.add(Ast.ObjectField.named(
+                            field.name(),
+                            rewriteExpression(field.value(), module, locals)));
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
@@ -1303,7 +1294,6 @@ public final class TreeShaker {
                     scanType(field.type());
                 }
                 for (Ast.ObjectField field : object.fields()) {
-                    if (field.isDynamic()) scanExpression(module, field.dynamicName(), locals);
                     scanExpression(module, field.value(), locals);
                 }
             } else if (expression instanceof Ast.LambdaExpr lambda) {
