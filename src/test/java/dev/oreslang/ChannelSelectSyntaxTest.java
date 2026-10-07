@@ -14,6 +14,63 @@ import org.junit.jupiter.api.Test;
 
 final class ChannelSelectSyntaxTest {
     @Test
+    void doSelectAndDoNbSelectExplicitlyDiscardStaticArmResults() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                fnc blocking(Channel<int> input): void {
+                  do select {
+                  case readch input: val value
+                    stdio.println(value);
+                  }
+                  return;
+                }
+                actor fnc delayed(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  do nb select first {
+                  case readch input: val value
+                    stdio.println(value);
+                  }
+                  return;
+                }
+                fnc immediate(Channel<int> input): void {
+                  do try select {
+                  case readch input: val value
+                    stdio.println(value);
+                  default:
+                    stdio.println("none");
+                  }
+                  return;
+                }
+                """));
+        Ast.FunctionDecl blocking = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(0);
+        Ast.FunctionDecl delayed = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
+        Ast.FunctionDecl immediate = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(2);
+        Ast.SelectStmt blockingSelect = assertInstanceOf(Ast.SelectStmt.class, blocking.body().getFirst());
+        Ast.SelectStmt delayedSelect = assertInstanceOf(Ast.SelectStmt.class, delayed.body().get(1));
+        Ast.SelectStmt immediateSelect = assertInstanceOf(Ast.SelectStmt.class, immediate.body().getFirst());
+        assertEquals(Ast.WaitMode.BLOCKING, blockingSelect.mode());
+        assertEquals(Ast.WaitMode.NONBLOCKING, delayedSelect.mode());
+        assertEquals(Ast.SelectPolicy.PRIORITY, delayedSelect.policy());
+        assertEquals(Ast.WaitMode.IMMEDIATE, immediateSelect.mode());
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
+    void doSelectCannotSilentlyDropDynamicNonblockingFuture() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc discard(Array<SelectCase> cases): void {
+                  do nb select from cases;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc discard(Array<SelectCase> cases): void {
+                  do select from cases;
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void parsesBlockingAndNonBlockingStaticSelect() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 fnc blocking(
