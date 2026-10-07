@@ -8478,15 +8478,36 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
     }
-    private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
+    private record OptionValue(boolean present, Object value)
+            implements OresMutex.SharedState, ActorRuntime.ActorTransportValue {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
+        @Override public List<?> actorTransportChildren(){return present ? List.of(value) : List.of();}
+        @Override public Object rebuildActorTransportValue(List<Object> children){
+            if (present && children.size() != 1) throw new IllegalArgumentException("Some transport shape requires one child");
+            if (!present && !children.isEmpty()) throw new IllegalArgumentException("None transport shape requires no children");
+            return new OptionValue(present, present ? children.getFirst() : null);
+        }
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
-    private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
+    private record ResultValue(boolean ok, Object value)
+            implements OresMutex.SharedState, ActorRuntime.ActorTransportValue {
         @Override public Iterable<?> sharedStateChildren(){return List.of(value);}
+        @Override public List<?> actorTransportChildren(){return List.of(value);}
+        @Override public Object rebuildActorTransportValue(List<Object> children){
+            if (children.size() != 1) throw new IllegalArgumentException("Result transport shape requires one child");
+            return new ResultValue(ok, children.getFirst());
+        }
         @Override public String toString(){return ok ? "Ok(" + value + ")" : "Err(" + value + ")";}
     }
-    private record OptionUnwrapError(String reason) {
+    private record OptionUnwrapError(String reason)
+            implements ActorRuntime.ActorTransportValue {
+        @Override public List<?> actorTransportChildren(){return List.of(reason);}
+        @Override public Object rebuildActorTransportValue(List<Object> children){
+            if (children.size() != 1 || !(children.getFirst() instanceof String copiedReason)) {
+                throw new IllegalArgumentException("OptionUnwrapError transport shape requires one string child");
+            }
+            return new OptionUnwrapError(copiedReason);
+        }
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
     private static final class OresPanic extends RuntimeException {
