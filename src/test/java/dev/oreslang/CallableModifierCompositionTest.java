@@ -141,6 +141,33 @@ final class CallableModifierCompositionTest {
     }
 
     @Test
+    void trapCannotBeSilentlyDiscardedOnNonCallableDeclarations() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                trap interface Api {
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                trap contract Api {
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Box as
+                  trap constructor() {
+                    return;
+                  }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                actor Worker {
+                  trap val int state = 1;
+                }
+                """));
+    }
+
+    @Test
     void functionExpressionEffectsBelongToTheValueNotItsBindingKind() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 fnc use(): void {
