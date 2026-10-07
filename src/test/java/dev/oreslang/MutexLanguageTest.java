@@ -81,6 +81,26 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void mutexGuardForwardsListGetAndMutationWithoutLeakingTheGuard() {
+        assertDoesNotThrow(() -> {
+            var program = TypeChecker.check(Parser.parse("""
+                    define module app
+                      fnc mutate(): int {
+                        val mutex = SharedMutex.new([10]);
+                        val guard = mutex.lock();
+                        val before = guard.get(0);
+                        guard.set(0, before + 1);
+                        val after = guard.get(0);
+                        guard.release();
+                        return after;
+                      }
+                    end
+                    """));
+            OwnershipChecker.check(program);
+        });
+    }
+
+    @Test
     void sharedMutexAcceptsFullySharedSafeUnionTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
