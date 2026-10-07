@@ -847,7 +847,33 @@ public final class ChannelRuntime {
                             findMutualPeerLocked(
                                     chosen,
                                     SelectOperation.READ);
-                   private static CaseRegistration preferredCommittableCaseLocked(
+                    if (reader != null) {
+                        commitPairLocked(reader, chosen, completions);
+                        progressed = true;
+                        break;
+                    }
+
+                    if (channel.capacity > channel.buffer.size()) {
+                        @SuppressWarnings("unchecked")
+                        Channel<Object> writable =
+                                (Channel<Object>) channel;
+                        writable.buffer.addLast(chosen.writeValue());
+                        commitSingleLocked(
+                                chosen,
+                                new SelectResult(
+                                        chosen.index,
+                                        SelectOperation.WRITE,
+                                        null),
+                                completions);
+                        progressed = true;
+                        break;
+                    }
+                }
+            }
+        } while (progressed);
+    }
+
+    private static CaseRegistration preferredCommittableCaseLocked(
             SelectRegistration selection) {
         if (selection.decided) return null;
 
