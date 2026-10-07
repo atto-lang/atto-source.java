@@ -3069,10 +3069,10 @@ public final class OresEvalRootNode extends RootNode {
                                 "duplicate obj field " + entry.getKey());
                     }
                 }
-                boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
-                Object constructed = dynamicKeys ? new DynamicStructValue(result)
-                        : object.inferredStruct() ? result : Map.copyOf(result);
-                continuation.accept(task, constructed, null);
+                // Suspension callbacks use the declared Map<String,Object>
+                // contract. The expression wrapper decides which object shape
+                // escapes this builder; avoid widening SourceObjectCont to Object.
+                continuation.accept(task, result, null);
                 return;
             }
 
