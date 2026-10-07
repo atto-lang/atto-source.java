@@ -120,6 +120,44 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void typedCallReturnsTransportedResultAndOptionValues() throws Exception {
+        String program = """
+                define actor Worker as
+                  pub compute(int value): Result<int, String> {
+                    return Ok(value + 1);
+                  }
+
+                  pub maybe(bool present): Option<String> {
+                    if present; do
+                      return Some("yes");
+                    fi
+                    return None;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+
+                  val Result<int, String> result = await worker.call.compute(41);
+                  val Option<String> maybe = await worker.call.maybe(true);
+
+                  stdio.stdout.write(result.unwrap());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(maybe.unwrap());
+
+                  worker.stop();
+                  await worker.done;
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "42|yes",
+                run(program, "source-actor-call-result-option.ores"));
+    }
+
+    @Test
     void readyFailsWhenOnStartLeavesActorStateUninitialized() throws Exception {
         String program = """
                 define actor Worker as
