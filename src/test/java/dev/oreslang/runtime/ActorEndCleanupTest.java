@@ -50,6 +50,36 @@ final class ActorEndCleanupTest {
     }
 
     @Test
+    void outputRemainsAvailableUntilFinalCleanupCompletes() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnSharedTrusted(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("before");
+                        turn.runtime().endCurrentActorWithCleanup(
+                                () -> turn.runtime().emitCurrentActorOutput("cleanup"));
+                        turn.runtime().emitCurrentActorOutput("after");
+                    });
+
+            ref.ready().join();
+            ref.send("go");
+
+            var first = ref.outputs().next().join();
+            var second = ref.outputs().next().join();
+            var third = ref.outputs().next().join();
+            ref.done().join();
+            var terminal = ref.outputs().next().join();
+
+            assertEquals("before", first.value().value());
+            assertEquals("after", second.value().value());
+            assertEquals("cleanup", third.value().value());
+            assertEquals(0L, first.value().sequence());
+            assertEquals(1L, second.value().sequence());
+            assertEquals(2L, third.value().sequence());
+            assertTrue(terminal.done());
+        }
+    }
+
+    @Test
     void repeatedEndCannotReplaceTheRegisteredCleanup() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicInteger cleanups = new AtomicInteger();
