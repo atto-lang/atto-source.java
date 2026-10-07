@@ -845,9 +845,6 @@ public final class TypeChecker {
                     currentClassOwner = previousClassOwner;
                 }
             }
-            if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
-                throw new IllegalArgumentException("const field '" + field.name() + "' needs a compile-time constant initializer");
-            }
         }
 
         Ast.ConstructorDecl constructor = klass.constructor();
@@ -1020,9 +1017,6 @@ public final class TypeChecker {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
         if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
-        if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
-            throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
-        }
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -1071,9 +1065,6 @@ public final class TypeChecker {
             Type actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
-            if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
-                throw new IllegalArgumentException("const '" + binding.name() + "' needs a compile-time constant initializer");
-            }
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind());
             return;
