@@ -368,6 +368,52 @@ The outer `Option` is intentionally part of the language-facing selection
 contract. It also composes uniformly with `trap` and Future APIs; the runtime
 must not flatten nested `Option` values.
 
+## Select plans: optional optimization layer
+
+A `SelectPlan` is an optional reusable descriptor for hot repeated selects and
+for a dynamically assembled case set that will be selected more than once.
+
+It is deliberately **not** the semantic definition of `select`:
+
+- ordinary static `select`, `nb select`, and `try select` remain valid on
+  the original `SelectSet`/registration path;
+- a plan may cache immutable case metadata and retain the deterministic fairness
+  cursor;
+- every plan invocation creates a fresh selection operation/generation;
+- cancellation, close, winner arbitration, and loser detachment continue through
+  the same existing runtime machinery;
+- the initial implementation does not leave channel waiters registered between
+  iterations.
+
+That last rule is intentional. Reusing descriptors is mechanically safe;
+reusing live registrations is a separate optimization because stale waiters
+must never consume a value for the next iteration.
+
+Conceptually, a compiler may later hoist a plan for a provably stable static
+site:
+
+```text
+loop {
+  select { A; B; }
+}
+
+=> optimization only =>
+
+plan = SelectPlan(A, B)
+loop {
+  select(plan)
+}
+```
+
+This transformation is permitted only when evaluating the case expressions has
+no required per-iteration observable behavior and the referenced channel/value
+bindings are stable. Otherwise the compiler must keep the original lowering.
+
+Dynamic selection can explicitly build a plan after constructing its runtime
+case list. Mutating the source list afterward does not mutate the plan; create a
+new plan for a changed case set. A later versioned dynamic-plan builder may
+support incremental add/remove/rebind without changing this snapshot contract.
+
 ## Cancellation
 
 Oreslang does not require Go-style `context.Context` propagation through every
