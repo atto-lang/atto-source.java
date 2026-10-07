@@ -5104,11 +5104,15 @@ public final class OresEvalRootNode extends RootNode {
             throw new ReturnSignal(eval(value, env));
         }
 
+        private String lexicalContainerLabel(Ast.ClassDecl lexicalClass) {
+            return lexicalClass.actorKind() == Ast.ActorKind.NONE ? "class" : "actor";
+        }
+
         private void requireExplicitClassCallableImport(Env env, String name) {
             Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
             if (lexicalClass != null) {
                 throw new IllegalArgumentException(
-                        "class '" + lexicalClass.name()
+                        "" + lexicalContainerLabel(lexicalClass) + " '" + lexicalClass.name()
                                 + "' cannot implicitly access file/module callable '"
                                 + name + "'; move the dependency to another source unit and import it explicitly");
             }
@@ -5126,7 +5130,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
             if (lexicalClass != null) {
                 throw new IllegalArgumentException(
-                        "class '" + lexicalClass.name()
+                        "" + lexicalContainerLabel(lexicalClass) + " '" + lexicalClass.name()
                                 + "' cannot implicitly access " + kind + " '" + namespace
                                 + "'; same-file placement does not grant lexical access");
             }
@@ -5142,7 +5146,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
             if (lexicalClass != null && lexicalClass != target) {
                 throw new IllegalArgumentException(
-                        "class '" + lexicalClass.name()
+                        "" + lexicalContainerLabel(lexicalClass) + " '" + lexicalClass.name()
                                 + "' cannot implicitly access sibling "
                                 + (target.actorKind() == Ast.ActorKind.NONE ? "class '" : "actor '")
                                 + target.name()
