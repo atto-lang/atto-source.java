@@ -4836,12 +4836,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
-            if (!ref.readyFuture.isDone()) {
-                ref.readyFuture.failFromRuntime(
-                        new ActorTerminatedException(
-                                ref.id(), kind, ref.terminationCause.get()));
-            }
             Throwable terminal = ref.terminationCause.get();
+            if (!ref.readyFuture.isDone()) {
+                // Preserve the initializer failure as the direct cause of
+                // readiness rejection. Only a graceful stop-before-ready has
+                // no underlying failure and needs a synthesized marker.
+                ref.readyFuture.failFromRuntime(
+                        terminal == null
+                                ? new ActorTerminatedException(ref.id(), kind, null)
+                                : terminal);
+            }
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
