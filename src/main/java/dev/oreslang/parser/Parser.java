@@ -2341,7 +2341,7 @@ public final class Parser {
         boolean sawDefault = false;
 
         while (!check(END) && !check(EOF)) {
-            if (match(CASE)) {
+            if (matchCaseKeyword()) {
                 if (sawDefault) throw error(previous(), "switch case cannot appear after default");
                 List<Ast.Expr> constants = new ArrayList<>();
                 do constants.add(parseExpression()); while (match(COMMA));
