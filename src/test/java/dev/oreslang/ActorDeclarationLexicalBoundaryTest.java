@@ -64,7 +64,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          pub receive(): void {
+                          receive(ActorMail<String> mail): void {
                             main();
                             return;
                           }
@@ -304,6 +304,10 @@ final class ActorDeclarationLexicalBoundaryTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   on_start(): void {
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
                     return;
                   }
 
