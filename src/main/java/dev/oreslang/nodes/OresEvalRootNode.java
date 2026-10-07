@@ -4174,8 +4174,9 @@ public final class OresEvalRootNode extends RootNode {
                 OresFuture<?> future,
                 String operation) {
             if (future.isDone()) return future.join();
-            if (ActorRuntime.inActorExecution()
-                    || context.vm().isRootSchedulerCurrent()) {
+            if (context.vm().isRootSchedulerCurrent()
+                    || (ActorRuntime.inActorExecution()
+                        && !ActorRuntime.isActorBlockingImplementationThread())) {
                 // This registration belongs only to this attempted blocking
                 // operation. Remove it before failing closed so no waiter leaks.
                 future.cancel(false);
