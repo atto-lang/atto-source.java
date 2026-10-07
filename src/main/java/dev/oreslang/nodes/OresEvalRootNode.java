@@ -2864,7 +2864,8 @@ public final class OresEvalRootNode extends RootNode {
                                                         t2,
                                                         indexValue(
                                                                 receiver,
-                                                                key),
+                                                                key,
+                                                                env),
                                                         null);
                                             } catch (RuntimeException | Error failure3) {
                                                 continuation.accept(
@@ -3082,7 +3083,8 @@ public final class OresEvalRootNode extends RootNode {
                                 "duplicate obj field " + entry.getKey());
                     }
                 }
-                Object built = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic)
+                Object built = object.fields().stream()
+                        .anyMatch(field -> field.isDynamic() && !field.isSymbolKey())
                         ? new DynamicStructValue(result)
                         : object.explicitStruct()
                             ? result
@@ -3101,7 +3103,16 @@ public final class OresEvalRootNode extends RootNode {
                             return;
                         }
                         final String actualKey;
-                        if (field.isDynamic()) {
+                        if (field.isSymbolKey()) {
+                            if (!(key instanceof dev.oreslang.runtime.OresSymbol symbol)) {
+                                continuation.accept(
+                                        t, null,
+                                        new IllegalArgumentException(
+                                                "computed Symbol key must evaluate to Symbol"));
+                                return;
+                            }
+                            actualKey = symbol.memberKey();
+                        } else if (field.isDynamic()) {
                             if (!(key instanceof String stringKey)) {
                                 continuation.accept(
                                         t,
@@ -3138,7 +3149,7 @@ public final class OresEvalRootNode extends RootNode {
             if (field.isDynamic()) {
                 evalSuspendableExpr(
                         task,
-                        field.dynamicName(),
+                        field.keyExpression(),
                         env,
                         afterKey);
             } else {
@@ -3690,33 +3701,44 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
-        private Object indexValue(Object receiver, Object index) {
+        private Object indexValue(Object receiver, Object index, Env env) {
+            String symbolKey = index instanceof dev.oreslang.runtime.OresSymbol symbol
+                    ? symbol.memberKey()
+                    : null;
+            if (receiver instanceof OresObject object && symbolKey != null) {
+                return member(object, symbolKey, env);
+            }
             if (receiver instanceof DynamicStructValue dynamic) {
-                if (!(index instanceof String key)) {
+                String key = symbolKey != null ? symbolKey : index instanceof String string ? string : null;
+                if (key == null) {
                     throw new IllegalArgumentException(
-                            "DynamicStruct key must be a string");
+                            "DynamicStruct key must be a string or Symbol");
                 }
                 if (!dynamic.fields.containsKey(key)) {
                     throw new IllegalArgumentException(
-                            "unknown DynamicStruct key " + key);
+                            "unknown DynamicStruct key " + Ast.displayMemberKey(key));
                 }
                 return dynamic.fields.get(key);
             }
             if (receiver instanceof Map<?, ?> map) {
-                if (!(index instanceof String key)) {
+                String key = symbolKey != null ? symbolKey : index instanceof String string ? string : null;
+                if (key == null) {
                     throw new IllegalArgumentException(
-                            "object/map key must be a string");
+                            "object/map key must be a string or Symbol");
                 }
                 if (!map.containsKey(key)) {
                     throw new IllegalArgumentException(
-                            "unknown object/map key " + key);
+                            "unknown object/map key " + Ast.displayMemberKey(key));
                 }
                 Object value = map.get(key);
                 if (value == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
-                            "explicit struct field '" + key + "' is read before initialization");
+                            "explicit struct field '" + Ast.displayMemberKey(key) + "' is read before initialization");
                 }
                 return value;
+            }
+            if (symbolKey != null) {
+                throw new IllegalArgumentException("Symbol indexing requires object/class state");
             }
             if (!(index instanceof Number number)) {
                 throw new IllegalArgumentException(
@@ -3790,10 +3812,38 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(key instanceof String string)) {
+                String symbolKey = key instanceof dev.oreslang.runtime.OresSymbol symbol
+                        ? symbol.memberKey() : null;
+                if (receiver instanceof OresObject object && symbolKey != null) {
+                    OwnedField targetField = object.owner.findField(
+                            object.klass, symbolKey, new LinkedHashSet<>());
+                    if (targetField == null) {
                         throw new IllegalArgumentException(
-                                "DynamicStruct key must be a string");
+                                "unknown Symbol field " + Ast.displayMemberKey(symbolKey));
+                    }
+                    if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException(
+                                "field '" + object.klass.name() + "."
+                                        + Ast.displayMemberKey(symbolKey) + "' is immutable");
+                    }
+                    object.fields.put(symbolKey, value);
+                    return value;
+                }
+                if (receiver instanceof LinkedHashMap<?, ?> rawRecord && symbolKey != null) {
+                    @SuppressWarnings("unchecked")
+                    LinkedHashMap<String, Object> record = (LinkedHashMap<String, Object>) rawRecord;
+                    if (!record.containsKey(symbolKey)) {
+                        throw new IllegalArgumentException(
+                                "unknown explicit struct Symbol field " + Ast.displayMemberKey(symbolKey));
+                    }
+                    record.put(symbolKey, value);
+                    return value;
+                }
+                if (receiver instanceof DynamicStructValue dynamic) {
+                    String string = symbolKey != null ? symbolKey : key instanceof String s ? s : null;
+                    if (string == null) {
+                        throw new IllegalArgumentException(
+                                "DynamicStruct key must be a string or Symbol");
                     }
                     dynamic.fields.put(string, value);
                     return value;
@@ -5119,6 +5169,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("Symbol")) return SymbolFactory.INSTANCE;
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
@@ -5221,7 +5272,7 @@ public final class OresEvalRootNode extends RootNode {
                         return value;
                     }
                     // Explicit anonymous structs use this mutable map path.
-                    // struct infer values use ReadonlyRecordValue instead.
+                    // infer struct values use ReadonlyRecordValue instead.
                     if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
                         @SuppressWarnings("unchecked")
                         LinkedHashMap<String, Object> record =
@@ -5239,9 +5290,37 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
+                    String symbolKey = index instanceof dev.oreslang.runtime.OresSymbol symbol
+                            ? symbol.memberKey() : null;
+                    if (receiver instanceof OresObject object && symbolKey != null) {
+                        OwnedField targetField = object.owner.findField(
+                                object.klass, symbolKey, new LinkedHashSet<>());
+                        if (targetField == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown Symbol field " + Ast.displayMemberKey(symbolKey));
+                        }
+                        if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "field '" + object.klass.name() + "."
+                                            + Ast.displayMemberKey(symbolKey) + "' is immutable");
+                        }
+                        object.fields.put(symbolKey, value);
+                        return value;
+                    }
+                    if (receiver instanceof LinkedHashMap<?, ?> rawRecord && symbolKey != null) {
+                        @SuppressWarnings("unchecked")
+                        LinkedHashMap<String, Object> record = (LinkedHashMap<String, Object>) rawRecord;
+                        if (!record.containsKey(symbolKey)) {
+                            throw new IllegalArgumentException(
+                                    "unknown explicit struct Symbol field " + Ast.displayMemberKey(symbolKey));
+                        }
+                        record.put(symbolKey, value);
+                        return value;
+                    }
                     if (receiver instanceof DynamicStructValue dynamic) {
-                        if (!(index instanceof String key)) {
-                            throw new IllegalArgumentException("DynamicStruct key must be a string");
+                        String key = symbolKey != null ? symbolKey : index instanceof String s ? s : null;
+                        if (key == null) {
+                            throw new IllegalArgumentException("DynamicStruct key must be a string or Symbol");
                         }
                         dynamic.fields.put(key, value);
                         return value;
@@ -5342,29 +5421,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("DynamicStruct key must be a string");
-                    }
-                    if (!dynamic.fields.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown DynamicStruct key " + key);
-                    }
-                    return dynamic.fields.get(key);
-                }
-                if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("object/map key must be a string");
-                    }
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown object/map key " + key);
-                    }
-                    return map.get(key);
-                }
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
-                int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
-                if (receiver instanceof Object[] array) return array[i];
-                throw new IllegalArgumentException("value is not indexable: " + receiver);
+                return indexValue(receiver, index, env);
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Array")
@@ -5451,7 +5508,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
+                boolean dynamicKeys = object.fields().stream()
+                        .anyMatch(field -> field.isDynamic() && !field.isSymbolKey());
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -5463,7 +5521,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 for (Ast.ObjectField field : object.fields()) {
                     String key;
-                    if (field.isDynamic()) {
+                    if (field.isSymbolKey()) {
+                        Object evaluatedKey = eval(field.keyExpression(), env);
+                        if (!(evaluatedKey instanceof dev.oreslang.runtime.OresSymbol symbol)) {
+                            throw new IllegalArgumentException(
+                                    "computed Symbol key must evaluate to Symbol");
+                        }
+                        key = symbol.memberKey();
+                    } else if (field.isDynamic()) {
                         Object evaluatedKey = eval(field.dynamicName(), env);
                         if (!(evaluatedKey instanceof String stringKey)) {
                             throw new IllegalArgumentException("dynamic obj key must evaluate to a string");
@@ -5625,6 +5690,22 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver == SymbolFactory.INSTANCE) {
+                return switch (name) {
+                    case "create" -> (Invokable) args ->
+                            dev.oreslang.runtime.OresSymbol.create(
+                                    requireStringArg(args, "Symbol.create"));
+                    case "process" -> (Invokable) args ->
+                            dev.oreslang.runtime.OresSymbol.process(
+                                    requireStringArg(args, "Symbol.process"));
+                    case "stable" -> (Invokable) args ->
+                            dev.oreslang.runtime.OresSymbol.stable(
+                                    requireStringArg(args, "Symbol.stable"));
+                    case "iterator" -> dev.oreslang.runtime.OresSymbol.iterator();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Symbol member " + name);
                 };
             }
             if (receiver instanceof ChannelFactory factory) {
@@ -6642,7 +6723,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(
                         object.klass,
-                        CallableSelector.instance("Symbol.iterator", 0),
+                        CallableSelector.instance(Ast.symbolMemberKey("process", "Symbol.iterator"), 0),
                         new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
                 object.owner.requireClassMemberVisible(
@@ -7641,7 +7722,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     /**
-     * Runtime provenance for struct infer. It behaves as a Map for existing
+     * Runtime provenance for infer struct. It behaves as a Map for existing
      * structural operations while remaining immutable across aliases and async
      * detachment/copy boundaries.
      */
@@ -7656,7 +7737,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Object get(Object key) { return fields.get(key); }
         @Override public boolean containsKey(Object key) { return fields.containsKey(key); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
-        @Override public String toString() { return "struct infer" + fields; }
+        @Override public String toString() { return "infer struct" + fields; }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
@@ -7739,6 +7820,7 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    private enum SymbolFactory { INSTANCE }
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
@@ -7762,7 +7844,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                    || value instanceof Complex || value instanceof dev.oreslang.runtime.OresSymbol
+                    || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
                 return true;
             }
 
