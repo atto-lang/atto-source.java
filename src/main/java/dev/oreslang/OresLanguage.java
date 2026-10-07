@@ -11,6 +11,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.SharedCodeRegistry;
 import org.graalvm.polyglot.SandboxPolicy;
 
 import java.nio.file.InvalidPathException;
@@ -65,7 +66,6 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     protected CallTarget parse(ParsingRequest request) {
         var source = request.getSource();
         String text = source.getCharacters().toString();
-        Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         String codeUnitId = source.getPath();
         if (codeUnitId == null || codeUnitId.isBlank()) {
             codeUnitId = source.getName();
@@ -77,6 +77,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             }
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
+        // Reuse only immutable, checked definitions pinned by the trusted
+        // code loader. Mutable evaluators, module slots and import bindings
+        // remain private to this Graal context / semantic actor domain.
+        Ast.Program program = SharedCodeRegistry.process().checkedProgramIfLive(codeUnitId, text);
+        if (program == null) program = OresCompiler.parseAndTypeCheck(text);
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
