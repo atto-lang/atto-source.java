@@ -73,6 +73,8 @@ final class ActorCapabilityIsolationTest {
     @Test
     void privateActorCannotLaunderSharedMemoryThroughOrdinaryHelperFunction() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
+                import fnc build_shared from "@self";
+
                 fnc build_shared(): void {
                   val shared = SharedMutex.new(1);
                   stdio.println(shared);
@@ -97,6 +99,8 @@ final class ActorCapabilityIsolationTest {
     @Test
     void privateActorCannotLaunderSharedMemoryThroughStaticClassHelper() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
+                import class Helpers from "@self";
+
                 define class Helpers as
                   pub static fnc build_shared(): void {
                     val shared = SharedMutex.new(1);
@@ -228,6 +232,8 @@ final class ActorCapabilityIsolationTest {
     @Test
     void privateActorCannotLaunderSharedMemoryThroughFunctionValue() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
+                import fnc build_shared from "@self";
+
                 fnc build_shared(): void {
                   val shared = SharedMutex.new(1);
                   stdio.println(shared);
@@ -253,6 +259,8 @@ final class ActorCapabilityIsolationTest {
     @Test
     void privateActorCannotLaunderReadonlyShareThroughQualifiedFunctionValue() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
+                import module helpers from "@self";
+
                 define module helpers
                   pub fnc expose(): void {
                     val shared = process.share_readonly(arr[1, 2, 3]);
@@ -281,6 +289,8 @@ final class ActorCapabilityIsolationTest {
     @Test
     void privateActorCannotLaunderSharedMemoryThroughStaticMethodValue() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
+                import class Helpers from "@self";
+
                 define class Helpers as
                   pub static fnc build_shared(): void {
                     val shared = SharedMutex.new(1);
