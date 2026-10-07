@@ -1206,9 +1206,9 @@ public final class Parser {
                         + "dynamic 'select from' has a separate Future/SelectResult API");
             }
             advance();
-            return parseStaticSelectStatement();
+            return parseStaticSelectStatement(true);
         }
-        if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
+        if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement(false);
         if (looksLikeImmediateChannelExpression()) {
             Ast.Expr expression = parseExpression();
             consumeStatementTerminator("channel probe expression should end with ';'");
@@ -1331,7 +1331,7 @@ public final class Parser {
         return i < tokens.size() && tokens.get(i).type() == LBRACE;
     }
 
-    private Ast.SelectStmt parseStaticSelectStatement() {
+    private Ast.SelectStmt parseStaticSelectStatement(boolean discardResult) {
         Ast.WaitMode mode = Ast.WaitMode.BLOCKING;
         if (match(NB)) mode = Ast.WaitMode.NONBLOCKING;
         else if (match(TRY)) mode = Ast.WaitMode.IMMEDIATE;
@@ -1372,6 +1372,7 @@ public final class Parser {
                 while (!check(CASE) && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
+                if (discardResult) lowerDoSelectArmReturns(body);
                 arms.add(new Ast.SelectArm(
                         operation,
                         channel,
@@ -1388,6 +1389,7 @@ public final class Parser {
                 while (!check(CASE) && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
+                if (discardResult) lowerDoSelectArmReturns(body);
                 arms.add(new Ast.SelectArm(
                         Ast.ChannelOperation.DEFAULT,
                         null,
@@ -1403,6 +1405,29 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms);
+    }
+
+    /**
+     * 'do select' discards arm values: a terminal 'return value;' evaluates
+     * its operand only and must not escape the enclosing callable. Nonterminal
+     * or nested returns are rejected rather than accidentally crossing
+     * function or asynchronous continuation boundaries.
+     */
+    private void lowerDoSelectArmReturns(List<Ast.Stmt> body) {
+        if (body.isEmpty()) return;
+        for (int i = 0; i < body.size() - 1; i++) {
+            if (containsNestedReturn(body.get(i))) {
+                throw error(previous(), "'do select' arm forbids earlier or nested returns; "
+                        + "use a single terminal arm-local return");
+            }
+        }
+        Ast.Stmt last = body.getLast();
+        if (last instanceof Ast.ReturnStmt returned) {
+            if (returned.value() == null) body.remove(body.size() - 1);
+            else body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
+        } else if (containsNestedReturn(last)) {
+            throw error(previous(), "'do select' arm forbids nested returns");
+        }
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
