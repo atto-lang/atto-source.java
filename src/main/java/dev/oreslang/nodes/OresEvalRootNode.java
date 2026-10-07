@@ -3079,7 +3079,7 @@ public final class OresEvalRootNode extends RootNode {
                         result.put(entry.getKey(), entry.getValue());
                     } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
                         throw new IllegalArgumentException(
-                                "duplicate obj field " + entry.getKey());
+                                "duplicate struct field " + entry.getKey());
                     }
                 }
                 Object built = object.explicitStruct()
@@ -3797,7 +3797,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
-                        "DynamicStruct has been removed; use a closed struct or an explicit map collection");
+                        "DynamicStruct has been removed; use struct infer{...} or an explicit closed struct");
             }
             HostClassFacade hostClass =
                     hostClasses.get(created.type().name());
@@ -5313,7 +5313,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
-                            "DynamicStruct has been removed; use a closed struct or an explicit map collection");
+                            "DynamicStruct has been removed; use struct infer{...} or an explicit closed struct");
                 }
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
@@ -5761,7 +5761,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof Map<?, ?> map) {
-                if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
+                if (!map.containsKey(name)) throw new IllegalArgumentException("unknown struct/map member " + name);
                 Object value = map.get(name);
                 if (value == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
