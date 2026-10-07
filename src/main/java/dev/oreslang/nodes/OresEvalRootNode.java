@@ -4595,18 +4595,26 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (!detached) {
-                executeBlock(arm.body(), armEnv, tailBarrier);
+                if (selected.explicitDo()) {
+                    try {
+                        executeBlock(arm.body(), armEnv, tailBarrier);
+                    } catch (ReturnSignal ignored) {
+                        // Do-select return is arm-local; expression evaluated, value discarded.
+                    }
+                } else {
+                    executeBlock(arm.body(), armEnv, tailBarrier);
+                }
                 return;
             }
 
             try {
                 executeBlock(arm.body(), armEnv, true);
             } catch (ReturnSignal returned) {
-                if (returned.value != null) {
+                if (returned.value != null && !selected.explicitDo()) {
                     throw new IllegalStateException(
                             "nb select continuation cannot return a value");
                 }
-                // return; exits only this detached arm.
+                // do nb select may discard an arm-local return value.
             } catch (BreakSignal | ContinueSignal escapedLoopControl) {
                 throw new IllegalStateException(
                         "nb select continuation cannot break/continue an enclosing loop",
