@@ -262,7 +262,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          on_start(value: int): void {
+                          on_start(int value): void {
                             return;
                           }
                         end
@@ -361,7 +361,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          pub send(value: String): void {
+                          pub send(String value): void {
                             return;
                           }
                         end
