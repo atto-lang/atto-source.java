@@ -49,4 +49,47 @@ final class InferredStructReadonlyBoundaryTest {
                 """)));
     }
 
+    @Test void returnCannotEraseReadonlyCapability() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc leak(): {foo: string} {
+                  return struct infer{foo: "a"};
+                }
+                """)));
+    }
+
+    @Test void fixedStructuralParameterCannotRoundTripReadonlyAsMutableShape() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc identity({foo: string} value): {foo: string} {
+                  return value;
+                }
+                fnc bad(): void {
+                  const result = identity(struct infer{foo: "a"});
+                  return;
+                }
+                """)));
+    }
+
+    @Test void collectionInsertionCannotEraseNestedReadonlyCapability() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                  val items = arr[struct{foo: string}{foo: "mutable"}];
+                  items.add(struct infer{foo: "readonly"});
+                  return;
+                }
+                """)));
+    }
+
+    @Test void genericIdentityPreservesReadonlyCapability() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc identity<T>(T value): T {
+                  return value;
+                }
+                fnc bad(): void {
+                  let mut upgraded = identity(struct infer{foo: "a"});
+                  upgraded.foo = "b";
+                  return;
+                }
+                """)));
+    }
+
 }
