@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -60,7 +61,6 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
-    private static final int UNTRUSTED_YIELD_QUANTUM = 64;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
@@ -1073,11 +1073,21 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                admitted = cell.mailbox.tryWrite(
+                cell.sourceContinuations.addLast(
                         MessageEnvelope.continuation(continuation));
+                admitted = true;
+
+                // If this continuation was published by the actor envelope that
+                // is executing right now, force the enclosing actor batch to
+                // leave its TurnExecutor boundary before the continuation can
+                // run. That makes scheduler cooperation a real carrier handoff
+                // rather than a same-batch queue rotation.
+                if (currentActor.get() == cell) {
+                    cell.sourceHandoffRequested = true;
+                }
             }
-            if (admitted) cell.schedule();
-            return admitted;
+            cell.schedule();
+            return true;
         } finally {
             if (!admitted) cell.releaseMailboxSlot(true);
         }
@@ -3491,7 +3501,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (resume
                         && !cell.stopped.get()
                         && !cell.finalized()
-                        && !cell.mailbox.isEmpty()) {
+                        && cell.hasQueuedWork()) {
                     resumeCells.add(cell);
                 }
             }
@@ -3620,8 +3630,19 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Cooperative scheduler hook used by compiler-injected loop safepoints.
-     * Carrier threads remain an implementation detail.
+     * Actor cancellation/quota checkpoint used at compiler-injected VM
+     * safepoints.
+     *
+     * <p>This method deliberately does <strong>not</strong> call
+     * {@link Thread#yield()} and does not claim to suspend the actor. An OS
+     * thread scheduling hint cannot preserve an Ores continuation and does not
+     * release the actor's logical turn. Resumable preemption is represented
+     * explicitly by {@link OresScheduler.Cooperate} from a heap-owned
+     * {@link OresScheduler.Task} state machine.</p>
+     *
+     * <p>Therefore a source line is never a preemption boundary. A caller that
+     * is not continuation-lowered may only observe cancellation/quota checks at
+     * this point; it must keep running until a real resumable boundary.</p>
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
@@ -3630,6 +3651,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
+            cell.untrustedSafepoints++;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.FUEL,
@@ -3648,20 +3670,13 @@ public final class ActorRuntime implements AutoCloseable {
                         UntrustedActorQuotaExceededException.Resource.CPU_TIME,
                         "untrusted actor exceeded its CPU-time budget");
             }
-            if (++cell.untrustedSafepoints % UNTRUSTED_YIELD_QUANTUM == 0) {
-                Thread.yield();
-            }
-            return;
         }
 
-        // Carrier identity is not actor identity. A shared carrier thread may
-        // be interrupted by executor shutdown, host code, or unrelated runtime
-        // machinery; that interrupt must never be reinterpreted as cancellation
-        // of whichever actor happens to be multiplexed onto the carrier now.
-        // Structured actor cancellation is represented by ActorCell/runtime
-        // state above. Non-cooperative untrusted termination belongs to the
-        // host-owned revocable isolate boundary used by FORCE_ISOLATED.
-        Thread.yield();
+        // Carrier identity is not actor identity. Carrier interruption/yield is
+        // never actor cancellation or actor preemption. Structured cancellation
+        // is represented by ActorCell/runtime state above. Non-cooperative
+        // untrusted termination belongs to the host-owned revocable isolate
+        // boundary used by FORCE_ISOLATED.
     }
 
     private static long currentThreadCpuNanos() {
@@ -4966,8 +4981,16 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
-        /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
+        /** Mailbox transport for ordinary user messages. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
+        /**
+         * VM-owned resumable source continuations. These are deliberately kept
+         * out of the ordinary FIFO mailbox so an immediately-ready preemption
+         * continuation cannot be overtaken by a later actor message.
+         *
+         * <p>Access is serialized by {@link #lifecycleLock}.</p>
+         */
+        private final ArrayDeque<MessageEnvelope> sourceContinuations = new ArrayDeque<>();
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
@@ -4976,10 +4999,19 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object mailboxAccountingLock = new Object();
         private int queuedMessages;
         private int queuedUserMessages;
+        /** Separate control-lane quota: user mailbox headroom cannot be borrowed. */
+        private int queuedContinuations;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
+        /**
+         * Set when the currently executing actor envelope enqueues a source
+         * continuation. The batch must then unwind through TurnExecutor before
+         * any queued continuation is admitted, otherwise rt cooperate would
+         * merely rotate work on the same physical carrier.
+         */
+        private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
         private boolean finalized;
         private long turnStartedWallNanos;
@@ -5035,7 +5067,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean reserveContinuationSlot() {
             synchronized (mailboxAccountingLock) {
+                if (queuedContinuations >= INTERNAL_CONTINUATION_SLOTS) return false;
                 if (queuedMessages >= mailboxCapacityWithControlHeadroom()) return false;
+                queuedContinuations++;
                 queuedMessages++;
                 return true;
             }
@@ -5043,21 +5077,38 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void releaseMailboxSlot(boolean continuation) {
             synchronized (mailboxAccountingLock) {
-                if (queuedMessages <= 0) {
+                // Validate every counter before changing any of them: a failed
+                // invariant must not partially release another lane's capacity.
+                if (queuedMessages <= 0
+                        || queuedMessages != queuedUserMessages + queuedContinuations) {
                     throw new IllegalStateException(
-                            "actor mailbox accounting underflow for " + ref.id());
+                            "actor mailbox accounting invariant violation for " + ref.id());
+                }
+                if (continuation && queuedContinuations <= 0) {
+                    throw new IllegalStateException(
+                            "actor continuation accounting underflow for " + ref.id());
+                }
+                if (!continuation && queuedUserMessages <= 0) {
+                    throw new IllegalStateException(
+                            "actor user-mailbox accounting underflow for " + ref.id());
                 }
                 queuedMessages--;
-
-                if (!continuation) {
-                    if (queuedUserMessages <= 0) {
-                        queuedMessages++;
-                        throw new IllegalStateException(
-                                "actor user-mailbox accounting underflow for " + ref.id());
-                    }
+                if (continuation) {
+                    queuedContinuations--;
+                } else {
                     queuedUserMessages--;
                 }
             }
+        }
+
+        private boolean hasQueuedWork() {
+            synchronized (lifecycleLock) {
+                return hasQueuedWorkLocked();
+            }
+        }
+
+        private boolean hasQueuedWorkLocked() {
+            return !sourceContinuations.isEmpty() || !mailbox.isEmpty();
         }
 
         private OresScheduler sourceScheduler() {
@@ -5084,18 +5135,25 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || forceKillFenced || finalized) return false;
-                activeTurns++;
+                if (activeTurns != 0) {
+                    throw new IllegalStateException(
+                            "actor single-writer execution lease violation for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
+                }
+                activeTurns = 1;
                 return true;
             }
         }
 
         private void endTurn() {
             synchronized (lifecycleLock) {
-                if (activeTurns <= 0) {
-                    throw new IllegalStateException("actor active-turn accounting underflow for " + ref.id());
+                if (activeTurns != 1) {
+                    throw new IllegalStateException(
+                            "actor execution lease accounting violation for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
                 }
-                activeTurns--;
-                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                activeTurns = 0;
+                if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
         }
@@ -5244,23 +5302,25 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                // The actor remains logically scheduled until the TurnExecutor
-                // returns. OresContext's executor leaves the TruffleContext in
-                // its own finally block, so clearing this bit any earlier lets
-                // shutdown/finalization race a carrier that still owns guest
-                // context state.
-                synchronized (lifecycleLock) {
-                    if (carrierEntered) carrierActive = false;
-                    if (scheduled.get()) scheduled.set(false);
-                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                    reschedule = !stopped.get()
-                            && !forceKillFenced
-                            && !closed.get()
-                            && !finalized
-                            && !mailbox.isEmpty();
-                    lifecycleLock.notifyAll();
+                try {
+                    // The actor remains logically scheduled until TurnExecutor
+                    // returns. Truffle context exit belongs to that boundary.
+                    synchronized (lifecycleLock) {
+                        if (carrierEntered) carrierActive = false;
+                        if (scheduled.get()) scheduled.set(false);
+                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                        reschedule = !stopped.get()
+                                && !forceKillFenced
+                                && !closed.get()
+                                && !finalized
+                                && hasQueuedWorkLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                } finally {
+                    // Finalization hooks and reservation checks are allowed to
+                    // fail closed; neither may strand carrier-local VM identity.
+                    ACTOR_CARRIER.remove();
                 }
-                ACTOR_CARRIER.remove();
                 if (reschedule) schedule();
             }
         }
@@ -5270,8 +5330,11 @@ public final class ActorRuntime implements AutoCloseable {
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
-            boolean turnActive = beginTurn();
+            boolean turnActive = false;
             try {
+                // Admission may throw on a single-writer lease violation.
+                // The carrier's actor identity must still be cleared.
+                turnActive = beginTurn();
                 if (!turnActive) return;
 
                 if (kind == ActorKind.UNTRUSTED) {
@@ -5305,14 +5368,19 @@ public final class ActorRuntime implements AutoCloseable {
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
-                        // Stop closes the mailbox under this same lock. Do not
-                        // turn a graceful stop racing the next read into a failure.
+                        // Runtime continuations are control-plane actor work.
+                        // Give an already-ready continuation priority over later
+                        // user messages so a preempted logical turn cannot be
+                        // overtaken by another mutation of the same actor.
                         if (stopped.get() || finalized) break;
-                        envelope = mailbox.tryRead().orElse(null);
+                        envelope = sourceContinuations.pollFirst();
+                        if (envelope == null) {
+                            envelope = mailbox.tryRead().orElse(null);
+                        }
                     }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
-                    try (envelope) {
+                    try (MessageEnvelope selectedEnvelope = envelope) {
                         /*
                          * Linearize queued-work start against stop/cancel.
                          * If cancellation acquired lifecycleLock first, this
@@ -5340,6 +5408,13 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     }
                     processed++;
+
+                    synchronized (lifecycleLock) {
+                        if (sourceHandoffRequested) {
+                            sourceHandoffRequested = false;
+                            break;
+                        }
+                    }
                 }
             } catch (Throwable failure) {
                 // Actor cancellation is a control-plane unwind, not a guest
@@ -5354,20 +5429,34 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                if (turnActive) endTurn();
-                CURRENT_ACTOR_EXECUTION.remove();
-                currentActor.remove();
+                try {
+                    if (turnActive) endTurn();
+                } finally {
+                    // endTurn itself is a fail-closed invariant check and may
+                    // throw; never strand actor authority on a reused carrier.
+                    CURRENT_ACTOR_EXECUTION.remove();
+                    currentActor.remove();
+                }
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
             }
         }
 
         private void drainMailboxReservations() {
+            synchronized (lifecycleLock) {
+                MessageEnvelope continuation;
+                while ((continuation = sourceContinuations.pollFirst()) != null) {
+                    releaseMailboxSlot(true);
+                    continuation.close();
+                }
+                sourceHandoffRequested = false;
+            }
+
             while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot(envelope.isContinuation());
+                releaseMailboxSlot(false);
                 envelope.close();
             })) {
-                // drain all committed mailbox envelopes, including after close
+                // drain all committed user-message envelopes, including after close
             }
         }
 
