@@ -2809,8 +2809,6 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
-                                    ChannelRuntime.SelectSet set =
-                                            asSelectSet(cases);
                                     ChannelRuntime.SelectPolicy policy =
                                             runtimeSelectPolicy(
                                                     selected.policy());
@@ -2818,7 +2816,9 @@ public final class OresEvalRootNode extends RootNode {
                                             == Ast.WaitMode.IMMEDIATE) {
                                         java.util.Optional<
                                                 ChannelRuntime.SelectResult> result =
-                                                set.trySelect(policy);
+                                                cases instanceof ChannelRuntime.SelectPlan plan
+                                                        ? plan.trySelect(policy)
+                                                        : asSelectSet(cases).trySelect(policy);
                                         continuation.accept(
                                                 t,
                                                 result.isPresent()
@@ -2833,7 +2833,9 @@ public final class OresEvalRootNode extends RootNode {
                                     }
                                     OresFuture<
                                             ChannelRuntime.SelectResult> future =
-                                            set.selectAsync(policy);
+                                            cases instanceof ChannelRuntime.SelectPlan plan
+                                                    ? plan.selectAsync(policy)
+                                                    : asSelectSet(cases).selectAsync(policy);
                                     if (selected.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
                                         continuation.accept(
@@ -4242,7 +4244,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Enum<?>
                     || value instanceof java.util.UUID
                     || value instanceof Complex
-                    || value instanceof OptionUnwrapError) {
+                    || value instanceof OptionUnwrapError
+                    || value instanceof CancellationToken) {
                 return value;
             }
 
@@ -8424,11 +8427,44 @@ public final class OresEvalRootNode extends RootNode {
         private Object write(List<Object> args) {
             requireTwo(args, "SelectCase.write");
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
-                throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
+                throw new IllegalArgumentException(
+                        "SelectCase.write expects Channel<T> as first argument");
             }
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
                     args.get(1));
+        }
+
+        private Object awaitFuture(List<Object> args) {
+            requireOne(args, "SelectCase.await");
+            if (!(args.getFirst() instanceof OresFuture<?> future)) {
+                throw new IllegalArgumentException(
+                        "SelectCase.await expects Future<T>");
+            }
+            return ChannelRuntime.await(future);
+        }
+
+        private Object timeout(List<Object> args) {
+            requireOne(args, "SelectCase.timeout");
+            if (!(args.getFirst() instanceof Number number)) {
+                throw new IllegalArgumentException(
+                        "SelectCase.timeout expects a non-negative nanosecond count");
+            }
+            long nanos = number.longValue();
+            if (nanos < 0L) {
+                throw new IllegalArgumentException(
+                        "SelectCase.timeout expects a non-negative nanosecond count");
+            }
+            return ChannelRuntime.timeout(nanos);
+        }
+
+        private Object cancelled(List<Object> args) {
+            requireOne(args, "SelectCase.cancelled");
+            if (!(args.getFirst() instanceof CancellationToken token)) {
+                throw new IllegalArgumentException(
+                        "SelectCase.cancelled expects CancellationToken");
+            }
+            return ChannelRuntime.cancelled(token);
         }
 
         private Object defaultCase(List<Object> args) {
@@ -8444,6 +8480,38 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
+    private record SelectPlanFactory(Evaluator owner) {
+        private Object create(List<Object> args) {
+            requireOne(args, "SelectPlan.new");
+            Object source = args.getFirst();
+            if (source instanceof ChannelRuntime.SelectPlan plan) return plan;
+            if (source instanceof ChannelRuntime.SelectSet set) {
+                return new ChannelRuntime.SelectPlan(set.cases());
+            }
+            if (source instanceof ChannelRuntime.SelectCase selectCase) {
+                return new ChannelRuntime.SelectPlan(List.of(selectCase));
+            }
+            if (source instanceof List<?> list) {
+                ArrayList<ChannelRuntime.SelectCase> cases =
+                        new ArrayList<>(list.size());
+                for (Object item : list) {
+                    cases.add(owner.requireSelectCase(item));
+                }
+                return new ChannelRuntime.SelectPlan(cases);
+            }
+            if (source instanceof Map<?, ?> map) {
+                ArrayList<ChannelRuntime.SelectCase> cases =
+                        new ArrayList<>(map.size());
+                for (Object item : map.values()) {
+                    cases.add(owner.requireSelectCase(item));
+                }
+                return new ChannelRuntime.SelectPlan(cases);
+            }
+            throw new IllegalArgumentException(
+                    "SelectPlan.new expects SelectCase, SelectSet, SelectPlan, or list/map of SelectCase values");
+        }
+    }
+
     private record SelectResultValue(
             int index,
             String operation,
@@ -8454,6 +8522,7 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
     private enum FutureFactory { INSTANCE }
+    private enum CancellationTokenFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
     private record MutexFactory(boolean shared, OresContext context) {
@@ -8476,7 +8545,9 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                    || value instanceof Complex || value instanceof ActorRuntime.ActorId
+                    || value instanceof ActorRuntime.ActorRef<?>
+                    || value instanceof CancellationToken) {
                 return true;
             }
 
