@@ -851,19 +851,22 @@ public final class Ast {
         public TupleExpr { elements = List.copyOf(elements); }
     }
 
-    public record ObjectField(String name, Expr dynamicName, Expr value) {
+    /**
+     * One statically named field in an anonymous struct value.
+     *
+     * <p>The field name is part of the compile-time struct shape. Runtime or
+     * computed field names are intentionally not representable in the AST.</p>
+     */
+    public record ObjectField(String name, Expr value) {
         public ObjectField {
-            if ((name == null) == (dynamicName == null)) {
-                throw new IllegalArgumentException("object field must have exactly one static or dynamic key");
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("struct field name cannot be blank");
             }
+            java.util.Objects.requireNonNull(value, "value");
         }
         public static ObjectField named(String name, Expr value) {
-            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), null, value);
+            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), value);
         }
-        public static ObjectField dynamic(Expr key, Expr value) {
-            return new ObjectField(null, java.util.Objects.requireNonNull(key, "key"), value);
-        }
-        public boolean isDynamic() { return dynamicName != null; }
     }
 
     public enum ObjectKind { INFERRED_STRUCT, EXPLICIT_STRUCT }
