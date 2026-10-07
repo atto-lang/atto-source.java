@@ -17,10 +17,12 @@ import org.junit.jupiter.api.Test;
  * the physical carrier boundary. A preemption request may make a continuation
  * ready, but that continuation cannot run until the prior carrier boundary has
  * exited. Once ready, the continuation has priority over a later user message.
- * Stop drains both lanes and no completed source effect may replay.</p>
+ * Stop drains both lanes without claiming the active carrier was revoked;
+ * the carrier must exit before the actor is fully stopped. Completed source
+ * effects may never replay.</p>
  */
 final class FormalActorPreemptionModelCheckTest {
-    private enum Phase { IDLE, RUNNING, HANDOFF, READY, RESUMED, USER_RUNNING, DONE, STOPPED }
+    private enum Phase { IDLE, RUNNING, HANDOFF, READY, RESUMED, USER_RUNNING, DONE, STOP_REQUESTED, STOPPED }
 
     private enum Action {
         START_TURN,
@@ -32,7 +34,8 @@ final class FormalActorPreemptionModelCheckTest {
         RUN_USER_MESSAGE,
         FINISH_RESUMED_TURN,
         FINISH_USER_MESSAGE,
-        STOP
+        STOP,
+        EXIT_STOPPED_CARRIER
     }
 
     private record State(
@@ -60,7 +63,8 @@ final class FormalActorPreemptionModelCheckTest {
 
         boolean sawHandoffWithUserWaiting = false;
         boolean sawResumedBeforeUser = false;
-        boolean sawStopWithQueuedWork = false;
+        boolean sawStopRequestedOnActiveCarrier = false;
+        boolean sawStopAfterCarrierExit = false;
 
         for (State state : states) {
             assertSafety(state);
@@ -70,8 +74,11 @@ final class FormalActorPreemptionModelCheckTest {
             if (state.phase() == Phase.RESUMED && state.userQueued()) {
                 sawResumedBeforeUser = true;
             }
+            if (state.phase() == Phase.STOP_REQUESTED) {
+                sawStopRequestedOnActiveCarrier = true;
+            }
             if (state.phase() == Phase.STOPPED) {
-                sawStopWithQueuedWork = true;
+                sawStopAfterCarrierExit = true;
             }
         }
 
@@ -79,8 +86,10 @@ final class FormalActorPreemptionModelCheckTest {
                 "model must cover a later mailbox message racing preemption");
         assertTrue(sawResumedBeforeUser,
                 "ready continuation must be able to resume before later user work");
-        assertTrue(sawStopWithQueuedWork,
-                "model must cover teardown racing queued work");
+        assertTrue(sawStopRequestedOnActiveCarrier,
+                "stop must be modeled while the old carrier still holds its lease");
+        assertTrue(sawStopAfterCarrierExit,
+                "stop must become final after the old carrier exits");
     }
 
     private static Set<State> explore() {
@@ -178,7 +187,21 @@ final class FormalActorPreemptionModelCheckTest {
                         s.completedEffects(), s.continuationEntries(), s.userEntries()));
             }
             case STOP -> {
-                if (s.phase() == Phase.STOPPED) yield Optional.empty();
+                if (s.phase() == Phase.STOPPED || s.phase() == Phase.STOP_REQUESTED) {
+                    yield Optional.empty();
+                }
+                // Structured stop immediately rejects queued work, but does
+                // NOT revoke a running guest/Truffle carrier. Retain the lease
+                // until the carrier has actually left its execution boundary.
+                yield Optional.of(new State(
+                        s.carrierOwned() ? Phase.STOP_REQUESTED : Phase.STOPPED,
+                        s.activeLeases(), s.carrierOwned(), false, false,
+                        s.completedEffects(), s.continuationEntries(), s.userEntries()));
+            }
+            case EXIT_STOPPED_CARRIER -> {
+                if (s.phase() != Phase.STOP_REQUESTED || !s.carrierOwned()) {
+                    yield Optional.empty();
+                }
                 yield Optional.of(new State(
                         Phase.STOPPED, 0, false, false, false,
                         s.completedEffects(), s.continuationEntries(), s.userEntries()));
@@ -214,11 +237,19 @@ final class FormalActorPreemptionModelCheckTest {
             assertEquals(1, state.continuationEntries(),
                     "later user work may start only after the preempted turn resumed");
         }
+        if (state.phase() == Phase.STOP_REQUESTED) {
+            assertEquals(1, state.activeLeases(),
+                    "structured cancellation may not release an active lease early");
+            assertTrue(state.carrierOwned(),
+                    "the existing carrier must unwind before finalized stop");
+        }
+        if (state.phase() == Phase.STOP_REQUESTED || state.phase() == Phase.STOPPED) {
+            assertFalse(state.continuationQueued(), "stop drains continuation lane");
+            assertFalse(state.userQueued(), "stop drains user mailbox lane");
+        }
         if (state.phase() == Phase.STOPPED) {
             assertEquals(0, state.activeLeases());
             assertFalse(state.carrierOwned());
-            assertFalse(state.continuationQueued(), "stop drains continuation lane");
-            assertFalse(state.userQueued(), "stop drains user mailbox lane");
         }
     }
 }
