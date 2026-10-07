@@ -3082,13 +3082,11 @@ public final class OresEvalRootNode extends RootNode {
                                 "duplicate obj field " + entry.getKey());
                     }
                 }
-                Object built = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic)
-                        ? new DynamicStructValue(result)
-                        : object.explicitStruct()
-                            ? result
-                            : object.inferredStruct()
-                                ? new ReadonlyRecordValue(result)
-                                : Map.copyOf(result);
+                Object built = object.explicitStruct()
+                        ? result
+                        : object.inferredStruct()
+                            ? new ReadonlyRecordValue(result)
+                            : throwRemovedObjectLiteral();
                 continuation.accept(task, built, null);
                 return;
             }
@@ -3100,20 +3098,15 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        final String actualKey;
                         if (field.isDynamic()) {
-                            if (!(key instanceof String stringKey)) {
-                                continuation.accept(
-                                        t,
-                                        null,
-                                        new IllegalArgumentException(
-                                                "dynamic obj key must evaluate to a string"));
-                                return;
-                            }
-                            actualKey = stringKey;
-                        } else {
-                            actualKey = field.name();
+                            continuation.accept(
+                                    t,
+                                    null,
+                                    new IllegalArgumentException(
+                                            "struct fields must be statically named for AOT compilation"));
+                            return;
                         }
+                        final String actualKey = field.name();
                         evalSuspendableExpr(
                                 t,
                                 field.value(),
@@ -3691,17 +3684,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object indexValue(Object receiver, Object index) {
-            if (receiver instanceof DynamicStructValue dynamic) {
-                if (!(index instanceof String key)) {
-                    throw new IllegalArgumentException(
-                            "DynamicStruct key must be a string");
-                }
-                if (!dynamic.fields.containsKey(key)) {
-                    throw new IllegalArgumentException(
-                            "unknown DynamicStruct key " + key);
-                }
-                return dynamic.fields.get(key);
-            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
@@ -3769,10 +3751,6 @@ public final class OresEvalRootNode extends RootNode {
                     object.fields.put(member.member(), value);
                     return value;
                 }
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    dynamic.fields.put(member.member(), value);
-                    return value;
-                }
                 if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
                     @SuppressWarnings("unchecked")
                     LinkedHashMap<String, Object> record =
@@ -3790,14 +3768,6 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(key instanceof String string)) {
-                        throw new IllegalArgumentException(
-                                "DynamicStruct key must be a string");
-                    }
-                    dynamic.fields.put(string, value);
-                    return value;
-                }
                 if (receiver instanceof List<?> raw
                         && key instanceof Number number) {
                     @SuppressWarnings("unchecked")
@@ -3806,7 +3776,7 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 throw new IllegalArgumentException(
-                        "indexed assignment requires mutable array/list or DynamicStruct");
+                        "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
             }
             throw new IllegalArgumentException(
                     "unsupported assignment target");
@@ -3826,11 +3796,8 @@ public final class OresEvalRootNode extends RootNode {
                 return new ArrayList<>();
             }
             if (created.type().name().equals("DynamicStruct")) {
-                if (!args.isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "DynamicStruct<T> constructor takes no positional arguments");
-                }
-                return new DynamicStructValue();
+                throw new IllegalArgumentException(
+                        "DynamicStruct has been removed; use a closed struct or an explicit map collection");
             }
             HostClassFacade hostClass =
                     hostClasses.get(created.type().name());
@@ -4008,13 +3975,6 @@ public final class OresEvalRootNode extends RootNode {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new OresObject(object.owner, object.klass, fields);
-                }
-                if (value instanceof DynamicStructValue dynamic) {
-                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                        fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
-                    }
-                    return new DynamicStructValue(fields);
                 }
                 if (value instanceof ReadonlyRecordValue readonly) {
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
@@ -4781,12 +4741,6 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : map.values()) cases.add(requireSelectCase(item));
                 return new ChannelRuntime.SelectSet(cases);
             }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Object item : dynamic.fields.values()) {
-                    cases.add(requireSelectCase(item));
-                }
-                return new ChannelRuntime.SelectSet(cases);
-            }
             throw new IllegalArgumentException(
                     "dynamic select requires SelectSet or list/map of SelectCase values");
         }
@@ -5216,10 +5170,6 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    if (receiver instanceof DynamicStructValue dynamic) {
-                        dynamic.fields.put(target.member(), value);
-                        return value;
-                    }
                     // Explicit anonymous structs use this mutable map path.
                     // struct infer values use ReadonlyRecordValue instead.
                     if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
@@ -5234,18 +5184,11 @@ public final class OresEvalRootNode extends RootNode {
                         return value;
                     }
                     throw new IllegalArgumentException(
-                            "member assignment requires a mutable class, explicit struct, or DynamicStruct");
+                            "member assignment requires a mutable class or explicit struct");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    if (receiver instanceof DynamicStructValue dynamic) {
-                        if (!(index instanceof String key)) {
-                            throw new IllegalArgumentException("DynamicStruct key must be a string");
-                        }
-                        dynamic.fields.put(key, value);
-                        return value;
-                    }
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
@@ -5253,7 +5196,8 @@ public final class OresEvalRootNode extends RootNode {
                         list.set(i, value);
                         return value;
                     }
-                    throw new IllegalArgumentException("indexed assignment requires a mutable array/list or DynamicStruct");
+                    throw new IllegalArgumentException(
+                            "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -5342,15 +5286,6 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("DynamicStruct key must be a string");
-                    }
-                    if (!dynamic.fields.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown DynamicStruct key " + key);
-                    }
-                    return dynamic.fields.get(key);
-                }
                 if (receiver instanceof Map<?, ?> map) {
                     if (!(index instanceof String key)) {
                         throw new IllegalArgumentException("object/map key must be a string");
@@ -5377,10 +5312,8 @@ public final class OresEvalRootNode extends RootNode {
                     return new ArrayList<>();
                 }
                 if (created.type().name().equals("DynamicStruct")) {
-                    if (!created.arguments().isEmpty()) {
-                        throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
-                    }
-                    return new DynamicStructValue();
+                    throw new IllegalArgumentException(
+                            "DynamicStruct has been removed; use a closed struct or an explicit map collection");
                 }
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
@@ -5451,7 +5384,6 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -5462,16 +5394,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 for (Ast.ObjectField field : object.fields()) {
-                    String key;
                     if (field.isDynamic()) {
-                        Object evaluatedKey = eval(field.dynamicName(), env);
-                        if (!(evaluatedKey instanceof String stringKey)) {
-                            throw new IllegalArgumentException("dynamic obj key must evaluate to a string");
-                        }
-                        key = stringKey;
-                    } else {
-                        key = field.name();
+                        throw new IllegalArgumentException(
+                                "struct fields must be statically named for AOT compilation");
                     }
+                    String key = field.name();
                     Object value = eval(field.value(), env);
                     if (object.explicitStruct()) {
                         if (!result.containsKey(key)) {
@@ -5484,15 +5411,12 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         result.put(key, value);
                     } else if (result.putIfAbsent(key, value) != null) {
-                        throw new IllegalArgumentException("duplicate obj field " + key);
+                        throw new IllegalArgumentException("duplicate struct field " + key);
                     }
                 }
-                return dynamicKeys ? new DynamicStructValue(result)
-                        : object.explicitStruct()
-                            ? result
-                            : object.inferredStruct()
-                                ? new ReadonlyRecordValue(result)
-                                : Map.copyOf(result);
+                if (object.explicitStruct()) return result;
+                if (object.inferredStruct()) return new ReadonlyRecordValue(result);
+                return throwRemovedObjectLiteral();
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -5835,12 +5759,6 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException(
                             "unknown List member " + name);
                 };
-            }
-            if (receiver instanceof DynamicStructValue dynamic) {
-                if (!dynamic.fields.containsKey(name)) {
-                    throw new IllegalArgumentException("unknown DynamicStruct member " + name);
-                }
-                return dynamic.fields.get(name);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -6831,7 +6749,6 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
-            if (name.equals("DynamicStruct")) return value instanceof DynamicStructValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
@@ -6863,7 +6780,6 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
-            if (value instanceof DynamicStructValue) return "DynamicStruct";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
             if (value instanceof Boolean) return "bool";
@@ -7081,7 +6997,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Map<?, ?> structuralFields(Object value) {
-            if (value instanceof DynamicStructValue dynamic) return dynamic.fields;
             if (value instanceof Map<?, ?> map) return map;
             return null;
         }
@@ -7219,20 +7134,6 @@ public final class OresEvalRootNode extends RootNode {
                 return shaped;
             }
 
-            if (declared.name().equals("DynamicStruct")) {
-                if (declared.arguments().size() != 1 || !(value instanceof DynamicStructValue dynamic)) {
-                    throw returnTypeMismatch(callable, declared, value);
-                }
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    shapeReturnedValue(
-                            declared.arguments().getFirst(),
-                            entry.getValue(),
-                            callable + "[" + entry.getKey() + "]",
-                            resolving);
-                }
-                return value;
-            }
-
             if (declared.name().equals("bool") || declared.name().equals("Bool")) {
                 if (!(value instanceof Boolean)) throw returnTypeMismatch(callable, declared, value);
                 return value;
@@ -7355,12 +7256,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object destructureMember(Object value, String name) {
-            if (value instanceof DynamicStructValue dynamic) {
-                if (!dynamic.fields.containsKey(name)) {
-                    throw new IllegalArgumentException("object destructure missing member " + name);
-                }
-                return dynamic.fields.get(name);
-            }
             if (value instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
                 Object member = map.get(name);
@@ -7504,13 +7399,6 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : set) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
             }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    if (containsLiveMutexGuard(entry.getKey(), seen)
-                            || containsLiveMutexGuard(entry.getValue(), seen)) return true;
-                }
-                return false;
-            }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (containsLiveMutexGuard(entry.getKey(), seen)
@@ -7576,13 +7464,6 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
                 return;
             }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    releaseMutexGuardsInValue(entry.getKey(), failed, seen);
-                    releaseMutexGuardsInValue(entry.getValue(), failed, seen);
-                }
-                return;
-            }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     releaseMutexGuardsInValue(entry.getKey(), failed, seen);
@@ -7632,12 +7513,10 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
 
-    private static final class DynamicStructValue implements OresMutex.SharedState {
-        private final LinkedHashMap<String, Object> fields;
-        private DynamicStructValue() { this.fields = new LinkedHashMap<>(); }
-        private DynamicStructValue(Map<String, Object> initial) { this.fields = new LinkedHashMap<>(initial); }
-        @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
-        @Override public String toString() { return "DynamicStruct" + fields; }
+    private static Object throwRemovedObjectLiteral() {
+        throw new IllegalStateException(
+                "legacy obj/ObjectExpr reached runtime; source must use struct infer{...} "
+                        + "or struct{field: Type,...}{...}");
     }
 
     /**
@@ -7794,15 +7673,6 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) {
                 for (Object field : object.fields.values()) {
                     if (!runtimeSharedSafe(field, seen)) return false;
-                }
-                return true;
-            }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    if (!runtimeSharedSafe(entry.getKey(), seen)
-                            || !runtimeSharedSafe(entry.getValue(), seen)) {
-                        return false;
-                    }
                 }
                 return true;
             }
