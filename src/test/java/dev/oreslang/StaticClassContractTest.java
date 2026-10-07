@@ -232,6 +232,78 @@ final class StaticClassContractTest {
     }
 
     @Test
+    void instanceAndStaticNamespacesMayReuseTheSameMemberName() throws Exception {
+        String output = run("""
+                define class Namespaces as
+                  val int value;
+                  pub static const value: String = "class";
+
+                  pub instanceValue(): int {
+                    return self.value;
+                  }
+                end
+
+                pub routine main(): void {
+                  val item = new Namespaces(7);
+                  stdio.stdout.write(item.instanceValue());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(Namespaces.value);
+                  return;
+                }
+                """);
+
+        assertEquals("7|class", output);
+    }
+
+    @Test
+    void privateInferredStaticFieldsKeepDeclaringClassAccess() throws Exception {
+        String output = run("""
+                define class Config as
+                  private static const base: int = 40;
+                  private static const inferred = Config.base + 2;
+
+                  pub static fnc answer(): int {
+                    return Config.inferred;
+                  }
+                end
+
+                pub routine main(): void {
+                  stdio.stdout.write(Config.answer());
+                  return;
+                }
+                """);
+
+        assertEquals("42", output);
+    }
+
+    @Test
+    void concreteGenericStaticContractsAreAllowedButClassGenericsAreNot() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define static contract Factory<T> as
+                  fnc create() => T;
+                end
+
+                define class IntFactory implements static Factory<int> as
+                  pub static fnc create(): int { return 42; }
+                end
+                """)));
+
+        IllegalArgumentException classGeneric = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define static contract Factory<T> as
+                          fnc create() => T;
+                        end
+
+                        define class GenericFactory<T> implements static Factory<T> as
+                          pub static fnc create(): int { return 42; }
+                        end
+                        """)));
+        assertTrue(classGeneric.getMessage().contains("T")
+                || classGeneric.getMessage().contains("unknown type"));
+    }
+
+    @Test
     void staticFieldsCannotDependOnClassTypeParameters() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
