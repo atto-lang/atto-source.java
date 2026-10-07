@@ -1053,6 +1053,14 @@ public final class Parser {
         return true;
     }
 
+    private boolean matchCaseKeyword() {
+        return match(CASE) || matchContextualKeyword("case");
+    }
+
+    private boolean matchWhenKeyword() {
+        return match(WHEN) || matchContextualKeyword("when");
+    }
+
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
         return a.name().equals(b.name()) && a.arguments().equals(b.arguments()) && a.inferArguments() == b.inferArguments();
     }
@@ -1545,7 +1553,7 @@ public final class Parser {
 
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
-            if (match(CASE, WHEN)) {
+            if (matchWhenKeyword() || matchCaseKeyword()) {
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -2224,7 +2232,7 @@ public final class Parser {
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
             Ast.Pattern pattern = match(ELSE) ? new Ast.WildcardPattern() : parsePattern();
-            Ast.Expr guard = match(WHEN) ? parseExpression() : null;
+            Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
@@ -2279,7 +2287,7 @@ public final class Parser {
         boolean sawDefault = false;
 
         while (!check(END) && !check(EOF)) {
-            if (match(CASE)) {
+            if (matchCaseKeyword()) {
                 if (sawDefault) throw error(previous(), "switch case cannot appear after default");
                 List<Ast.Expr> constants = new ArrayList<>();
                 do constants.add(parseExpression()); while (match(COMMA));
