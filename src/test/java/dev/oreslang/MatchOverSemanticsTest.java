@@ -84,10 +84,10 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void ordinaryStatementMatchStillExitsCallableWhenReturnIsUsed() throws Exception {
+    void legacyStatementMatchStillExitsCallableWhenReturnIsUsed() throws Exception {
         assertEquals("4\n", run("""
                 fnc choose(bool flag): int {
-                  match flag over
+                  match flag
                     true -> { return 4; }
                     false -> { return 5; }
                   end
@@ -103,7 +103,7 @@ final class MatchOverSemanticsTest {
     void ordinaryStatementMatchSupportsVoidCallbacksAndKeepsExecuting() throws Exception {
         assertEquals("hit\ncontinued\n", run("""
                 pub fnc main(): void {
-                  match Some(5) over
+                  match Some(5) no-return over
                     Some(value) -> { stdio.println("hit"); }
                     None -> { stdio.println("miss"); }
                   end
@@ -127,6 +127,61 @@ final class MatchOverSemanticsTest {
                   return;
                 }
                 """).getMessage().contains("returns void"));
+    }
+
+    @Test
+    @Test
+    void noReturnMatchDiscardsArmLocalResultAndContinues() throws Exception {
+        assertEquals("continued\\n", run("""
+                pub fnc main(): void {
+                  match Some(5) no-return over
+                    Some(value) -> { return value + 10; }
+                    None -> { return 0; }
+                  end
+                  stdio.println("continued");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void noReturnAllowsCallbackArmsWithoutReturn() throws Exception {
+        assertEquals("side-effect\\ncontinued\\n", run("""
+                pub fnc main(): void {
+                  match true no-return over
+                    true -> { stdio.println("side-effect"); }
+                    false -> { stdio.println("other"); }
+                  end
+                  stdio.println("continued");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rejectsBareStatementOverWithoutExplicitNoReturn() {
+        assertTrue(reject("""
+                pub fnc main(): void {
+                  match true over
+                    true -> { stdio.println("side-effect"); }
+                    false -> { stdio.println("other"); }
+                  end
+                  return;
+                }
+                """).getMessage().contains("no-return"));
+    }
+
+    @Test
+    void rejectsUsingNoReturnAsExpression() {
+        assertTrue(reject("""
+                pub fnc main(): void {
+                  val x = match true no-return over
+                    true -> { return 1; }
+                    false -> { return 2; }
+                  end;
+                  return;
+                }
+                """).getMessage().contains("cannot be used as a value"));
     }
 
     @Test
@@ -197,7 +252,7 @@ final class MatchOverSemanticsTest {
                   end;
                   return x;
                 }
-                """).getMessage().contains("nested callable returns"));
+                """).getMessage().contains("earlier or nested returns"));
     }
 
     @Test
