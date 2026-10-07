@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import dev.oreslang.OresLanguage;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Source;
 
 import java.nio.charset.StandardCharsets;
@@ -66,6 +68,25 @@ public final class SharedCodeRegistry {
         return new Lease(this, entry);
     }
 
+    /**
+     * Return a cached immutable, checked definition tree for a currently pinned
+     * image, or null if this source was not admitted through the host registry.
+     * The caller still must perform its destination-specific capability checks.
+     */
+    public Ast.Program checkedProgramIfLive(String codeUnitId, String sourceText) {
+        Objects.requireNonNull(codeUnitId, "codeUnitId");
+        Objects.requireNonNull(sourceText, "sourceText");
+        Entry entry;
+        synchronized (this) {
+            entry = images.get(new Key(codeUnitId, digest(sourceText)));
+            if (entry == null) return null;
+            if (!entry.originalText.equals(sourceText)) {
+                throw new SecurityException("different source text has the same code-image digest");
+            }
+        }
+        return entry.checkedProgram();
+    }
+
     /** Supervisor-only diagnostic; no handles or source contents are exposed. */
     public synchronized int liveImages() {
         return images.size();
@@ -95,12 +116,22 @@ public final class SharedCodeRegistry {
         private final Key key;
         private final Source source;
         private final String originalText;
+        private Ast.Program checkedProgram;
         private int references;
 
         private Entry(Key key, Source source, String originalText) {
             this.key = key;
             this.source = source;
             this.originalText = originalText;
+        }
+
+        // The typed AST is immutable data; there is no evaluator, closure or
+        // actor/module runtime state in this object. Compiler state remains local.
+        private synchronized Ast.Program checkedProgram() {
+            if (checkedProgram == null) {
+                checkedProgram = OresCompiler.parseAndTypeCheck(originalText);
+            }
+            return checkedProgram;
         }
     }
 
@@ -127,6 +158,13 @@ public final class SharedCodeRegistry {
 
         public String sha256() {
             return entry.key.sha256();
+        }
+
+        public Ast.Program checkedProgram() {
+            if (closed.get()) {
+                throw new IllegalStateException("code-image lease is closed");
+            }
+            return entry.checkedProgram();
         }
 
         @Override
