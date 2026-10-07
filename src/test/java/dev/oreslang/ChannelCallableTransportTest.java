@@ -64,6 +64,16 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void nestedBorrowedPayloadsAreRejectedBeforeChannelCreation() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Option<&int>> payload): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Array<&int>> payload): void { return; }
+                """)));
+    }
+
+    @Test
     void ordinaryDataChannelsRemainLegal() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc apply(Fnc<int, int> callback, int value): int {

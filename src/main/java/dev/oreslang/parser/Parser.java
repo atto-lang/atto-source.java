@@ -2765,7 +2765,9 @@ public final class Parser {
         }
         if (match(OBJ)) return parseObjectLiteral(false);
         if (match(STRUCT)) {
-            consume(INFER, "struct expression requires 'struct infer{...}'");
+            if (!matchContextualKeyword("infer")) {
+                throw error(peek(), "struct expression requires 'struct infer{...}'");
+            }
             return parseObjectLiteral(true);
         }
         if (match(ARR)) {

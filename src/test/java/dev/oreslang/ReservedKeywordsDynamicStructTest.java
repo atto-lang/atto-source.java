@@ -95,7 +95,7 @@ final class ReservedKeywordsDynamicStructTest {
         String program = """
                 define module app
                   pub fnc main(): void {
-                    let DynamicStruct<int> bag = new DynamicStruct<int>();
+                    let mut DynamicStruct<int> bag = new DynamicStruct<int>();
                     bag["stop"] = 1;
                     bag["done"] = 2;
                     const key = "do";
@@ -128,7 +128,7 @@ final class ReservedKeywordsDynamicStructTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc bad(): void {
-                    let DynamicStruct<int> bag = new DynamicStruct<int>();
+                    let mut DynamicStruct<int> bag = new DynamicStruct<int>();
                     bag.answer = "forty-two";
                     return;
                   }
@@ -138,7 +138,7 @@ final class ReservedKeywordsDynamicStructTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc bad(): void {
-                    let DynamicStruct<int> bag = new DynamicStruct<int>();
+                    let mut DynamicStruct<int> bag = new DynamicStruct<int>();
                     bag[1] = 42;
                     return;
                   }

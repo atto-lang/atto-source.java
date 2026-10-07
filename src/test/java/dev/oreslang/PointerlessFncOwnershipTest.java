@@ -21,7 +21,7 @@ final class PointerlessFncOwnershipTest {
                 end
 
                 fnc ok(): int {
-                  let Box box = new Box();
+                  let mut Box box = new Box();
                   val Fnc<Box, int> read = |value| -> {
                     return value.value;
                   };

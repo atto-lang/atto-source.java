@@ -3069,7 +3069,10 @@ public final class OresEvalRootNode extends RootNode {
                                 "duplicate obj field " + entry.getKey());
                     }
                 }
-                continuation.accept(task, result, null);
+                boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
+                Object constructed = dynamicKeys ? new DynamicStructValue(result)
+                        : object.inferredStruct() ? result : Map.copyOf(result);
+                continuation.accept(task, constructed, null);
                 return;
             }
 
@@ -5177,7 +5180,21 @@ public final class OresEvalRootNode extends RootNode {
                         dynamic.fields.put(target.member(), value);
                         return value;
                     }
-                    throw new IllegalArgumentException("member assignment requires a class instance, DynamicStruct, or mutex guard");
+                    // Inferred structs have a closed static shape but mutable
+                    // storage when reached through an owning mutable binding.
+                    if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
+                        @SuppressWarnings("unchecked")
+                        LinkedHashMap<String, Object> record =
+                                (LinkedHashMap<String, Object>) rawRecord;
+                        if (!record.containsKey(target.member())) {
+                            throw new IllegalArgumentException(
+                                    "unknown inferred struct field " + target.member());
+                        }
+                        record.put(target.member(), value);
+                        return value;
+                    }
+                    throw new IllegalArgumentException(
+                            "member assignment requires a mutable class, inferred struct, or DynamicStruct");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
@@ -5411,7 +5428,8 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("duplicate obj field " + key);
                     }
                 }
-                return dynamicKeys ? new DynamicStructValue(result) : Map.copyOf(result);
+                return dynamicKeys ? new DynamicStructValue(result)
+                        : object.inferredStruct() ? result : Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();

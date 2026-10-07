@@ -47,7 +47,7 @@ final class OwnershipAndClosureTest {
                           return;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("immutable parameter/binding"));
+        assertTrue(error.getMessage().contains("read-only binding"));
     }
 
     @Test
@@ -85,7 +85,7 @@ final class OwnershipAndClosureTest {
                 end
 
                 pub routine main(): void {
-                  let Counter counter = new Counter();
+                  let mut Counter counter = new Counter();
                   counter.bump();
                   counter.bump();
                   stdio.stdout.write(counter.value);
@@ -110,7 +110,7 @@ final class OwnershipAndClosureTest {
                         end
 
                         fnc bad(): void {
-                          val Counter counter = new Counter();
+                          const Counter counter = new Counter();
                           counter.bump();
                           return;
                         }
@@ -131,7 +131,7 @@ final class OwnershipAndClosureTest {
                 }
 
                 pub routine main(): void {
-                  let Bar b = new Bar();
+                  let mut Bar b = new Bar();
                   change(&mut b);
                   stdio.stdout.write(b.foo);
                   return;
@@ -288,7 +288,7 @@ final class OwnershipAndClosureTest {
                 }
 
                 fnc ok(): void {
-                  let Bar b = new Bar();
+                  let mut Bar b = new Bar();
                   if true; do
                     val &Bar read = &b;
                     stdio.println(read.foo);
