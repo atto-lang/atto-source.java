@@ -144,7 +144,10 @@ final class FormalActorPreemptionModelCheckTest {
             }
             case QUEUE_USER_MESSAGE -> {
                 if (s.terminal() || s.phase() == Phase.STOP_REQUESTED
-                        || s.userQueued() || s.phase() == Phase.USER_RUNNING) yield Optional.empty();
+                        || s.userQueued() || s.phase() == Phase.USER_RUNNING
+                        || (s.phase() == Phase.IDLE && s.continuationEntries() == 0)) {
+                    yield Optional.empty();
+                }
                 yield Optional.of(new State(
                         s.phase(), s.activeLeases(), s.carrierOwned(), s.continuationQueued(), true,
                         s.completedEffects(), s.continuationEntries(), s.userEntries()));
@@ -167,7 +170,7 @@ final class FormalActorPreemptionModelCheckTest {
                 // User work is forbidden while an immediately-ready preemption
                 // continuation exists. This is the priority invariant.
                 if (!s.userQueued() || s.continuationQueued() || s.carrierOwned()
-                        || s.phase() != Phase.IDLE) {
+                        || s.phase() != Phase.IDLE || s.continuationEntries() != 1) {
                     yield Optional.empty();
                 }
                 yield Optional.of(new State(
