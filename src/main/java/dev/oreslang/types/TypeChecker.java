@@ -1122,8 +1122,13 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
-            if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
-            else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            Type stored = binding.kind() == Ast.BindingKind.CONST
+                    && isSymbolConstantType(actual)
+                    && isSymbolType(declared)
+                    ? actual
+                    : declared;
+            if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), stored, binding.kind());
+            else env.define(binding.name(), stored, binding.kind(), missingExplicitFields);
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -1436,6 +1441,7 @@ public final class TypeChecker {
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
+            if (name.name().equals("Symbol")) return new Named("$SymbolFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
@@ -1484,7 +1490,15 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
+                String symbolKey = symbolMemberKeyFromType(index);
+                if (symbolKey != null) {
+                    targetType = memberType(
+                            new Ast.MemberExpr(indexed.receiver(), symbolKey),
+                            env, generics, self, true);
+                } else if (isSymbolType(index)) {
+                    throw new IllegalArgumentException(
+                            "closed structural/class Symbol assignment requires a compile-time-stable Symbol identity");
+                } else if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
                     if (dynamic.arguments().size() != 1) {
                         throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
                     }
@@ -1639,6 +1653,8 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            Type symbolFactoryResult = builtinSymbolFactoryCall(call, env, generics, self);
+            if (symbolFactoryResult != null) return symbolFactoryResult;
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2225,6 +2241,18 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("Symbol")
+                    && env.lookup("Symbol") == null) {
+                if (member.member().equals("iterator")) {
+                    return symbolConstantType("process", "Symbol.iterator");
+                }
+                if (member.member().equals("create") || member.member().equals("process")
+                        || member.member().equals("stable")) {
+                    return new Function(List.of(Primitive.STRING), new Named("Symbol", List.of()));
+                }
+                throw new IllegalArgumentException("unknown Symbol member '" + member.member() + "'");
+            }
+            if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
                     && isBooleanIntrinsicName(member.member())) {
@@ -2395,6 +2423,26 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
+            String symbolKey = symbolMemberKeyFromType(index);
+            if (symbolKey != null) {
+                if (receiver instanceof Record record) {
+                    Type member = record.members().get(symbolKey);
+                    if (member == null) {
+                        throw new IllegalArgumentException(
+                                "unknown Symbol member " + Ast.displayMemberKey(symbolKey));
+                    }
+                    return member;
+                }
+                if (receiver instanceof Named) {
+                    return typeOf(new Ast.MemberExpr(indexed.receiver(), symbolKey), env, generics, self);
+                }
+                throw new IllegalArgumentException(
+                        "Symbol indexing requires a struct/record, class, or interface value");
+            }
+            if (isSymbolType(index)) {
+                throw new IllegalArgumentException(
+                        "closed structural/class Symbol lookup requires a compile-time-stable Symbol identity");
+            }
             if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
                 if (dynamic.arguments().size() != 1) {
                     throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
@@ -2603,29 +2651,35 @@ public final class TypeChecker {
 
                 Set<String> initialized = new LinkedHashSet<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    if (field.isDynamic()) {
+                    String fieldName;
+                    if (field.isSymbolKey()) {
+                        fieldName = requireCompileTimeSymbolMemberKey(
+                                field.keyExpression(), env, generics, self,
+                                "explicit struct field key");
+                    } else if (field.isDynamic()) {
                         throw new IllegalArgumentException(
-                                "explicit struct initializers require statically named declared fields");
+                                "explicit struct initializers require declared named or compile-time Symbol fields");
+                    } else {
+                        fieldName = field.name();
                     }
-                    Type expected = members.get(field.name());
+                    Type expected = members.get(fieldName);
                     if (expected == null) {
                         throw new IllegalArgumentException(
-                                "explicit struct initializer contains undeclared field '" + field.name() + "'");
+                                "explicit struct initializer contains undeclared field '"
+                                        + Ast.displayMemberKey(fieldName) + "'");
                     }
-                    if (!initialized.add(field.name())) {
+                    if (!initialized.add(fieldName)) {
                         throw new IllegalArgumentException(
-                                "duplicate explicit struct initializer field '" + field.name() + "'");
+                                "duplicate explicit struct initializer field '"
+                                        + Ast.displayMemberKey(fieldName) + "'");
                     }
-                    Type actualField =
-                            typeOf(field.value(), env, generics, self);
+                    Type actualField = typeOf(field.value(), env, generics, self);
                     requireReadonlyCapabilityPreserved(
-                            actualField,
-                            expected,
-                            "explicit struct field '" + field.name() + "'");
+                            actualField, expected,
+                            "explicit struct field '" + Ast.displayMemberKey(fieldName) + "'");
                     requireAssignable(
-                            actualField,
-                            expected,
-                            "explicit struct field '" + field.name() + "'");
+                            actualField, expected,
+                            "explicit struct field '" + Ast.displayMemberKey(fieldName) + "'");
                 }
 
                 Set<String> missing = new LinkedHashSet<>(members.keySet());
@@ -2648,7 +2702,16 @@ public final class TypeChecker {
                 dynamicValue = dynamicValue == null
                         ? dynamicValueType
                         : collectionElementJoin(dynamicValue, dynamicValueType);
-                if (field.isDynamic()) {
+                if (field.isSymbolKey()) {
+                    String fieldName = requireCompileTimeSymbolMemberKey(
+                            field.keyExpression(), env, generics, self,
+                            object.inferredStruct() ? "infer struct field key" : "object Symbol field key");
+                    if (members.putIfAbsent(fieldName, object.inferredStruct()
+                            ? widenCollectionElement(exactValueType) : exactValueType) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate Symbol field " + Ast.displayMemberKey(fieldName));
+                    }
+                } else if (field.isDynamic()) {
                     dynamicKeys = true;
                     requireAssignable(
                             typeOf(field.dynamicName(), env, generics, self),
@@ -3686,6 +3749,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.name().equals("Symbol") || isSymbolConstantType(named)) return named.arguments().isEmpty();
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
@@ -5892,6 +5956,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Symbol" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                yield new Named("Symbol", List.of());
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
@@ -6028,6 +6098,12 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (isSymbolConstantType(actual)) {
+            if (isSymbolConstantType(expected)) return actual.equals(expected);
+            if (expected instanceof Named named && named.name().equals("Symbol")
+                    && named.arguments().isEmpty()) return true;
+        }
+        if (isSymbolConstantType(expected)) return false;
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
@@ -6342,6 +6418,99 @@ public final class TypeChecker {
 
     private boolean hasInferredArgs(Ast.TypeRef ref) {
         return ref.inferArguments() || ref.arguments().stream().anyMatch(this::hasInferredArgs);
+    }
+
+    private static final String SYMBOL_CONSTANT_TYPE_PREFIX = "$symbol_constant$";
+
+    private Type symbolConstantType(String scope, String key) {
+        return new Named(SYMBOL_CONSTANT_TYPE_PREFIX + Ast.symbolMemberKey(scope, key), List.of());
+    }
+
+    private boolean isSymbolConstantType(Type type) {
+        return type instanceof Named named
+                && named.arguments().isEmpty()
+                && named.name().startsWith(SYMBOL_CONSTANT_TYPE_PREFIX);
+    }
+
+    private boolean isSymbolType(Type type) {
+        return isSymbolConstantType(type)
+                || (type instanceof Named named
+                    && named.name().equals("Symbol")
+                    && named.arguments().isEmpty());
+    }
+
+    private String symbolMemberKeyFromType(Type type) {
+        if (!(type instanceof Named named)
+                || !named.arguments().isEmpty()
+                || !named.name().startsWith(SYMBOL_CONSTANT_TYPE_PREFIX)) return null;
+        String key = named.name().substring(SYMBOL_CONSTANT_TYPE_PREFIX.length());
+        if (!Ast.isSymbolMemberKey(key)) {
+            throw new IllegalStateException("malformed compiler Symbol singleton type");
+        }
+        return key;
+    }
+
+    private String requireCompileTimeSymbolMemberKey(
+            Ast.Expr expression, Env env, Set<String> generics, Type self, String where) {
+        Type keyType = typeOf(expression, env, generics, self);
+        String key = symbolMemberKeyFromType(keyType);
+        if (key != null) return key;
+        if (isSymbolType(keyType)) {
+            throw new IllegalArgumentException(
+                    where + " must resolve to one compile-time-stable Symbol identity; "
+                            + "bind it with const or use Symbol.create/process/stable with a literal");
+        }
+        throw new IllegalArgumentException(where + " requires a Symbol, got " + keyType);
+    }
+
+    private Type builtinSymbolFactoryCall(
+            Ast.CallExpr call, Env env, Set<String> generics, Type self) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Symbol")
+                || env.lookup("Symbol") != null
+                || !(member.member().equals("create")
+                    || member.member().equals("process")
+                    || member.member().equals("stable"))) return null;
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException("Symbol." + member.member() + " does not accept type arguments");
+        }
+        if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+            throw new IllegalArgumentException("Symbol." + member.member() + " expects exactly one String key");
+        }
+        Ast.Expr argument = call.arguments().getFirst();
+        requireAssignable(typeOf(argument, env, generics, self), Primitive.STRING,
+                "Symbol." + member.member() + " key");
+        if (!(argument instanceof Ast.LiteralExpr literal) || !(literal.value() instanceof String raw)) {
+            return new Named("Symbol", List.of());
+        }
+        String key = validateCompileTimeSymbolKey(raw);
+        if (member.member().equals("stable")) {
+            try {
+                java.util.UUID uuid = java.util.UUID.fromString(key);
+                String canonical = uuid.toString();
+                if (!canonical.equals(key.toLowerCase(java.util.Locale.ROOT))) {
+                    throw new IllegalArgumentException("Symbol.stable key must be a canonical UUID");
+                }
+                key = canonical;
+            } catch (IllegalArgumentException invalid) {
+                if (invalid.getMessage() != null && invalid.getMessage().startsWith("Symbol.stable")) throw invalid;
+                throw new IllegalArgumentException("Symbol.stable key must be a canonical UUID", invalid);
+            }
+            return symbolConstantType("stable", key);
+        }
+        return symbolConstantType("process", key);
+    }
+
+    private String validateCompileTimeSymbolKey(String key) {
+        if (key == null || key.isBlank()) throw new IllegalArgumentException("Symbol key cannot be blank");
+        if (key.length() > 256) throw new IllegalArgumentException("Symbol key exceeds 256 characters");
+        for (int i = 0; i < key.length(); i++) {
+            if (Character.isISOControl(key.charAt(i))) {
+                throw new IllegalArgumentException("Symbol key cannot contain control characters");
+            }
+        }
+        return key;
     }
 
     private void requireAssignable(Type actual, Type expected, String where) {
