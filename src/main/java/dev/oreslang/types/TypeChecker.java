@@ -3510,6 +3510,11 @@ public final class TypeChecker {
                         ? List.of(named.arguments().get(0)) : null;
                 case "Err" -> named.name().equals("Result") && named.arguments().size() == 2
                         ? List.of(named.arguments().get(1)) : null;
+                case "Read", "Await" -> named.name().equals("Select") && named.arguments().size() == 1
+                        ? List.of(named.arguments().getFirst()) : null;
+                case "Write", "Timeout", "Cancelled", "Default" ->
+                        named.name().equals("Select") && named.arguments().size() == 1
+                                ? List.of() : null;
                 default -> null;
             };
             if (args == null) {
@@ -3678,6 +3683,13 @@ public final class TypeChecker {
         return false;
     }
 
+    private boolean isSelectConstructor(String constructor) {
+        return switch (constructor) {
+            case "Read", "Write", "Await", "Timeout", "Cancelled", "Default" -> true;
+            default -> false;
+        };
+    }
+
     private boolean patternsProvablyDisjoint(
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
@@ -3691,6 +3703,12 @@ public final class TypeChecker {
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
                         || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                if (subject instanceof Named selected
+                        && selected.name().equals("Select")
+                        && isSelectConstructor(a.constructor())
+                        && isSelectConstructor(b.constructor())) {
+                    return true;
+                }
             }
             return false;
         }
@@ -3778,6 +3796,17 @@ public final class TypeChecker {
                 err |= c.constructor().equals("Err");
             }
             return ok && err;
+        }
+        if (subject instanceof Named named && named.name().equals("Select")) {
+            Set<String> constructors = new HashSet<>();
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c
+                        && isSelectConstructor(c.constructor())) {
+                    constructors.add(c.constructor());
+                }
+            }
+            return constructors.containsAll(
+                    Set.of("Read", "Write", "Await", "Timeout", "Cancelled", "Default"));
         }
         return false;
     }
@@ -5767,10 +5796,15 @@ public final class TypeChecker {
                 yield new Named("Future", List.of(element));
             }
             case "SelectCase", "SelectSet", "SelectPlan", "Select" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) {
-                    throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+                if (ref.inferArguments() || ref.arguments().size() > 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " accepts zero (legacy erased) or one explicit type argument");
                 }
-                yield new Named(ref.name(), List.of(resolve(ref.arguments().getFirst(), generics, self)));
+                yield new Named(
+                        ref.name(),
+                        List.of(ref.arguments().isEmpty()
+                                ? Unknown.INSTANCE
+                                : resolve(ref.arguments().getFirst(), generics, self)));
             }
             case "SelectResult" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
@@ -5877,6 +5911,14 @@ public final class TypeChecker {
         if (actual instanceof Generic actualGeneric) {
             return expected instanceof Generic expectedGeneric
                     && actualGeneric.name().equals(expectedGeneric.name());
+        }
+        if (actual instanceof Named sourceNamed && expected instanceof Named targetNamed) {
+            if (sourceNamed.name().equals("Select") && targetNamed.name().equals("SelectResult")) {
+                return true;
+            }
+            if (sourceNamed.name().equals("SelectResult") && targetNamed.name().equals("Select")) {
+                return true;
+            }
         }
         if (actual instanceof Union source) {
             return source.options().stream().allMatch(option -> assignable(option, expected));
