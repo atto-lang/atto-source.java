@@ -1292,6 +1292,29 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl staticClass = classNamespaceOf(member.receiver(), scope);
+            if (staticClass != null) {
+                Ast.FieldDecl staticField = null;
+                for (Ast.FieldDecl field : staticClass.fields()) {
+                    if (field.isStatic() && field.name().equals(member.member())) {
+                        staticField = field;
+                        break;
+                    }
+                }
+                if (staticField == null) {
+                    throw error("unknown static field '" + member.member()
+                            + "' on " + staticClass.name());
+                }
+                if (staticField.bindingKind() != Ast.BindingKind.LET) {
+                    throw error("static field '" + staticClass.name() + "."
+                            + member.member()
+                            + "' is immutable; declare the static field with let to permit mutation");
+                }
+                // A class namespace is not an owned value and therefore does
+                // not need (or have) a mutable local receiver.
+                return;
+            }
+
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
