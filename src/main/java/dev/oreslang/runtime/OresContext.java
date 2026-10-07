@@ -33,6 +33,9 @@ public final class OresContext implements AutoCloseable {
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
+    private final NativeHttp http = new NativeHttp(this);
+    public NativeHttp http() { return http; }
+
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
@@ -401,6 +404,7 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        http.close();
         RuntimeException failure = null;
         try {
             asyncRuntime.close();

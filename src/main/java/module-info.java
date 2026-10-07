@@ -1,6 +1,7 @@
 module dev.oreslang {
     requires java.management;
     requires java.net.http;
+    requires jdk.httpserver;
     requires java.base;
     requires java.compiler;
     requires java.logging;

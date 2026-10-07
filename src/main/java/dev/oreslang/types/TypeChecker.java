@@ -104,6 +104,7 @@ public final class TypeChecker {
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "HttpServer", "HttpExchange", "HttpHandler",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
@@ -2696,6 +2697,8 @@ public final class TypeChecker {
                             "unknown Channel member '" + member.member() + "'");
                 };
             }
+            Type httpMember = builtinHttpMember(sumReceiver, member.member());
+            if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
             if (sumReceiver instanceof Named actorRef
@@ -4029,6 +4032,57 @@ public final class TypeChecker {
         return actorClass;
     }
 
+    private static Type builtinHttpMember(Type receiver, String name) {
+        if (!(receiver instanceof Named named)) return null;
+        Type exchange = new Named("HttpExchange", List.of());
+        Type server = new Named("HttpServer", List.of());
+        Type voidFuture = new Named("Future", List.of(Primitive.VOID));
+        return switch (named.name()) {
+            case "http" -> switch (name) {
+                case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
+                case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
+                case "claim" -> new Function(List.of(Primitive.STRING), exchange);
+                default -> null;
+            };
+            case "HttpHandler" -> switch (name) {
+                case "isolated" -> Primitive.BOOL;
+                case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
+                default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
+            };
+            case "HttpServer" -> switch (name) {
+                case "port", "active", "accepted", "rejected", "completed" -> Primitive.INT;
+                case "accept" -> new Function(List.of(), new Named("Future", List.of(exchange)));
+                case "shutdown" -> new Function(List.of(Primitive.INT), voidFuture);
+                default -> throw new IllegalArgumentException("unknown HTTP server member " + name);
+            };
+            case "HttpExchange" -> switch (name) {
+                case "can_respond" -> Primitive.BOOL;
+                case "method", "target", "request_id", "operation_id", "server_timing" -> Primitive.STRING;
+                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns" -> Primitive.INT;
+                case "set_route" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT), Primitive.VOID);
+                case "add_param" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.VOID);
+                case "param_size" -> new Function(List.of(Primitive.STRING), Primitive.INT);
+                case "param_at" -> new Function(List.of(Primitive.STRING, Primitive.INT), Primitive.STRING);
+                case "path_size" -> Primitive.INT;
+                case "path_at" -> new Function(List.of(Primitive.INT), Primitive.STRING);
+                case "header", "query", "param", "cookie" -> new Function(List.of(Primitive.STRING), Primitive.STRING);
+                case "set_header" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.VOID);
+                case "read_chunk" -> new Function(List.of(Primitive.INT), new Named("Future", List.of(new ListType(Primitive.INT))));
+                case "write_bytes" -> new Function(List.of(new ListType(Primitive.INT)), voidFuture);
+                case "respond_bytes" -> new Function(List.of(Primitive.INT, Primitive.STRING, new ListType(Primitive.INT)), voidFuture);
+                case "body_text" -> new Function(List.of(), new Named("Future", List.of(Primitive.STRING)));
+                case "respond" -> new Function(List.of(Primitive.INT, Primitive.STRING, Primitive.STRING), voidFuture);
+                case "start" -> new Function(List.of(Primitive.INT, Primitive.STRING), voidFuture);
+                case "write" -> new Function(List.of(Primitive.STRING), voidFuture);
+                case "finish" -> new Function(List.of(), voidFuture);
+                case "abort" -> new Function(List.of(), Primitive.VOID);
+                case "move_to" -> new Function(List.of(Unknown.INSTANCE), Primitive.STRING);
+                default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
+            };
+            default -> null;
+        };
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -4130,7 +4184,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+        if (named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
+                || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {

@@ -13,6 +13,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
+import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -4145,6 +4146,9 @@ public final class OresEvalRootNode extends RootNode {
                         return future;
                     }
 
+                    if (fn.returnType().name().equals("Future")) {
+                        return chainFuture(future, values -> values.getFirst(), true, false);
+                    }
                     return returnSourceTaskResult(future, false);
                 }
 
@@ -5961,8 +5965,117 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown network socket member " + name);
                 };
             }
+            if (receiver instanceof NativeHttp.Handler handler) {
+                return switch (name) {
+                    case "isolated" -> handler.isolated();
+                    case "dispatch" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
+                            throw new IllegalArgumentException("dispatch requires HTTP exchange");
+                        handler.dispatch(exchange); return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
+                };
+            }
+            if (receiver instanceof NativeHttp.Server server) {
+                return switch (name) {
+                    case "port" -> (long) server.port();
+                    case "active" -> (long) server.active();
+                    case "accepted" -> server.accepted();
+                    case "rejected" -> server.rejected();
+                    case "completed" -> server.completed();
+                    case "accept" -> (Invokable) args -> { requireZero(args, "http.accept"); return server.accept(); };
+                    case "shutdown" -> (Invokable) args -> {
+                        if (args.size() != 1) throw new IllegalArgumentException("shutdown requires grace milliseconds");
+                        return server.shutdown(((Number) args.get(0)).intValue());
+                    };
+                    default -> throw new IllegalArgumentException("unknown HTTP server member " + name);
+                };
+            }
+            if (receiver instanceof NativeHttp.Exchange exchange) {
+                return switch (name) {
+                    case "can_respond" -> exchange.canRespond();
+                    case "server_timing" -> exchange.serverTiming();
+                    case "actor_startup_ns" -> exchange.startupNanos();
+                    case "move_to_claim_ns" -> exchange.transferNanos();
+                    case "request_id" -> exchange.requestId();
+                    case "operation_id" -> exchange.operationId();
+                    case "pipeline_id" -> (long) exchange.pipelineId();
+                    case "contract_id" -> (long) exchange.contractId();
+                    case "set_route" -> (Invokable) args -> {
+                        if (args.size() != 3) throw new IllegalArgumentException("set_route requires operation, pipeline, contract");
+                        exchange.route(requireString(args.get(0), "operation"), ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue()); return null;
+                    };
+                    case "add_param" -> (Invokable) args -> {
+                        requireTwo(args, "add_param"); exchange.addParam(requireString(args.get(0), "name"), requireString(args.get(1), "value")); return null;
+                    };
+                    case "param" -> (Invokable) args -> exchange.param(requireStringArg(args, "param"));
+                    case "param_size" -> (Invokable) args -> (long) exchange.paramSize(requireStringArg(args, "param_size"));
+                    case "param_at" -> (Invokable) args -> {
+                        requireTwo(args, "param_at"); return exchange.paramAt(requireString(args.get(0), "name"), ((Number) args.get(1)).intValue());
+                    };
+                    case "cookie" -> (Invokable) args -> exchange.cookie(requireStringArg(args, "cookie"));
+                    case "method" -> exchange.method();
+                    case "target" -> exchange.target();
+                    case "path_size" -> (long) exchange.pathSize();
+                    case "path_at" -> (Invokable) args -> {
+                        if (args.size() != 1) throw new IllegalArgumentException("path_at requires index");
+                        return exchange.pathAt(((Number) args.get(0)).intValue());
+                    };
+                    case "header" -> (Invokable) args -> exchange.header(requireStringArg(args, "header"));
+                    case "query" -> (Invokable) args -> exchange.query(requireStringArg(args, "query"));
+                    case "set_header" -> (Invokable) args -> {
+                        requireTwo(args, "set_header"); exchange.setHeader(requireString(args.get(0), "name"), requireString(args.get(1), "value")); return null;
+                    };
+                    case "move_to" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof ActorRuntime.ActorRef<?> ref))
+                            throw new IllegalArgumentException("move_to requires actor reference");
+                        return exchange.moveTo(ref);
+                    };
+                    case "read_chunk" -> (Invokable) args -> {
+                        if (args.size() != 1) throw new IllegalArgumentException("read_chunk requires maximum byte count");
+                        return exchange.readChunk(((Number) args.get(0)).intValue());
+                    };
+                    case "write_bytes" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof List<?> bytes)) throw new IllegalArgumentException("write_bytes requires byte array");
+                        return exchange.writeBytes(bytes);
+                    };
+                    case "respond_bytes" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.get(2) instanceof List<?> bytes)) throw new IllegalArgumentException("respond_bytes requires status, content type, byte array");
+                        return exchange.respondBytes(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), bytes);
+                    };
+                    case "body_text" -> (Invokable) args -> { requireZero(args, "body_text"); return exchange.bodyText(); };
+                    case "respond" -> (Invokable) args -> {
+                        if (args.size() != 3) throw new IllegalArgumentException("respond requires status, content type, body");
+                        return exchange.respond(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), requireString(args.get(2), "body"));
+                    };
+                    case "start" -> (Invokable) args -> {
+                        requireTwo(args, "start"); return exchange.start(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"));
+                    };
+                    case "write" -> (Invokable) args -> exchange.write(requireStringArg(args, "write"));
+                    case "finish" -> (Invokable) args -> { requireZero(args, "finish"); return exchange.finish(); };
+                    case "abort" -> (Invokable) args -> { requireZero(args, "abort"); exchange.abort(); return null; };
+                    default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
+                };
+            }
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
+                    case "handler" -> (Invokable) args -> {
+                        String type = requireStringArg(args, "http.handler");
+                        Ast.ClassDecl declaration = requireLocalActorClass(type);
+                        ActorRuntime.ActorKind kind = switch (declaration.actorKind()) {
+                            case SHARED -> ActorRuntime.ActorKind.SHARED;
+                            case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
+                            default -> throw new IllegalArgumentException("HTTP handler must be shared or isolated actor");
+                        };
+                        return context.http().handler(this, type, kind);
+                    };
+                    case "listen" -> (Invokable) args -> {
+                        if (args.size() != 5) throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");
+                        return context.http().listen(requireString(args.get(0), "host"),
+                            ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue(),
+                            ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue());
+                    };
+                    case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
                     case "get_text" -> (Invokable) http::getText;
                     case "post_text" -> (Invokable) http::postText;
                     default -> throw new IllegalArgumentException("unknown http member " + name);
