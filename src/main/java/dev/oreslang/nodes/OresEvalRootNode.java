@@ -1253,7 +1253,10 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.Stmt stmt = statements.get(index);
-            if (!statementContainsPotentialSuspension(
+            // Source tasks must carry returns as SourceFlow, not as a tail-call
+            // signal, including when a discarded do-select value is a call.
+            if (!(stmt instanceof Ast.ReturnStmt)
+                    && !statementContainsPotentialSuspension(
                     stmt,
                     java.util.Collections.newSetFromMap(
                             new IdentityHashMap<>()))) {
