@@ -1,6 +1,6 @@
 # Actor class lifecycle and parent-facing output streams (design + implementation status)
 
-**Status (2026-10-06): partial compiler groundwork, NOT an executable actor-class API.**
+**Status (2026-10-06): parser/lexical-boundary groundwork plus host-side actor ready/done Futures; NOT an executable source-level actor-class API.**
 
 The existing `ActorRuntime` already has `ActorRef.send/stop/cancel/forceCancel`,
 bounded channel-backed mailboxes, actor identity, child supervision, and
@@ -129,9 +129,11 @@ weakens isolate policy.
 2. Extend AST/parser/type checker with actor constructors, `spawn` expressions,
    reserved lifecycle hooks, `ActorRef<Worker>` and envelope/stream types.
    Keep constructor execution actor-local; reject `new Worker()`.
-3. Add actor readiness and finalization Futures to `ActorRuntime`, including
-   the case of no first message, init failure, cancel-before-ready, and
-   spawns while parent is stopping.
+3. **Host substrate implemented in this branch:** `ActorRef.ready()` and
+   `ActorRef.done()` expose runtime-only completion Futures. `ready()` schedules
+   actor initialization even with no first message; stop-before-start and
+   initializer failure settle the Future exceptionally. Before source exposure,
+   still verify force-cancel and parent/child termination races with CI.
 4. Implement inbox dispatch and bounded parent outbox with serialization,
    per-worker sequence counters, EOF and failure forwarding; lift `self.send`
    into asynchronous nonblocking flow control.
