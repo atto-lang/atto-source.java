@@ -1,147 +1,92 @@
-# OresVM: immutable code sharing and strict actor-state isolation
+# OresVM: one-process shared code, actor-owned mutable state
 
-**Contract (2026-10-06):** Code is process-/image-shared; mutable execution
-state belongs to its owner. **Never** clone imported executable code per actor.
-Never mistake an immutable code image for permission to access its originating
-module's mutable globals, host capabilities, closures, class instances, or
-other actors' heaps.
+**Scope (2026-10-06): All actor kinds run in the same OS process.** The
+current objective is to load one immutable code/import definition image and
+reuse it across shared, private/isolated, and untrusted actors **inside that
+process**. Sharing native executable pages across multiple OS processes,
+`mmap`, `memfd`, and relocation design are explicitly deferred.
 
-## Actor API and construction
+## Required invariants
 
-* Actors are not ordinary objects and **cannot declare a constructor**.
-  The parser already rejects any actor \`constructor(...)\`, even an empty
-  public constructor. Preserve that rule, including inherited/alias spelling.
-* \`spawn Worker()\` (future source lowering) must allocate an \`ActorRef<Worker>\`
-  and initialize actor-local field defaults in the actor's execution domain.
-  Add a **distinct actor lifecycle hook** such as \`on_start(): void\` for
-  user initialization. Execute it after identity, heap, policy and mailbox
-  are established, before \`ready\` resolves. Do not call a class constructor
-  in the spawning parent. An actor cannot be built with \`new Worker()\`.
-* \`await w.ready\` resolves when actor-local startup finishes. Failure is
-  observable, not a silent ready result. Constructors for ordinary classes
-  remain valid and are unrelated to actor startup.
-* Lambda implementations use **slim arrow**:
-  \`const create = async || -> { const w = spawn Worker(); await w.ready; return w; };\`
-  Never replace implementation arrows with \`=>\`.
+- Load/parse/check one code unit *per source identity and version*, not once
+  per actor. All actor kinds can reference the same process-owned, immutable
+  definition image.
+- Each actor retains its own mailbox, mutable fields, closure environments,
+  module initialization results, async frames, execution lease, GC roots and
+  capability policy. Do not duplicate imports as executable source/AST
+  definitions just because a guest has a private or untrusted execution context.
+- Shared code is not shared mutable data. Actors must not directly write
+  another actor's heap. For `shared actor`, a capability to read approved
+  frozen data is not permission to write shared mutable memory.
+- Importing a definition never grants access to unrelated module globals or
+  transitive host capabilities. Admission is repeated for each destination
+  actor/context, even when the underlying AST is cached.
+- Untrusted actors receive no Java/Truffle host object, raw function
+  pointer, mutable AST handle, classloader, cross-actor closure, or supervisor
+  capability merely because the immutable code is process-owned.
+- Hot reload pins old versioned images until the last live actor/continuation
+  has finished with them; a new image does not mutate an old actor's code.
 
-## Memory domains
+## What the current branch actually shares
 
-| Artifact | Shared actor | Private/isolated actor | Untrusted actor |
-| --- | --- | --- | --- |
-| Immutable source, import graph, checked AST, bytecode/code image | Share once per image/generation | Share read-only *without granting guest host access* | Share read-only via sandbox's validated code-image loader |
-| Mutable module bindings, class static mutable state, initialization results | Owner/service-scoped; never inferred shared by the code image | Isolate-local or explicit supervisor-owned service | Isolate-local and zero ambient supervisor authority |
-| Actor fields, class instances, closures, stack/async frames, GC roots | Actor-owned | Actor/isolate-owned | Actor/isolate-owned |
-| Cross-actor communication | Serialized mailbox or explicit capability | Serialized mailbox | Serialized and sandbox-validated mailbox |
-| Compiled runtime caches/invocation inline caches | May share only when immutable and security-neutral | Context-/isolate-local if mutable | Context-/isolate-local; must not leak host pointers |
+The draft `SharedCodeRegistry` is supervisor-owned and refcounted. It
+reuses the exact `org.graalvm.polyglot.Source` object and the same checked
+immutable Oreslang `Ast.Program` for all live contexts with identical
+`(codeUnitId, SHA-256(sourceText))`. It checks source bytes/text even
+after a digest hit; different versions or source identities do not alias.
 
-\`shared actor\` denotes scheduling and the ability to reference approved
-immutable pages, **not** shared mutable heap writes. Actor single-writer
-discipline remains mandatory. \`rt proxy\` is an explicit bounded synchronized
-capability, **not** an implicit consequence of importing code.
+`HotReloadManager.load` checks a cached immutable AST against the
+*destination* `IsolatePolicy`, then creates an independent Graal
+`Context` and pins a lease. `OresLanguage.parse` looks up that pinned
+AST rather than reparsing on every actor load. The new `Evaluator` and its
+mutable module/closure state remain context-local.
 
-An \`import\` publishes an immutable **definition reference**, not a copy of
-an initialized module object. Linking that definition into an actor must
-install a *new, owner-scoped binding table* containing only the dependencies
-explicitly imported by that source unit, with policy checks each time it is
-bound. Imported classes and routines are definitions, not mutable static
-singleton objects. Any module state with global/singleton semantics is
-accessed via a separately declared authority/capability; a plain import
-never confers direct read/write access to such state.
+**Important limitation:** `OresLanguage` uses
+`TruffleLanguage.ContextPolicy.EXCLUSIVE`, so a fresh Truffle
+`RootCallTarget` and per-context evaluator are still created during
+`Context.eval`. This branch shares the immutable **source and checked
+program definition tree** but does not establish that Graal JIT machine
+code or executable call targets are shared among private/untrusted
+Truffle contexts. Those are potential follow-on same-process optimizations,
+subject to no mutable JIT cache or guest-context leakage.
 
-## Lexical isolation is a compile-time rule AND runtime rule
+## Actor construction and source-level rules
 
-Inside class, actor class, and module bodies, name lookup can reach:
+- Actor `constructor(...)` remains **rejected** (ordinary classes can
+  still have constructors). `spawn Worker()` returns `ActorRef<Worker>`;
+  the runtime, not the caller, constructs actor-owned state.
+- A future `on_start(): void` lifecycle hook runs inside the established
+  actor domain before `w.ready` resolves. Actor start-up failure rejects
+  readiness instead of leaking an uninitialized object.
+- Lambda bodies use the **slim arrow**:
+  `const create = async || -> { const w = spawn Worker(); await w.ready; return w; };`
+  The fat arrow `=>` remains reserved for other declaration semantics.
+- Classes, actors, and modules may resolve only their own members,
+  activation-local lexical bindings, explicitly imported definitions,
+  and capability-approved built-ins. Qualified names such as
+  `OtherModule.helper` must not bypass explicit import rules.
+  The initial branch only guards implicit unqualified fallbacks;
+  complete type/runtime binding enforcement is a separate gate.
 
-1. Local parameters, activation locals, lexical inner callables (subject to
-   \`lex\` / \`nlex\`), their own declared fields/methods/functions.
-2. Names from an explicit source-level \`import\`, with immutable definition
-   identity and per-destination capability admission.
-3. Approved built-ins, subject to actor/isolate capabilities.
+## Same-process acceptance tests
 
-No implicit lookup in sibling file-level callables, sibling modules, other
-classes' static members, unqualified file globals, or the parent actor's
-environment. Qualifying a name (\`OtherModule.foo\`, \`OtherClass.foo\`) must
-NOT bypass the rule. \`import * as X\` exposes only the imported declaration
-manifest, not a dynamic module object with ambient globals.
+1. Spawn at least 1,000 actors of each kind with the same imports. Show
+   stable process-owned immutable code identity and that the amount of
+   cached definitions does **not** grow linearly with actor count.
+2. Show mutable actor/instance/module states remain independent, with no
+   cross-actor writable aliases, including through `rt proxy` or imports.
+3. Check the same image against trusted and untrusted policies: a privileged
+   builtin may be accepted by one but must be rejected by the other.
+4. Concurrency-test first-load compilation, reference counting, version
+   replacement, cancellation/failure cleanup, and final image eviction.
+5. Verify explicit-import-only lexical boundaries on class/actor/module
+   references including qualified access; preserve valid explicit imports.
+6. Run exact-head Maven/GraalVM tests before merge. When source Actions
+   cannot allocate runners, use a funded organization with an **exact-tree
+   verified** temporary mirror and no cross-org token/secrets.
 
-Apply this boundary in parser/name binding, type/ownership/effect checking,
-AST lowering, linked-code resolution, reflection/interop, and the evaluator.
-The current actor groundwork PR #415 blocks unqualified class-to-file
-callable access but **does not yet satisfy these stronger rules**.
+## Deferred, outside the current scope
 
-## Process-local implementation increment
-
-\`SharedCodeRegistry\` is a supervisor-only, refcounted, content-addressed
-cache of immutable Graal polyglot \`Source\` instances. \`HotReloadManager\`
-acquires a lease per generation and releases it after its independent
-\`Context\` closes. Identical \`codeUnitId + SHA-256(sourceText)\` yields
-the same \`Source\` **object** across live generations/managers; byte-for-byte
-source is checked even after a digest match. Distinct code-unit names and
-versions are kept separate to preserve import/diagnostic identities.
-
-This saves repeated \`Source\` construction and retains one host-side
-immutable image per simultaneously live code identity. It **does not yet**
-share parsed ASTs, full import graphs, Truffle call targets or machine-code
-pages. \`OresLanguage\` currently declares \`ContextPolicy.EXCLUSIVE\` and
-builds a new evaluator per context: that separation is intentional, since
-an evaluator carries mutable module and closure state. Future caching can
-share a deeply immutable *checked program/compiled definition graph*, but
-not the stateful evaluator.
-
-Each destination still performs its own policy/capability admission even
-when using a previously validated image. Host-owned registry handles must
-never become guest values or pass through actor mailboxes. Code data is
-not included in actor heap accounting; mutable link tables and runtime
-metadata ARE charged to their owner.
-
-## Native / multi-process backend (mandatory before zero-copy claim)
-
-Reusing a Java \`Source\` instance is **not equivalent** to physical shared
-memory for isolated OS processes. The native backend needs:
-
-* A versioned, fully relocatable code image with an ABI/compiler-options/
-  target/architecture/dependency fingerprint and a signed or otherwise
-  integrity-validated immutable import manifest.
-* Read-only memory-mapped image pages (\`mmap\` / suitable platform equivalent)
-  mapped into many actor worker processes, or sealed immutable \`memfd\`
-  mappings on supported Linux kernels; executable pages use RX, never RWX.
-* Per-isolate mutable GOT/PLT, dispatch/inline caches, import-binding tables,
-  static mutable slots, GC roots and thread/continuation state. Relocations
-  must never dirty a page intended to be physically shared.
-* No guest-visible raw mapping handles, writable alias, Java \`Source\` object,
-  host classloader, pointer-based callable, or capability-bearing relocation.
-* Old code generations pinned while any actor or continuation executes them;
-  new spawns bind to the new version only at an explicit safe boundary.
-  Retire after the final execution/import lease and resource finalizer.
-
-Physical page reuse and memory safety must be demonstrated by native
-integration tests, not inferred from \`Source\` identity, JIT caching, shared
-JVM heap, or ordinary read-only Java wrappers. For \`UNTRUSTED\`, do not turn
-off Graal sandboxing to achieve cache reuse; keep code-mapping and
-capability policy under the trusted loader.
-
-## Acceptance gates
-
-1. Run 1,000 shared, 1,000 private and 1,000 untrusted actors on identical
-   imports: prove identical immutable image identity and **distinct mutable
-   actor/module initialization state**.
-2. Prove class/actor/module sibling and qualified symbol reads fail without
-   explicit import at both compile time and runtime. A real explicit import
-   must remain usable without copying the imported executable definition.
-3. Concurrency test acquire/release, hot reload generation pinning,
-   failed initialization/close, cancellation while imports execute, and
-   registry eviction after last owner retires.
-4. Validate code-image digest mismatch rejection, source identity separation,
-   per-actor capability rechecking, and no cross-sandbox object/closure escape.
-5. Native workers: compare physical shared/private RSS/PSS across process
-   counts and inspect memory mappings for shared RX/RO and owner-private RW.
-   Require **one physical code image per version** (modulo OS page caching),
-   not one physical copy per worker process.
-6. Run exact-head Java/GraalVM CI; if source organization cannot schedule
-   runners, use an exact Git-tree/blob-verified mirror in a funded test org.
-   Do not merge this stack on zero-job allocation failures or doc-only proofs.
-
-**Current status:** process-local immutable \`Source\` identity reuse is
-implemented in this draft stack. Parsed/compiled definition sharing, strict
-qualified lexical isolation, actor-local \`on_start\`/source \`spawn\`, and
-read-only physical code mappings remain open engineering gates.
+Cross-OS-process read-only page mapping, shared native executable pages,
+`memfd`, multi-process loader/ABI relocation and PSS/RSS comparison.
+Do not treat these as prerequisites for this same-process design.
