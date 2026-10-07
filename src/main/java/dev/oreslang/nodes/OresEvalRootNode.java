@@ -4805,11 +4805,21 @@ public final class OresEvalRootNode extends RootNode {
             throw new ReturnSignal(eval(value, env));
         }
 
+        private void requireExplicitClassCallableImport(Env env, String name) {
+            if (env.accessClass() != null) {
+                throw new IllegalArgumentException(
+                        "class '" + env.accessClass().name()
+                                + "' cannot implicitly access file/module callable '"
+                                + name + "'; declare an explicit import or use self");
+            }
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
+                    requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return functionInvocation(direct, args);
                 }
@@ -5118,6 +5128,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (imported != Env.MISSING) return imported;
                 Ast.FunctionDecl fn = findSingleFunction(name.name());
                 if (fn != null) {
+                    requireExplicitClassCallableImport(env, name.name());
                     if (fn.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException("actor callable " + fn.name()
                                 + " is an actor entry point, not a first-class callable value");
