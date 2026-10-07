@@ -1262,7 +1262,14 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch();
+        if (match(MATCH)) {
+            if (consumeMatchAndReturnSuffix()) {
+                Ast.Expr result = new Ast.MatchExpr(parseMatch(true));
+                consumeStatementTerminator("match-and-return expression should end with ';'");
+                return new Ast.ExprStmt(result);
+            }
+            return parseMatch();
+        }
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
@@ -1976,7 +1983,32 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() {
+    private Ast.MatchStmt parseMatch() { return parseMatch(false); }
+
+    /**
+     * The hyphenated spelling is a single contextual operator, not arithmetic.
+     * Insist on token adjacency so "match - and - return" is not silently
+     * misinterpreted as a match expression.
+     */
+    private boolean consumeMatchAndReturnSuffix() {
+        if (current + 3 >= tokens.size()) return false;
+        Token leading = previous();
+        Token firstDash = tokens.get(current);
+        Token and = tokens.get(current + 1);
+        Token secondDash = tokens.get(current + 2);
+        Token returning = tokens.get(current + 3);
+        if (leading.type() != MATCH || firstDash.type() != MINUS
+                || and.type() != IDENT || !and.lexeme().equals("and")
+                || secondDash.type() != MINUS || returning.type() != RETURN
+                || !adjacent(leading, firstDash) || !adjacent(firstDash, and)
+                || !adjacent(and, secondDash) || !adjacent(secondDash, returning)) {
+            return false;
+        }
+        advance(); advance(); advance(); advance();
+        return true;
+    }
+
+    private Ast.MatchStmt parseMatch(boolean armLocalReturns) {
         boolean ordered = check(IDENT) && peek().lexeme().equals("first");
         if (ordered) advance();
 
@@ -1988,22 +2020,25 @@ public final class Parser {
         } finally {
             suppressRefinementOperators = previousSuppression;
         }
-        match(SEMICOLON);
+        // Contextual separator: it must not reserve "over" elsewhere.
+        boolean over = check(IDENT) && peek().lexeme().equals("over");
+        if (over) advance();
+        if (!over) match(SEMICOLON);
 
         boolean armSuppression = suppressRefinementOperators;
         suppressRefinementOperators = false;
         try {
-            return parseMatchArms(subject, ordered);
+            return parseMatchArms(subject, ordered, over, armLocalReturns);
         } finally {
             suppressRefinementOperators = armSuppression;
         }
     }
 
-    private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered) {
-        boolean braces = match(LBRACE);
+    private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered, boolean over, boolean armLocalReturns) {
+        boolean braces = !over && match(LBRACE);
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(braces ? RBRACE : END) && !check(EOF)) {
-            Ast.Pattern pattern = match(ELSE) ? new Ast.WildcardPattern() : parsePattern();
+            Ast.Pattern pattern = matchMatchFallback() ? new Ast.WildcardPattern() : parsePattern();
             Ast.Expr guard = match(WHEN) ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
@@ -2019,7 +2054,23 @@ public final class Parser {
                 }
                 consume(RBRACE, "expected '}' after match arm block");
                 yieldsValue = !body.isEmpty() && body.getLast() instanceof Ast.ExprStmt && !lastTerminated;
+                if (armLocalReturns) {
+                    if (body.isEmpty() || !(body.getLast() instanceof Ast.ReturnStmt returned)
+                            || returned.value() == null) {
+                        throw error(previous(), "match-and-return arms must end with an explicit 'return <value>;' statement");
+                    }
+                    for (int i = 0; i < body.size() - 1; i++) {
+                        if (body.get(i) instanceof Ast.ReturnStmt) {
+                            throw error(previous(), "match-and-return must have exactly one terminal arm-local return");
+                        }
+                    }
+                    body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
+                    yieldsValue = true;
+                }
             } else {
+                if (armLocalReturns) {
+                    throw error(peek(), "match-and-return requires braced arms containing 'return <value>;' ");
+                }
                 body.add(new Ast.ExprStmt(parseExpression()));
                 yieldsValue = true;
             }
@@ -2030,6 +2081,18 @@ public final class Parser {
         consume(braces ? RBRACE : END, "expected closing delimiter for match");
         if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
         return new Ast.MatchStmt(subject, ordered, arms);
+    }
+
+    /** Match-only fallback markers; Symbol.default is not a runtime field access. */
+    private boolean matchMatchFallback() {
+        if (match(ELSE, DEFAULT)) return true;
+        if (check(IDENT) && peek().lexeme().equals("Symbol")
+                && checkNext(DOT) && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == DEFAULT) {
+            advance(); advance(); advance();
+            return true;
+        }
+        return false;
     }
 
     private Ast.Pattern parsePattern() {
@@ -2501,7 +2564,9 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        if (match(MATCH)) return new Ast.MatchExpr(parseMatch());
+        if (match(MATCH)) {
+            return new Ast.MatchExpr(parseMatch(consumeMatchAndReturnSuffix()));
+        }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
