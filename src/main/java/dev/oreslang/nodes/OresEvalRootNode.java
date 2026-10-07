@@ -3086,7 +3086,9 @@ public final class OresEvalRootNode extends RootNode {
                         ? new DynamicStructValue(result)
                         : object.explicitStruct()
                             ? result
-                            : Map.copyOf(result);
+                            : object.inferredStruct()
+                                ? new ReadonlyRecordValue(result)
+                                : Map.copyOf(result);
                 continuation.accept(task, built, null);
                 return;
             }
@@ -4013,6 +4015,13 @@ public final class OresEvalRootNode extends RootNode {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new DynamicStructValue(fields);
+                }
+                if (value instanceof ReadonlyRecordValue readonly) {
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> entry : readonly.entrySet()) {
+                        fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
+                    }
+                    return new ReadonlyRecordValue(fields);
                 }
                 if (value instanceof OptionValue option) {
                     return option.present()
@@ -5479,7 +5488,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 return dynamicKeys ? new DynamicStructValue(result)
-                        : object.explicitStruct() ? result : Map.copyOf(result);
+                        : object.explicitStruct()
+                            ? result
+                            : object.inferredStruct()
+                                ? new ReadonlyRecordValue(result)
+                                : Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -7625,6 +7638,25 @@ public final class OresEvalRootNode extends RootNode {
         private DynamicStructValue(Map<String, Object> initial) { this.fields = new LinkedHashMap<>(initial); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
         @Override public String toString() { return "DynamicStruct" + fields; }
+    }
+
+    /**
+     * Runtime provenance for struct infer. It behaves as a Map for existing
+     * structural operations while remaining immutable across aliases and async
+     * detachment/copy boundaries.
+     */
+    private static final class ReadonlyRecordValue
+            extends java.util.AbstractMap<String, Object>
+            implements OresMutex.SharedState {
+        private final Map<String, Object> fields;
+        private ReadonlyRecordValue(Map<String, Object> initial) {
+            this.fields = Map.copyOf(initial);
+        }
+        @Override public Set<Entry<String, Object>> entrySet() { return fields.entrySet(); }
+        @Override public Object get(Object key) { return fields.get(key); }
+        @Override public boolean containsKey(Object key) { return fields.containsKey(key); }
+        @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
+        @Override public String toString() { return "struct infer" + fields; }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
