@@ -1743,7 +1743,13 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("SelectCase")
+                    || name.name().equals("SelectSet") || name.name().equals("SelectPlan")) {
+                return new Named("$" + name.name() + "Factory", List.of());
+            }
+            if (name.name().equals("CancellationToken")) {
+                return new Named("$CancellationTokenFactory", List.of());
+            }
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2095,22 +2101,38 @@ public final class TypeChecker {
                 return new Named("Channel", List.of(element));
             }
 
+            if (call.callee() instanceof Ast.MemberExpr cancellationCall
+                    && cancellationCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("CancellationToken")
+                    && cancellationCall.member().equals("new")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "CancellationToken.new does not accept type arguments");
+                }
+                if (!call.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "CancellationToken.new expects no arguments");
+                }
+                return new Named("CancellationToken", List.of());
+            }
+
             if (call.callee() instanceof Ast.MemberExpr selectCaseCall
                     && selectCaseCall.receiver() instanceof Ast.NameExpr factory
                     && factory.name().equals("SelectCase")) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
-                            "SelectCase constructors infer channel element types");
+                            "SelectCase constructors infer their source types");
                 }
                 return switch (selectCaseCall.member()) {
                     case "read" -> {
                         if (call.arguments().size() != 1) {
-                            throw new IllegalArgumentException("SelectCase.read expects one Channel<T>");
+                            throw new IllegalArgumentException(
+                                    "SelectCase.read expects one Channel<T>");
                         }
-                        channelElementType(
+                        Type element = channelElementType(
                                 typeOf(call.arguments().getFirst(), env, generics, self),
                                 "SelectCase.read");
-                        yield new Named("SelectCase", List.of());
+                        yield new Named("SelectCase", List.of(element));
                     }
                     case "write" -> {
                         if (call.arguments().size() != 2) {
@@ -2124,16 +2146,64 @@ public final class TypeChecker {
                                 typeOf(call.arguments().get(1), env, generics, self),
                                 element,
                                 "SelectCase.write value");
-                        yield new Named("SelectCase", List.of());
+                        yield new Named("SelectCase", List.of(Primitive.VOID));
+                    }
+                    case "await" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.await expects Future<T>");
+                        }
+                        Type awaited = deref(
+                                typeOf(call.arguments().getFirst(), env, generics, self));
+                        if (!(awaited instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.await expects Future<T>; got " + awaited);
+                        }
+                        Type payload = future.arguments().getFirst();
+                        if (payload == Primitive.VOID) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.await(Future<void>) is not representable in Select<T>; "
+                                            + "use a static 'when await future' arm without a binding");
+                        }
+                        yield new Named("SelectCase", List.of(payload));
+                    }
+                    case "timeout" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.timeout expects a nanosecond count");
+                        }
+                        requireAssignable(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.INT,
+                                "SelectCase.timeout nanoseconds");
+                        yield new Named("SelectCase", List.of(Primitive.VOID));
+                    }
+                    case "cancelled" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.cancelled expects CancellationToken");
+                        }
+                        Type token = deref(
+                                typeOf(call.arguments().getFirst(), env, generics, self));
+                        if (!(token instanceof Named named)
+                                || !named.name().equals("CancellationToken")) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.cancelled expects CancellationToken; got " + token);
+                        }
+                        yield new Named("SelectCase", List.of(Primitive.VOID));
                     }
                     case "default" -> {
                         if (!call.arguments().isEmpty()) {
-                            throw new IllegalArgumentException("SelectCase.default expects no arguments");
+                            throw new IllegalArgumentException(
+                                    "SelectCase.default expects no arguments");
                         }
-                        yield new Named("SelectCase", List.of());
+                        yield new Named("SelectCase", List.of(Primitive.VOID));
                     }
                     default -> throw new IllegalArgumentException(
-                            "unknown SelectCase constructor '" + selectCaseCall.member() + "'");
+                            "unknown SelectCase constructor '"
+                                    + selectCaseCall.member() + "'");
                 };
             }
 
@@ -2142,14 +2212,37 @@ public final class TypeChecker {
                     && factory.name().equals("SelectSet")
                     && selectSetCall.member().equals("new")) {
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("SelectSet.new does not accept type arguments");
+                    throw new IllegalArgumentException(
+                            "SelectSet.new does not accept type arguments");
                 }
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(
-                            "SelectSet.new expects one list/map of SelectCase values");
+                            "SelectSet.new expects one selectable source");
                 }
-                typeOf(call.arguments().getFirst(), env, generics, self);
-                return new Named("SelectSet", List.of());
+                Type source = deref(
+                        typeOf(call.arguments().getFirst(), env, generics, self));
+                return new Named(
+                        "SelectSet",
+                        List.of(selectPayloadType(source)));
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr selectPlanCall
+                    && selectPlanCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("SelectPlan")
+                    && selectPlanCall.member().equals("new")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "SelectPlan.new does not accept type arguments");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "SelectPlan.new expects one selectable source");
+                }
+                Type source = deref(
+                        typeOf(call.arguments().getFirst(), env, generics, self));
+                return new Named(
+                        "SelectPlan",
+                        List.of(selectPayloadType(source)));
             }
 
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -2847,13 +2940,16 @@ public final class TypeChecker {
 
             Type selectedReceiver = deref(receiver);
             if (selectedReceiver instanceof Named selected
-                    && selected.name().equals("SelectResult")) {
+                    && selected.name().equals("Select")
+                    && selected.arguments().size() == 1) {
+                Type payload = selected.arguments().getFirst();
                 return switch (member.member()) {
                     case "index" -> Primitive.INT;
                     case "operation" -> Primitive.STRING;
                     case "value" -> Unknown.INSTANCE;
+                    case "payload" -> new Named("Option", List.of(payload));
                     default -> throw new IllegalArgumentException(
-                            "unknown SelectResult member '" + member.member() + "'");
+                            "unknown Select<T> member '" + member.member() + "'");
                 };
             }
 
@@ -3116,11 +3212,10 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
-            // Dynamic select accepts a SelectSet directly or a runtime
-            // list/map of SelectCase values. The exact case element type may
-            // remain Unknown until collection generic constraints are richer.
-            typeOf(selected.cases(), env, generics, self);
-            Type result = new Named("SelectResult", List.of());
+            Type source = deref(
+                    typeOf(selected.cases(), env, generics, self));
+            Type payload = selectPayloadType(source);
+            Type result = new Named("Select", List.of(payload));
             Type optional = new Named("Option", List.of(result));
             return switch (selected.mode()) {
                 case BLOCKING, IMMEDIATE -> optional;
@@ -3231,6 +3326,36 @@ public final class TypeChecker {
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    private Type selectPayloadType(Type source) {
+        source = deref(source);
+        if (source == Unknown.INSTANCE) return Unknown.INSTANCE;
+        if (source instanceof ListType list) {
+            return selectPayloadType(list.element());
+        }
+        if (source instanceof Union union) {
+            ArrayList<Type> payloads = new ArrayList<>();
+            for (Type option : union.options()) {
+                Type payload = selectPayloadType(option);
+                if (payload != Primitive.VOID) payloads.add(payload);
+            }
+            return payloads.isEmpty()
+                    ? Primitive.VOID
+                    : Types.unionOf(payloads);
+        }
+        if (source instanceof Named named) {
+            if ((named.name().equals("SelectCase")
+                    || named.name().equals("SelectSet")
+                    || named.name().equals("SelectPlan"))
+                    && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+        }
+        if (source instanceof Record) return Unknown.INSTANCE;
+        throw new IllegalArgumentException(
+                "dynamic select requires SelectCase<T>, SelectPlan<T>, SelectSet<T>, "
+                        + "or a collection of SelectCase<T>; got " + source);
     }
 
     private Type channelElementType(Type channel, String where) {
@@ -6798,6 +6923,35 @@ public final class TypeChecker {
                 // Future<void> is the canonical completion type for nb writech.
                 // OresFuture supports a null terminal payload, so void is valid here.
                 yield new Named("Future", List.of(element));
+            }
+            case "SelectCase", "SelectSet", "SelectPlan", "Select" -> {
+                if (ref.inferArguments() || ref.arguments().size() > 1) {
+                    throw new IllegalArgumentException(
+                            ref.name()
+                                    + " accepts zero (legacy erased) or one explicit type argument");
+                }
+                yield new Named(
+                        ref.name(),
+                        List.of(ref.arguments().isEmpty()
+                                ? Unknown.INSTANCE
+                                : resolve(
+                                        ref.arguments().getFirst(),
+                                        generics,
+                                        self)));
+            }
+            case "SelectResult" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "SelectResult is the legacy erased select-result spelling and takes no type arguments");
+                }
+                yield new Named("Select", List.of(Unknown.INSTANCE));
+            }
+            case "CancellationToken" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "CancellationToken does not accept type arguments");
+                }
+                yield new Named("CancellationToken", List.of());
             }
             case "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
