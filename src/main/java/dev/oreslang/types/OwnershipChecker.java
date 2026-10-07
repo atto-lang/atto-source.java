@@ -82,6 +82,11 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        validateCallableBorrowSurface(
+                "function '" + fn.name() + "'",
+                fn.parameters(),
+                fn.returnType(),
+                fn.async() || fn.generator());
         Scope scope = new Scope(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -101,9 +106,10 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
-            if (fieldType != null && fieldType.isBorrow()) {
+            if (fieldType != null && containsStoredBorrowType(fieldType)) {
                 throw error("field '" + klass.name() + "." + field.name()
-                        + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
+                        + "' cannot store a borrowed reference, including inside an owned container; "
+                        + "class/actor fields must own, copy, share, or proxy their state");
             }
         }
 
@@ -128,6 +134,18 @@ public final class OwnershipChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            validateCallableBorrowSurface(
+                    "method '" + klass.name() + "." + method.name() + "'",
+                    method.parameters(),
+                    method.returnType(),
+                    method.async());
+            if (method.async()
+                    && !method.isStatic()
+                    && klass.actorKind() == Ast.ActorKind.NONE) {
+                throw error("async instance method '" + klass.name() + "." + method.name()
+                        + "' would retain a borrowed self receiver across deferred execution; "
+                        + "use an owned/static async entry point until receiver lifetime pinning is supported");
+            }
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -176,6 +194,10 @@ public final class OwnershipChecker {
     }
 
     private VarState stateForParam(Ast.Param param) {
+        if (!param.type().isBorrow() && containsStoredBorrowType(param.type())) {
+            throw error("parameter '" + param.name()
+                    + "' cannot hide a borrow inside an owned parameter type until explicit lifetime parameters are supported");
+        }
         if (param.structural() && param.mutable()) {
             throw error("structural parameter '" + param.name()
                     + "' is a read-only borrowed view and cannot be declared mut");
@@ -263,7 +285,7 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
-                validateReturnedBorrow(ret.value(), returned);
+                validateReturnedBorrow(ret.value(), returned, returnType);
             }
             return;
         }
@@ -570,6 +592,16 @@ public final class OwnershipChecker {
 
         value = retainBorrowForBinding(value);
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
+        if (isBorrowValue(value)
+                && binding.declaredType() != null
+                && !binding.declaredType().isBorrow()) {
+            throw error("borrowed value '" + binding.name()
+                    + "' cannot be laundered into an owned binding type");
+        }
+        if (!storedType.isBorrow() && containsStoredBorrowType(storedType)) {
+            throw error("binding '" + binding.name()
+                    + "' cannot store a borrow inside an owned container until explicit lifetime parameters are supported");
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -769,13 +801,20 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            checkExpr(member.receiver(), scope, false);
+            ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver != null
                     && concreteReceiver.name().equals("DynamicStruct")
                     && concreteReceiver.arguments().size() == 1) {
                 Ast.TypeRef valueType = concreteReceiver.arguments().getFirst();
-                return new ValueInfo(valueType, kindOfType(valueType), null);
+                ValueKind valueKind = kindOfType(valueType);
+                if (isBorrowValue(receiverValue) && valueKind != ValueKind.COPY) {
+                    return new ValueInfo(
+                            Ast.TypeRef.borrowed(valueType, false),
+                            ValueKind.IMM_BORROW,
+                            receiverValue.borrowSource);
+                }
+                return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             if (klass != null) {
@@ -789,6 +828,12 @@ public final class OwnershipChecker {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
+                    if (isBorrowValue(receiverValue) && fieldKind != ValueKind.COPY) {
+                        return new ValueInfo(
+                                Ast.TypeRef.borrowed(fieldType, false),
+                                ValueKind.IMM_BORROW,
+                                receiverValue.borrowSource);
+                    }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
@@ -796,6 +841,12 @@ public final class OwnershipChecker {
                     throw error("actor self method '" + klass.name() + "." + member.member()
                             + "' cannot escape its mailbox turn as a bound method; invoke it directly inside the turn");
                 }
+            }
+            if (isBorrowValue(receiverValue)) {
+                return new ValueInfo(
+                        Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), false),
+                        ValueKind.IMM_BORROW,
+                        receiverValue.borrowSource);
             }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
@@ -806,6 +857,12 @@ public final class OwnershipChecker {
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
+            }
+            if (isBorrowValue(receiver) && elementKind != ValueKind.COPY) {
+                return new ValueInfo(
+                        Ast.TypeRef.borrowed(elementType, false),
+                        ValueKind.IMM_BORROW,
+                        receiver.borrowSource);
             }
             return new ValueInfo(elementType, elementKind, null);
         }
@@ -1309,6 +1366,10 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(argument.type)) {
                 throw error(callable + " argument " + (i + 1) + " cannot consume a guard-bearing value");
             }
+            if (isBorrowValue(argument)) {
+                throw error(callable + " argument " + (i + 1)
+                        + " is borrowed and cannot satisfy an owned parameter");
+            }
         }
     }
 
@@ -1402,6 +1463,50 @@ public final class OwnershipChecker {
                     || (value.type != null && value.type.isBorrow()));
     }
 
+    private boolean containsStoredBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        if (type.name().equals("Fnc") || type.name().equals("Function")) return false;
+        if (type.isRecordType()) {
+            for (Ast.TypeRef member : type.recordMembers().values()) {
+                if (containsStoredBorrowType(member)) return true;
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsStoredBorrowType(argument)) return true;
+        }
+        return false;
+    }
+
+    private void validateCallableBorrowSurface(
+            String callable,
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType,
+            boolean deferred) {
+        if (returnType != null
+                && !returnType.isBorrow()
+                && containsStoredBorrowType(returnType)) {
+            throw error(callable
+                    + " cannot return an owned container that embeds a borrow until explicit lifetime parameters are supported");
+        }
+        for (Ast.Param parameter : parameters) {
+            if (!parameter.type().isBorrow()
+                    && containsStoredBorrowType(parameter.type())) {
+                throw error(callable + " parameter '" + parameter.name()
+                        + "' cannot hide a borrow inside an owned parameter type");
+            }
+            if (deferred && (parameter.type().isBorrow() || parameter.structural())) {
+                throw error(callable + " is deferred and cannot accept borrowed parameter '"
+                        + parameter.name()
+                        + "'; Future/Iterator lifetimes are not yet parameterized by the caller's borrow");
+            }
+        }
+        if (deferred && returnType != null && returnType.isBorrow()) {
+            throw error(callable
+                    + " is deferred and cannot return/yield a borrow until Future/Iterator lifetimes are explicit");
+        }
+    }
+
     private boolean isIncomingBorrow(VarState state) {
         return state != null
                 && state.origin == Origin.PARAM
@@ -1417,9 +1522,10 @@ public final class OwnershipChecker {
                     + "return explicit owned data or pass the borrow directly until explicit lifetime parameters are supported");
         }
         VarState source = ownershipRoot(value.borrowSource);
-        if (value.borrowLease || isIncomingBorrow(source)) return value;
+        if (value.borrowLease) return value;
 
         if (value.kind == ValueKind.MUT_BORROW) {
+            if (isIncomingBorrow(source)) return value;
             throw error("cannot alias a mutable borrow; transfer the existing &mut binding instead");
         }
         if (source.mutableBorrowed) {
@@ -1429,9 +1535,15 @@ public final class OwnershipChecker {
         return new ValueInfo(value.type, value.kind, source, true);
     }
 
-    private void validateReturnedBorrow(Ast.Expr expression, ValueInfo returned) {
+    private void validateReturnedBorrow(
+            Ast.Expr expression,
+            ValueInfo returned,
+            Ast.TypeRef declaredReturnType) {
         if (!isBorrowValue(returned)) return;
-
+        if (declaredReturnType == null || !declaredReturnType.isBorrow()) {
+            throw error("borrowed expression cannot be returned as owned data; "
+                    + "declare a borrowed return type or return an owned copy/take/share result");
+        }
         VarState source = returned.borrowSource == null
                 ? null
                 : ownershipRoot(returned.borrowSource);

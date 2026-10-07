@@ -555,6 +555,123 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void borrowedInteriorFieldCannotBeReturnedAsOwnedData() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 7;
+                        end
+
+                        define class Holder as
+                          pub val Box box = new Box();
+                        end
+
+                        fnc bad(&Holder holder): Box {
+                          return holder.box;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("returned as owned data"), error::getMessage);
+    }
+
+    @Test
+    void borrowedInteriorFieldMayBeReturnedAsBorrowFromIncomingBorrow() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub val int value = 7;
+                end
+
+                define class Holder as
+                  pub val Box box = new Box();
+                end
+
+                fnc get(&Holder holder): &Box {
+                  return holder.box;
+                }
+                """)));
+    }
+
+    @Test
+    void borrowedInteriorFieldOfLocalCannotEscape() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 7;
+                        end
+
+                        define class Holder as
+                          pub val Box box = new Box();
+                        end
+
+                        fnc bad(): &Box {
+                          let Holder holder = new Holder();
+                          val &Holder view = &holder;
+                          return view.box;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("outlive")
+                || error.getMessage().contains("incoming borrowed"), error::getMessage);
+    }
+
+    @Test
+    void borrowedInteriorFieldCannotSatisfyOwnedParameter() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 7;
+                        end
+
+                        define class Holder as
+                          pub val Box box = new Box();
+                        end
+
+                        fnc consume(Box box): void {
+                          return;
+                        }
+
+                        fnc bad(&Holder holder): void {
+                          consume(holder.box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("borrowed")
+                && error.getMessage().contains("owned parameter"), error::getMessage);
+    }
+
+    @Test
+    void borrowedInteriorCopyFieldMayBeReadNormally() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub val int value = 7;
+                end
+
+                define class Holder as
+                  pub val Box box = new Box();
+                end
+
+                fnc read(&Holder holder): int {
+                  return holder.box.value;
+                }
+                """)));
+    }
+
+    @Test
+    void deferredCallablesRejectBorrowedParametersWithoutLifetimePinning() {
+        for (String declaration : new String[] {
+                "async fnc bad(&Bar value): int { return 1; }",
+                "generator fnc bad(&Bar value): int { yield 1; return; }"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                    TypeChecker.check(Parser.parse("""
+                            define class Bar as
+                              pub val int value = 7;
+                            end
+                            """ + declaration)));
+            assertTrue(error.getMessage().contains("deferred")
+                    || error.getMessage().contains("borrow"), error::getMessage);
+        }
+    }
+
+    @Test
     void actorSelfBoundMethodCannotEscapeMailboxTurn() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
