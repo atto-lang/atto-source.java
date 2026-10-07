@@ -302,7 +302,7 @@ tuple_literal   = "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 inferred_struct_literal
-                = ( "struct" "infer" | "infer" "struct" )
+                = "infer" "struct"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
 explicit_struct_literal
                 = "struct" "{"
@@ -459,8 +459,8 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Single- and double-quoted struct keys are equivalent static field names.
      Reserved stop/do/done are legal static struct/member keys.
    - Anonymous structs always have a closed compile-time-known field set.
-     infer struct{...} is canonical; infer struct {...} is an equivalent
-     compatibility spelling. Computed/backtick struct keys are rejected.
+     infer struct{...} is canonical; whitespace before the initializer is optional.
+     Computed/backtick struct keys are rejected.
    - DynamicStruct<T> and obj{...} are not language value forms. Open-ended
      keyed collections must use a dedicated collection abstraction rather than
      changing an anonymous struct's shape at runtime.

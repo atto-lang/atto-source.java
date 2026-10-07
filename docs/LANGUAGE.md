@@ -523,7 +523,7 @@ const user = infer struct{name: "Ada", age: 37};
 stdio.println(user.name);
 ```
 
-`infer struct {...}` is accepted as an equivalent compatibility spelling.
+Whitespace before the initializer is optional: `infer struct {...}`.
 An inferred struct is permanently readonly: its field set and field values
 cannot be mutated through aliases or mutable bindings.
 

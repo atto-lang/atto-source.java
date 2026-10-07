@@ -7294,11 +7294,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object publicStructuralMember(Object value, String name) {
-            if (value instanceof DynamicStructValue dynamic) {
-                return dynamic.fields.containsKey(name)
-                        ? dynamic.fields.get(name)
-                        : Env.MISSING;
-            }
             if (value instanceof Map<?, ?> map) {
                 return map.containsKey(name) ? map.get(name) : Env.MISSING;
             }
