@@ -296,11 +296,17 @@ public final class TypeChecker {
                         "module '" + module.name() + "' is missing required contract field '" + contract.name()
                                 + "." + required.name() + "'");
             }
-            if (actual.bindingKind() != required.bindingKind()) {
+            boolean actualRebindable = actual.bindingKind() == Ast.BindingKind.LET;
+            boolean requiredRebindable = required.bindingKind() == Ast.BindingKind.LET;
+            if (actualRebindable != requiredRebindable
+                    || actual.mutableReferent() != required.mutableReferent()) {
                 throw new IllegalArgumentException(
-                        "module '" + module.name() + "." + actual.name() + "' has binding kind "
-                                + actual.bindingKind() + " but contract '" + contract.name() + "' requires "
-                                + required.bindingKind());
+                        "module '" + module.name() + "." + actual.name()
+                                + "' has binding capabilities rebindable=" + actualRebindable
+                                + ", mutableReferent=" + actual.mutableReferent()
+                                + " but contract '" + contract.name()
+                                + "' requires rebindable=" + requiredRebindable
+                                + ", mutableReferent=" + required.mutableReferent());
             }
         }
 
