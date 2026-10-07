@@ -5416,7 +5416,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
-                return tailCallable(args -> {
+                TailInvokable bodyCallable = tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
@@ -5441,6 +5441,15 @@ public final class OresEvalRootNode extends RootNode {
                     } catch (BreakSignal | ContinueSignal signal) {
                         throw new IllegalStateException("loop control cannot cross a lambda boundary", signal);
                     }
+                });
+                if (!lambda.async()) return bodyCallable;
+                // Async RHS callbacks are first-class tasks.  The runtime-owned
+                // carrier enters guest code through the context's turn executor;
+                // it must never occupy an actor dispatcher worker while awaiting.
+                return tailCallable(args -> {
+                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
+                    List<Object> supplied = List.copyOf(args);
+                    return context.asyncRuntime().submit(() -> invoke(invokableInvocation(bodyCallable, supplied)));
                 });
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
