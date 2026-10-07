@@ -5704,6 +5704,49 @@ public final class OresEvalRootNode extends RootNode {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof ActorRuntime.ActorRef<?> actorRef) {
+                @SuppressWarnings("unchecked")
+                ActorRuntime.ActorRef<Object> typedRef =
+                        (ActorRuntime.ActorRef<Object>) actorRef;
+                return switch (name) {
+                    case "ready" -> actorRef.ready();
+                    case "done" -> actorRef.done();
+                    case "id" -> actorRef.id();
+                    case "kind" -> actorRef.kind();
+                    case "send" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.send");
+                        typedRef.send(args.getFirst());
+                        return null;
+                    };
+                    case "stop" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.stop");
+                        actorRef.stop();
+                        return null;
+                    };
+                    case "cancel" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.cancel");
+                        return actorRef.cancel();
+                    };
+                    case "kill" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.kill");
+                        return actorRef.kill();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorRef member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorInboxMail<?> mail) {
+                return switch (name) {
+                    case "value" -> mail.value();
+                    case "recipient" -> mail.recipient();
+                    case "sender" -> mail.sender().isPresent()
+                            ? new OptionValue(true, mail.sender().orElseThrow())
+                            : new OptionValue(false, null);
+                    case "sequence" -> mail.sequence();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorMail member " + name);
+                };
+            }
             if (receiver instanceof OresFuture<?> future) {
                 return switch (name) {
                     case "map" -> (Invokable) args -> {
