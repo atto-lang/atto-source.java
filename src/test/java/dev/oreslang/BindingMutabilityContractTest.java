@@ -165,4 +165,23 @@ final class BindingMutabilityContractTest {
                 """);
     }
 
+
+    @Test void duplicateValMutQualifierIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                  val mut Box x = new Box();
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                  val Channel<Box> inbox = Channel.new<Box>(1);
+                  select {
+                    case val mut job = readch(inbox) -> { }
+                  }
+                  return;
+                }
+                """));
+    }
+
 }
