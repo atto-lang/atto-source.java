@@ -5053,6 +5053,12 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
+        if (concrete instanceof Record) {
+            // Inline structural shapes are already the canonical read-only
+            // structural contract. They do not need a nominal class/interface
+            // lookup and may safely view readonly inferred records.
+            return concrete;
+        }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
             if (!(concrete instanceof Named named)) {
