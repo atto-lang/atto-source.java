@@ -74,15 +74,31 @@ of output strings.
 | `w.stop()`, `w.cancel()` | `void`, `bool` | Graceful stop vs structured cancellation (supervisor authority checks apply) |
 | `w.kill()` | `bool` | Force-isolated cancellation only if revoker is configured; never thread interruption masquerading as isolation |
 | `self.send(value)` | `Future<void>` or nonblocking admission acknowledgement | **Outbound** from actor to its output stream; NOT recursive delivery to own inbox |
-| `self.end()` | `void` | Actor-side graceful completion: reject new outputs; close stream after admitted outputs drain |
+| `self.end()` | `void` | Non-blocking graceful stop request; seals/drains the inbox immediately so no later `receive()` starts; current turn may finish, then finalization closes outputs after admitted values drain |
+| `self.endWithCleanup(|| -> { ... })` | `void` | Same immediate inbox fence as `self.end()`, plus one synchronous zero-arg final cleanup action after the current turn unwinds and before outputs close / `done` settles |
 | `receive(ActorMail<T>)` | `void` | Lifecycle handler invoked once per incoming envelope, serialized and actor-local |
 | `rt cooperate` | `void` scheduling effect | Suspension/safepoint; no implicit publication or message delivery |
 
-`self.send(value)` and `self.end()` are **non-overridable runtime actor
-operations**. Actor classes may not declare instance methods named `send` or
-`end`, and source code does not use `super.send(...)` to reach transport.
+`self.send(value)`, `self.end()`, and `self.endWithCleanup(...)` are **non-overridable runtime actor operations**. Actor classes may not declare instance methods named `send`, `end`, or `endWithCleanup`, and source code does not use `super.send(...)` to reach transport.
 This keeps quota checks, serialization, termination fences, and output-stream
 ordering outside user-overridable dispatch.
+
+`self.end()` is intentionally **not overloaded**. Cleanup uses the separate
+`self.endWithCleanup(...)` name:
+
+```ores
+self.endWithCleanup(|| -> {
+  // final synchronous actor-local cleanup
+});
+```
+
+The end request itself does not block. As soon as either end API is called, the
+actor mailbox is sealed and queued-but-not-started mail is discarded; no later
+`receive()` invocation may begin. Code already executing in the current
+`receive()` may continue until that turn returns. For `endWithCleanup`, the
+cleanup then runs exactly once as the final guest action while actor-local state
+is still available. Cleanup cannot be async/suspending; if it throws, `done`
+rejects with the cleanup failure.
 
 ## Message identities and transport
 
