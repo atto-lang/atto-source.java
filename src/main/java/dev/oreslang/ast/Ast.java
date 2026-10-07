@@ -887,7 +887,8 @@ public final class Ast {
     public record ObjectExpr(
             List<ObjectField> fields,
             ObjectKind kind,
-            List<StructFieldSpec> declaredFields) implements Expr {
+            List<StructFieldSpec> declaredFields,
+            TypeRef inferenceWitness) implements Expr {
         public ObjectExpr {
             fields = List.copyOf(fields);
             declaredFields = List.copyOf(declaredFields);
@@ -895,12 +896,18 @@ public final class Ast {
             if (kind != ObjectKind.EXPLICIT_STRUCT && !declaredFields.isEmpty()) {
                 throw new IllegalArgumentException("only explicit structs may carry a declared field shape");
             }
+            if (inferenceWitness != null && kind != ObjectKind.INFERRED_STRUCT) {
+                throw new IllegalArgumentException("only inferred structs may carry an inference type witness");
+            }
+        }
+        public ObjectExpr(List<ObjectField> fields, ObjectKind kind, List<StructFieldSpec> declaredFields) {
+            this(fields, kind, declaredFields, null);
         }
         public ObjectExpr(List<ObjectField> fields) {
-            this(fields, ObjectKind.OBJECT, List.of());
+            this(fields, ObjectKind.OBJECT, List.of(), null);
         }
         public ObjectExpr(List<ObjectField> fields, boolean inferredStruct) {
-            this(fields, inferredStruct ? ObjectKind.INFERRED_STRUCT : ObjectKind.OBJECT, List.of());
+            this(fields, inferredStruct ? ObjectKind.INFERRED_STRUCT : ObjectKind.OBJECT, List.of(), null);
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
