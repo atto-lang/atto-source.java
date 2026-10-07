@@ -190,13 +190,16 @@ deprecated_if_do
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 
+(* 'over' is the contextual delimiter; no 'with' / 'match-and-return'. *)
+(* Match is a statement in statement position, an expression in value position. *)
 match_stmt      = "match" [ "first" ] expression
                   ( "over" match_arm { match_arm } "end"
                   | "{" match_arm { match_arm } "}"
                   | [ ";" ] match_arm { match_arm } "end" ) ;
-match_value     = "match-and-return" [ "first" ] expression
+match_value     = "match" [ "first" ] expression
                   ( "over" match_return_arm { match_return_arm } "end"
-                  | "{" match_return_arm { match_return_arm } "}" ) ;
+                  | "{" match_arm { match_arm } "}"
+                  | [ ";" ] match_arm { match_arm } "end" ) ;
 match_return_arm= ( pattern | "else" | "default" | "Symbol.default" )
                   [ "when" expression ] "->"
                   "{" { statement } "return" expression [ ";" ] "}" ;
