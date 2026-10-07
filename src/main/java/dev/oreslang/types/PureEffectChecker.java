@@ -60,6 +60,18 @@ public final class PureEffectChecker {
                     inherited.binding(),
                     callableBoundaryFromParent || inherited.crossedCallableBoundary());
         }
+
+        private void rebind(String name, Binding binding) {
+            if (bindings.containsKey(name)) {
+                bindings.put(name, binding);
+                return;
+            }
+            if (parent != null && !callableBoundaryFromParent) {
+                parent.rebind(name, binding);
+                return;
+            }
+            throw error("cannot rebind unknown/outside pure-effect binding '" + name + "'");
+        }
     }
 
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
@@ -578,6 +590,22 @@ public final class PureEffectChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             assertWritableTarget(assignment.target(), scope, callable);
             checkExpr(assignment.value(), scope, module, callable);
+
+            if (assignment.target() instanceof Ast.NameExpr name) {
+                Lookup previous = scope.lookup(name.name());
+                if (previous == null) {
+                    throw error("pure callable '" + callable
+                            + "' cannot rebind unknown name '" + name.name() + "'");
+                }
+                Binding binding = previous.binding();
+                scope.rebind(name.name(), new Binding(
+                        binding.slot(),
+                        aliasesExternal(assignment.value(), scope)
+                                ? ValueOrigin.EXTERNAL_ALIAS
+                                : ValueOrigin.OWNED,
+                        binding.kind(),
+                        provenPureCallable(assignment.value(), scope)));
+            }
             return;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
@@ -700,7 +728,15 @@ public final class PureEffectChecker {
             Scope scope,
             String callable) {
         Lookup found = scope.lookup(name.name());
-        if (found == null) return;
+        if (found == null) {
+            if (name.name().equals("None")) return;
+            Ast.FunctionDecl target = ambiguousFunctions.contains(name.name())
+                    ? null
+                    : functions.get(name.name());
+            if (target != null && target.pure()) return;
+            throw error("pure callable '" + callable
+                    + "' cannot read unresolved/ambient binding '" + name.name() + "'");
+        }
 
         Binding binding = found.binding();
         if (binding.slot() == SlotOrigin.EXTERNAL
