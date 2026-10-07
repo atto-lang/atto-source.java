@@ -121,14 +121,14 @@ public final class Parser {
                             modifiers.visibility != Ast.Visibility.PUBLIC));
                     continue;
                 }
-                if (match(INTERFACE)) {
+                if (match(INTERFACE, TRAIT)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
-                    validateOnlyVisibilityModifiers(modifiers, "interfaces");
+                    validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                throw error(previous(), "expected module, class, interface, or trait after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -282,18 +282,18 @@ public final class Parser {
                 return parseClass(modifiers.visibility,
                         modifiers.isAbstract, false);
             }
-            if (match(INTERFACE)) {
+            if (match(INTERFACE, TRAIT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
-                validateOnlyVisibilityModifiers(modifiers, "interfaces");
+                validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class or interface after 'define'");
+            throw error(previous(), "expected class, interface, or trait after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
+        throw error(peek(), "expected function, routine, class, interface, trait, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
@@ -360,9 +360,9 @@ public final class Parser {
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
             return parseContract(modifiers.visibility);
         }
-        if (match(INTERFACE)) {
-            validateOnlyVisibilityModifiers(modifiers, "interfaces");
-            rejectCallableStructuralAnnotation(annotations, "interface declarations");
+        if (match(INTERFACE, TRAIT)) {
+            validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
+            rejectCallableStructuralAnnotation(annotations, "interface/trait declarations");
             return parseInterface(modifiers.visibility);
         }
         if (match(TYPE)) {
