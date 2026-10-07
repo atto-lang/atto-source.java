@@ -3757,7 +3757,10 @@ public final class TypeChecker {
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type refinement: " + source + " cannot be " + target);
             }
-            destination.define(test.binding(), target, Ast.BindingKind.VAL);
+            destination.define(
+                    test.binding(),
+                    overlayReadonlyCapabilities(source, target),
+                    Ast.BindingKind.VAL);
             return;
         }
         if (condition instanceof Ast.PatternTestExpr test) {
@@ -3837,7 +3840,12 @@ public final class TypeChecker {
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
-            if (typed.binding() != null) bindings.define(typed.binding(), target, Ast.BindingKind.VAL);
+            if (typed.binding() != null) {
+                bindings.define(
+                        typed.binding(),
+                        overlayReadonlyCapabilities(subject, target),
+                        Ast.BindingKind.VAL);
+            }
             return;
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
