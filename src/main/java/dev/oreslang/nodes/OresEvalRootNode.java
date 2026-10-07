@@ -3435,7 +3435,8 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
-                    && env.lookup(name.name()) == Env.MISSING) {
+                    && env.lookup(name.name()) == Env.MISSING
+                    && !env.outerDeclarationsBlocked()) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
                     evalSuspendableArguments(
@@ -4807,7 +4808,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
-                    && env.lookup(directName.name()) == Env.MISSING) {
+                    && env.lookup(directName.name()) == Env.MISSING
+                    && !env.outerDeclarationsBlocked()) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     List<Object> args = evaluateArguments(call.arguments(), env);
@@ -5110,12 +5112,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Invokable hostFunction = hostFunctions.get(name.name());
                 if (hostFunction != null) return hostFunction;
+                Object imported = importedValue(name.name());
+                if (imported != Env.MISSING) return imported;
+                if (env.outerDeclarationsBlocked()) {
+                    throw new IllegalArgumentException(
+                            "nlex callable cannot resolve outer declaration " + name.name()
+                                    + "; import it explicitly or pass it as an argument");
+                }
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) return new ModuleFacade(this, module);
                 Ast.ClassDecl klass = findClass(name.name());
                 if (klass != null) return new ClassFacade(this, klass);
-                Object imported = importedValue(name.name());
-                if (imported != Env.MISSING) return imported;
                 Ast.FunctionDecl fn = findSingleFunction(name.name());
                 if (fn != null) {
                     if (fn.actorKind() != Ast.ActorKind.NONE) {
@@ -7318,6 +7325,7 @@ public final class OresEvalRootNode extends RootNode {
         private static final Object MISSING = new Object();
         private final Env parent;
         private final boolean descendantsNonLexical;
+        private final boolean outerDeclarationsBlocked;
         private final Ast.ClassDecl accessClass;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
@@ -7345,10 +7353,13 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject constructingObject) {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
+            this.outerDeclarationsBlocked = descendantsNonLexical
+                    || (parent != null && parent.outerDeclarationsBlocked);
             this.accessClass = accessClass;
             this.constructingObject = constructingObject;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
+        private boolean outerDeclarationsBlocked() { return outerDeclarationsBlocked; }
         private Ast.ClassDecl accessClass() { return accessClass; }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
