@@ -396,7 +396,7 @@ final class ProjectManifestImportTest {
                 import fnc imported_marker from "./helper.ores";
 
                 define actor Worker as
-                  receive(ActorMail<String> mail): void {
+                  pub run(): void {
                     imported_marker();
                     self.end();
                     return;
@@ -406,7 +406,7 @@ final class ProjectManifestImportTest {
                 pub async routine main(): void {
                   val worker = spawn Worker();
                   await worker.ready;
-                  worker.send("go");
+                  worker.send.run();
                   await worker.done;
                   return;
                 }
