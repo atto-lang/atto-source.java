@@ -5553,6 +5553,21 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
+            if (receiver instanceof ChannelRuntime.Channel<?> channel) {
+                return switch (name) {
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Channel.close");
+                        channel.close();
+                        return null;
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "Channel.is_closed");
+                        return channel.isClosed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Channel member " + name);
+                };
+            }
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
                     throw new IllegalArgumentException("unknown Channel factory member " + name);
