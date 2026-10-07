@@ -1545,7 +1545,7 @@ public final class Parser {
 
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
-            if (match(CASE, WHEN)) {
+            if (matchContextualKeyword("when", "case")) {
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -2224,7 +2224,7 @@ public final class Parser {
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
             Ast.Pattern pattern = match(ELSE) ? new Ast.WildcardPattern() : parsePattern();
-            Ast.Expr guard = match(WHEN) ? parseExpression() : null;
+            Ast.Expr guard = matchContextualKeyword("when") ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
@@ -2279,7 +2279,7 @@ public final class Parser {
         boolean sawDefault = false;
 
         while (!check(END) && !check(EOF)) {
-            if (match(CASE)) {
+            if (matchContextualKeyword("case")) {
                 if (sawDefault) throw error(previous(), "switch case cannot appear after default");
                 List<Ast.Expr> constants = new ArrayList<>();
                 do constants.add(parseExpression()); while (match(COMMA));
@@ -2596,7 +2596,7 @@ public final class Parser {
     private Ast.DynamicSelectExpr parseDynamicSelect(Ast.WaitMode mode) {
         Ast.SelectPolicy policy = parseSelectPolicy();
         consume(FROM,
-                "dynamic select requires 'select from cases'; static select uses 'select { case ... }'");
+                "dynamic select requires 'select from cases'; static select uses 'select { when ... }'");
         Ast.Expr cases = parseUnary();
         return new Ast.DynamicSelectExpr(mode, policy, cases);
     }
@@ -3097,6 +3097,25 @@ public final class Parser {
         if (check(IDENT) && peek().lexeme().equals("shared")) {
             advance();
             return true;
+        }
+        return false;
+    }
+
+    /**
+     * Matches words that are keywords only in a specific grammar position.
+     *
+     * <p>{@code case} and {@code when} intentionally lex as IDENT so they remain
+     * legal variable/parameter names. Grammar productions opt into their keyword
+     * meaning explicitly at switch/select arms and match guards.</p>
+     */
+    private boolean matchContextualKeyword(String... keywords) {
+        if (!check(IDENT)) return false;
+        String lexeme = peek().lexeme();
+        for (String keyword : keywords) {
+            if (lexeme.equals(keyword)) {
+                advance();
+                return true;
+            }
         }
         return false;
     }
