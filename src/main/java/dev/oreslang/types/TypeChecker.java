@@ -3212,6 +3212,13 @@ public final class TypeChecker {
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
                         || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
             }
+            if (a.constructor().equals(b.constructor()) && a.arguments().size() == b.arguments().size()) {
+                for (int i = 0; i < a.arguments().size(); i++) {
+                    Type payload = constructorPatternArgumentType(a.constructor(), subject, i);
+                    if (payload != null && patternsProvablyDisjoint(
+                            a.arguments().get(i), b.arguments().get(i), payload, generics, self)) return true;
+                }
+            }
             return false;
         }
         if (left instanceof Ast.TypePattern a && right instanceof Ast.TypePattern b) {
@@ -3220,6 +3227,17 @@ public final class TypeChecker {
             return !typesMayOverlap(at, bt);
         }
         return false;
+    }
+
+    private Type constructorPatternArgumentType(String name, Type subject, int index) {
+        if (!(subject instanceof Named named)) return null;
+        if (name.equals("Some") && named.name().equals("Option")
+                && named.arguments().size() == 1 && index == 0) return named.arguments().getFirst();
+        if (name.equals("Ok") && named.name().equals("Result")
+                && named.arguments().size() == 2 && index == 0) return named.arguments().get(0);
+        if (name.equals("Err") && named.name().equals("Result")
+                && named.arguments().size() == 2 && index == 0) return named.arguments().get(1);
+        return null;
     }
 
     private boolean guardsProvablyDisjoint(Ast.Expr left, Ast.Expr right) {
