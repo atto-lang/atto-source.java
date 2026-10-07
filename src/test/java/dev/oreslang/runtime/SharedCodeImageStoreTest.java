@@ -88,4 +88,44 @@ final class SharedCodeImageStoreTest {
                 "CodeImage must remain an opaque store-minted capability");
     }
 
+
+    @Test
+    void parsedCodeImageAstContainersAreTransitivelyReadOnly() {
+        Ast.Program program = Parser.parse("""
+                define actor Worker as
+                  let int count = 0;
+
+                  receive(ActorMail<String> mail): void {
+                    self.count = self.count + 1;
+                    self.end();
+                    return;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl root = program.modules().getFirst();
+        Ast.ClassDecl worker = root.declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.MethodDecl receive = worker.methods().stream()
+                .filter(method -> method.name().equals("receive"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThrows(UnsupportedOperationException.class,
+                () -> program.modules().add(root));
+        assertThrows(UnsupportedOperationException.class,
+                () -> root.declarations().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> worker.fields().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> worker.methods().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> receive.body().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> receive.parameters().clear());
+    }
+
 }
