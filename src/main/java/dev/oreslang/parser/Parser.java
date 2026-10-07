@@ -2747,13 +2747,26 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after arr literal");
             return new Ast.ListExpr(items);
         }
-        if (match(NLEX)) {
-            if (check(PIPE)) return parsePipeLambda(true);
-            if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
-            throw error(previous(), "'nlex' in expression position must prefix a lambda");
+        // RHS modifier order matches named callables.  Keep these modifiers
+        // attached to the callable value rather than to its enclosing binding.
+        if (check(NLEX) || check(ASYNC)) {
+            boolean nonLexical = false;
+            boolean async = false;
+            while (check(NLEX) || check(ASYNC)) {
+                if (match(NLEX)) {
+                    if (nonLexical) throw error(previous(), "duplicate 'nlex' lambda modifier");
+                    nonLexical = true;
+                } else if (match(ASYNC)) {
+                    if (async) throw error(previous(), "duplicate 'async' lambda modifier");
+                    async = true;
+                }
+            }
+            if (check(PIPE)) return parsePipeLambda(nonLexical, async);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(nonLexical, async);
+            throw error(peek(), "RHS 'nlex'/'async' modifiers must prefix a lambda");
         }
-        if (check(PIPE)) return parsePipeLambda(false);
-        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
+        if (check(PIPE)) return parsePipeLambda(false, false);
+        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, false);
         if (match(LPAREN)) {
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
@@ -2797,15 +2810,15 @@ public final class Parser {
         return new Ast.ObjectExpr(fields);
     }
 
-    private Ast.LambdaExpr parseLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parseLambda(boolean nonLexical, boolean async) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaBody(params, nonLexical, async);
     }
 
-    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean async) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
@@ -2823,10 +2836,10 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaBody(params, nonLexical, async);
     }
 
-    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical, boolean async) {
         // Typed block lambdas use '|args| -> ReturnType { ... }'. Probe the
         // type grammar and roll back unless it is immediately followed by a
         // block: '|x| -> x + 1' must remain an expression-bodied lambda.
@@ -2844,10 +2857,10 @@ public final class Parser {
             if (returnType == null) current = checkpoint;
         }
         if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, returnType);
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, returnType, async);
         }
         // Braces are mandatory when declaring a lambda return type.
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, null, async);
     }
 
     private boolean looksLikeLambda() {
