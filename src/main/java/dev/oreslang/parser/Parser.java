@@ -92,6 +92,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(ACTOR, ISOACTOR)) {
+                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
+                    continue;
+                }
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
@@ -267,6 +271,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (match(ACTOR, ISOACTOR)) {
+                return parseDefinedActorClass(previous(), modifiers, annotations);
+            }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
@@ -605,6 +612,28 @@ public final class Parser {
         return check(IDENT) && peek().lexeme().equals(lexeme);
     }
 
+    /**
+     * "define actor Name as ... end" is a declaration spelling, not a new actor
+     * allocation primitive. Actor construction/spawn must still be lowered by
+     * the runtime before source programs may instantiate actor classes.
+     */
+    private Ast.ClassDecl parseDefinedActorClass(
+            Token actorToken,
+            Modifiers modifiers,
+            List<Ast.Annotation> annotations) {
+        modifiers = mergeModifiers(modifiers, parseModifiers());
+        Ast.ActorKind kind = resolveActorKind(
+                actorToken, actorToken.type() == ISOACTOR, modifiers);
+        if (modifiers.async || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.isAbstract) {
+            throw error(actorToken,
+                    "actor class declarations accept only visibility and actor-kind modifiers");
+        }
+        rejectCallableStructuralAnnotation(annotations, "actor class declarations");
+        return parseActorClass(kind, modifiers.visibility);
+    }
+
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
@@ -612,6 +641,7 @@ public final class Parser {
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         boolean braceStyle = match(LBRACE);
+        if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
