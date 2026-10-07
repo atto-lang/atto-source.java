@@ -120,10 +120,13 @@ public final class OresEvalRootNode extends RootNode {
         return arguments.length == 1 && command.equals(arguments[0]);
     }
 
-    private static final class Evaluator {
+    private static final class Evaluator
+            implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        /** Exact immutable image published by link(); shared by all source actors. */
+        private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
@@ -392,8 +395,195 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "code image changed under active evaluator " + codeUnitId);
             }
+            SharedCodeImageStore.CodeImage prior = linkedCodeImage;
+            if (prior != null && prior != image) {
+                throw new IllegalStateException(
+                        "linked code image identity changed for " + codeUnitId);
+            }
+            linkedCodeImage = image;
             context.registerLinkedCodeUnit(codeUnitId, this);
             if (startupPhase == StartupPhase.CREATED) startupPhase = StartupPhase.LINKED;
+        }
+
+        @Override
+        public SharedCodeImageStore.CodeImage codeImage() {
+            SharedCodeImageStore.CodeImage image = linkedCodeImage;
+            if (image == null) {
+                throw new IllegalStateException(
+                        "source actor code unit is not linked yet: " + codeUnitId);
+            }
+            return image;
+        }
+
+        @Override
+        public ActorRuntime.ActorOwnedGuestState initializeActor(
+                String actorTypeName,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            Objects.requireNonNull(actorContext, "actorContext");
+            SharedCodeImageStore.CodeImage image =
+                    actorContext.codeImage().orElseThrow(
+                            () -> new SecurityException(
+                                    "source actor requires an explicitly whitelisted code image"));
+            if (image != codeImage()) {
+                throw new SecurityException(
+                        "source actor code image does not match its linked evaluator");
+            }
+
+            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            ActorRuntime.ActorKind expectedKind = switch (klass.actorKind()) {
+                case NONE -> throw new IllegalArgumentException(
+                        "source spawn target '" + actorTypeName + "' is not an actor");
+                case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
+                case SHARED -> ActorRuntime.ActorKind.SHARED;
+                case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
+            };
+            if (actorContext.kind() != expectedKind) {
+                throw new SecurityException(
+                        "source actor runtime kind " + actorContext.kind()
+                                + " does not match declaration kind " + expectedKind);
+            }
+
+            List<Ast.FieldDecl> classFields =
+                    effectiveFields(klass, new LinkedHashSet<>());
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : classFields) {
+                fields.put(field.name(), UNINITIALIZED_FIELD);
+            }
+            OresObject object = new OresObject(this, klass, fields);
+
+            // Field initializers are actor-local state construction. They run
+            // only after ActorRuntime has installed this actor's execution
+            // context and before ready is allowed to settle.
+            for (Ast.FieldDecl field : classFields) {
+                if (field.initializer() == null) continue;
+                OwnedField owned =
+                        findField(klass, field.name(), new LinkedHashSet<>());
+                Ast.ClassDecl fieldOwner =
+                        owned == null ? klass : owned.owner();
+                Env initializerEnv =
+                        new Env(null, false, fieldOwner, object);
+                initializerEnv.define("self", object, Ast.BindingKind.VAL);
+                fields.put(
+                        field.name(),
+                        eval(field.initializer(), initializerEnv));
+            }
+
+            Ast.MethodDecl startup =
+                    findMethod(
+                            klass,
+                            CallableSelector.instance("on_start", 0),
+                            new LinkedHashSet<>());
+            if (startup != null) {
+                if (methodContainsPotentialSuspension(startup)) {
+                    throw new IllegalStateException(
+                            "actor on_start cannot suspend; startup must finish before ready settles");
+                }
+                executeActorStartup(object, startup);
+            }
+
+            for (Map.Entry<String, Object> field : fields.entrySet()) {
+                if (field.getValue() == UNINITIALIZED_FIELD) {
+                    throw new IllegalStateException(
+                            "actor '" + klass.name()
+                                    + "' startup did not initialize field '"
+                                    + field.getKey() + "'");
+                }
+            }
+
+            return new SourceActorState(
+                    actorContext.self().id(),
+                    actorTypeName,
+                    object);
+        }
+
+        @Override
+        public void receiveActor(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorInboxMail<Object> mail,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            SourceActorState state =
+                    rawState instanceof SourceActorState source
+                            ? source
+                            : null;
+            if (state == null
+                    || !state.ownerActorId().equals(actorContext.self().id())
+                    || !state.actorTypeName().equals(actorTypeName)
+                    || !mail.recipient().equals(actorContext.self().id())) {
+                throw new SecurityException(
+                        "source actor mailbox dispatch does not match actor-owned state");
+            }
+
+            Ast.MethodDecl receive =
+                    findMethod(
+                            state.object().klass,
+                            CallableSelector.instance("receive", 1),
+                            new LinkedHashSet<>());
+            if (receive == null) {
+                throw new IllegalStateException(
+                        "actor '" + state.object().klass.name()
+                                + "' has no receive(ActorMail<T>) handler");
+            }
+            if (methodContainsPotentialSuspension(receive)) {
+                throw new IllegalStateException(
+                        "suspending actor receive is not executable yet; "
+                                + "mailbox-turn suspension must serialize later user messages before rt cooperate/await is enabled");
+            }
+
+            Object result =
+                    invoke(methodInvocation(
+                            state.object(),
+                            receive,
+                            List.of(mail)));
+            if (result != null) {
+                throw new IllegalStateException(
+                        "actor receive must complete with void");
+            }
+        }
+
+        private Ast.ClassDecl requireLocalActorClass(String actorTypeName) {
+            Ast.ClassDecl klass = findClass(actorTypeName);
+            if (klass == null) {
+                throw new IllegalArgumentException(
+                        "source actor '" + actorTypeName
+                                + "' is not declared in linked code unit "
+                                + codeUnitId
+                                + "; cross-code-unit actor spawn lowering is not enabled yet");
+            }
+            if (klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "source spawn target '" + actorTypeName
+                                + "' is not an actor");
+            }
+            return klass;
+        }
+
+        private void executeActorStartup(
+                OresObject object,
+                Ast.MethodDecl startup) {
+            Env env =
+                    new Env(
+                            null,
+                            false,
+                            declaringClass(startup),
+                            object);
+            env.define("self", object, Ast.BindingKind.VAL);
+            try {
+                executeBlock(startup.body(), env);
+            } catch (ReturnSignal signal) {
+                if (signal.value != null) {
+                    throw new IllegalStateException(
+                            "actor on_start cannot return a value");
+                }
+            } catch (TailCallSignal signal) {
+                throw new IllegalStateException(
+                        "actor on_start cannot tail-call across the startup initialization boundary",
+                        signal);
+            } catch (BreakSignal | ContinueSignal signal) {
+                throw new IllegalStateException(
+                        "loop control cannot cross actor on_start",
+                        signal);
+            }
         }
 
         private synchronized Object initialize() {
@@ -3619,6 +3809,26 @@ public final class OresEvalRootNode extends RootNode {
                     (Ast.MemberExpr) call.callee();
 
             if (receiver instanceof OresObject object) {
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && member.member().equals("end")) {
+                    if (!args.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "self.end expects no arguments");
+                    }
+                    return object.owner.invokableInvocation(
+                            ignored -> {
+                                object.owner.context.actors().endCurrentActor();
+                                return null;
+                            },
+                            List.of());
+                }
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && member.member().equals("send")) {
+                    throw new IllegalStateException(
+                            "self.send parent-output lowering is not executable yet; "
+                                    + "do not reinterpret it as self-mail");
+                }
+
                 Ast.MethodDecl method =
                         object.owner.findMethod(
                                 object.klass,
@@ -5372,6 +5582,31 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                if (runtime.operation().equals("spawn")) {
+                    if (runtime.arguments().size() != 1
+                            || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
+                        throw new IllegalStateException(
+                                "internal spawn intrinsic requires exactly one actor target");
+                    }
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor spawn arguments are not enabled; initialize actor-local state with fields and on_start()");
+                    }
+                    Ast.ClassDecl actorClass =
+                            requireLocalActorClass(created.type().name());
+                    ActorRuntime.ActorKind runtimeKind =
+                            switch (actorClass.actorKind()) {
+                                case NONE -> throw new AssertionError(
+                                        "non-actor reached source spawn lowering");
+                                case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
+                                case SHARED -> ActorRuntime.ActorKind.SHARED;
+                                case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
+                            };
+                    return context.actors().spawnCodeActor(
+                            runtimeKind,
+                            this,
+                            created.type().name());
+                }
                 if (runtime.operation().equals("cooperate")) {
                     if (!runtime.arguments().isEmpty()) {
                         throw new IllegalArgumentException("rt cooperate takes no arguments");
@@ -7747,6 +7982,21 @@ public final class OresEvalRootNode extends RootNode {
         private DynamicStructValue(Map<String, Object> initial) { this.fields = new LinkedHashMap<>(initial); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
         @Override public String toString() { return "DynamicStruct" + fields; }
+    }
+
+    private record SourceActorState(
+            ActorRuntime.ActorId ownerActorId,
+            String actorTypeName,
+            OresObject object)
+            implements ActorRuntime.ActorOwnedGuestState {
+        private SourceActorState {
+            Objects.requireNonNull(ownerActorId, "ownerActorId");
+            if (actorTypeName == null || actorTypeName.isBlank()) {
+                throw new IllegalArgumentException(
+                        "source actor type name cannot be blank");
+            }
+            Objects.requireNonNull(object, "object");
+        }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
