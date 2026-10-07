@@ -2678,6 +2678,15 @@ public final class TypeChecker {
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
             }
+            if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
+                    && env.lookup("process") == null && member.member().equals("unique_id")) {
+                return new Function(List.of(), Primitive.STRING);
+            }
+            if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
+                    && env.lookup("process") == null
+                    && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
+                return new Function(List.of(), Primitive.INT);
+            }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
@@ -4058,7 +4067,8 @@ public final class TypeChecker {
             case "HttpExchange" -> switch (name) {
                 case "can_respond" -> Primitive.BOOL;
                 case "method", "target", "request_id", "operation_id", "server_timing" -> Primitive.STRING;
-                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns" -> Primitive.INT;
+                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns", "admitted_ns" -> Primitive.INT;
+                case "completion" -> new Named("Future", List.of(Primitive.INT));
                 case "set_route" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT), Primitive.VOID);
                 case "add_param" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.VOID);
                 case "param_size" -> new Function(List.of(Primitive.STRING), Primitive.INT);
