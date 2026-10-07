@@ -92,4 +92,28 @@ final class ExplicitStructDefiniteInitializationTest {
                 """)));
     }
 
+    @Test
+    void lexicalLambdaCannotCapturePartialExplicitStruct() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): (() => bool) {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  return || -> {
+                    point.ready = true;
+                    return point.ready;
+                  };
+                }
+                """)));
+    }
+
+    @Test
+    void lexicalLambdaMayCaptureExplicitStructAfterCompletion() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): (() => bool) {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  point.ready = true;
+                  return || -> point.ready;
+                }
+                """)));
+    }
+
 }
