@@ -21,6 +21,7 @@ import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.OresFutures;
+import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
 
 import java.nio.file.Path;
@@ -372,6 +373,12 @@ public final class OresEvalRootNode extends RootNode {
         private synchronized void link() {
             if (startupPhase == StartupPhase.FAILED) {
                 throw new IllegalStateException("cannot relink failed code unit " + codeUnitId);
+            }
+            SharedCodeImageStore.CodeImage image =
+                    context.registerSharedCodeImage(codeUnitId, program);
+            if (image.program() != program) {
+                throw new IllegalStateException(
+                        "code image changed under active evaluator " + codeUnitId);
             }
             context.registerLinkedCodeUnit(codeUnitId, this);
             if (startupPhase == StartupPhase.CREATED) startupPhase = StartupPhase.LINKED;
@@ -3812,6 +3819,7 @@ public final class OresEvalRootNode extends RootNode {
                 return instantiateHost(hostClass, args);
             }
             Ast.ClassDecl klass = findClass(created.type().name());
+            if (klass != null) requireLexicalClassAccess(env, klass);
             Evaluator owner = this;
             boolean externalConstruction = false;
             if (klass == null) {
