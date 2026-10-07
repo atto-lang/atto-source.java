@@ -281,6 +281,32 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
+    void actorMayUseExplicitSameFileParentButNotAmbientSiblingTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                shared actor Parent {
+                  pub fnc inherited(): int { return 1; }
+                }
+
+                shared actor Child extends Parent {
+                  pub fnc current(): int { return self.inherited(); }
+                }
+                """)));
+
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        isoactor Parent {
+                        }
+
+                        shared actor Child extends Parent {
+                        }
+                        """)));
+        assertTrue(mismatch.getMessage().contains("isolation kind"),
+                mismatch.getMessage());
+    }
+
+
+    @Test
     void actorLexicalBoundarySurvivesNonlexicalLambda() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
