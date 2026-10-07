@@ -19,7 +19,7 @@ define actor Worker as
     return;
   }
 
-  pub receive(ActorMail<String> mail): void {
+  receive(ActorMail<String> mail): void {
     if mail.value != "start"; do
       return;
     fi
@@ -78,18 +78,18 @@ of output strings.
 | `receive(ActorMail<T>)` | `void` | Lifecycle handler invoked once per incoming envelope, serialized and actor-local |
 | `rt cooperate` | `void` scheduling effect | Suspension/safepoint; no implicit publication or message delivery |
 
-Prefer a **non-overridable base transport implementation** for `self.send`.
-If source-level overriding is allowed, `super.send(value)` must resolve to
-that base implementation without letting a subclass bypass quotas, transport
-validation, or termination fences. An actor `send()` with **zero args** cannot
-forward the string payload emitted by the example; an explicit payload
-parameter is required.
+`self.send(value)` and `self.end()` are **non-overridable runtime actor
+operations**. Actor classes may not declare instance methods named `send` or
+`end`, and source code does not use `super.send(...)` to reach transport.
+This keeps quota checks, serialization, termination fences, and output-stream
+ordering outside user-overridable dispatch.
 
 ## Message identities and transport
 
-- Introduce a new source-level `ActorMail<T>` inbox envelope with
-  `actor_id`/optional sender identity, monotonic mailbox sequence,
-  immutable `value`, and optional reply capability. It is not the Java
+- Source `ActorMail<T>` is now statically modeled with immutable
+  `recipient: ActorId`, `sender: Option<ActorId>`, `sequence: int`, and
+  `value: T`. Runtime delivery uses `ActorRuntime.ActorInboxMail<T>`, which
+  is deliberately distinct from the existing
   `dev.oreslang.runtime.ActorMail` Group Mailman record.
 - Introduce `ActorOutput<T>(actor_id, sequence, value)` for output. The
   output sender is the *emitting* actor, not its parent.
@@ -189,4 +189,4 @@ to follow for any future inline cache or scheduler metadata—shared code may
 reference actor-local runtime state, but must not become a writable state bag
 shared by isolated actors.
 
-Do not mark this milestone as executing source-level `spawn Worker()` or streamed worker output. The source parser/type checker now admit and validate `spawn Worker()`, `w.ready`/`w.done`, `ActorRef.send`, `self.send`, and `self.end`, but evaluator lowering into `ActorRuntime` remains a separate acceptance gate.
+Do not mark this milestone as executing source-level `spawn Worker()` or streamed worker output. The source parser/type checker now admit and validate `spawn Worker()`, `w.ready`/`w.done`, typed `ActorMail<T>`/`receive`, `ActorRef.send`, `self.send`, and `self.end`, but evaluator lowering into `ActorRuntime` remains a separate acceptance gate.
