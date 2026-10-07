@@ -211,6 +211,31 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
+            // Immediate tuple unpacking does not store references in an owned
+            // container. Give each resulting binding its own scoped borrow lease.
+            if (destructure.kind() == Ast.DestructureKind.SEQUENCE
+                    && destructure.initializer() instanceof Ast.TupleExpr tuple
+                    && destructure.bindings().size() == tuple.elements().size()
+                    && destructure.bindings().stream().noneMatch(Ast.DestructureBinding::rest)) {
+                Map<String, VarState> unpacked = new LinkedHashMap<>();
+                for (int i = 0; i < destructure.bindings().size(); i++) {
+                    Ast.DestructureBinding binding = destructure.bindings().get(i);
+                    if (binding.isDiscard()) {
+                        checkExpr(tuple.elements().get(i), scope, true);
+                    } else {
+                        // Every initializer sees the original scope, including
+                        // when an unpacked binding shadows an outer owner.
+                        Scope elementScope = new Scope(scope);
+                        checkBinding(new Ast.BindingStmt(binding.kind(), null, binding.name(),
+                                tuple.elements().get(i), binding.mutableReferent()), elementScope);
+                        if (unpacked.putIfAbsent(binding.name(), elementScope.lookup(binding.name())) != null) {
+                            throw error("duplicate tuple binding '" + binding.name() + "'");
+                        }
+                    }
+                }
+                unpacked.forEach(scope::define);
+                return;
+            }
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
@@ -539,6 +564,21 @@ public final class OwnershipChecker {
         }
     }
 
+    private void checkSuspensionBorrows(Scope scope, String operation) {
+        if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+            throw error("cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
+        }
+        // Actor self is retained by the mailbox continuation under the same
+        // execution lease. Ordinary user borrows (including aliases of self)
+        // still cannot cross suspension.
+        if (scope.visibleStates().stream().anyMatch(state -> !state.moved
+                && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
+                && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                    || state.immutableBorrows > 0 || state.mutableBorrowed))) {
+            throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
+        }
+    }
+
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
         boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
         VarState placeholder = null;
@@ -673,6 +713,7 @@ public final class OwnershipChecker {
                         null);
             }
             if (runtime.operation().equals("cooperate")) {
+                checkSuspensionBorrows(scope, "cooperate");
                 if (!runtime.arguments().isEmpty()) {
                     throw error("rt cooperate takes no arguments");
                 }
@@ -873,18 +914,7 @@ public final class OwnershipChecker {
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
-            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
-                throw error("cannot await while holding a MutexGuard; release the guard before suspension");
-            }
-            // Actor self is retained by the mailbox continuation under the same
-            // execution lease. Ordinary user borrows (including aliases of self)
-            // still cannot cross suspension.
-            if (scope.visibleStates().stream().anyMatch(state -> !state.moved
-                    && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
-                    && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
-                        || state.immutableBorrows > 0 || state.mutableBorrowed))) {
-                throw error("cannot await while an ordinary borrow is live; end the lexical borrow before suspension");
-            }
+            checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
@@ -1413,6 +1443,10 @@ public final class OwnershipChecker {
         if (arguments.size() != params.size()) return; // arity is TypeChecker's responsibility
         for (int i = 0; i < arguments.size(); i++) {
             Ast.Expr arg = arguments.get(i);
+            if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("borrow")
+                    && runtime.arguments().size() == 1) {
+                arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
+            }
             Ast.Param param = params.get(i);
             if (param.structural() && !param.type().isBorrow()) {
                 ValueInfo argument = checkExpr(arg, scope, false);
@@ -1427,7 +1461,7 @@ public final class OwnershipChecker {
                 boolean mutable = param.type().mutableBorrow();
                 if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                     if (mutable && !unary.operator().equals("&mut")) {
-                        throw error(callable + " argument " + (i + 1) + " requires &mut borrow");
+                        throw error(callable + " argument " + (i + 1) + " requires rt borrow mut");
                     }
                     VarState owner = borrowOwner(unary.operand(), scope);
                     validateBorrow(owner, mutable);
@@ -1443,10 +1477,10 @@ public final class OwnershipChecker {
                         throw error("actor self borrow cannot cross an ordinary callable boundary");
                     }
                     if (mutable && state.kind != ValueKind.MUT_BORROW) {
-                        throw error(callable + " argument " + (i + 1) + " requires &mut value");
+                        throw error(callable + " argument " + (i + 1) + " requires a mutable borrowed value");
                     }
                     if (!mutable && state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW) {
-                        throw error(callable + " argument " + (i + 1) + " requires borrowed value; pass &" + name.name());
+                        throw error(callable + " argument " + (i + 1) + " requires borrowed value; pass rt borrow " + name.name());
                     }
                     continue;
                 }

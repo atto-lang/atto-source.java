@@ -146,20 +146,25 @@ class NativeHttpTest {
     }
 
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
-        String source = """
-            define actor Bad as
-              receive(ActorMail<String> mail): void {
-                val Array<int> values = new Array<int>();
-                val borrowed = &values;
-                val request = http.claim(mail.value);
-                await request.respond(200, "text/plain", "bad");
-                stdio.println(borrowed.size);
-                return;
-              }
-            end
-            """;
-        Exception error = assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+        for (String binding : new String[] {
+                "val borrowed = rt borrow values;",
+                "val borrowed = (rt borrow values);",
+                "val (borrowed) = tuple (rt borrow values);"}) {
+            String source = """
+                define actor Bad as
+                  receive(ActorMail<String> mail): void {
+                    val Array<int> values = new Array<int>();
+                    %s
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "bad");
+                    stdio.println(borrowed.size);
+                    return;
+                  }
+                end
+                """.formatted(binding);
+            Exception error = assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+        }
     }
 
     @FunctionalInterface interface Client { void run(int port) throws Exception; }

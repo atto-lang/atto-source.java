@@ -851,6 +851,19 @@ public final class OresEvalRootNode extends RootNode {
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
                     throws Exception {
+                try {
+                    return resumeSource(resume);
+                } catch (RuntimeException failure) {
+                    awaitingContinuation = null;
+                    nextStep = null;
+                    initialBlockEnv = null;
+                    throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
+                            function != null ? function.name() : method != null ? method.name() : "<block>",
+                            resume.initial() ? "source task" : "resumed source task");
+                }
+            }
+
+            private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
                 nextStep = null;
 
                 if (resume.initial()) {
@@ -4366,6 +4379,8 @@ public final class OresEvalRootNode extends RootNode {
                         "function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
+            } catch (RuntimeException failure) {
+                throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, fn.name(), "function");
             }
         }
 
@@ -4447,6 +4462,8 @@ public final class OresEvalRootNode extends RootNode {
                 return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a method boundary", signal);
+            } catch (RuntimeException failure) {
+                throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, method.name(), "method");
             }
         }
 
@@ -8592,7 +8609,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
     private static final class OresPanic extends RuntimeException {
-        private OresPanic(String message) { super(message, null, false, false); }
+        private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
