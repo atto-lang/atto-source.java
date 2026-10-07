@@ -3393,11 +3393,30 @@ public final class TypeChecker {
                             + sourceTarget);
         }
 
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass != null) {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor identity cannot be used as a structural match target: " + sourceTarget);
+            }
+            if (klass.genericParameters().size() != named.arguments().size()) {
+                throw new IllegalArgumentException(
+                        "structural pattern target '" + sourceTarget + "' has invalid generic arity");
+            }
+            Type specialized = substituteGenerics(
+                    publicClassShape(klass, new LinkedHashSet<>()),
+                    classGenericBindings(klass, named));
+            if (!(specialized instanceof Record record)) {
+                throw new IllegalStateException("structural class shape did not remain a record");
+            }
+            return record;
+        }
+
         Ast.InterfaceDecl iface = findInterface(named.name());
         if (iface == null || iface.moduleContract()) {
             throw new IllegalArgumentException(
                     "structural pattern target '" + sourceTarget
-                            + "' must name an interface/trait value contract, not a class/module contract");
+                            + "' must name a class/interface/trait value contract, not a module contract");
         }
         if (iface.genericParameters().size() != named.arguments().size()) {
             throw new IllegalArgumentException(
@@ -3429,7 +3448,19 @@ public final class TypeChecker {
         if (subject instanceof SelfType selfType) {
             return structuralPatternMayMatch(selfType.bound(), targetShape);
         }
-        return assignable(subject, targetShape);
+        if (subject instanceof Record) return assignable(subject, targetShape);
+        if (subject instanceof Named named) {
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                // Open nominal classes may have a runtime subtype with a wider
+                // public shape. Actors are the exception: structural erasure is
+                // forbidden for the entire actor hierarchy.
+                return klass.actorKind() == Ast.ActorKind.NONE;
+            }
+            Ast.InterfaceDecl iface = findInterface(named.name());
+            if (iface != null && !iface.moduleContract()) return true;
+        }
+        return false;
     }
 
     private boolean patternSubsumes(
