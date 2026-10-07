@@ -724,22 +724,27 @@ public final class Parser {
             }
 
             Ast.BindingKind fieldBindingKind = Ast.BindingKind.VAL;
-            if (moduleContract && isBindingKind(peek().type())) fieldBindingKind = parseBindingKind();
+            boolean fieldMutableReferent = true;
+            if (isBindingKind(peek().type())) {
+                fieldBindingKind = parseBindingKind();
+                fieldMutableReferent = fieldBindingKind == Ast.BindingKind.VAL || match(MUT);
+            }
 
             if (check(IDENT) && checkNext(COLON)) {
                 String fieldName = advance().lexeme();
                 consume(COLON, "expected ':' after interface field name");
                 Ast.TypeRef type = parseTypeRef();
                 consumeMemberTerminator(terminator, "interface field signature should end with ';'");
-                members.add(new Ast.InterfaceFieldDecl(fieldName, type, fieldBindingKind));
+                members.add(new Ast.InterfaceFieldDecl(
+                        fieldName, type, fieldBindingKind, fieldMutableReferent));
                 continue;
             }
 
-            if (!moduleContract && isBindingKind(peek().type())) advance();
             Ast.TypeRef type = parseTypeRef();
             String fieldName = consume(IDENT, "expected interface field name").lexeme();
             consumeMemberTerminator(terminator, "interface field signature should end with ';'");
-            members.add(new Ast.InterfaceFieldDecl(fieldName, type, fieldBindingKind));
+            members.add(new Ast.InterfaceFieldDecl(
+                    fieldName, type, fieldBindingKind, fieldMutableReferent));
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
