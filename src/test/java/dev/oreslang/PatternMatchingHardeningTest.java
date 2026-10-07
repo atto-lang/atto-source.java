@@ -36,6 +36,37 @@ final class PatternMatchingHardeningTest {
                 }
                 """)));
 
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc contextualArms(int value): void {
+                  do select {
+                    when readch input: {
+                    }
+                    case writech output, value: {
+                    }
+                  }
+
+                  switch value
+                    case 1 -> {
+                      return;
+                    }
+                    default -> {
+                      return;
+                    }
+                  end
+                }
+
+                fnc guarded(int value): int {
+                  match value over
+                    on int n when n > 0 -> {
+                      return n;
+                    }
+                    on _ -> {
+                      return 0;
+                    }
+                  end
+                }
+                """));
+
         IllegalArgumentException fatMatch = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Option<int> value): void {
                   match value over
