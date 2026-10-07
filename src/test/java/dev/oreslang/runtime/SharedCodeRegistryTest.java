@@ -1,8 +1,6 @@
 package dev.oreslang.runtime;
 
-import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
-import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -99,7 +97,7 @@ final class SharedCodeRegistryTest {
                     "private contexts must use one process code engine");
             assertSame(ProcessCodeEngine.shared(), a.context().getEngine());
 
-            long before = SharedCodeRegistry.process().parseInvocations(a.source());
+            long before = SharedCodeRegistry.process().parseInvocations("actor-image.ores", MINIMAL_PROGRAM);
             assertDoesNotThrow(a::start);
             long afterFirst = SharedCodeRegistry.process().parseInvocations(a.source());
             assertEquals(before + 1, afterFirst,
@@ -118,18 +116,31 @@ final class SharedCodeRegistryTest {
     }
 
     @Test
-    void identicalButUnadmittedSourceCannotAttachToSharedAstByBytesAlone() {
-        SharedCodeRegistry registry = new SharedCodeRegistry();
-        try (var admitted = registry.acquire("same.ores", MINIMAL_PROGRAM)) {
-            Source privateCopy = Source.newBuilder(
-                            OresLanguage.ID, MINIMAL_PROGRAM, "same.ores")
-                    .mimeType(OresLanguage.MIME_TYPE)
-                    .buildLiteral();
+    void unapprovedAdversarialLoadDoesNotJoinProcessSharedImage() {
+        IsolatePolicy supervisor = IsolatePolicy.developer();
+        try (HotReloadManager manager =
+                     HotReloadManager.forUntrustedActors(
+                             supervisor, ExecutionProfile.serverJit())) {
+            var privateGeneration = manager.load("same.ores", MINIMAL_PROGRAM);
+            assertFalse(privateGeneration.sharedCodeImage(),
+                    "unapproved adversarial code must use a private source path");
+        }
+    }
 
-            assertSame(admitted.checkedProgram(),
-                    registry.checkedProgramIfLive(admitted.source()));
-            assertNull(registry.checkedProgramIfLive(privateCopy),
-                    "source identity, not matching bytes/path, is the sharing authority");
+    @Test
+    void approvedAdversarialLoadMayReuseOnlyItsExactSharedImage() {
+        IsolatePolicy supervisor = IsolatePolicy.developer();
+        try (HotReloadManager manager =
+                     HotReloadManager.forUntrustedActors(
+                             supervisor, ExecutionProfile.serverJit())) {
+            manager.approveGuestCodeSharing("same.ores", MINIMAL_PROGRAM);
+            var sharedGeneration = manager.load("same.ores", MINIMAL_PROGRAM);
+            assertTrue(sharedGeneration.sharedCodeImage());
+
+            String changed = "pub routine main(): void { val n = 2; return; }";
+            var changedGeneration = manager.load("same.ores", changed);
+            assertFalse(changedGeneration.sharedCodeImage(),
+                    "approval must not extend to a different content hash");
         }
     }
 
