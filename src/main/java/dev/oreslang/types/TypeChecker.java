@@ -3262,10 +3262,6 @@ public final class TypeChecker {
         List<Ast.MatchArm> arms = matched.arms();
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
-            boolean fallback = isFallbackArm(arm);
-            if (!matched.ordered() && fallback && i != arms.size() - 1) {
-                throw new IllegalArgumentException("exclusive match fallback '_'/'else'/catch-all binding must be the final arm");
-            }
 
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
@@ -3274,19 +3270,16 @@ public final class TypeChecker {
             }
             checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
 
-            if (!matched.ordered() && !fallback) {
-                for (int j = 0; j < i; j++) {
-                    Ast.MatchArm previous = arms.get(j);
-                    if (isFallbackArm(previous)) {
-                        throw new IllegalArgumentException("exclusive match fallback must be the final arm");
-                    }
-                    if (!patternsProvablyDisjoint(previous.pattern(), arm.pattern(), subject, generics, self)
-                            && !guardsProvablyDisjoint(previous.guard(), arm.guard())) {
-                        throw new IllegalArgumentException(
-                                "overlapping match arms " + (j + 1) + " and " + (i + 1)
-                                        + "; exclusive match requires a proof of disjointness"
-                                        + " (use 'match first' only when priority semantics are intentional)");
-                    }
+            // Match is ordered. Overlap is valid, but an earlier unguarded arm
+            // that completely contains a later pattern makes that arm dead.
+            for (int j = 0; j < i; j++) {
+                Ast.MatchArm previous = arms.get(j);
+                if (previous.guard() != null) continue;
+                if (patternSubsumes(previous.pattern(), arm.pattern(), subject, generics, self)) {
+                    throw new IllegalArgumentException(
+                            "unreachable match arm " + (i + 1)
+                                    + ": earlier arm " + (j + 1)
+                                    + " already matches every value accepted by it");
                 }
             }
         }
@@ -3294,7 +3287,7 @@ public final class TypeChecker {
         if (!matchProvablyExhaustive(arms, subject, generics, self)) {
             throw new IllegalArgumentException(
                     "non-exhaustive match for " + subject
-                            + "; add an unguarded '_'/'else' arm or cover every known constructor/value");
+                            + "; add an unguarded 'on _ -> { ... }' arm or cover every provable case");
         }
     }
 
@@ -3313,12 +3306,50 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof Ast.TypePattern typed) {
-            requireRuntimeReifiableType(typed.type(), "is pattern");
+            requireRuntimeReifiableType(typed.type(), "type pattern");
             Type target = deref(resolve(typed.type(), generics, self));
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
             if (typed.binding() != null) bindings.define(typed.binding(), target, Ast.BindingKind.VAL);
+            return;
+        }
+        if (pattern instanceof Ast.StructuralPattern structural) {
+            Type resolvedTarget = deref(resolve(structural.target(), generics, self));
+            Record targetShape = structuralPatternShape(
+                    structural.target(), resolvedTarget, generics);
+            if (!structuralPatternMayMatch(subject, targetShape)) {
+                throw new IllegalArgumentException(
+                        "unreachable structural pattern: " + subject
+                                + " cannot satisfy " + structural.target());
+            }
+            if (structural.binding() != null) {
+                // A named interface target becomes a proven structural view of
+                // that interface; inline shapes retain their record type.
+                Type bindingType = resolvedTarget instanceof Named ? resolvedTarget : targetShape;
+                bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuplePattern) {
+            if (!(subject instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException(
+                        "tuple pattern requires a Tuple value, got " + subject
+                                + "; List/Array patterns are intentionally unsupported");
+            }
+            if (tuple.elements().size() != tuplePattern.elements().size()) {
+                throw new IllegalArgumentException(
+                        "tuple pattern arity " + tuplePattern.elements().size()
+                                + " does not match tuple arity " + tuple.elements().size());
+            }
+            for (int i = 0; i < tuplePattern.elements().size(); i++) {
+                checkPattern(
+                        tuplePattern.elements().get(i),
+                        tuple.elements().get(i),
+                        bindings,
+                        generics,
+                        self);
+            }
             return;
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
@@ -3349,6 +3380,126 @@ public final class TypeChecker {
             return;
         }
         throw new IllegalArgumentException("unsupported pattern " + pattern);
+    }
+
+    private Record structuralPatternShape(
+            Ast.TypeRef sourceTarget,
+            Type resolvedTarget,
+            Set<String> generics) {
+        if (resolvedTarget instanceof Record record) return record;
+        if (!(resolvedTarget instanceof Named named)) {
+            throw new IllegalArgumentException(
+                    "structural pattern target must be an inline record shape or named interface/trait, got "
+                            + sourceTarget);
+        }
+
+        Ast.InterfaceDecl iface = findInterface(named.name());
+        if (iface == null || iface.moduleContract()) {
+            throw new IllegalArgumentException(
+                    "structural pattern target '" + sourceTarget
+                            + "' must name an interface/trait value contract, not a class/module contract");
+        }
+        if (iface.genericParameters().size() != named.arguments().size()) {
+            throw new IllegalArgumentException(
+                    "structural pattern target '" + sourceTarget + "' has invalid generic arity");
+        }
+
+        Record raw = interfaceShape(
+                iface,
+                Set.copyOf(iface.genericParameters()),
+                new LinkedHashSet<>());
+        Type specialized = substituteGenerics(
+                raw,
+                genericBindings(
+                        iface.genericParameters(),
+                        named.arguments(),
+                        "structural pattern " + iface.name()));
+        if (!(specialized instanceof Record record)) {
+            throw new IllegalStateException("structural interface shape did not remain a record");
+        }
+        return record;
+    }
+
+    private boolean structuralPatternMayMatch(Type subject, Record targetShape) {
+        if (subject == Unknown.INSTANCE || subject instanceof Generic) return true;
+        if (subject instanceof Union union) {
+            return union.options().stream()
+                    .anyMatch(option -> structuralPatternMayMatch(option, targetShape));
+        }
+        if (subject instanceof SelfType selfType) {
+            return structuralPatternMayMatch(selfType.bound(), targetShape);
+        }
+        return assignable(subject, targetShape);
+    }
+
+    private boolean patternSubsumes(
+            Ast.Pattern earlier,
+            Ast.Pattern later,
+            Type subject,
+            Set<String> generics,
+            Type self) {
+        if (earlier instanceof Ast.WildcardPattern || earlier instanceof Ast.BindingPattern) return true;
+        if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
+
+        if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
+            return java.util.Objects.equals(a.value(), b.value());
+        }
+
+        if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
+            Type earlierType = deref(resolve(a.type(), generics, self));
+            Type laterType = deref(resolve(b.type(), generics, self));
+            return assignable(laterType, earlierType);
+        }
+        if (earlier instanceof Ast.TypePattern a && later instanceof Ast.LiteralPattern b) {
+            Type earlierType = deref(resolve(a.type(), generics, self));
+            Type literalType = typeOf(new Ast.LiteralExpr(b.value()), new Env(null), generics, self);
+            return assignable(literalType, earlierType);
+        }
+
+        if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.StructuralPattern b) {
+            Type ar = deref(resolve(a.target(), generics, self));
+            Type br = deref(resolve(b.target(), generics, self));
+            Record earlierShape = structuralPatternShape(a.target(), ar, generics);
+            Record laterShape = structuralPatternShape(b.target(), br, generics);
+            return structuralRecordAssignable(laterShape, earlierShape);
+        }
+        if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.TypePattern b) {
+            Type ar = deref(resolve(a.target(), generics, self));
+            Record earlierShape = structuralPatternShape(a.target(), ar, generics);
+            Type laterType = deref(resolve(b.type(), generics, self));
+            return assignable(laterType, earlierShape);
+        }
+
+        if (earlier instanceof Ast.TuplePattern a && later instanceof Ast.TuplePattern b) {
+            if (!(subject instanceof Tuple tuple)
+                    || tuple.kind() != TupleKind.TUPLE
+                    || a.elements().size() != b.elements().size()
+                    || a.elements().size() != tuple.elements().size()) return false;
+            for (int i = 0; i < a.elements().size(); i++) {
+                if (!patternSubsumes(
+                        a.elements().get(i),
+                        b.elements().get(i),
+                        tuple.elements().get(i),
+                        generics,
+                        self)) return false;
+            }
+            return true;
+        }
+
+        if (earlier instanceof Ast.ConstructorPattern a && later instanceof Ast.ConstructorPattern b) {
+            if (!a.constructor().equals(b.constructor())
+                    || a.arguments().size() != b.arguments().size()) return false;
+            for (int i = 0; i < a.arguments().size(); i++) {
+                if (!patternSubsumes(
+                        a.arguments().get(i),
+                        b.arguments().get(i),
+                        Unknown.INSTANCE,
+                        generics,
+                        self)) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     private boolean patternsProvablyDisjoint(
