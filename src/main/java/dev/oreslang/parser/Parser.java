@@ -1436,11 +1436,19 @@ public final class Parser {
         }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
-            return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
+            boolean inheritedMutableReferent = inherited == Ast.BindingKind.VAL || match(MUT);
+            return parseDestructure(
+                    check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT,
+                    inherited,
+                    inheritedMutableReferent);
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
-        if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure(Ast.DestructureKind.SEQUENCE, null);
-        if (check(LBRACE) && looksLikeDestructure()) return parseDestructure(Ast.DestructureKind.OBJECT, null);
+        if (check(LBRACKET) && looksLikeDestructure()) {
+            return parseDestructure(Ast.DestructureKind.SEQUENCE, null, false);
+        }
+        if (check(LBRACE) && looksLikeDestructure()) {
+            return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
+        }
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
@@ -2041,7 +2049,10 @@ public final class Parser {
         }
     }
 
-    private Ast.DestructureStmt parseDestructure(Ast.DestructureKind kind, Ast.BindingKind inheritedKind) {
+    private Ast.DestructureStmt parseDestructure(
+            Ast.DestructureKind kind,
+            Ast.BindingKind inheritedKind,
+            boolean inheritedMutableReferent) {
         Token.Type close;
         if (kind == Ast.DestructureKind.SEQUENCE) {
             consume(LBRACKET, "expected '['");
@@ -2055,8 +2066,12 @@ public final class Parser {
 
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
         Ast.BindingKind currentKind = inheritedKind;
+        boolean currentMutableReferent = inheritedMutableReferent;
         do {
-            if (isBindingKind(peek().type())) currentKind = parseBindingKind();
+            if (isBindingKind(peek().type())) {
+                currentKind = parseBindingKind();
+                currentMutableReferent = currentKind == Ast.BindingKind.VAL || match(MUT);
+            }
             boolean rest = match(ELLIPSIS);
 
             if (isDiscardToken(peek())) {
@@ -2073,7 +2088,8 @@ public final class Parser {
                 throw error(peek(), "destructure binding kind must be declared before the first binding");
             }
             String name = consume(IDENT, "expected binding name in destructure").lexeme();
-            bindings.add(new Ast.DestructureBinding(currentKind, name, rest));
+            bindings.add(new Ast.DestructureBinding(
+                    currentKind, name, rest, currentMutableReferent));
             if (rest && check(COMMA)) {
                 throw error(peek(), "rest destructure binding must be the final binding");
             }
@@ -2093,15 +2109,17 @@ public final class Parser {
     }
 
     private boolean looksLikePrefixedDestructure() {
-        if (current + 2 >= tokens.size()) return false;
-        Token.Type open = tokens.get(current + 1).type();
+        int openIndex = current + 1;
+        if (openIndex < tokens.size() && tokens.get(openIndex).type() == MUT) openIndex++;
+        if (openIndex + 1 >= tokens.size()) return false;
+        Token.Type open = tokens.get(openIndex).type();
         Token.Type close;
         if (open == LBRACKET) close = RBRACKET;
         else if (open == LBRACE) close = RBRACE;
         else return false;
 
         int depth = 0;
-        for (int i = current + 1; i < tokens.size(); i++) {
+        for (int i = openIndex; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
             if (type == open) depth++;
             else if (type == close) {
