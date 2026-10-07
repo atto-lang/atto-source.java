@@ -28,7 +28,7 @@ final class ActorEndCleanupTest {
                         // requesting end. self.end must discard it.
                         turn.self().send("queued-second");
 
-                        turn.runtime().endCurrentActor(
+                        turn.runtime().endCurrentActorWithCleanup(
                                 () -> events.add("cleanup"));
                         events.add("after-end-request");
                     });
@@ -55,10 +55,10 @@ final class ActorEndCleanupTest {
             AtomicInteger cleanups = new AtomicInteger();
             ActorRuntime.ActorRef<String> ref = runtime.spawnSharedTrusted(
                     context -> (message, turn) -> {
-                        turn.runtime().endCurrentActor(cleanups::incrementAndGet);
+                        turn.runtime().endCurrentActorWithCleanup(cleanups::incrementAndGet);
                         assertThrows(
                                 IllegalStateException.class,
-                                () -> turn.runtime().endCurrentActor(
+                                () -> turn.runtime().endCurrentActorWithCleanup(
                                         () -> cleanups.addAndGet(100)));
                     });
 
@@ -74,7 +74,7 @@ final class ActorEndCleanupTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> ref = runtime.spawnSharedTrusted(
                     context -> (message, turn) ->
-                            turn.runtime().endCurrentActor(
+                            turn.runtime().endCurrentActorWithCleanup(
                                     () -> {
                                         throw new IllegalStateException(
                                                 "cleanup failed");
