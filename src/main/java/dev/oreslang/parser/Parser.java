@@ -2763,7 +2763,11 @@ public final class Parser {
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
-        if (match(OBJ)) return parseObjectLiteral();
+        if (match(OBJ)) return parseObjectLiteral(false);
+        if (match(STRUCT)) {
+            consume(INFER, "struct expression requires 'struct infer{...}'");
+            return parseObjectLiteral(true);
+        }
         if (match(ARR)) {
             consume(LBRACKET, "expected '[' after arr");
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
@@ -2797,13 +2801,18 @@ public final class Parser {
         throw error(peek(), "expected expression");
     }
 
-    private Ast.ObjectExpr parseObjectLiteral() {
-        consume(LBRACE, "expected '{' after obj");
+    private Ast.ObjectExpr parseObjectLiteral(boolean inferredStruct) {
+        consume(LBRACE, inferredStruct
+                ? "expected '{' after struct infer"
+                : "expected '{' after obj");
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
                 Ast.ObjectField field;
                 if (match(BACKTICK)) {
+                    if (inferredStruct) {
+                        throw error(previous(), "struct infer requires statically named fields");
+                    }
                     Ast.Expr key = parseExpression();
                     consume(BACKTICK, "expected closing backtick after dynamic object key");
                     consume(COLON, "expected ':' after dynamic object key");
@@ -2817,7 +2826,7 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RBRACE, "expected '}' after obj literal");
-        return new Ast.ObjectExpr(fields);
+        return new Ast.ObjectExpr(fields, inferredStruct);
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
