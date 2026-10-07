@@ -161,7 +161,7 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void doMatchMatchDiscardsArmLocalResultAndContinues() throws Exception {
+    void doMatchDiscardsArmLocalResultAndContinues() throws Exception {
         assertEquals("continued\n", run("""
                 pub fnc main(): void {
                   do match Some(5) over
@@ -203,7 +203,7 @@ final class MatchOverSemanticsTest {
 
     @Test
     void rejectsUsingDoMatchAsExpression() {
-        assertTrue(reject("""
+        reject("""
                 pub fnc main(): void {
                   val x = do match true over
                     true -> { return 1; }
@@ -211,7 +211,7 @@ final class MatchOverSemanticsTest {
                   end;
                   return;
                 }
-                """));
+                """);
     }
 
     @Test
