@@ -1869,8 +1869,14 @@ public final class TypeChecker {
                                 "collection member '" + member.member() + "' call arity mismatch");
                     }
                     for (int i = 0; i < builtin.parameters().size(); i++) {
+                        Type actualArgument =
+                                typeOf(call.arguments().get(i), env, generics, self);
+                        requireReadonlyCapabilityPreserved(
+                                actualArgument,
+                                builtin.parameters().get(i),
+                                "collection member argument " + (i + 1));
                         requireAssignable(
-                                typeOf(call.arguments().get(i), env, generics, self),
+                                actualArgument,
                                 builtin.parameters().get(i),
                                 "collection member argument " + (i + 1));
                     }
@@ -1894,8 +1900,14 @@ public final class TypeChecker {
                             throw new IllegalArgumentException("MutexGuard." + member.member() + " call arity mismatch");
                         }
                         for (int i = 0; i < builtin.parameters().size(); i++) {
+                            Type actualArgument =
+                                    typeOf(call.arguments().get(i), env, generics, self);
+                            requireReadonlyCapabilityPreserved(
+                                    actualArgument,
+                                    builtin.parameters().get(i),
+                                    "MutexGuard argument " + (i + 1));
                             requireAssignable(
-                                    typeOf(call.arguments().get(i), env, generics, self),
+                                    actualArgument,
                                     builtin.parameters().get(i),
                                     "argument " + (i + 1));
                         }
@@ -1977,6 +1989,10 @@ public final class TypeChecker {
                             }
                             validateLambdaArgument(
                                     call.arguments().get(i), expected, env, generics, self);
+                            requireReadonlyCapabilityPreserved(
+                                    actuals.get(i),
+                                    expected,
+                                    "argument " + (i + 1) + " to structural method");
                             requireMutableReferentCompatible(
                                     actuals.get(i),
                                     fn.mutableParameters().get(i),
@@ -2074,6 +2090,10 @@ public final class TypeChecker {
                                             call.arguments().get(i), fn.parameters().get(i), env, generics, self);
                                     Type actualArgument =
                                             typeOf(call.arguments().get(i), env, generics, self);
+                                    requireReadonlyCapabilityPreserved(
+                                            actualArgument,
+                                            fn.parameters().get(i),
+                                            "argument " + (i + 1) + " to function-valued field");
                                     requireMutableReferentCompatible(
                                             actualArgument,
                                             fn.mutableParameters().get(i),
@@ -2160,6 +2180,10 @@ public final class TypeChecker {
             for (int i = 0; i < fn.parameters().size(); i++) {
                 validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
                 Type actualArgument = typeOf(call.arguments().get(i), env, generics, self);
+                requireReadonlyCapabilityPreserved(
+                        actualArgument,
+                        fn.parameters().get(i),
+                        "argument " + (i + 1) + " to function");
                 requireMutableReferentCompatible(
                         actualArgument,
                         fn.mutableParameters().get(i),
@@ -2411,8 +2435,18 @@ public final class TypeChecker {
                     Ast.Param param = constructor.parameters().get(i);
                     Type expectedPattern = resolveParam(param, classGenerics, constructorSelf);
                     Type expected = substituteGenerics(expectedPattern, classBindings);
+                    Type actualArgument =
+                            typeOf(created.arguments().get(i), env, generics, self);
+                    requireReadonlyCapabilityPreserved(
+                            actualArgument,
+                            expected,
+                            "constructor parameter " + param.name());
+                    requireMutableReferentCompatible(
+                            actualArgument,
+                            param.mutable(),
+                            "constructor parameter '" + param.name() + "'");
                     requireAssignable(
-                            typeOf(created.arguments().get(i), env, generics, self),
+                            actualArgument,
                             expected,
                             "constructor parameter " + param.name());
                 }
@@ -2429,9 +2463,19 @@ public final class TypeChecker {
                 Ast.FieldDecl field = resolvedField.field();
                 if (i < created.arguments().size()) {
                     Type fieldPattern = classFieldType(resolvedField.owner(), field);
-                    Type expected = substituteGenerics(fieldPattern, classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
-                    requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
-                            expected, "constructor field " + field.name());
+                    Type expected = substituteGenerics(
+                            fieldPattern,
+                            classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
+                    Type actualArgument =
+                            typeOf(created.arguments().get(i), env, generics, self);
+                    requireReadonlyCapabilityPreserved(
+                            actualArgument,
+                            expected,
+                            "constructor field " + field.name());
+                    requireAssignable(
+                            actualArgument,
+                            expected,
+                            "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
                 }
@@ -5288,6 +5332,10 @@ public final class TypeChecker {
             validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
             Type actual = typeOfAgainstExpected(
                     arguments.get(i), expected, env, callerGenerics, callerSelf);
+            requireReadonlyCapabilityPreserved(
+                    actual,
+                    expected,
+                    "argument " + (i + 1) + " to " + label);
             requireMutableReferentCompatible(
                     actual, params.get(i).mutable(),
                     "argument " + (i + 1) + " to mutable parameter");
