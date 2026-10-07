@@ -2211,9 +2211,17 @@ public final class TypeChecker {
                     }
                     Named actorRef = new Named("ActorRef", actorProxy.arguments());
                     Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+                    Type proxyTarget =
+                            receiverDispatchType(deref(actorProxy.arguments().getFirst()));
+                    if (!(proxyTarget instanceof Named actorType)) {
+                        throw new IllegalArgumentException(
+                                actorProxy.name()
+                                        + " target must be a concrete actor class; got "
+                                        + proxyTarget);
+                    }
                     ResolvedMethod endpoint = findMethodTarget(
                             actorClass,
-                            (Named) actorProxy.arguments().getFirst(),
+                            actorType,
                             member.member(),
                             call.arguments().size(),
                             new LinkedHashSet<>());
