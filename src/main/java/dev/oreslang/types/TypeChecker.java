@@ -2644,6 +2644,9 @@ public final class TypeChecker {
             }
 
             for (Ast.FieldDecl field : klass.fields()) {
+                // Class-static storage is not carried by an instance value, so
+                // it must not taint the instance's channel/sendability shape.
+                if (field.isStatic()) continue;
                 Type fieldType = resolveSharedGeneric(classFieldType(klass, field), classBindings);
                 if (containsChannelCallable(fieldType, seen, classBindings)) return true;
             }
