@@ -55,7 +55,10 @@ public final class TypeChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
+    private record SelfImport(Ast.ImportKind kind, String name) { }
+
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<SelfImport> selfImports = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -107,6 +110,25 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (ImportRules.isSelfPath(imported.path())) {
+                for (String name : imported.names()) {
+                    int matches = selfImportMatches(program, imported.kind(), name);
+                    if (matches == 0) {
+                        throw new IllegalArgumentException(
+                                "same-code-unit import "
+                                        + imported.kind().name().toLowerCase()
+                                        + " '" + name + "' from '@self' does not match a local declaration");
+                    }
+                    if (matches > 1) {
+                        throw new IllegalArgumentException(
+                                "same-code-unit import "
+                                        + imported.kind().name().toLowerCase()
+                                        + " '" + name + "' from '@self' is ambiguous");
+                    }
+                    selfImports.add(new SelfImport(imported.kind(), name));
+                }
+                continue;
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
@@ -123,6 +145,55 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    private static int selfImportMatches(
+            Ast.Program program,
+            Ast.ImportKind kind,
+            String name) {
+        int matches = 0;
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (kind == Ast.ImportKind.MODULE) {
+                if (!Parser.ROOT_MODULE.equals(module.name())
+                        && module.name().equals(name)) {
+                    matches++;
+                }
+                continue;
+            }
+            for (Ast.Decl declaration : module.declarations()) {
+                boolean matched = switch (kind) {
+                    case FUNCTION -> declaration instanceof Ast.FunctionDecl fn
+                            && fn.kind() == Ast.CallableKind.FNC
+                            && fn.actorKind() == Ast.ActorKind.NONE
+                            && fn.name().equals(name);
+                    case ACTOR -> declaration instanceof Ast.ClassDecl klass
+                            && klass.actorKind() != Ast.ActorKind.NONE
+                            && klass.name().equals(name);
+                    case CLASS -> declaration instanceof Ast.ClassDecl klass
+                            && klass.actorKind() == Ast.ActorKind.NONE
+                            && klass.name().equals(name);
+                    case INTERFACE -> declaration instanceof Ast.InterfaceDecl iface
+                            && !iface.moduleContract()
+                            && iface.name().equals(name);
+                    case CONTRACT -> declaration instanceof Ast.InterfaceDecl iface
+                            && iface.moduleContract()
+                            && iface.name().equals(name);
+                    case TYPE -> declaration instanceof Ast.TypeAliasDecl alias
+                            && alias.name().equals(name);
+                    case TYPES -> (declaration instanceof Ast.InterfaceDecl iface
+                                    && iface.name().equals(name))
+                            || (declaration instanceof Ast.TypeAliasDecl alias
+                                    && alias.name().equals(name));
+                    case TRAIT, STRUCT, ALL, MODULE -> false;
+                };
+                if (matched) matches++;
+            }
+        }
+        return matches;
+    }
+
+    private boolean selfImported(Ast.ImportKind kind, String name) {
+        return selfImports.contains(new SelfImport(kind, name));
     }
 
     private void collect(Ast.Program program) {
@@ -1073,6 +1144,7 @@ public final class TypeChecker {
      * This intentionally applies to ordinary classes and actor classes alike.
      */
     private void rejectImplicitClassCallable(String name) {
+        if (selfImported(Ast.ImportKind.FUNCTION, name)) return;
         if (lexicalClassOrigin != null) {
             throw new IllegalArgumentException(
                     "class '" + lexicalClassOrigin.name() + "' cannot implicitly access "
@@ -1095,6 +1167,7 @@ public final class TypeChecker {
     }
 
     private void rejectUnimportedModuleNamespace(String name) {
+        if (selfImported(Ast.ImportKind.MODULE, name)) return;
         if (lexicalClassOrigin != null) {
             throw new IllegalArgumentException(
                     "class '" + lexicalClassOrigin.name() + "' cannot read "
@@ -1108,6 +1181,10 @@ public final class TypeChecker {
     }
 
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
+        Ast.ImportKind kind = target.actorKind() == Ast.ActorKind.NONE
+                ? Ast.ImportKind.CLASS
+                : Ast.ImportKind.ACTOR;
+        if (selfImported(kind, target.name())) return;
         if (lexicalClassOrigin != null && lexicalClassOrigin != target) {
             // Ancestor methods can still be reached through self/super;
             // arbitrary sibling class namespaces have no lexical authority.
