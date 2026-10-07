@@ -1,6 +1,7 @@
 // Proposed Oreslang actor-class acceptance fixture.
-// STATUS: DESIGN ONLY. Not executable until spawn, ActorMail<T>, actor
-// lifecycle hooks, async RHS lambdas, and parent output streams are lowered.
+// STATUS: PARTIALLY TYPECHECKABLE DESIGN. `spawn Actor()`/ActorRef lifecycle
+// semantics are now parsed/typechecked, but executable spawn lowering, ActorMail<T>,
+// async RHS lambdas, and parent output streams are not complete.
 //
 // Important language invariants:
 // - Actor constructors are FORBIDDEN; initialize through actor-local fields
@@ -14,7 +15,7 @@ define actor Worker as
 
   // No constructor. This hook runs in the actor's own execution domain
   // before w.ready settles, and is not publicly callable.
-  pub on_start(): void {
+  on_start(): void {
     return;
   }
 
