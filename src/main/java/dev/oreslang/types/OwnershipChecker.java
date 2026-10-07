@@ -764,14 +764,6 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
-            if (concreteReceiver != null
-                    && concreteReceiver.name().equals("DynamicStruct")
-                    && concreteReceiver.arguments().size() == 1) {
-                Ast.TypeRef valueType = concreteReceiver.arguments().getFirst();
-                ValueKind valueKind = valueType.name().equals("$infer$")
-                        ? ValueKind.MOVE_ONLY : kindOfType(valueType);
-                return new ValueInfo(valueType, valueKind, null);
-            }
             if (concreteReceiver != null && concreteReceiver.isRecordType()) {
                 Ast.TypeRef valueType = concreteReceiver.recordMembers().get(member.member());
                 if (valueType == null) {
@@ -906,7 +898,6 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            boolean dynamic = false;
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
             if (object.explicitStruct()) {
                 for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -917,21 +908,19 @@ public final class OwnershipChecker {
             }
             for (Ast.ObjectField field : object.fields()) {
                 if (field.isDynamic()) {
-                    dynamic = true;
-                    ValueInfo key = checkExpr(field.dynamicName(), scope, false);
-                    if (containsMutexGuardType(key.type)) {
-                        throw error("dynamic object keys cannot contain MutexGuard");
-                    }
+                    throw error(
+                            "struct fields must be statically named for AOT compilation; "
+                                    + "dynamic/computed struct keys are not supported");
                 }
                 ValueInfo info = checkExpr(field.value(), scope, true);
-                if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an object/map");
-                if (!field.isDynamic() && !object.explicitStruct()) members.put(field.name(), info.type);
+                if (containsMutexGuardType(info.type)) {
+                    throw error("MutexGuard cannot be stored in a struct");
+                }
+                if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
-            Ast.TypeRef type = dynamic
-                    ? new Ast.TypeRef("DynamicStruct", List.of(Ast.TypeRef.inferred()), false)
-                    : object.inferredStruct()
-                        ? Ast.TypeRef.readonlyRecordType(members)
-                        : Ast.TypeRef.recordType(members);
+            Ast.TypeRef type = object.inferredStruct()
+                    ? Ast.TypeRef.readonlyRecordType(members)
+                    : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
@@ -2281,8 +2270,8 @@ public final class OwnershipChecker {
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
-        if ((concrete.name().equals("Array") || concrete.name().equals("List")
-                || concrete.name().equals("DynamicStruct")) && concrete.arguments().size() == 1) {
+        if ((concrete.name().equals("Array") || concrete.name().equals("List"))
+                && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
         if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
@@ -2401,9 +2390,6 @@ public final class OwnershipChecker {
         if (concrete.isRecordType()) {
             Ast.TypeRef member = concrete.recordMembers().get(name);
             if (member != null) return member;
-        }
-        if (concrete.name().equals("DynamicStruct") && concrete.arguments().size() == 1) {
-            return concrete.arguments().getFirst();
         }
         Ast.ClassDecl klass = findClass(concrete.name());
         if (klass != null) {
