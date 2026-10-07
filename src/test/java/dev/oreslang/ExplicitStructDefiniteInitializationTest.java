@@ -67,4 +67,18 @@ final class ExplicitStructDefiniteInitializationTest {
                 }
                 """)));
     }
+    @Test
+    void lambdaBodyCannotEstablishInitializationUntilItRuns() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): bool {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  const initialize = || -> {
+                    point.ready = true;
+                    return;
+                  };
+                  return point.ready;
+                }
+                """)));
+    }
+
 }
