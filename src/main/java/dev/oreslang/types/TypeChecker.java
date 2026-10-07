@@ -1386,7 +1386,7 @@ public final class TypeChecker {
         Set<String> declared = new LinkedHashSet<>();
         for (Ast.StructFieldSpec field : object.declaredFields()) declared.add(field.name());
         for (Ast.ObjectField field : object.fields()) {
-            if (!field.isDynamic()) declared.remove(field.name());
+            declared.remove(field.name());
         }
         return java.util.Collections.unmodifiableSet(declared);
     }
@@ -2570,10 +2570,6 @@ public final class TypeChecker {
 
                 Set<String> initialized = new LinkedHashSet<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    if (field.isDynamic()) {
-                        throw new IllegalArgumentException(
-                                "explicit struct initializers require statically named declared fields");
-                    }
                     Type expected = members.get(field.name());
                     if (expected == null) {
                         throw new IllegalArgumentException(
@@ -2608,11 +2604,6 @@ public final class TypeChecker {
 
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
-                if (field.isDynamic()) {
-                    throw new IllegalArgumentException(
-                            "struct fields must be statically named for AOT compilation; "
-                                    + "computed/dynamic struct keys are not supported");
-                }
                 Type exactValueType = typeOf(field.value(), env, generics, self);
                 if (members.putIfAbsent(
                         field.name(),
@@ -5192,9 +5183,6 @@ public final class TypeChecker {
                 rejectStaticClassGenericReference(field.type(), classGenerics, klass, method);
             }
             for (Ast.ObjectField field : object.fields()) {
-                if (field.isDynamic()) {
-                    rejectStaticClassGenericReferences(field.dynamicName(), classGenerics, klass, method);
-                }
                 rejectStaticClassGenericReferences(field.value(), classGenerics, klass, method);
             }
         } else if (expression instanceof Ast.LambdaExpr lambda) {
