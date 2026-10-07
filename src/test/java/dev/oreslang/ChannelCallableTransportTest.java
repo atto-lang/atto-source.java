@@ -74,6 +74,37 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void nbSelectRegistrationOwnsEveryMoveOnlyWriteCandidate() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                  val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
+                  val Fnc<int, int> callback = |x| -> { return x * 2; };
+                  nb select {
+                    case writech handlers, callback: { }
+                  }
+                  callback(2);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void nbSelectCannotRegisterSameMoveOnlyPayloadTwice() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                  val Channel<Fnc<int, int>> a = Channel.new<Fnc<int, int>>(1);
+                  val Channel<Fnc<int, int>> b = Channel.new<Fnc<int, int>>(1);
+                  val Fnc<int, int> callback = |x| -> { return x * 2; };
+                  nb select {
+                    case writech a, callback: { }
+                    case writech b, callback: { }
+                  }
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void ordinaryDataChannelsRemainLegal() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc apply(Fnc<int, int> callback, int value): int {
