@@ -3105,6 +3105,11 @@ public final class TypeChecker {
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
             boolean fallback = isFallbackArm(arm);
+            if (!matched.ordered() && i > 0
+                    && matchProvablyExhaustive(arms.subList(0, i), subject, generics, self)) {
+                throw new IllegalArgumentException("unreachable match arm " + (i + 1)
+                        + ": preceding arms already cover " + subject);
+            }
             if (!matched.ordered() && fallback && i != arms.size() - 1) {
                 throw new IllegalArgumentException("exclusive match fallback '_'/'else'/catch-all binding must be the final arm");
             }
