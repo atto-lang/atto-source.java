@@ -125,6 +125,8 @@ public final class OresEvalRootNode extends RootNode {
         private final String codeUnitId;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
+        private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
+                new IdentityHashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
@@ -277,6 +279,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void indexFunction(String module, Ast.FunctionDecl fn) {
+            declarationModules.put(fn, module);
             String qualified = module + "." + fn.name();
             indexFunctionSlot(qualified, fn);
 
@@ -637,7 +640,10 @@ public final class OresEvalRootNode extends RootNode {
                                 function != null && function.nonLexical(),
                                 function != null
                                         ? null
-                                        : declaringClass(method));
+                                        : declaringClass(method),
+                                function == null
+                                        ? null
+                                        : declarationModules.get(function));
 
                         if (receiver != null) {
                             params.define(
@@ -3438,6 +3444,7 @@ public final class OresEvalRootNode extends RootNode {
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
+                    requireExplicitClassCallableImport(env, name.name());
                     evalSuspendableArguments(
                             task,
                             call.arguments(),
@@ -4059,7 +4066,7 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, fn.async());
             }
 
-            Env env = new Env(null, fn.nonLexical());
+            Env env = new Env(null, fn.nonLexical(), null, declarationModules.get(fn));
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -4099,7 +4106,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl fn,
                 List<?> args,
                 GeneratorRuntime.Emitter<Object> emitter) {
-            Env env = new Env(null, fn.nonLexical());
+            Env env = new Env(null, fn.nonLexical(), null, declarationModules.get(fn));
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -4806,11 +4813,60 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void requireExplicitClassCallableImport(Env env, String name) {
-            if (env.accessClass() != null) {
+            if (env.lexicalContainerClass() != null) {
                 throw new IllegalArgumentException(
-                        "class '" + env.accessClass().name()
+                        "class '" + env.lexicalContainerClass().name()
                                 + "' cannot implicitly access file/module callable '"
                                 + name + "'; declare an explicit import or use self");
+            }
+            String owner = unqualifiedFunctionOwners.get(name);
+            if (owner != null && env.isInsideExplicitModule()
+                    && !owner.equals(env.lexicalModule())) {
+                throw new IllegalArgumentException(
+                        "module '" + env.lexicalModule()
+                                + "' cannot implicitly access callable '" + name
+                                + "' from module '" + owner
+                                + "'; use an explicit import");
+            }
+        }
+
+        private void requireLexicalNamespaceAccess(Env env, String namespace, String kind) {
+            if (env.lexicalContainerClass() != null) {
+                throw new IllegalArgumentException(
+                        "class '" + env.lexicalContainerClass().name()
+                                + "' cannot implicitly access " + kind + " '" + namespace
+                                + "'; use an explicit import");
+            }
+            if (env.isInsideExplicitModule() && !namespace.equals(env.lexicalModule())) {
+                throw new IllegalArgumentException(
+                        "module '" + env.lexicalModule() + "' cannot implicitly access "
+                                + kind + " '" + namespace + "'; use an explicit import");
+            }
+        }
+
+        private void requireLexicalClassAccess(Env env, Ast.ClassDecl target) {
+            if (env.lexicalContainerClass() != null
+                    && env.lexicalContainerClass() != target) {
+                throw new IllegalArgumentException(
+                        "class '" + env.lexicalContainerClass().name()
+                                + "' cannot implicitly access sibling class '"
+                                + target.name() + "'; use an explicit import");
+            }
+            if (env.isInsideExplicitModule()) {
+                String qualified = null;
+                for (Map.Entry<String, Ast.ClassDecl> entry : classes.entrySet()) {
+                    if (entry.getValue() == target && entry.getKey().contains(".")) {
+                        qualified = entry.getKey();
+                        break;
+                    }
+                }
+                if (qualified != null
+                        && !qualified.startsWith(env.lexicalModule() + ".")) {
+                    throw new IllegalArgumentException(
+                            "module '" + env.lexicalModule()
+                                    + "' cannot implicitly access class '" + target.name()
+                                    + "' from a different module; use an explicit import");
+                }
             }
         }
 
@@ -5121,9 +5177,15 @@ public final class OresEvalRootNode extends RootNode {
                 Invokable hostFunction = hostFunctions.get(name.name());
                 if (hostFunction != null) return hostFunction;
                 Ast.ModuleDecl module = modules.get(name.name());
-                if (module != null) return new ModuleFacade(this, module);
+                if (module != null) {
+                    requireLexicalNamespaceAccess(env, name.name(), "module");
+                    return new ModuleFacade(this, module);
+                }
                 Ast.ClassDecl klass = findClass(name.name());
-                if (klass != null) return new ClassFacade(this, klass);
+                if (klass != null) {
+                    requireLexicalClassAccess(env, klass);
+                    return new ClassFacade(this, klass);
+                }
                 Object imported = importedValue(name.name());
                 if (imported != Env.MISSING) return imported;
                 Ast.FunctionDecl fn = findSingleFunction(name.name());
@@ -7319,6 +7381,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
+        // Declaration-origin boundary survives nlex lambdas, which intentionally
+        // discard private-member authority but must not acquire file ambient scope.
+        private final Ast.ClassDecl lexicalContainerClass;
+        private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
         private Env(Env parent) {
@@ -7343,13 +7409,38 @@ public final class OresEvalRootNode extends RootNode {
                 boolean descendantsNonLexical,
                 Ast.ClassDecl accessClass,
                 OresObject constructingObject) {
+            this(parent, descendantsNonLexical, accessClass, constructingObject,
+                    parent == null ? null : parent.lexicalModule);
+        }
+        private Env(
+                Env parent,
+                boolean descendantsNonLexical,
+                Ast.ClassDecl accessClass,
+                String lexicalModule) {
+            this(parent, descendantsNonLexical, accessClass, null, lexicalModule);
+        }
+        private Env(
+                Env parent,
+                boolean descendantsNonLexical,
+                Ast.ClassDecl accessClass,
+                OresObject constructingObject,
+                String lexicalModule) {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
+            this.lexicalContainerClass = accessClass == null
+                    ? (parent == null ? null : parent.lexicalContainerClass)
+                    : accessClass;
+            this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
+        private Ast.ClassDecl lexicalContainerClass() { return lexicalContainerClass; }
+        private String lexicalModule() { return lexicalModule; }
+        private boolean isInsideExplicitModule() {
+            return lexicalModule != null && !Parser.ROOT_MODULE.equals(lexicalModule);
+        }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
@@ -7378,7 +7469,8 @@ public final class OresEvalRootNode extends RootNode {
                     parent == null ? null : parent.snapshot(),
                     descendantsNonLexical,
                     accessClass,
-                    null);
+                    null,
+                    lexicalModule);
             cp.slots.putAll(slots);
             return cp;
         }
