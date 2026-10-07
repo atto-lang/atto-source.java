@@ -1568,39 +1568,57 @@ public final class Parser {
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
             if (matchWhenKeyword() || matchCaseKeyword()) {
-                Ast.ChannelOperation operation;
-                Ast.Expr channel;
+                Ast.SelectOperation operation;
+                Ast.Expr source = null;
                 Ast.Expr value = null;
+                long timeoutNanos = 0L;
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
 
                 if (match(READCH)) {
-                    operation = Ast.ChannelOperation.READ;
-                    channel = parseExpression();
-                    consume(COLON, "readch select case requires ':'");
+                    operation = Ast.SelectOperation.READ;
+                    source = parseExpression();
+                    consume(COLON, "readch select arm requires ':'");
                     if (isBindingKind(peek().type())) {
                         bindingKind = parseBindingKind();
-                        bindingName = consume(IDENT, "readch case binding requires a name").lexeme();
+                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
                         match(SEMICOLON);
                     }
                 } else if (match(WRITECH)) {
-                    operation = Ast.ChannelOperation.WRITE;
-                    channel = parseExpression();
-                    consume(COMMA, "writech select case requires 'channel, value'");
+                    operation = Ast.SelectOperation.WRITE;
+                    source = parseExpression();
+                    consume(COMMA, "writech select arm requires 'channel, value'");
                     value = parseExpression();
-                    consume(COLON, "writech select case requires ':'");
+                    consume(COLON, "writech select arm requires ':'");
+                } else if (match(AWAIT)) {
+                    operation = Ast.SelectOperation.AWAIT;
+                    source = parseExpression();
+                    consume(COLON, "await select arm requires ':' before an optional binding");
+                    if (isBindingKind(peek().type())) {
+                        bindingKind = parseBindingKind();
+                        bindingName = consume(IDENT, "await select arm binding requires a name").lexeme();
+                        match(SEMICOLON);
+                    }
+                } else if (matchContextualIdentifier("timeout")) {
+                    operation = Ast.SelectOperation.TIMEOUT;
+                    timeoutNanos = parseSelectTimeoutNanos();
+                } else if (matchContextualIdentifier("cancelled")) {
+                    operation = Ast.SelectOperation.CANCELLED;
+                    source = parseExpression();
                 } else {
-                    throw error(peek(), "select case must start with readch or writech");
+                    throw error(peek(),
+                            "select arm must start with readch, writech, await, timeout, or cancelled");
                 }
 
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select case requires a braced body '{ ... }'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
                         operation,
-                        channel,
+                        source,
                         value,
+                        timeoutNanos,
                         bindingKind,
                         bindingName,
                         body));
@@ -1614,20 +1632,61 @@ public final class Parser {
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
-                        Ast.ChannelOperation.DEFAULT,
+                        Ast.SelectOperation.DEFAULT,
                         null,
                         null,
+                        0L,
                         null,
                         null,
                         body));
                 continue;
             }
 
-            throw error(peek(), "expected case/default inside select");
+            throw error(peek(), "expected when/case/default inside select");
         }
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    private long parseSelectTimeoutNanos() {
+        if (!check(INT) && !check(FLOAT)) {
+            throw error(peek(),
+                    "timeout duration must be a numeric literal followed by ns, us, ms, s, m, or h");
+        }
+        Token amount = advance();
+        Token unit = consume(IDENT,
+                "timeout duration requires a unit: ns, us, ms, s, m, or h");
+
+        java.math.BigDecimal value;
+        try {
+            value = new java.math.BigDecimal(amount.lexeme().replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(amount, "invalid timeout duration");
+        }
+        if (value.signum() < 0) {
+            throw error(amount, "timeout duration cannot be negative");
+        }
+
+        long nanosPerUnit = switch (unit.lexeme()) {
+            case "ns" -> 1L;
+            case "us" -> 1_000L;
+            case "ms" -> 1_000_000L;
+            case "s" -> 1_000_000_000L;
+            case "m" -> 60_000_000_000L;
+            case "h" -> 3_600_000_000_000L;
+            default -> throw error(unit,
+                    "unknown timeout unit '" + unit.lexeme()
+                            + "'; use ns, us, ms, s, m, or h");
+        };
+
+        try {
+            return value.multiply(java.math.BigDecimal.valueOf(nanosPerUnit))
+                    .longValueExact();
+        } catch (ArithmeticException invalid) {
+            throw error(amount,
+                    "timeout duration must resolve to an integral nanosecond value within int64 range");
+        }
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
