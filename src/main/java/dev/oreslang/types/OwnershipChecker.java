@@ -1357,6 +1357,13 @@ public final class OwnershipChecker {
 
         for (Capture capture : captures.values.values()) {
             VarState source = capture.source;
+            // Async callbacks execute on a separately scheduled carrier. Until
+            // sendability proofs can transfer owned heaps, prevent aliases of
+            // mutable or move-only parent state from crossing that boundary.
+            if (lambda.async() && (capture.write || source.mutable || source.kind != ValueKind.COPY)) {
+                throw error("async closure cannot capture mutable/non-Copy value '" + capture.name
+                        + "' across a task boundary; pass an owned/sendable argument instead");
+            }
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
