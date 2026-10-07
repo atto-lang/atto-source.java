@@ -2190,11 +2190,19 @@ public final class Parser {
         } finally {
             suppressRefinementOperators = previousSuppression;
         }
-        match(SEMICOLON);
+
+        // 'over' is contextual: it separates a match subject from keyword-delimited
+        // arms without globally reserving an otherwise legal identifier.
+        boolean over = check(IDENT) && peek().lexeme().equals("over");
+        if (over) advance();
+        boolean braced = !over && match(LBRACE);
+        if (!braced) match(SEMICOLON);
 
         List<Ast.MatchArm> arms = new ArrayList<>();
-        while (!check(END) && !check(EOF)) {
-            Ast.Pattern pattern = match(ELSE) ? new Ast.WildcardPattern() : parsePattern();
+        while (!(braced ? check(RBRACE) : check(END)) && !check(EOF)) {
+            // Explicit fallback aliases. Symbol.default is a match-only marker,
+            // not an expression lookup and not a lambda/function pattern.
+            Ast.Pattern pattern = matchMatchFallback() ? new Ast.WildcardPattern() : parsePattern();
             Ast.Expr guard = match(WHEN) ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
@@ -2203,9 +2211,23 @@ public final class Parser {
             List<Ast.Stmt> body = parseBlock();
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
-        consume(END, "expected 'end' to close match");
+        if (braced) consume(RBRACE, "expected '}' to close braced match");
+        else consume(END, "expected 'end' to close match");
         if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
         return new Ast.MatchStmt(subject, ordered, arms);
+    }
+
+    private boolean matchMatchFallback() {
+        if (match(ELSE, DEFAULT)) return true;
+        if (check(IDENT) && peek().lexeme().equals("Symbol")
+                && checkNext(DOT) && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == DEFAULT) {
+            advance(); // Symbol
+            advance(); // .
+            advance(); // default
+            return true;
+        }
+        return false;
     }
 
     private Ast.Pattern parsePattern() {
