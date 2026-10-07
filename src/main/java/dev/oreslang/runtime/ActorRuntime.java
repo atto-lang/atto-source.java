@@ -5484,7 +5484,12 @@ public final class ActorRuntime implements AutoCloseable {
                 if (closed.get()) {
                     throw new IllegalStateException("actor runtime is closed");
                 }
-                if (stopped.get() || finalized) throw terminated(ref);
+                // self.end/self.endWithCleanup seals the mailbox immediately, but
+                // the current turn and its final cleanup retain the actor's output
+                // capability until finalization closes the stream.
+                if ((stopped.get() && !endRequested) || finalized) {
+                    throw terminated(ref);
+                }
 
                 long current = outputBytes.get();
                 long next;
