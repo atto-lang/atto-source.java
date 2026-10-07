@@ -1262,14 +1262,6 @@ public final class OresEvalRootNode extends RootNode {
                             new IdentityHashMap<>()))) {
                 try {
                     executeStatement(stmt, env, defers, false);
-                    runStatements(
-                            task,
-                            statements,
-                            env,
-                            defers,
-                            index + 1,
-                            continuation);
-                    return;
                 } catch (ReturnSignal returned) {
                     finishBlock(
                             task,
@@ -1303,6 +1295,12 @@ public final class OresEvalRootNode extends RootNode {
                             continuation);
                     return;
                 }
+                // A later source statement or completion callback is not part
+                // of this statement's exception scope. Never reinterpret its
+                // error as another completion for the current block.
+                runStatements(
+                        task, statements, env, defers, index + 1, continuation);
+                return;
             }
 
             runSuspendableStatement(
@@ -1337,15 +1335,15 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlow initialFlow,
                 SourceFlowCont continuation) {
             if (defers.isEmpty()) {
+                SourceFlow completed = initialFlow;
                 try {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
-                    continuation.accept(task, initialFlow);
                 } catch (RuntimeException | Error failure) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(failure));
+                    completed = SourceFlow.throwing(failure);
                 }
+                // The consumer owns any failure it throws. Do not call it twice.
+                continuation.accept(task, completed);
                 return;
             }
 
@@ -1365,15 +1363,14 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Ast.Expr defer = defers.pollFirst();
             if (defer == null) {
+                SourceFlow completed = currentFlow;
                 try {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
-                    continuation.accept(task, currentFlow);
                 } catch (RuntimeException | Error failure) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(failure));
+                    completed = SourceFlow.throwing(failure);
                 }
+                continuation.accept(task, completed);
                 return;
             }
 
@@ -1978,19 +1975,18 @@ public final class OresEvalRootNode extends RootNode {
                     runtimeSelectPolicy(select.policy());
 
             if (select.mode() == Ast.WaitMode.IMMEDIATE) {
+                java.util.Optional<ChannelRuntime.SelectResult> result;
                 try {
-                    java.util.Optional<ChannelRuntime.SelectResult> result =
-                            set.trySelect(policy);
-                    if (result.isEmpty()) {
-                        continuation.accept(task, SourceFlow.normal());
-                    } else {
-                        runSelectedArmSuspendable(
-                                task, select, result.get(), env, continuation);
-                    }
+                    result = set.trySelect(policy);
                 } catch (RuntimeException | Error failure) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(failure));
+                    continuation.accept(task, SourceFlow.throwing(failure));
+                    return;
+                }
+                if (result.isEmpty()) {
+                    continuation.accept(task, SourceFlow.normal());
+                } else {
+                    runSelectedArmSuspendable(
+                            task, select, result.get(), env, continuation);
                 }
                 return;
             }
@@ -2032,16 +2028,15 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                ChannelRuntime.SelectResult chosen;
                 try {
-                    runSelectedArmSuspendable(
-                            task, select,
-                            (ChannelRuntime.SelectResult) future.join(),
-                            env, continuation);
+                    chosen = (ChannelRuntime.SelectResult) future.join();
                 } catch (RuntimeException | Error failure) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(failure));
+                    continuation.accept(task, SourceFlow.throwing(failure));
+                    return;
                 }
+                runSelectedArmSuspendable(
+                        task, select, chosen, env, continuation);
                 return;
             }
 
@@ -2055,16 +2050,13 @@ public final class OresEvalRootNode extends RootNode {
                                             OresFuture.unwrap(failure)));
                             return;
                         }
-                        try {
-                            runSelectedArmSuspendable(
-                                    t, select,
-                                    (ChannelRuntime.SelectResult) value,
-                                    env, continuation);
-                        } catch (RuntimeException | Error selectFailure) {
-                            continuation.accept(
-                                    t,
-                                    SourceFlow.throwing(selectFailure));
-                        }
+                        // The selected arm runs in the same source task. An
+                        // exception from a downstream completion must not be
+                        // reclassified as a second selected-arm completion.
+                        runSelectedArmSuspendable(
+                                t, select,
+                                (ChannelRuntime.SelectResult) value,
+                                env, continuation);
                     });
         }
 
