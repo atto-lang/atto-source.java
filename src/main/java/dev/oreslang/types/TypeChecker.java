@@ -3292,21 +3292,34 @@ public final class TypeChecker {
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
-            boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
+        if (subject instanceof Named named && named.name().equals("Option")
+                && named.arguments().size() == 1) {
+            boolean none = false;
+            List<Ast.MatchArm> somePayloads = new ArrayList<>();
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
+                if (c.constructor().equals("None")) none = true;
+                if (c.constructor().equals("Some") && c.arguments().size() == 1)
+                    somePayloads.add(new Ast.MatchArm(c.arguments().getFirst(), null, List.of()));
             }
-            return some && none;
+            return none && !somePayloads.isEmpty()
+                    && matchProvablyExhaustive(somePayloads, named.arguments().getFirst(), generics, self);
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
-            boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
+        if (subject instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            List<Ast.MatchArm> okPayloads = new ArrayList<>();
+            List<Ast.MatchArm> errPayloads = new ArrayList<>();
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)
+                        || c.arguments().size() != 1) continue;
+                if (c.constructor().equals("Ok"))
+                    okPayloads.add(new Ast.MatchArm(c.arguments().getFirst(), null, List.of()));
+                if (c.constructor().equals("Err"))
+                    errPayloads.add(new Ast.MatchArm(c.arguments().getFirst(), null, List.of()));
             }
-            return ok && err;
+            return !okPayloads.isEmpty() && !errPayloads.isEmpty()
+                    && matchProvablyExhaustive(okPayloads, named.arguments().get(0), generics, self)
+                    && matchProvablyExhaustive(errPayloads, named.arguments().get(1), generics, self);
         }
         return false;
     }
