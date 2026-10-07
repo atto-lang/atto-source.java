@@ -55,10 +55,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
-    private record SelfImport(Ast.ImportKind kind, String name) { }
-
     private final Set<String> importedValues = new HashSet<>();
-    private final Set<SelfImport> selfImports = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -111,25 +108,6 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
-            if (ImportRules.isSelfPath(imported.path())) {
-                for (String name : imported.names()) {
-                    int matches = selfImportMatches(program, imported.kind(), name);
-                    if (matches == 0) {
-                        throw new IllegalArgumentException(
-                                "same-code-unit import "
-                                        + imported.kind().name().toLowerCase()
-                                        + " '" + name + "' from '@self' does not match a local declaration");
-                    }
-                    if (matches > 1) {
-                        throw new IllegalArgumentException(
-                                "same-code-unit import "
-                                        + imported.kind().name().toLowerCase()
-                                        + " '" + name + "' from '@self' is ambiguous");
-                    }
-                    selfImports.add(new SelfImport(imported.kind(), name));
-                }
-                continue;
-            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
@@ -146,55 +124,6 @@ public final class TypeChecker {
                 }
             }
         }
-    }
-
-    private static int selfImportMatches(
-            Ast.Program program,
-            Ast.ImportKind kind,
-            String name) {
-        int matches = 0;
-        for (Ast.ModuleDecl module : program.modules()) {
-            if (kind == Ast.ImportKind.MODULE) {
-                if (!Parser.ROOT_MODULE.equals(module.name())
-                        && module.name().equals(name)) {
-                    matches++;
-                }
-                continue;
-            }
-            for (Ast.Decl declaration : module.declarations()) {
-                boolean matched = switch (kind) {
-                    case FUNCTION -> declaration instanceof Ast.FunctionDecl fn
-                            && fn.kind() == Ast.CallableKind.FNC
-                            && fn.actorKind() == Ast.ActorKind.NONE
-                            && fn.name().equals(name);
-                    case ACTOR -> declaration instanceof Ast.ClassDecl klass
-                            && klass.actorKind() != Ast.ActorKind.NONE
-                            && klass.name().equals(name);
-                    case CLASS -> declaration instanceof Ast.ClassDecl klass
-                            && klass.actorKind() == Ast.ActorKind.NONE
-                            && klass.name().equals(name);
-                    case INTERFACE -> declaration instanceof Ast.InterfaceDecl iface
-                            && !iface.moduleContract()
-                            && iface.name().equals(name);
-                    case CONTRACT -> declaration instanceof Ast.InterfaceDecl iface
-                            && iface.moduleContract()
-                            && iface.name().equals(name);
-                    case TYPE -> declaration instanceof Ast.TypeAliasDecl alias
-                            && alias.name().equals(name);
-                    case TYPES -> (declaration instanceof Ast.InterfaceDecl iface
-                                    && iface.name().equals(name))
-                            || (declaration instanceof Ast.TypeAliasDecl alias
-                                    && alias.name().equals(name));
-                    case TRAIT, STRUCT, ALL, MODULE -> false;
-                };
-                if (matched) matches++;
-            }
-        }
-        return matches;
-    }
-
-    private boolean selfImported(Ast.ImportKind kind, String name) {
-        return selfImports.contains(new SelfImport(kind, name));
     }
 
     private void collect(Ast.Program program) {
@@ -856,6 +785,16 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+        lexicalClassOrigin = klass;
+        try {
+            checkClassBody(module, klass);
+        } finally {
+            lexicalClassOrigin = previousLexicalClass;
+        }
+    }
+
+    private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
@@ -1191,65 +1130,62 @@ public final class TypeChecker {
     }
 
     /**
-     * Methods have a lexical receiver scope, not ambient access to unrelated
-     * file/module callables. Imports are resolved separately from this fallback.
-     * This intentionally applies to ordinary classes and actor classes alike.
+     * Actor classes are executable isolation boundaries, not ordinary lexical
+     * containers. Ordinary classes and modules retain normal same-source-unit
+     * visibility. Actor bodies may only use actor-owned declarations, explicit
+     * imports, and compiler/runtime intrinsics.
      */
-    private void rejectImplicitClassCallable(String name) {
-        if (selfImported(Ast.ImportKind.FUNCTION, name)) return;
-        if (lexicalClassOrigin != null) {
-            throw new IllegalArgumentException(
-                    "class '" + lexicalClassOrigin.name() + "' cannot implicitly access "
-                            + "file/module callable '" + name + "'; declare an explicit import "
-                            + "or invoke a method through self");
-        }
-        String owner = unqualifiedFunctionOwners.get(name);
-        if (owner != null && scopedModule()
-                && !owner.equals(currentLexicalModule)) {
-            throw new IllegalArgumentException(
-                    "module '" + currentLexicalModule + "' cannot implicitly access "
-                            + "callable '" + name + "' from module '" + owner
-                            + "'; use an explicit import");
-        }
+    private boolean insideActorLexicalBoundary() {
+        return lexicalClassOrigin != null
+                && lexicalClassOrigin.actorKind() != Ast.ActorKind.NONE;
     }
 
-    private boolean scopedModule() {
-        return currentLexicalModule != null
-                && !Parser.ROOT_MODULE.equals(currentLexicalModule);
+    private void rejectImplicitClassCallable(String name) {
+        if (!insideActorLexicalBoundary()) return;
+        throw new IllegalArgumentException(
+                "actor '" + lexicalClassOrigin.name() + "' cannot implicitly access "
+                        + "file/module callable '" + name + "'; move the dependency "
+                        + "to another source unit and import it explicitly");
     }
 
     private void rejectUnimportedModuleNamespace(String name) {
-        if (selfImported(Ast.ImportKind.MODULE, name)) return;
-        if (lexicalClassOrigin != null) {
-            throw new IllegalArgumentException(
-                    "class '" + lexicalClassOrigin.name() + "' cannot read "
-                            + "module '" + name + "' without an explicit import");
-        }
-        if (scopedModule() && !name.equals(currentLexicalModule)) {
-            throw new IllegalArgumentException(
-                    "module '" + currentLexicalModule + "' cannot read "
-                            + "module '" + name + "' without an explicit import");
-        }
+        if (!insideActorLexicalBoundary()) return;
+        throw new IllegalArgumentException(
+                "actor '" + lexicalClassOrigin.name() + "' cannot implicitly access "
+                        + "same-file module '" + name + "'; actor dependencies must "
+                        + "come from explicit imports");
     }
 
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
-        Ast.ImportKind kind = target.actorKind() == Ast.ActorKind.NONE
-                ? Ast.ImportKind.CLASS
-                : Ast.ImportKind.ACTOR;
-        if (selfImported(kind, target.name())) return;
-        if (lexicalClassOrigin != null && lexicalClassOrigin != target) {
-            // Ancestor methods can still be reached through self/super;
-            // arbitrary sibling class namespaces have no lexical authority.
+        if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
+        throw new IllegalArgumentException(
+                "actor '" + lexicalClassOrigin.name() + "' cannot implicitly access "
+                        + "same-file " + (target.actorKind() == Ast.ActorKind.NONE ? "class '" : "actor '")
+                        + target.name() + "'; actor dependencies must come from explicit imports");
+    }
+
+    private void rejectUnimportedActorTypeDependency(String name) {
+        if (!insideActorLexicalBoundary()) return;
+
+        Ast.ClassDecl localClass = findClass(name);
+        if (localClass != null && localClass != lexicalClassOrigin) {
             throw new IllegalArgumentException(
-                    "class '" + lexicalClassOrigin.name() + "' cannot read class '"
-                            + target.name() + "' without an explicit import");
+                    "actor '" + lexicalClassOrigin.name() + "' cannot use same-file type '"
+                            + name + "'; move the type to another source unit and import it explicitly");
         }
-        String owner = classOwners.get(target);
-        if (scopedModule() && owner != null && !owner.equals(currentLexicalModule)) {
+
+        Ast.InterfaceDecl localInterface = findInterface(name);
+        if (localInterface != null) {
             throw new IllegalArgumentException(
-                    "module '" + currentLexicalModule + "' cannot read "
-                            + "class '" + target.name() + "' from module '" + owner
-                            + "' without an explicit import");
+                    "actor '" + lexicalClassOrigin.name() + "' cannot use same-file type '"
+                            + name + "'; move the type to another source unit and import it explicitly");
+        }
+
+        Ast.TypeAliasDecl localAlias = findTypeAlias(name);
+        if (localAlias != null) {
+            throw new IllegalArgumentException(
+                    "actor '" + lexicalClassOrigin.name() + "' cannot use same-file type alias '"
+                            + name + "'; move the type to another source unit and import it explicitly");
         }
     }
 
@@ -5846,6 +5782,8 @@ public final class TypeChecker {
             return new Record(members);
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
+
+        rejectUnimportedActorTypeDependency(ref.name());
 
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
         if (alias != null) {
