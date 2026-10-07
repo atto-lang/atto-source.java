@@ -163,6 +163,7 @@ public record IsolatePolicy(
             Set<String> allowedHostClasses,
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
+        NativeBuildMode.requireCompatible(profile);
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
         if (!hostClasses.isEmpty()) {
             require(Capability.JAVA_INTEROP, "Java host imports");
@@ -203,6 +204,14 @@ public record IsolatePolicy(
          */
         if (System.getProperty("polyglot.engine.IsolateLibrary") != null) {
             builder.allowExperimentalOptions(true);
+        }
+
+        if (!profile.guestJitAllowed() && NativeBuildMode.kind() != NativeBuildMode.Kind.AOT) {
+            try (org.graalvm.polyglot.Engine probe = org.graalvm.polyglot.Engine.create()) {
+                if (probe.getOptions().get("engine.Compilation") != null) {
+                    builder.allowExperimentalOptions(true).option("engine.Compilation", "false");
+                }
+            }
         }
 
         if (adversarial) {

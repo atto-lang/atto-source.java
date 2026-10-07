@@ -6,6 +6,7 @@ module dev.oreslang {
     requires java.compiler;
     requires java.logging;
     requires org.graalvm.polyglot;
+    requires org.graalvm.nativeimage;
     requires org.graalvm.truffle;
     requires org.tomlj;
 
