@@ -54,10 +54,10 @@ final class RuntimeCooperateLanguageTest {
                     let x = 10;
                     x = x + 1;
                     rt cooperate;
-                    if x == 11 {
+                    if x == 11; do
                       x = x + 10;
                       rt cooperate;
-                    }
+                    fi
                     x = x + 1;
                     return x;
                   }
@@ -78,9 +78,9 @@ final class RuntimeCooperateLanguageTest {
                     let i = 0;
                     let total = 0;
                     loop {
-                      if i >= 8 {
+                      if i >= 8; do
                         break;
-                      }
+                      fi
                       total = total + i;
                       i = i + 1;
                       rt cooperate;
