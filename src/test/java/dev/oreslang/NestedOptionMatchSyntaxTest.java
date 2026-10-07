@@ -173,4 +173,161 @@ final class NestedOptionMatchSyntaxTest {
         assertTrue(text.contains("-1"), text);
         assertTrue(text.contains("-2"), text);
     }
+
+    @Test
+    void missingOuterNoneIsStillNonExhaustiveWithBothPresentShapesHandled() {
+        IllegalArgumentException err = rejects("""
+                fnc incomplete(Option<Option<int>> entry): int {
+                  match entry over
+                    Some(Some(value)) -> { return value; }
+                    Some(None) -> { return -1; }
+                  end
+                }
+                """);
+        assertTrue(err.getMessage().contains("non-exhaustive"), err.getMessage());
+    }
+
+    @Test
+    void someInnerIsAnOptionNotImplicitlyUnwrapped() {
+        rejects("""
+                fnc invalid(Option<Option<int>> entry): int {
+                  match entry over
+                    Some(inner) -> { return inner; }
+                    None -> { return -1; }
+                  end
+                }
+                """);
+        accepts("""
+                fnc valid(Option<Option<int>> entry): int {
+                  match entry over
+                    Some(inner) -> {
+                      match inner over
+                        Some(value) -> { return value; }
+                        None -> { return -1; }
+                      end
+                    }
+                    None -> { return -2; }
+                  end
+                }
+                """);
+    }
+
+    @Test
+    void optionIsNotTruthyAndCannotBeUsedAsImplicitIfUnwrap() {
+        rejects("""
+                fnc invalid(Option<bool> entry): int {
+                  if entry then
+                    return 1;
+                  fi
+                  return 0;
+                }
+                """);
+        rejects("""
+                fnc invalid(Option<int> entry): int {
+                  if val value = entry then
+                    return value;
+                  fi
+                  return 0;
+                }
+                """);
+    }
+
+    @Test
+    void patternsCannotPretendOptionIntContainsStoredNone() {
+        rejects("""
+                fnc invalid(Option<int> entry): int {
+                  match entry over
+                    Some(None) -> { return 1; }
+                    None -> { return 0; }
+                  end
+                }
+                """);
+    }
+
+    @Test
+    void guardedArmDoesNotMakePartialSomeCoverageExhaustive() {
+        IllegalArgumentException err = rejects("""
+                fnc invalid(Option<int> entry): int {
+                  match entry over
+                    Some(value) when value > 0 -> { return value; }
+                    None -> { return 0; }
+                  end
+                }
+                """);
+        assertTrue(err.getMessage().contains("non-exhaustive"), err.getMessage());
+    }
+
+    @Test
+    void constructorBindingsDoNotEscapeTheirLexicalArm() {
+        rejects("""
+                fnc invalid(Option<int> entry): int {
+                  match entry over
+                    Some(value) -> {}
+                    None -> {}
+                  end
+                  return value;
+                }
+                """);
+    }
+
+    @Test
+    void nestedBoolOptionRetainsFalsePresentNoneAndMissing() throws Exception {
+        String code = """
+                fnc classify(Option<Option<bool>> entry): int {
+                  match entry over
+                    Some(Some(false)) -> { return 10; }
+                    Some(Some(true)) -> { return 20; }
+                    Some(None) -> { return 30; }
+                    None -> { return 40; }
+                  end
+                }
+
+                pub fnc main(): void {
+                  stdio.println(classify(Some(Some(false))));
+                  stdio.println(classify(Some(Some(true))));
+                  stdio.println(classify(Some(None)));
+                  stdio.println(classify(None));
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(code));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source src = Source.newBuilder(OresLanguage.ID, code, "nested-bool-map-states.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(src);
+        }
+        assertEquals("10\\n20\\n30\\n40",
+                output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n").strip());
+    }
+
+    @Test
+    void singleScrutineeEvaluationForNestedOptionMatch() throws Exception {
+        String code = """
+                fnc lookup(): Option<Option<int>> {
+                  stdio.println("lookup");
+                  return Some(None);
+                }
+
+                pub fnc main(): void {
+                  match lookup() over
+                    Some(Some(value)) -> { stdio.println("stored"); }
+                    Some(None) -> { stdio.println("empty"); }
+                    None -> { stdio.println("missing"); }
+                  end
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(code));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source src = Source.newBuilder(OresLanguage.ID, code, "once-map-lookup.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(src);
+        }
+        assertEquals("lookup\\nempty",
+                output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n").strip());
+    }
 }
