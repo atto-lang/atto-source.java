@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -84,22 +86,88 @@ final class SharedCodeRegistryTest {
     }
 
     @Test
-    void independentHotReloadContextsShareOnlyTheImmutableSourceImage() {
+    void trustedContextsShareOneEngineSourceAndParsedCallTarget() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager first = new HotReloadManager(policy, ExecutionProfile.serverJit());
              HotReloadManager second = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
             var a = first.load("actor-image.ores", MINIMAL_PROGRAM);
             var b = second.load("actor-image.ores", MINIMAL_PROGRAM);
-            assertSame(a.source(), b.source());
+            assertSame(a.source(), b.source(),
+                    "same program image must not be copied per private context");
             assertNotSame(a.context(), b.context(), "guest contexts must remain isolated");
+            assertSame(a.context().getEngine(), b.context().getEngine(),
+                    "private contexts must use one process code engine");
+            assertSame(ProcessCodeEngine.shared(), a.context().getEngine());
+
+            long before = SharedCodeRegistry.process().parseInvocations(a.source());
+            assertDoesNotThrow(a::start);
+            long afterFirst = SharedCodeRegistry.process().parseInvocations(a.source());
+            assertEquals(before + 1, afterFirst,
+                    "first evaluation should populate the shared parse/call-target cache");
+
+            assertDoesNotThrow(b::start);
+            assertEquals(afterFirst,
+                    SharedCodeRegistry.process().parseInvocations(a.source()),
+                    "second context must reuse the cached parsed call target");
 
             first.retire(a.id());
             assertTrue(a.closed());
             assertFalse(b.closed());
             assertNotNull(b.source());
-            // Retirement of one generation cannot invalidate another actor's code.
-            assertDoesNotThrow(b::start);
         }
+    }
+
+    @Test
+    void identicalButUnadmittedSourceCannotAttachToSharedAstByBytesAlone() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        try (var admitted = registry.acquire("same.ores", MINIMAL_PROGRAM)) {
+            Source privateCopy = Source.newBuilder(
+                            OresLanguage.ID, MINIMAL_PROGRAM, "same.ores")
+                    .mimeType(OresLanguage.MIME_TYPE)
+                    .buildLiteral();
+
+            assertSame(admitted.checkedProgram(),
+                    registry.checkedProgramIfLive(admitted.source()));
+            assertNull(registry.checkedProgramIfLive(privateCopy),
+                    "source identity, not matching bytes/path, is the sharing authority");
+        }
+    }
+
+    @Test
+    void adversarialSharingRequiresExactSupervisorApprovalPerCodeUnit() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        IsolatePolicy supervisor = IsolatePolicy.developer();
+        String root = "pub routine main(): void { return; }";
+        String changed = "pub routine main(): void { val n = 2; return; }";
+
+        assertFalse(registry.approvedForAdversarialSharing("root.ores", root));
+        registry.approveForAdversarialSharing(supervisor, "root.ores", root);
+        assertTrue(registry.approvedForAdversarialSharing("root.ores", root));
+
+        assertFalse(registry.approvedForAdversarialSharing("root.ores", changed),
+                "approval is bound to the exact content hash");
+        assertFalse(registry.approvedForAdversarialSharing("dependency.ores", root),
+                "imports/dependencies require independent approval");
+        assertFalse(registry.approvedForAdversarialSharing("other-name.ores", root),
+                "approval is also bound to the code-unit identity");
+
+        registry.revokeForAdversarialSharing(supervisor, "root.ores", root);
+        assertFalse(registry.approvedForAdversarialSharing("root.ores", root));
+
+        assertThrows(SecurityException.class, () ->
+                registry.approveForAdversarialSharing(
+                        IsolatePolicy.untrustedActor(), "root.ores", root));
+    }
+
+    @Test
+    void adversarialAllowlistCannotApproveCodeItsGuestPolicyRejects() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        String privileged = "pub routine main(): void { print(1); return; }";
+        assertThrows(SecurityException.class, () ->
+                registry.approveForAdversarialSharing(
+                        IsolatePolicy.developer(), "privileged.ores", privileged));
+        assertFalse(registry.approvedForAdversarialSharing(
+                "privileged.ores", privileged));
     }
 
     @Test
