@@ -907,11 +907,6 @@ public final class OwnershipChecker {
                 }
             }
             for (Ast.ObjectField field : object.fields()) {
-                if (field.isDynamic()) {
-                    throw error(
-                            "struct fields must be statically named for AOT compilation; "
-                                    + "dynamic/computed struct keys are not supported");
-                }
                 ValueInfo info = checkExpr(field.value(), scope, true);
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
@@ -1654,9 +1649,6 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) {
             for (Ast.ObjectField field : e.fields()) {
-                if (field.isDynamic()) {
-                    scanExpr(field.dynamicName(), locals, outer, recursiveBinding, captures, false);
-                }
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
         }
