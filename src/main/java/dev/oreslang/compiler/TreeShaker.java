@@ -368,7 +368,7 @@ public final class TreeShaker {
                                     field.name(),
                                     substitute(field.value(), substitutions, shadowed)));
                 }
-                return new Ast.ObjectExpr(fields, object.inferredStruct());
+                return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
             if (expression instanceof Ast.LambdaExpr lambda) {
                 LinkedHashSet<String> nestedShadowed = new LinkedHashSet<>(shadowed);
@@ -952,7 +952,7 @@ public final class TreeShaker {
                                     field.name(),
                                     rewriteExpression(field.value(), module, locals)));
                 }
-                return new Ast.ObjectExpr(fields, object.inferredStruct());
+                return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
             if (expression instanceof Ast.LambdaExpr lambda) {
                 LinkedHashMap<String, Object> lambdaLocals = new LinkedHashMap<>(locals);
@@ -1299,6 +1299,9 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.TupleExpr tuple) {
                 for (Ast.Expr element : tuple.elements()) scanExpression(module, element, locals);
             } else if (expression instanceof Ast.ObjectExpr object) {
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    scanType(field.type());
+                }
                 for (Ast.ObjectField field : object.fields()) {
                     if (field.isDynamic()) scanExpression(module, field.dynamicName(), locals);
                     scanExpression(module, field.value(), locals);
