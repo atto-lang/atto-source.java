@@ -3154,6 +3154,13 @@ public final class TypeChecker {
                         + " must produce a final expression or exit the enclosing function");
             }
             Type actual = typeOfAgainstExpected(arm.result(), expected, armEnv, generics, self);
+            // A match expression must actually produce a value. Side-effect-only
+            // callbacks belong in a statement match instead of making void
+            // look like an ordinary result.
+            if (actual == Primitive.VOID) {
+                throw new IllegalArgumentException("match expression arm " + (i + 1)
+                        + " returns void; use statement 'match' for callbacks/side effects");
+            }
             if (expected != null && expected != Unknown.INSTANCE) {
                 requireAssignable(actual, expected, "match arm " + (i + 1) + " result");
             }
