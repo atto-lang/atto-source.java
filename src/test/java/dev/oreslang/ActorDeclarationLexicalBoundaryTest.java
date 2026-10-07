@@ -125,4 +125,115 @@ final class ActorDeclarationLexicalBoundaryTest {
                 end
                 """)));
     }
+
+    @Test
+    void siblingModulesCannotAccessEachOthersDeclarationsWithoutImport() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module internal as
+                          pub fnc secret(): int { return 42; }
+                        end
+
+                        define module worker as
+                          pub fnc wrong(): int {
+                            return internal.secret();
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("explicit import"),
+                failure.getMessage());
+    }
+
+    @Test
+    void moduleCannotReadOtherModuleCallableEvenWhenUniqueUnqualified() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module internal as
+                          pub fnc secret(): int { return 42; }
+                        end
+
+                        define module worker as
+                          pub fnc wrong(): int {
+                            return secret();
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("explicit import"),
+                failure.getMessage());
+    }
+
+    @Test
+    void moduleCanCallItsOwnMembersWithoutGlobalAccess() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module worker as
+                  fnc local(): int { return 42; }
+                  pub fnc run(): int { return local(); }
+                end
+                """)));
+    }
+
+    @Test
+    void classCannotCaptureSiblingModuleOrClassNamespace() {
+        IllegalArgumentException otherModule = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module other as
+                          pub fnc value(): int { return 9; }
+                        end
+
+                        define class Worker as
+                          pub run(): int { return other.value(); }
+                        end
+                        """)));
+        assertTrue(otherModule.getMessage().contains("explicit import"));
+
+        IllegalArgumentException siblingClass = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Other as
+                          pub static fnc value(): int { return 9; }
+                        end
+
+                        define class Worker as
+                          pub run(): int { return Other.value(); }
+                        end
+                        """)));
+        assertTrue(siblingClass.getMessage().contains("explicit import"));
+    }
+
+    @Test
+    void nonlexicalCallbackCannotLaunderClassAccessToOutsideCallable() {
+        IllegalArgumentException escaped = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc globalHelper(): int { return 4; }
+
+                        define class Worker as
+                          pub callback(): (() => int) {
+                            return nlex || -> { return globalHelper(); };
+                          }
+                        end
+                        """)));
+        assertTrue(escaped.getMessage().contains("cannot implicitly access"),
+                escaped.getMessage());
+    }
+
+    @Test
+    void lambdaSyntaxRequiresSlimArrow() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub routine main(): void {
+                  val create = || -> { return 42; };
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine main(): void {
+                  val create = || => { return 42; };
+                  return;
+                }
+                """));
+    }
+
 }
