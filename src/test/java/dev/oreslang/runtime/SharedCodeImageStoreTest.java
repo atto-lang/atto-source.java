@@ -79,4 +79,13 @@ final class SharedCodeImageStoreTest {
         assertThrows(IllegalStateException.class,
                 () -> store.publish("same/main.ores", one));
     }
+
+    @Test
+    void codeImagesCannotBeMintedOutsideTheStore() {
+        assertEquals(
+                0,
+                SharedCodeImageStore.CodeImage.class.getConstructors().length,
+                "CodeImage must remain an opaque store-minted capability");
+    }
+
 }
