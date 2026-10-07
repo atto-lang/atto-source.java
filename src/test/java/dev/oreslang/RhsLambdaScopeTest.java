@@ -180,4 +180,33 @@ final class RhsLambdaScopeTest {
         }
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("425"));
     }
+
+    @Test
+    void nestedOrdinaryClosureCannotTunnelThroughNlexCaptureBarrier() {
+        assertThrows(IllegalArgumentException.class, () -> check("""
+                pub fnc outer(): int {
+                    const outside = 5;
+                    const inner = nlex || -> int {
+                        const child = || -> int {
+                            return outside;
+                        };
+                        return child();
+                    };
+                    return inner();
+                }
+                """));
+        assertDoesNotThrow(() -> check("""
+                pub fnc outer(): int {
+                    const outside = 5;
+                    const inner = nlex || -> int {
+                        const inside = 6;
+                        const child = || -> int {
+                            return inside;
+                        };
+                        return child();
+                    };
+                    return inner();
+                }
+                """));
+    }
 }
