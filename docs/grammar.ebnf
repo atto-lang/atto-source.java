@@ -197,7 +197,7 @@ match_stmt      = "match" [ "first" ] expression
                   ( "{" match_arm { match_arm } "}"
                   | [ ";" ] match_arm { match_arm } "end" ) ;
 do_match_stmt   = "do" "match" [ "first" ] expression
-                  "over" match_discard_arm { match_discard_arm } "end" ;
+                  "over" match_discard_arm { match_discard_arm } "end" [ ";" ] ;
 match_value     = "match" [ "first" ] expression
                   ( "over" match_return_arm { match_return_arm } "end"
                   | "{" match_arm { match_arm } "}"
@@ -207,8 +207,10 @@ match_return_arm= ( pattern | "else" | "default" | "Symbol.default" )
                   "{" { statement } "return" expression [ ";" ] "}" ;
 match_discard_arm= ( pattern | "else" | "default" | "Symbol.default" )
                   [ "when" expression ] "->"
-                  ( "{" { statement } [ "return" expression [ ";" ] ] "}"
-                  | expression ) ;
+                  ( "{" { statement } "}" | expression ) ;
+(* In a do-match braced arm, only a terminal 'return [expression];' is
+   arm-local. Earlier/nested returns are forbidden; plain statements or
+   a bare 'return;' complete the arm without a result. *)
 match_arm       = ( pattern | "else" | "default" | "Symbol.default" )
                   [ "when" expression ] "->" ( block | expression ) ;
 pattern         = "_"
@@ -225,7 +227,7 @@ switch_default  = "default" "->" block ;
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
 select_stmt     = [ "do" ] [ select_wait_mode ] "select" [ select_policy ]
-                  "{" select_arm { select_arm } [ select_default ] "}" ;
+                  "{" select_arm { select_arm } [ select_default ] "}" [ ";" ] ;
 select_wait_mode= "nb" | "try" ;
 select_policy   = "first" | "fair" | "random" ;
 select_arm      = "case" "readch" expression ":"
@@ -295,6 +297,7 @@ index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
 primary         = literal
+                | match_value
                 | callable_name
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
