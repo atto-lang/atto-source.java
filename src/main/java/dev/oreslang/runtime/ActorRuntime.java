@@ -4678,6 +4678,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object mailboxAccountingLock = new Object();
         private int queuedMessages;
         private int queuedUserMessages;
+        /** Separate control-lane quota: user mailbox headroom cannot be borrowed. */
+        private int queuedContinuations;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -4744,7 +4746,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean reserveContinuationSlot() {
             synchronized (mailboxAccountingLock) {
+                if (queuedContinuations >= INTERNAL_CONTINUATION_SLOTS) return false;
                 if (queuedMessages >= mailboxCapacityWithControlHeadroom()) return false;
+                queuedContinuations++;
                 queuedMessages++;
                 return true;
             }
@@ -4752,18 +4756,25 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void releaseMailboxSlot(boolean continuation) {
             synchronized (mailboxAccountingLock) {
-                if (queuedMessages <= 0) {
+                // Validate every counter before changing any of them: a failed
+                // invariant must not partially release another lane's capacity.
+                if (queuedMessages <= 0
+                        || queuedMessages != queuedUserMessages + queuedContinuations) {
                     throw new IllegalStateException(
-                            "actor mailbox accounting underflow for " + ref.id());
+                            "actor mailbox accounting invariant violation for " + ref.id());
+                }
+                if (continuation && queuedContinuations <= 0) {
+                    throw new IllegalStateException(
+                            "actor continuation accounting underflow for " + ref.id());
+                }
+                if (!continuation && queuedUserMessages <= 0) {
+                    throw new IllegalStateException(
+                            "actor user-mailbox accounting underflow for " + ref.id());
                 }
                 queuedMessages--;
-
-                if (!continuation) {
-                    if (queuedUserMessages <= 0) {
-                        queuedMessages++;
-                        throw new IllegalStateException(
-                                "actor user-mailbox accounting underflow for " + ref.id());
-                    }
+                if (continuation) {
+                    queuedContinuations--;
+                } else {
                     queuedUserMessages--;
                 }
             }
@@ -4996,8 +5007,11 @@ public final class ActorRuntime implements AutoCloseable {
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
-            boolean turnActive = beginTurn();
+            boolean turnActive = false;
             try {
+                // Admission may throw on a single-writer lease violation.
+                // The carrier's actor identity must still be cleared.
+                turnActive = beginTurn();
                 if (!turnActive) return;
 
                 if (kind == ActorKind.UNTRUSTED) {
@@ -5092,9 +5106,14 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                if (turnActive) endTurn();
-                CURRENT_ACTOR_EXECUTION.remove();
-                currentActor.remove();
+                try {
+                    if (turnActive) endTurn();
+                } finally {
+                    // endTurn itself is a fail-closed invariant check and may
+                    // throw; never strand actor authority on a reused carrier.
+                    CURRENT_ACTOR_EXECUTION.remove();
+                    currentActor.remove();
+                }
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
             }
