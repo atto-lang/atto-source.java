@@ -23,7 +23,7 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
 
-                  pub stop(): void {
+                  pub shutdown(): void {
                     if self.started != 1; do
                       return;
                     fi
@@ -33,14 +33,14 @@ final class SourceActorSpawnExecutionTest {
                 end
 
                 define isoactor PrivateWorker as
-                  pub stop(): void {
+                  pub shutdown(): void {
                     self.end();
                     return;
                   }
                 end
 
                 define untrusted actor SandboxedWorker as
-                  pub stop(): void {
+                  pub shutdown(): void {
                     self.end();
                     return;
                   }
@@ -55,9 +55,9 @@ final class SourceActorSpawnExecutionTest {
                   await privateWorker.ready;
                   await sandboxed.ready;
 
-                  shared.send.stop();
-                  privateWorker.send.stop();
-                  sandboxed.send.stop();
+                  shared.send.shutdown();
+                  privateWorker.send.shutdown();
+                  sandboxed.send.shutdown();
 
                   await shared.done;
                   await privateWorker.done;
@@ -167,10 +167,6 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
 
-                  pub stop(): void {
-                    self.end();
-                    return;
-                  }
                 end
 
                 pub async routine main(): void {
