@@ -189,6 +189,69 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
+    void doMatchBareReturnIsArmLocalAndOptionalTerminatorAccepted() throws Exception {
+        assertEquals("continued\n", run("""
+                pub fnc main(): void {
+                  do match true over
+                    true -> { return; }
+                    false -> { return; }
+                  end;
+                  stdio.println("continued");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void doMatchNestedDoMatchAndUnbracedCallbackRemainStatementOnly() throws Exception {
+        assertEquals("nested\ncontinued\n", run("""
+                pub fnc main(): void {
+                  do match true over
+                    true -> {
+                      do match false over
+                        true -> { stdio.println("wrong"); }
+                        false -> { stdio.println("nested"); }
+                      end;
+                      return 42;
+                    }
+                    false -> { stdio.println("wrong"); }
+                  end;
+                  do match Some(3) over
+                    Some(value) -> stdio.println("continued")
+                    None -> stdio.println("wrong")
+                  end;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void doMatchRejectsNestedFunctionEscapesAndNonExhaustiveOptions() {
+        assertTrue(reject("""
+                pub fnc main(): void {
+                  do match true over
+                    true -> {
+                      if true then
+                        return;
+                      fi
+                    }
+                    false -> { stdio.println("false"); }
+                  end;
+                  return;
+                }
+                """).getMessage().contains("nested returns"));
+        assertTrue(reject("""
+                fnc f(Option<Option<int>> value): void {
+                  do match value over
+                    Some(Some(inner)) -> { stdio.println(inner); }
+                    None -> { stdio.println(0); }
+                  end;
+                  return;
+                }
+                """).getMessage().contains("non-exhaustive"));
+    }
+
+    @Test
     void rejectsBareStatementOverWithoutExplicitDoMatch() {
         assertTrue(reject("""
                 pub fnc main(): void {
