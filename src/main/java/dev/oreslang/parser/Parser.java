@@ -604,6 +604,22 @@ public final class Parser {
         return check(IDENT) && peek().lexeme().equals(lexeme);
     }
 
+    private boolean matchContextualIdentifier(String lexeme) {
+        if (!isContextualIdentifier(lexeme)) return false;
+        advance();
+        return true;
+    }
+
+    private void consumeContextualIdentifier(String lexeme, String message) {
+        if (!matchContextualIdentifier(lexeme)) throw error(peek(), message);
+    }
+
+    private boolean matchCaseKeyword() {
+        // CASE is retained for token-stream/backward compatibility, but the
+        // lexer emits ordinary IDENT for "case" so it remains legal elsewhere.
+        return match(CASE) || matchContextualIdentifier("case");
+    }
+
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
@@ -1545,7 +1561,7 @@ public final class Parser {
 
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
-            if (match(CASE)) {
+            if (matchCaseKeyword()) {
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -2208,9 +2224,6 @@ public final class Parser {
     }
 
     private Ast.MatchStmt parseMatch() {
-        boolean ordered = check(IDENT) && peek().lexeme().equals("first");
-        if (ordered) advance();
-
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
         Ast.Expr subject;
@@ -2219,11 +2232,19 @@ public final class Parser {
         } finally {
             suppressRefinementOperators = previousSuppression;
         }
-        match(SEMICOLON);
+
+        consumeContextualIdentifier("over", "match requires 'over' after the subject");
 
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
-            Ast.Pattern pattern = match(ELSE) ? new Ast.WildcardPattern() : parsePattern();
+            if (!matchContextualIdentifier("on")) {
+                if (check(ELSE) || check(DEFAULT)) {
+                    throw error(peek(), "match has no default/else keyword; use 'on _ -> { ... }'");
+                }
+                throw error(peek(), "every match arm must start with contextual keyword 'on'");
+            }
+
+            Ast.Pattern pattern = parsePattern();
             Ast.Expr guard = match(WHEN) ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
@@ -2233,16 +2254,35 @@ public final class Parser {
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
         consume(END, "expected 'end' to close match");
-        if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
-        return new Ast.MatchStmt(subject, ordered, arms);
+        if (arms.isEmpty()) throw error(previous(), "match requires at least one 'on' arm");
+        // Canonical match semantics are ordered: the first matching arm wins.
+        return new Ast.MatchStmt(subject, true, arms);
     }
 
     private Ast.Pattern parsePattern() {
+        if (match(STRUCTURAL)) {
+            Ast.TypeRef target = parseTypeRef();
+            String binding = check(IDENT) && !peek().lexeme().equals("_")
+                    ? advance().lexeme()
+                    : null;
+            return new Ast.StructuralPattern(target, binding);
+        }
+
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();
             String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
         }
+
+        if (match(LPAREN)) {
+            List<Ast.Pattern> elements = new ArrayList<>();
+            elements.add(parsePattern());
+            consume(COMMA, "tuple match patterns require at least two elements");
+            do elements.add(parsePattern()); while (match(COMMA));
+            consume(RPAREN, "expected ')' after tuple match pattern");
+            return new Ast.TuplePattern(elements);
+        }
+
         if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
@@ -2252,6 +2292,24 @@ public final class Parser {
             advance();
             return new Ast.WildcardPattern();
         }
+
+        // Canonical nominal binding syntax is `Type name`.
+        // Parse it speculatively so constructor patterns such as Some(value)
+        // and ordinary catch-all bindings remain unambiguous.
+        if (check(IDENT)) {
+            int patternStart = current;
+            try {
+                Ast.TypeRef target = parseTypeRef();
+                if (check(IDENT) && !peek().lexeme().equals("_")) {
+                    String binding = advance().lexeme();
+                    return new Ast.TypePattern(target, binding);
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Fall through to constructor/binding parsing from the same token.
+            }
+            current = patternStart;
+        }
+
         if (check(IDENT)) {
             String name = advance().lexeme();
             if (match(LPAREN)) {
@@ -2267,6 +2325,10 @@ public final class Parser {
                 return new Ast.ConstructorPattern(name, List.of());
             }
             return new Ast.BindingPattern(name);
+        }
+
+        if (check(LBRACKET)) {
+            throw error(peek(), "list patterns are not supported; use tuples for fixed structural matching");
         }
         throw error(peek(), "expected match pattern");
     }
