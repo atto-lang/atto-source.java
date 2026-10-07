@@ -4,6 +4,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class InferredStructReadonlyBoundaryTest {
@@ -88,6 +89,17 @@ final class InferredStructReadonlyBoundaryTest {
                   let mut upgraded = identity(struct infer{foo: "a"});
                   upgraded.foo = "b";
                   return;
+                }
+                """)));
+    }
+
+    @Test void structuralBorrowViewMayReadReadonlyInferredRecord() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc read(structural {foo: string} value): string {
+                  return value.foo;
+                }
+                fnc ok(): string {
+                  return read(struct infer{foo: "a"});
                 }
                 """)));
     }
