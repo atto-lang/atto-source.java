@@ -298,8 +298,8 @@ final class NestedOptionMatchSyntaxTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(src);
         }
-        assertEquals("10\\n20\\n30\\n40",
-                output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n").strip());
+        assertEquals("10\n20\n30\n40",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n").strip());
     }
 
     @Test
@@ -327,7 +327,7 @@ final class NestedOptionMatchSyntaxTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(src);
         }
-        assertEquals("lookup\\nempty",
-                output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n").strip());
+        assertEquals("lookup\nempty",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n").strip());
     }
 }
