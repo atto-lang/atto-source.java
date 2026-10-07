@@ -3138,11 +3138,6 @@ public final class TypeChecker {
                 if (field != null) {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
-                    if (field.field().bindingKind() != Ast.BindingKind.LET) {
-                        throw new IllegalArgumentException(
-                                "field '" + field.owner().name() + "." + field.field().name()
-                                        + "' is immutable");
-                    }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
