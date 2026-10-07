@@ -97,6 +97,19 @@ final class ActorMailTypeContractTest {
     }
 
     @Test
+    void compilerOwnedDispatchNameCannotBeUserDefined() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub dispatch(Object envelope): void { return; }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("reserved"),
+                failure.getMessage());
+    }
+
+    @Test
     void endpointArgumentsAndResultsMustBeActorBoundarySendable() {
         IllegalArgumentException closureArgument = assertThrows(
                 IllegalArgumentException.class,
