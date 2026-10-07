@@ -977,7 +977,9 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
-                    && (method.name().equals("send") || method.name().equals("end"))) {
+                    && (method.name().equals("send")
+                            || method.name().equals("end")
+                            || method.name().equals("endWithCleanup"))) {
                 throw new IllegalArgumentException(
                         "actor method name '" + method.name()
                                 + "' is reserved by the non-overridable actor transport/lifecycle API");
