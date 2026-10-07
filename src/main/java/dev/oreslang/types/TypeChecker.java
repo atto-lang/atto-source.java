@@ -940,19 +940,20 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            boolean actorStartupHook = method.name().equals("on_start");
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
-                    && (method.name().equals("send")
-                            || method.name().equals("end")
-                            || method.name().equals("endWithCleanup"))) {
+                    && !actorStartupHook
+                    && isReservedActorRuntimeMember(method.name())) {
                 throw new IllegalArgumentException(
                         "actor method name '" + method.name()
-                                + "' is reserved by the non-overridable actor transport/lifecycle API");
+                                + "' is reserved by the compiler-generated actor transport/lifecycle API");
             }
 
-            boolean actorStartupHook = method.name().equals("on_start");
-            boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
-                    && method.name().equals("receive");
+            boolean actorEndpoint = klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic()
+                    && method.visibility() == Ast.Visibility.PUBLIC
+                    && !actorStartupHook;
             if (actorStartupHook) {
                 if (klass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
@@ -985,33 +986,15 @@ public final class TypeChecker {
                 }
             }
 
-            if (actorReceiveHook) {
-                if (method.isStatic()) {
-                    throw new IllegalArgumentException(
-                            "actor mailbox handler '" + klass.name() + ".receive' must be an instance method");
-                }
-                if (method.visibility() == Ast.Visibility.PUBLIC) {
-                    throw new IllegalArgumentException(
-                            "actor mailbox handler '" + klass.name() + ".receive' is actor-local and cannot be public");
-                }
-                if (method.isAbstract()) {
-                    throw new IllegalArgumentException(
-                            "actor mailbox handler '" + klass.name() + ".receive' must have an implementation");
-                }
-                if (method.async()) {
-                    throw new IllegalArgumentException(
-                            "actor mailbox handler '" + klass.name() + ".receive' uses actor-turn suspension; "
-                                    + "declare it synchronously and use explicit await/rt cooperate safepoints");
-                }
-                if (!method.genericParameters().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "actor mailbox handler '" + klass.name() + ".receive' cannot declare generic parameters");
-                }
-                if (method.parameters().size() != 1) {
-                    throw new IllegalArgumentException(
-                            "actor mailbox handler '" + klass.name()
-                                    + ".receive' must take exactly one ActorMail<T> parameter");
-                }
+            if (actorEndpoint && method.isAbstract()) {
+                throw new IllegalArgumentException(
+                        "public actor endpoint '" + klass.name() + "." + method.name()
+                                + "' must have an implementation");
+            }
+            if (actorEndpoint && !method.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "public actor endpoint '" + klass.name() + "." + method.name()
+                                + "' cannot be generic; the generated mailbox dispatch table requires a closed signature");
             }
 
             if (method.async() && !method.isStatic()) {
@@ -1071,9 +1054,9 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
-                if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
+                if (param.structural() && actorEndpoint) {
                     throw new IllegalArgumentException(
-                            "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
+                            "structural parameter '" + param.name() + "' cannot cross actor endpoint boundaries; "
                                     + "actor APIs require owned/sendable nominal message values");
                 }
                 if (param.structural() && method.async()) {
@@ -1087,19 +1070,13 @@ public final class TypeChecker {
                             false,
                             "parameter '" + param.name() + "' of async static function '" + klass.name() + "." + method.name() + "'");
                 }
-                if (actorReceiveHook) {
-                    if (!(parameterType instanceof Named mail)
-                            || !mail.name().equals("ActorMail")
-                            || mail.arguments().size() != 1) {
-                        throw new IllegalArgumentException(
-                                "actor mailbox handler '" + klass.name()
-                                        + ".receive' parameter must be ActorMail<T>");
-                    }
+                if (actorEndpoint) {
                     validateActorCallableBoundaryType(
-                            mail.arguments().getFirst(),
+                            parameterType,
                             klass.actorKind(),
                             false,
-                            "mailbox payload of actor '" + klass.name() + ".receive'");
+                            "parameter '" + param.name() + "' of actor endpoint '"
+                                    + klass.name() + "." + method.name() + "'");
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -1108,9 +1085,12 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
             }
-            if (actorReceiveHook && returns != Primitive.VOID) {
-                throw new IllegalArgumentException(
-                        "actor mailbox handler '" + klass.name() + ".receive' must return void");
+            if (actorEndpoint) {
+                validateActorCallableBoundaryType(
+                        returns,
+                        klass.actorKind(),
+                        true,
+                        "return type of actor endpoint '" + klass.name() + "." + method.name() + "'");
             }
             if (method.async()) {
                 validateAsyncBoundaryType(
@@ -2160,11 +2140,9 @@ public final class TypeChecker {
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
-                if (actorSelf && (member.member().equals("on_start")
-                        || member.member().equals("receive"))) {
+                if (actorSelf && member.member().equals("on_start")) {
                     throw new IllegalArgumentException(
-                            member.member()
-                                    + " is a reserved actor lifecycle hook and cannot be called directly");
+                            "on_start is a reserved actor lifecycle hook and cannot be called directly");
                 }
                 if (actorSelf
                         && (member.member().equals("send")
@@ -2224,34 +2202,93 @@ public final class TypeChecker {
                     return Primitive.VOID;
                 }
 
+                if (receiver instanceof Named actorProxy
+                        && (actorProxy.name().equals("ActorSendProxy")
+                            || actorProxy.name().equals("ActorCallProxy"))) {
+                    if (actorProxy.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                actorProxy.name() + " requires exactly one actor type argument");
+                    }
+                    Named actorRef = new Named("ActorRef", actorProxy.arguments());
+                    Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+                    ResolvedMethod endpoint = findMethodTarget(
+                            actorClass,
+                            (Named) actorProxy.arguments().getFirst(),
+                            member.member(),
+                            call.arguments().size(),
+                            new LinkedHashSet<>());
+                    if (endpoint == null
+                            || endpoint.method().isStatic()
+                            || endpoint.method().visibility() != Ast.Visibility.PUBLIC
+                            || endpoint.method().name().equals("on_start")
+                            || isReservedActorRuntimeMember(endpoint.method().name())) {
+                        throw new IllegalArgumentException(
+                                "actor '" + actorClass.name() + "' has no public endpoint '"
+                                        + member.member() + "' at arity " + call.arguments().size());
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "actor endpoint dispatch does not accept call-site type arguments");
+                    }
+                    Ast.MethodDecl method = endpoint.method();
+                    Named ownerType = endpoint.ownerType();
+                    Map<String, Type> bindings =
+                            classGenericBindings(endpoint.owner(), ownerType);
+                    for (int i = 0; i < method.parameters().size(); i++) {
+                        Type expected = substituteGenerics(
+                                resolveParam(
+                                        method.parameters().get(i),
+                                        Set.copyOf(endpoint.owner().genericParameters()),
+                                        ownerType),
+                                bindings);
+                        Type actual = typeOf(
+                                call.arguments().get(i), env, generics, self);
+                        validateActorCallableBoundaryType(
+                                actual,
+                                actorClass.actorKind(),
+                                false,
+                                "argument " + (i + 1) + " to actor endpoint '"
+                                        + actorClass.name() + "." + method.name() + "'");
+                        requireAssignable(
+                                actual,
+                                expected,
+                                "argument " + (i + 1) + " to actor endpoint '"
+                                        + actorClass.name() + "." + method.name() + "'");
+                    }
+                    Type result = substituteGenerics(
+                            resolve(
+                                    method.returnType(),
+                                    Set.copyOf(endpoint.owner().genericParameters()),
+                                    ownerType),
+                            bindings);
+                    validateActorCallableBoundaryType(
+                            result,
+                            actorClass.actorKind(),
+                            true,
+                            "return type of actor endpoint '"
+                                    + actorClass.name() + "." + method.name() + "'");
+                    if (actorProxy.name().equals("ActorSendProxy")) {
+                        if (result != Primitive.VOID) {
+                            throw new IllegalArgumentException(
+                                    "worker.send." + method.name()
+                                            + "(...) requires a void actor endpoint; "
+                                            + "use worker.call." + method.name()
+                                            + "(...) to receive a result");
+                        }
+                        return Primitive.VOID;
+                    }
+                    return new Named("Future", List.of(result));
+                }
+
                 if (receiver instanceof Named actorRef
                         && actorRef.name().equals("ActorRef")) {
-                    Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+                    actorClassForRef(actorRef);
                     if (call.typeArgumentsPresent()) {
                         throw new IllegalArgumentException(
                                 "ActorRef." + member.member()
                                         + " does not accept call-site type arguments");
                     }
                     return switch (member.member()) {
-                        case "send" -> {
-                            if (call.arguments().size() != 1) {
-                                throw new IllegalArgumentException(
-                                        "ActorRef.send expects exactly one mailbox value");
-                            }
-                            Type payload = typeOf(
-                                    call.arguments().getFirst(), env, generics, self);
-                            validateActorCallableBoundaryType(
-                                    payload,
-                                    actorClass.actorKind(),
-                                    false,
-                                    "ActorRef.send mailbox value");
-                            Type expectedPayload = actorMailboxPayloadType(actorRef);
-                            requireAssignable(
-                                    payload,
-                                    expectedPayload,
-                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
-                            yield Primitive.VOID;
-                        }
                         case "stop" -> {
                             if (!call.arguments().isEmpty()) {
                                 throw new IllegalArgumentException(
@@ -2267,7 +2304,7 @@ public final class TypeChecker {
                             }
                             yield Primitive.BOOL;
                         }
-                        case "ready", "done", "outputs", "id", "kind" ->
+                        case "send", "call", "ready", "done", "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
                                         "ActorRef." + member.member()
                                                 + " is a property and is not callable");
@@ -2708,7 +2745,13 @@ public final class TypeChecker {
                             List.of(Unknown.INSTANCE));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "stop", "cancel", "kill" ->
+                    case "send" -> new Named(
+                            "ActorSendProxy",
+                            actorRef.arguments());
+                    case "call" -> new Named(
+                            "ActorCallProxy",
+                            actorRef.arguments());
+                    case "stop", "cancel", "kill" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
@@ -3953,6 +3996,15 @@ public final class TypeChecker {
             return new Record(members, record.readOnly());
         }
         return type;
+    }
+
+    private static boolean isReservedActorRuntimeMember(String name) {
+        return switch (name) {
+            case "receive", "send", "call", "ready", "done", "outputs",
+                    "id", "kind", "stop", "cancel", "kill",
+                    "end", "endWithCleanup" -> true;
+            default -> false;
+        };
     }
 
     private Type actorMailboxPayloadType(Named actorRef) {
