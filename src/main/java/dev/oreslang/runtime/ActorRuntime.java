@@ -1008,6 +1008,37 @@ public final class ActorRuntime implements AutoCloseable {
         Behavior<M> create(ActorContext<M> context) throws Exception;
     }
 
+    /**
+     * Marker for mutable guest state created on an actor's own execution
+     * domain. The runtime validates ownership before admitting it as persistent
+     * source-actor state.
+     */
+    public interface ActorOwnedGuestState {
+        ActorId ownerActorId();
+    }
+
+    /**
+     * Constrained compiler/interpreter bridge for source actor classes.
+     *
+     * <p>The executor is shared code, not actor state. It must be bound to one
+     * immutable CodeImage identity. Mutable state is created only through
+     * initializeActor after the ActorContext is installed, and subsequent
+     * mailbox turns receive that actor-owned state explicitly.</p>
+     */
+    public interface ActorCodeExecutor {
+        SharedCodeImageStore.CodeImage codeImage();
+
+        ActorOwnedGuestState initializeActor(
+                String actorTypeName,
+                ActorContext<Object> context) throws Exception;
+
+        void receiveActor(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorInboxMail<Object> mail,
+                ActorContext<Object> context) throws Exception;
+    }
+
     public interface ActorContext<M> {
         ActorRef<M> self();
         ActorRuntime runtime();
@@ -2618,12 +2649,53 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnInternal(kind, policy, behaviorFactory, false, codeImage);
     }
 
+    /**
+     * Compiler-only source actor entry point. Unlike the trusted host factory
+     * escape hatches, this does not capture arbitrary JVM state: the shared
+     * executor is identity-bound to its CodeImage and the actor's mutable guest
+     * state is created later on the actor dispatcher.
+     */
+    public ActorRef<Object> spawnCodeActor(
+            ActorKind kind,
+            ActorCodeExecutor executor,
+            String actorTypeName) {
+        return spawnCodeActor(
+                kind,
+                defaultSpawnPolicy(),
+                executor,
+                actorTypeName);
+    }
+
+    public ActorRef<Object> spawnCodeActor(
+            ActorKind kind,
+            IsolatePolicy policy,
+            ActorCodeExecutor executor,
+            String actorTypeName) {
+        Objects.requireNonNull(executor, "executor");
+        if (actorTypeName == null || actorTypeName.isBlank()) {
+            throw new IllegalArgumentException(
+                    "source actor type name cannot be blank");
+        }
+        SharedCodeImageStore.CodeImage image =
+                Objects.requireNonNull(executor.codeImage(), "executor codeImage");
+        return spawnInternal(
+                kind,
+                policy,
+                null,
+                false,
+                image,
+                executor,
+                actorTypeName);
+    }
+
     private <M> ActorRef<M> spawnInternal(
             ActorKind kind,
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
-        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null);
+        return spawnInternal(
+                kind, policy, behaviorFactory, trustedFactory,
+                null, null, null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -2632,11 +2704,39 @@ public final class ActorRuntime implements AutoCloseable {
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory,
             SharedCodeImageStore.CodeImage codeImage) {
+        return spawnInternal(
+                kind, policy, behaviorFactory, trustedFactory,
+                codeImage, null, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
-        Objects.requireNonNull(behaviorFactory);
+        if ((behaviorFactory == null) == (codeExecutor == null)) {
+            throw new IllegalArgumentException(
+                    "actor spawn requires exactly one behavior factory or source-code executor");
+        }
+        if (codeExecutor != null) {
+            if (codeImage == null || codeExecutor.codeImage() != codeImage) {
+                throw new SecurityException(
+                        "source actor executor must be identity-bound to its exact whitelisted CodeImage");
+            }
+            if (codeActorType == null || codeActorType.isBlank()) {
+                throw new IllegalArgumentException(
+                        "source actor type name cannot be blank");
+            }
+        } else {
+            Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        }
 
         ActorCell<?> parentForPolicy = currentActor.get();
         if (parentForPolicy != null) {
@@ -2670,7 +2770,7 @@ public final class ActorRuntime implements AutoCloseable {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
         }
         policy = effectivePolicy;
-        if (!trustedFactory) {
+        if (behaviorFactory != null && !trustedFactory) {
             requireStatelessActorFactory(behaviorFactory);
         }
 
@@ -2691,6 +2791,8 @@ public final class ActorRuntime implements AutoCloseable {
                         behaviorFactory,
                         trustedFactory,
                         codeImage,
+                        codeExecutor,
+                        codeActorType,
                         parent);
 
                 if (parent != null) {
@@ -4808,6 +4910,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final boolean trustedFactory;
         /** Exact immutable source image whitelisted for this actor, if any. */
         private final SharedCodeImageStore.CodeImage codeImage;
+        /** Shared compiler/interpreter code executor; never exposed to guest source. */
+        private final ActorCodeExecutor codeExecutor;
+        /** Closed-world source actor declaration selected for this actor. */
+        private final String codeActorType;
+        /** Mutable source actor state, created on this actor's dispatcher. */
+        private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -4850,6 +4958,8 @@ public final class ActorRuntime implements AutoCloseable {
                 BehaviorFactory<M> behaviorFactory,
                 boolean trustedFactory,
                 SharedCodeImageStore.CodeImage codeImage,
+                ActorCodeExecutor codeExecutor,
+                String codeActorType,
                 ActorCell<?> parent) {
             this.ref = ref;
             this.kind = kind;
@@ -4857,6 +4967,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.codeImage = codeImage;
+            this.codeExecutor = codeExecutor;
+            this.codeActorType = codeActorType;
             this.parent = parent;
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
@@ -4988,6 +5100,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             drainMailboxReservations();
             staticSelectCursors.clear();
+            codeActorState = null;
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
@@ -5176,14 +5289,34 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 };
 
-                if (behavior == null) {
-                    Behavior<M> created = Objects.requireNonNull(
-                            behaviorFactory.create(context),
-                            "actor behaviorFactory returned null");
-                    if (isPrivateKind(kind) && !trustedFactory) {
-                        validatePrivateBehaviorState(ref.id(), created);
+                if (behavior == null && codeActorState == null) {
+                    if (codeExecutor != null) {
+                        @SuppressWarnings("unchecked")
+                        ActorContext<Object> sourceContext =
+                                (ActorContext<Object>) (ActorContext<?>) context;
+                        ActorOwnedGuestState created =
+                                Objects.requireNonNull(
+                                        codeExecutor.initializeActor(
+                                                codeActorType,
+                                                sourceContext),
+                                        "source actor executor returned null state");
+                        if (!created.ownerActorId().equals(ref.id())) {
+                            throw new SecurityException(
+                                    "source actor state owner "
+                                            + created.ownerActorId()
+                                            + " does not match actor "
+                                            + ref.id());
+                        }
+                        codeActorState = created;
+                    } else {
+                        Behavior<M> created = Objects.requireNonNull(
+                                behaviorFactory.create(context),
+                                "actor behaviorFactory returned null");
+                        if (isPrivateKind(kind) && !trustedFactory) {
+                            validatePrivateBehaviorState(ref.id(), created);
+                        }
+                        behavior = created;
                     }
-                    behavior = created;
                     synchronized (lifecycleLock) {
                         if (stopped.get() || forceKillFenced) {
                             ref.readyFuture.failFromRuntime(terminated(ref));
@@ -5227,12 +5360,33 @@ public final class ActorRuntime implements AutoCloseable {
                                     (M) envelope.value());
                             activeMail = mail;
                             try {
-                                behavior.onMessage(mail.value(), context);
+                                if (codeExecutor != null) {
+                                    if (codeActorState == null
+                                            || !codeActorState.ownerActorId().equals(ref.id())) {
+                                        throw new SecurityException(
+                                                "source actor state lost actor ownership before mailbox dispatch");
+                                    }
+                                    @SuppressWarnings("unchecked")
+                                    ActorInboxMail<Object> sourceMail =
+                                            (ActorInboxMail<Object>) (ActorInboxMail<?>) mail;
+                                    @SuppressWarnings("unchecked")
+                                    ActorContext<Object> sourceContext =
+                                            (ActorContext<Object>) (ActorContext<?>) context;
+                                    codeExecutor.receiveActor(
+                                            codeActorType,
+                                            codeActorState,
+                                            sourceMail,
+                                            sourceContext);
+                                } else {
+                                    behavior.onMessage(mail.value(), context);
+                                }
                             } finally {
                                 activeMail = null;
                             }
                         }
-                        if (isPrivateKind(kind) && !trustedFactory) {
+                        if (codeExecutor == null
+                                && isPrivateKind(kind)
+                                && !trustedFactory) {
                             // Private state that survives a mailbox turn must
                             // remain in actor-owned storage/capabilities. This
                             // catches behavior fields that were null/immutable
