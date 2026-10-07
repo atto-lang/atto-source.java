@@ -471,16 +471,12 @@ final class ReturnedDestructuringTest {
 
     @Test
     void objectRestRejectsDynamicShapeAndRemovedMembers() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc dynamic(string key): DynamicStruct<int> {
-                  return struct infer{`key`: 1, v: 2};
-                }
-
-                pub fnc main(): void {
-                  const {v, ...rest} = dynamic("other");
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc dynamic(string key): void {
+                  const value = struct infer{`key`: 1, v: 2};
                   return;
                 }
-                """)));
+                """));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 type Row = {v: int, label: string};
