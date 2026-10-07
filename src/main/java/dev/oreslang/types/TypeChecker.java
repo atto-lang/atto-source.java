@@ -103,7 +103,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "CancellationToken", "SelectCase", "SelectSet", "SelectPlan", "Select", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
@@ -1526,51 +1526,117 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "static 'nb select { ... }' requires an actor execution domain "
                                 + "because its selected branch executes later; "
-                                + "use 'nb select from cases' when only a Future<SelectResult> is needed");
+                                + "use 'nb select from cases' when only a Future<Select<T>> is needed");
             }
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
+            boolean hasDefault = false;
             for (Ast.SelectArm arm : selected.arms()) {
                 env.restoreInitialization(before);
                 Env armEnv = selected.mode() == Ast.WaitMode.NONBLOCKING
                         ? new Env(env, env.descendantsNonLexical(), true)
                         : new Env(env);
-                if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
-                    Type element = channelElementType(
-                            typeOf(arm.channel(), env, generics, self),
-                            "select " + arm.operation().name().toLowerCase());
-                    if (arm.operation() == Ast.ChannelOperation.WRITE) {
+
+                switch (arm.operation()) {
+                    case DEFAULT -> hasDefault = true;
+                    case TIMEOUT -> { }
+                    case READ -> {
+                        Type element = channelElementType(
+                                typeOf(arm.source(), env, generics, self),
+                                "select readch");
+                        if (arm.bindingName() != null) {
+                            requireMutableReferentCompatible(
+                                    element,
+                                    arm.mutableReferent(),
+                                    "select binding '" + arm.bindingName() + "'");
+                            armEnv.define(
+                                    arm.bindingName(),
+                                    element,
+                                    arm.bindingKind());
+                        }
+                    }
+                    case WRITE -> {
+                        Type element = channelElementType(
+                                typeOf(arm.source(), env, generics, self),
+                                "select writech");
                         requireAssignable(
                                 typeOf(arm.value(), env, generics, self),
                                 element,
                                 "writech select value");
-                    } else if (arm.bindingName() != null) {
-                        requireMutableReferentCompatible(
-                                element, arm.mutableReferent(),
-                                "select binding '" + arm.bindingName() + "'");
-                        armEnv.define(
-                                arm.bindingName(),
-                                element,
-                                arm.bindingKind());
+                    }
+                    case AWAIT -> {
+                        Type awaited = deref(
+                                typeOf(arm.source(), env, generics, self));
+                        if (!(awaited instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "select await arm requires Future<T>; got " + awaited);
+                        }
+                        Type result = future.arguments().getFirst();
+                        if (arm.bindingName() != null) {
+                            if (result == Primitive.VOID) {
+                                throw new IllegalArgumentException(
+                                        "select await Future<void> cannot bind a result value");
+                            }
+                            requireMutableReferentCompatible(
+                                    result,
+                                    arm.mutableReferent(),
+                                    "select binding '" + arm.bindingName() + "'");
+                            armEnv.define(
+                                    arm.bindingName(),
+                                    result,
+                                    arm.bindingKind());
+                        }
+                    }
+                    case CANCELLED -> {
+                        Type token = deref(
+                                typeOf(arm.source(), env, generics, self));
+                        if (!(token instanceof Named named)
+                                || !named.name().equals("CancellationToken")
+                                || !named.arguments().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "select cancelled arm requires CancellationToken; got " + token);
+                        }
                     }
                 }
+
                 if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
-                    checkIsolatedArmBlock(arm.body(), armEnv, generics,
-                            Unknown.INSTANCE, self, true);
+                    checkIsolatedArmBlock(
+                            arm.body(),
+                            armEnv,
+                            generics,
+                            Unknown.INSTANCE,
+                            self,
+                            true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                    // Compatibility: detached legacy nb select arms cannot return a value.
-                    checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
+                    checkCallableBlock(
+                            arm.body(),
+                            armEnv,
+                            generics,
+                            Primitive.VOID,
+                            self);
                 } else {
-                    checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    checkBlock(
+                            arm.body(),
+                            armEnv,
+                            generics,
+                            expectedReturn,
+                            self);
                     exits.add(env.initializationSnapshot());
                 }
             }
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                 env.restoreInitialization(before);
-            } else {
+            } else if (!selected.explicitDo()) {
+                if (selected.mode() == Ast.WaitMode.IMMEDIATE && !hasDefault) {
+                    exits.add(before);
+                }
                 env.mergeInitialization(exits);
+            } else {
+                // Keep do-select definite-initialization conservative until
+                // arm-local return flow is modeled per arm.
+                env.restoreInitialization(before);
             }
             return;
         }
