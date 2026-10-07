@@ -459,7 +459,7 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
-        Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
+        Env env = new Env(fn.nonLexical() ? null : moduleBindingEnv(module), fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
@@ -1316,11 +1316,16 @@ public final class TypeChecker {
             }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
+            if (importedValues.contains(name.name())) return Unknown.INSTANCE;
+            if (env.outerDeclarationsBlocked()) {
+                throw new IllegalArgumentException(
+                        "nlex callable cannot resolve outer declaration '" + name.name()
+                                + "'; import it explicitly or pass it as a parameter");
+            }
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleShape(moduleNamespace);
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
-            if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
                 if (fn.actorKind() != Ast.ActorKind.NONE) {
@@ -1526,7 +1531,8 @@ public final class TypeChecker {
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
             if (call.callee() instanceof Ast.NameExpr functionName
-                    && env.lookup(functionName.name()) == null) {
+                    && env.lookup(functionName.name()) == null
+                    && !env.outerDeclarationsBlocked()) {
                 Ast.FunctionDecl target = findFunction(functionName.name(), call.arguments().size());
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
@@ -1557,6 +1563,7 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
+                    && !env.outerDeclarationsBlocked()
                     && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
@@ -2042,6 +2049,7 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
+                    && !env.outerDeclarationsBlocked()
                     && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
                         namespace.name() + "." + member.member());
@@ -2237,6 +2245,11 @@ public final class TypeChecker {
             }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
+            if (env.outerDeclarationsBlocked()) {
+                throw new IllegalArgumentException(
+                        "nlex callable cannot construct outer class '" + klass.name()
+                                + "'; import it explicitly or pass a constructed value");
+            }
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
             }
@@ -5794,13 +5807,17 @@ public final class TypeChecker {
     private static final class Env {
         private final Env parent;
         private final boolean descendantsNonLexical;
+        private final boolean outerDeclarationsBlocked;
         private final Map<String, Binding> bindings = new HashMap<>();
         private Env(Env parent) { this(parent, parent != null && parent.descendantsNonLexical); }
         private Env(Env parent, boolean descendantsNonLexical) {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
+            this.outerDeclarationsBlocked = descendantsNonLexical
+                    || (parent != null && parent.outerDeclarationsBlocked);
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
+        private boolean outerDeclarationsBlocked() { return outerDeclarationsBlocked; }
         private void define(String name, Type type, Ast.BindingKind kind) {
             if (bindings.putIfAbsent(name, new Binding(type, kind)) != null) throw new IllegalArgumentException("duplicate binding '" + name + "'");
         }
