@@ -6351,7 +6351,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     snapshot.put(entry.getKey(), entry.getValue());
                 }
-                return java.util.Collections.unmodifiableMap(snapshot);
+                return context.asGuestHostValue(java.util.Collections.unmodifiableMap(snapshot));
             }
             return value;
         }

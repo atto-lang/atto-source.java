@@ -46,6 +46,11 @@ public final class OresContext implements AutoCloseable {
     private final SharedCodeImageStore sharedCodeImages = new SharedCodeImageStore();
     private final Map<String, Map<String, String>> linkedImportResolutions = new HashMap<>();
 
+    public Object asGuestHostValue(Object value) {
+        requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host argument conversion");
+        return env.asGuestValue(value);
+    }
+
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
         this.env = env;

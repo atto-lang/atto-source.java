@@ -4380,6 +4380,12 @@ public final class TypeChecker {
                 // A named interface target becomes a proven structural view of
                 // that interface; inline shapes retain their record type.
                 Type bindingType = resolvedTarget instanceof Named ? resolvedTarget : targetShape;
+                // Structural matching must not erase a record's readonly
+                // capability, including readonly members inside an explicit
+                // struct. A named structural contract needs the same shape
+                // overlay when the subject is a record.
+                if (subject instanceof Record) bindingType = targetShape;
+                bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
             return;
