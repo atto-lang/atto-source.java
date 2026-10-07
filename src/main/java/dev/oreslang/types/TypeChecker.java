@@ -1040,12 +1040,16 @@ public final class TypeChecker {
     }
 
     private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
+        checkCallableBlock(body, parent, generics, expectedReturn, self, false);
+    }
+
+    private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self, boolean async) {
         int previousLoopDepth = loopDepth;
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         loopDepth = 0;
         currentGenerator = false;
-        currentAsyncCallable = false;
+        currentAsyncCallable = async;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
         } finally {
@@ -2406,7 +2410,9 @@ public final class TypeChecker {
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            boolean previousAsync = currentAsyncCallable;
             if (nonLexical) currentClassOwner = null;
+            currentAsyncCallable = lambda.async();
             Type declaredReturn = lambda.returnType() == null
                     ? null : resolve(lambda.returnType(), generics, self);
             Type result;
@@ -2416,7 +2422,7 @@ public final class TypeChecker {
                     if (declaredReturn != null) requireAssignable(result, declaredReturn, "lambda expression return");
                 } else {
                     checkCallableBlock(lambda.blockBody(), lambdaEnv, generics,
-                            declaredReturn == null ? Unknown.INSTANCE : declaredReturn, self);
+                            declaredReturn == null ? Unknown.INSTANCE : declaredReturn, self, lambda.async());
                     if (declaredReturn != null && declaredReturn != Primitive.VOID
                             && !definitelyReturns(lambda.blockBody())) {
                         throw new IllegalArgumentException("non-void typed lambda must return on every path");
@@ -2425,8 +2431,12 @@ public final class TypeChecker {
                 }
             } finally {
                 currentClassOwner = previousClassOwner;
+                currentAsyncCallable = previousAsync;
             }
-            return new Function(parameters, declaredReturn == null ? result : declaredReturn);
+            Type returnType = declaredReturn == null ? result : declaredReturn;
+            return new Function(parameters,
+                    lambda.parameters().stream().map(Ast.Param::mutable).toList(),
+                    lambda.async(), callableResult(lambda.async(), false, returnType));
         }
         return Unknown.INSTANCE;
     }
@@ -2871,7 +2881,9 @@ public final class TypeChecker {
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
+        boolean previousAsync = currentAsyncCallable;
         if (nonLexical) currentClassOwner = null;
+        currentAsyncCallable = lambda.async();
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -2893,6 +2905,9 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        if (lambda.async() != expected.async()) {
+            throw new IllegalArgumentException("async lambda effect does not match expected callable signature");
+        }
         if (lambda.returnType() != null) {
             Type declared = resolve(lambda.returnType(), generics, self);
             requireAssignable(declared, expected.result(), "typed lambda return");
@@ -2924,10 +2939,11 @@ public final class TypeChecker {
                         lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
                 requireAssignable(actual, expected.result(), "lambda expression body");
             } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self, lambda.async());
             }
         } finally {
             currentClassOwner = previousClassOwner;
+            currentAsyncCallable = previousAsync;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
