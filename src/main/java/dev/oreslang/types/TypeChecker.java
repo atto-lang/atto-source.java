@@ -62,6 +62,13 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private int loopDepth;
+    private boolean inDiscardingSelectArm;
+    private final List<String> warnings = new ArrayList<>();
+
+    /** Non-fatal compiler diagnostics, detached from mutable checker state. */
+    public record TypeCheckResult(Ast.Program program, List<String> warnings) {
+        public TypeCheckResult { warnings = List.copyOf(warnings); }
+    }
 
     public static Ast.Program check(Ast.Program program) {
         program = checkTypes(program);
@@ -72,12 +79,16 @@ public final class TypeChecker {
 
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
     public static Ast.Program checkTypes(Ast.Program program) {
+        return checkTypesWithDiagnostics(program).program();
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return program;
+        return new TypeCheckResult(program, checker.warnings);
     }
 
     private void validateImports(Ast.Program program) {
@@ -1045,23 +1056,49 @@ public final class TypeChecker {
         }
     }
 
-    private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
+    private void checkCallableBlock(
+            List<Ast.Stmt> body,
+            Env parent,
+            Set<String> generics,
+            Type expectedReturn,
+            Type self) {
         checkCallableBlock(body, parent, generics, expectedReturn, self, false);
     }
 
-    private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self, boolean async) {
+    private void checkCallableBlock(
+            List<Ast.Stmt> body,
+            Env parent,
+            Set<String> generics,
+            Type expectedReturn,
+            Type self,
+            boolean async) {
+        checkIsolatedArmBlock(
+                body, parent, generics, expectedReturn, self, async, false);
+    }
+
+    private void checkIsolatedArmBlock(
+            List<Ast.Stmt> body,
+            Env parent,
+            Set<String> generics,
+            Type expectedReturn,
+            Type self,
+            boolean async,
+            boolean discardReturn) {
         int previousLoopDepth = loopDepth;
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
+        boolean previousDiscard = inDiscardingSelectArm;
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = async;
+        inDiscardingSelectArm = discardReturn;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
         } finally {
             loopDepth = previousLoopDepth;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
+            inDiscardingSelectArm = previousDiscard;
         }
     }
 
@@ -1127,6 +1164,11 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (inDiscardingSelectArm) {
+                warnings.add(ret.value() == null
+                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
+                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+            }
             if (currentGenerator) {
                 if (ret.value() != null) {
                     throw new IllegalArgumentException(
@@ -1229,10 +1271,19 @@ public final class TypeChecker {
                                 arm.bindingKind());
                     }
                 }
-                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                    // nb select arms run later as detached actor continuations.
-                    // return; exits the arm itself and loop control cannot cross
-                    // back into an already-continued enclosing loop.
+                if (selected.explicitDo()) {
+                    // Every do-select return is arm-local, including blocking do select.
+                    // A returned value is evaluated, discarded, and warned about.
+                    checkIsolatedArmBlock(
+                            arm.body(),
+                            armEnv,
+                            generics,
+                            Unknown.INSTANCE,
+                            self,
+                            false,
+                            true);
+                } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Compatibility: detached legacy nb select arms cannot return a value.
                     checkCallableBlock(
                             arm.body(),
                             armEnv,
@@ -2086,6 +2137,18 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            // Channels are actor-local capabilities, but their lifecycle can
+            // be controlled by the owning source code without Java interop.
+            if (sumReceiver instanceof Named channelType
+                    && channelType.name().equals("Channel")
+                    && channelType.arguments().size() == 1) {
+                return switch (member.member()) {
+                    case "close" -> new Function(List.of(), Primitive.VOID);
+                    case "is_closed" -> new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Channel member '" + member.member() + "'");
+                };
+            }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
