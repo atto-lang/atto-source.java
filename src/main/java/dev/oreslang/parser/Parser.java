@@ -835,6 +835,39 @@ public final class Parser {
         return true;
     }
 
+    private boolean checkCaseKeyword() {
+        return check(CASE) || isContextualIdentifier("case");
+    }
+
+    private boolean matchCaseKeyword() {
+        if (!checkCaseKeyword()) return false;
+        advance();
+        return true;
+    }
+
+    private boolean checkWhenKeyword() {
+        return check(WHEN) || isContextualIdentifier("when");
+    }
+
+    private boolean matchWhenKeyword() {
+        if (!checkWhenKeyword()) return false;
+        advance();
+        return true;
+    }
+
+    private boolean checkSelectArmKeyword() {
+        if (!(checkCaseKeyword() || checkWhenKeyword())) return false;
+        if (current + 1 >= tokens.size()) return false;
+        Token.Type next = tokens.get(current + 1).type();
+        return next == READCH || next == WRITECH;
+    }
+
+    private boolean matchSelectArmKeyword() {
+        if (!checkSelectArmKeyword()) return false;
+        advance();
+        return true;
+    }
+
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
         return a.name().equals(b.name()) && a.arguments().equals(b.arguments()) && a.inferArguments() == b.inferArguments();
     }
@@ -1350,7 +1383,7 @@ public final class Parser {
 
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
-            if (match(CASE)) {
+            if (matchSelectArmKeyword()) {
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -1377,7 +1410,7 @@ public final class Parser {
                 }
 
                 List<Ast.Stmt> body = new ArrayList<>();
-                while (!check(CASE) && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
+                while (!checkSelectArmKeyword() && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
                 if (discardResult) lowerDiscardedArmReturns(body, "do select");
@@ -1394,7 +1427,7 @@ public final class Parser {
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
                 List<Ast.Stmt> body = new ArrayList<>();
-                while (!check(CASE) && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
+                while (!checkSelectArmKeyword() && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
                 if (discardResult) lowerDiscardedArmReturns(body, "do select");
@@ -2083,7 +2116,7 @@ public final class Parser {
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(braces ? RBRACE : END) && !check(EOF)) {
             Ast.Pattern pattern = matchMatchFallback() ? new Ast.WildcardPattern() : parsePattern();
-            Ast.Expr guard = match(WHEN) ? parseExpression() : null;
+            Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
@@ -2261,7 +2294,7 @@ public final class Parser {
         boolean sawDefault = false;
 
         while (!check(END) && !check(EOF)) {
-            if (match(CASE)) {
+            if (matchCaseKeyword()) {
                 if (sawDefault) throw error(previous(), "switch case cannot appear after default");
                 List<Ast.Expr> constants = new ArrayList<>();
                 do constants.add(parseExpression()); while (match(COMMA));
