@@ -19,29 +19,29 @@ final class DestructureAndForOfMutabilityTest {
     @Test void prefixedDestructurePreservesAllFourModes() {
         accepts("""
                 fnc ok(): void {
-                  val [item] = [struct infer{foo: "a"}];
+                  val [item] = [struct{foo: string}{foo: "a"}];
                   item.foo = "b";
                   return;
                 }
                 """);
         rejects("""
                 fnc bad(): void {
-                  val [item] = [struct infer{foo: "a"}];
-                  item = struct infer{foo: "b"};
+                  val [item] = [struct{foo: string}{foo: "a"}];
+                  item = struct{foo: string}{foo: "b"};
                   return;
                 }
                 """);
 
         accepts("""
                 fnc ok(): void {
-                  let [item] = [struct infer{foo: "a"}];
-                  item = struct infer{foo: "b"};
+                  let [item] = [struct{foo: string}{foo: "a"}];
+                  item = struct{foo: string}{foo: "b"};
                   return;
                 }
                 """);
         rejects("""
                 fnc bad(): void {
-                  let [item] = [struct infer{foo: "a"}];
+                  let [item] = [struct{foo: string}{foo: "a"}];
                   item.foo = "b";
                   return;
                 }
@@ -49,15 +49,15 @@ final class DestructureAndForOfMutabilityTest {
 
         accepts("""
                 fnc ok(): void {
-                  let mut [item] = [struct infer{foo: "a"}];
+                  let mut [item] = [struct{foo: string}{foo: "a"}];
                   item.foo = "b";
-                  item = struct infer{foo: "c"};
+                  item = struct{foo: string}{foo: "c"};
                   return;
                 }
                 """);
         rejects("""
                 fnc bad(): void {
-                  const [item] = [struct infer{foo: "a"}];
+                  const [item] = [struct{foo: string}{foo: "a"}];
                   item.foo = "b";
                   return;
                 }
@@ -67,16 +67,16 @@ final class DestructureAndForOfMutabilityTest {
     @Test void inlineDestructureKindsPreserveReferentPermission() {
         accepts("""
                 fnc ok(): void {
-                  [val item] = [struct infer{foo: "a"}];
+                  [val item] = [struct{foo: string}{foo: "a"}];
                   item.foo = "b";
                   return;
                 }
                 """);
         accepts("""
                 fnc ok(): void {
-                  [let mut item] = [struct infer{foo: "a"}];
+                  [let mut item] = [struct{foo: string}{foo: "a"}];
                   item.foo = "b";
-                  item = struct infer{foo: "c"};
+                  item = struct{foo: string}{foo: "c"};
                   return;
                 }
                 """);
@@ -85,7 +85,7 @@ final class DestructureAndForOfMutabilityTest {
     @Test void forOfValIsFixedMutableAndLetIsRebindableReadonly() {
         accepts("""
                 fnc ok(): void {
-                  for val item of arr[struct infer{foo: "a"}] do
+                  for val item of arr[struct{foo: string}{foo: "a"}] do
                     item.foo = "b";
                   done
                   return;
@@ -93,8 +93,8 @@ final class DestructureAndForOfMutabilityTest {
                 """);
         rejects("""
                 fnc bad(): void {
-                  for val item of arr[struct infer{foo: "a"}] do
-                    item = struct infer{foo: "b"};
+                  for val item of arr[struct{foo: string}{foo: "a"}] do
+                    item = struct{foo: string}{foo: "b"};
                   done
                   return;
                 }
@@ -102,15 +102,15 @@ final class DestructureAndForOfMutabilityTest {
 
         accepts("""
                 fnc ok(): void {
-                  for let item of arr[struct infer{foo: "a"}] do
-                    item = struct infer{foo: "b"};
+                  for let item of arr[struct{foo: string}{foo: "a"}] do
+                    item = struct{foo: string}{foo: "b"};
                   done
                   return;
                 }
                 """);
         rejects("""
                 fnc bad(): void {
-                  for let item of arr[struct infer{foo: "a"}] do
+                  for let item of arr[struct{foo: string}{foo: "a"}] do
                     item.foo = "b";
                   done
                   return;
@@ -119,9 +119,9 @@ final class DestructureAndForOfMutabilityTest {
 
         accepts("""
                 fnc ok(): void {
-                  for let mut item of arr[struct infer{foo: "a"}] do
+                  for let mut item of arr[struct{foo: string}{foo: "a"}] do
                     item.foo = "b";
-                    item = struct infer{foo: "c"};
+                    item = struct{foo: string}{foo: "c"};
                   done
                   return;
                 }
@@ -131,7 +131,7 @@ final class DestructureAndForOfMutabilityTest {
     @Test void forOfDestructureCarriesInheritedMutability() {
         accepts("""
                 fnc ok(): void {
-                  for val [item] of arr[[struct infer{foo: "a"}]] do
+                  for val [item] of arr[[struct{foo: string}{foo: "a"}]] do
                     item.foo = "b";
                   done
                   return;
@@ -139,16 +139,16 @@ final class DestructureAndForOfMutabilityTest {
                 """);
         accepts("""
                 fnc ok(): void {
-                  for let mut [item] of arr[[struct infer{foo: "a"}]] do
+                  for let mut [item] of arr[[struct{foo: string}{foo: "a"}]] do
                     item.foo = "b";
-                    item = struct infer{foo: "c"};
+                    item = struct{foo: string}{foo: "c"};
                   done
                   return;
                 }
                 """);
         rejects("""
                 fnc bad(): void {
-                  for const [item] of arr[[struct infer{foo: "a"}]] do
+                  for const [item] of arr[[struct{foo: string}{foo: "a"}]] do
                     item.foo = "b";
                   done
                   return;
