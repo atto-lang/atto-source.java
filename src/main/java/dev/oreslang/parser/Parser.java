@@ -2815,12 +2815,25 @@ public final class Parser {
             return new Ast.NewExpr(type, args);
         }
         if (match(OBJ)) return parseObjectLiteral(Ast.ObjectKind.OBJECT, List.of());
+        if (looksLikeInferStructExpression()) {
+            advance(); // contextual 'infer'
+            Ast.TypeRef witness = null;
+            if (match(LT)) {
+                witness = parseTypeRef();
+                if (match(COMMA)) {
+                    throw error(previous(), "infer<T> struct accepts exactly one type witness");
+                }
+                consume(GT, "expected '>' after infer struct type witness");
+            }
+            consume(STRUCT, "expected 'struct' after infer or infer<T>");
+            return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of(), witness);
+        }
         if (match(STRUCT)) {
-            if (matchContextualKeyword("infer")) {
-                return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            if (isContextualIdentifier("infer")) {
+                throw error(peek(), "use canonical 'infer struct {...}', not legacy 'struct infer {...}'");
             }
             if (check(LBRACE)) return parseExplicitStructLiteral();
-            throw error(peek(), "struct expression requires 'struct infer{...}' or 'struct{field: Type,...}{...}'");
+            throw error(peek(), "struct expression requires 'infer struct {...}', 'infer<T> struct {...}', or 'struct{field: Type,...}{...}'");
         }
         if (match(ARR)) {
             consume(LBRACKET, "expected '[' after arr");
@@ -2855,6 +2868,27 @@ public final class Parser {
         throw error(peek(), "expected expression");
     }
 
+    private boolean looksLikeInferStructExpression() {
+        if (!isContextualIdentifier("infer")) return false;
+        int next = current + 1;
+        if (next >= tokens.size()) return false;
+        if (tokens.get(next).type() == STRUCT) return true;
+        if (tokens.get(next).type() != LT) return false;
+
+        int depth = 0;
+        for (int i = next; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LT) depth++;
+            else if (type == GT) {
+                depth--;
+                if (depth == 0) {
+                    return i + 1 < tokens.size() && tokens.get(i + 1).type() == STRUCT;
+                }
+            }
+        }
+        return false;
+    }
+
     private Ast.ObjectExpr parseExplicitStructLiteral() {
         consume(LBRACE, "expected '{' after struct");
         List<Ast.StructFieldSpec> declared = new ArrayList<>();
@@ -2879,10 +2913,17 @@ public final class Parser {
     private Ast.ObjectExpr parseObjectLiteral(
             Ast.ObjectKind kind,
             List<Ast.StructFieldSpec> declaredFields) {
+        return parseObjectLiteral(kind, declaredFields, null);
+    }
+
+    private Ast.ObjectExpr parseObjectLiteral(
+            Ast.ObjectKind kind,
+            List<Ast.StructFieldSpec> declaredFields,
+            Ast.TypeRef inferenceWitness) {
         boolean inferredStruct = kind == Ast.ObjectKind.INFERRED_STRUCT;
         boolean explicitStruct = kind == Ast.ObjectKind.EXPLICIT_STRUCT;
         consume(LBRACE, inferredStruct
-                ? "expected '{' after struct infer"
+                ? "expected '{' after infer struct"
                 : explicitStruct
                     ? "expected '{' after explicit struct shape"
                     : "expected '{' after obj");
@@ -2894,7 +2935,7 @@ public final class Parser {
                     if (inferredStruct || explicitStruct) {
                         throw error(previous(),
                                 inferredStruct
-                                        ? "struct infer requires statically named fields"
+                                        ? "infer struct requires statically named fields"
                                         : "explicit struct initializers require statically named declared fields");
                     }
                     Ast.Expr key = parseExpression();
@@ -2912,9 +2953,9 @@ public final class Parser {
         consume(RBRACE, explicitStruct
                 ? "expected '}' after explicit struct initializer"
                 : inferredStruct
-                    ? "expected '}' after struct infer literal"
+                    ? "expected '}' after infer struct literal"
                     : "expected '}' after obj literal");
-        return new Ast.ObjectExpr(fields, kind, declaredFields);
+        return new Ast.ObjectExpr(fields, kind, declaredFields, inferenceWitness);
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
