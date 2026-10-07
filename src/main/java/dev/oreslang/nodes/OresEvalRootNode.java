@@ -7465,10 +7465,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
-                if (targetClass != null) return classIsA(object.klass, targetClass, new LinkedHashSet<>());
+                if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, new LinkedHashSet<>());
                 Ast.InterfaceDecl targetInterface = findInterface(name);
                 if (targetInterface != null) {
-                    return classImplements(object.klass, targetInterface, new LinkedHashSet<>(), new LinkedHashSet<>());
+                    return object.owner.classImplements(object.klass, targetInterface, new LinkedHashSet<>(), new LinkedHashSet<>());
                 }
             }
 
@@ -7502,7 +7502,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean classIsA(Ast.ClassDecl actual, Ast.ClassDecl target, Set<Ast.ClassDecl> seen) {
-            if (actual == target || actual.name().equals(target.name())) return true;
+            if (actual == target) return true;
             if (!seen.add(actual)) return false;
             for (Ast.TypeRef parentRef : actual.parents()) {
                 Ast.ClassDecl parent = findClass(parentRef.name());
@@ -7519,7 +7519,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!seenClasses.add(actual)) return false;
             for (Ast.TypeRef interfaceRef : actual.interfaces()) {
                 Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
-                if (iface != null && (iface == target || iface.name().equals(target.name())
+                if (iface != null && (iface == target
                         || interfaceExtends(iface, target, seenInterfaces))) return true;
             }
             for (Ast.TypeRef parentRef : actual.parents()) {
@@ -7531,7 +7531,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean interfaceExtends(
                 Ast.InterfaceDecl actual, Ast.InterfaceDecl target, Set<Ast.InterfaceDecl> seen) {
-            if (actual == target || actual.name().equals(target.name())) return true;
+            if (actual == target) return true;
             if (!seen.add(actual)) return false;
             for (Ast.TypeRef parentRef : actual.parents()) {
                 Ast.InterfaceDecl parent = findInterface(parentRef.name());
