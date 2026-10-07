@@ -82,6 +82,25 @@ final class SelectSourceFlowSafetyTest {
     }
 
     @Test
+    void channelCloseIsVisibleToSourceAndPreservesCommittedBufferedValue() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Channel<int> channel = Channel.new<int>(1);
+                  writech channel, 42;
+                  stdio.stdout.write(channel.is_closed());
+                  channel.close();
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(channel.is_closed());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(readch channel);
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("false:true:42", run(source));
+    }
+
+    @Test
     void selectedClosedChannelErrorIsCaughtOnce() throws Exception {
         String source = """
                 pub fnc main(): void {
