@@ -9,53 +9,53 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorMailTypeContractTest {
 
     @Test
-    void typedReceiveDefinesActorRefSendPayloadAndEnvelopeMembers() {
+    void typedPublicMethodsDefineGeneratedActorEndpointTable() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                  receive(ActorMail<String> mail): void {
-                    val String value = mail.value;
-                    val int sequence = mail.sequence;
-                    val ActorId recipient = mail.recipient;
-                    val Option<ActorId> sender = mail.sender;
+                  pub notify(String value): void {
                     stdio.println(value);
-                    stdio.println(sequence);
-                    stdio.println(recipient);
-                    stdio.println(sender);
                     return;
+                  }
+
+                  pub add(int left, int right): int {
+                    return left + right;
                   }
                 end
 
-                pub routine main(): void {
+                pub async routine main(): void {
                   val worker = spawn Worker();
-                  worker.send("hello");
+                  worker.send.notify("hello");
+                  val result = await worker.call.add(20, 22);
+                  worker.stop();
+                  await worker.done;
                   return;
                 }
                 """)));
     }
 
     @Test
-    void actorRefSendMustMatchReceivePayload() {
+    void typedDispatchArgumentsMustMatchEndpointSignature() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<String> mail): void {
-                            return;
-                          }
+                          pub notify(String value): void { return; }
                         end
 
                         pub routine main(): void {
                           val worker = spawn Worker();
-                          worker.send(42);
+                          worker.send.notify(42);
                           return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("ActorRef.send mailbox value"),
+        assertTrue(
+                failure.getMessage().contains("actor endpoint")
+                        || failure.getMessage().contains("argument"),
                 failure.getMessage());
     }
 
     @Test
-    void actorWithoutReceiveCannotAcceptMailboxSend() {
+    void actorWithoutEndpointCannotAcceptArbitraryDispatch() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -65,81 +65,107 @@ final class ActorMailTypeContractTest {
 
                         pub routine main(): void {
                           val worker = spawn Worker();
-                          worker.send("hello");
+                          worker.send.missing("hello");
                           return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("no receive(ActorMail<T>)"),
+        assertTrue(failure.getMessage().contains("no public endpoint"),
                 failure.getMessage());
     }
 
     @Test
-    void receiveIsActorLocalAndHasCanonicalShape() {
+    void receiveIsReservedForCompilerOwnedMailboxDispatch() {
+        IllegalArgumentException privateHandler = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(Object mail): void { return; }
+                        end
+                        """)));
+        assertTrue(privateHandler.getMessage().contains("reserved"),
+                privateHandler.getMessage());
+
         IllegalArgumentException publicHandler = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          pub receive(ActorMail<String> mail): void { return; }
+                          pub receive(Object mail): void { return; }
                         end
                         """)));
-        assertTrue(publicHandler.getMessage().contains("actor-local"),
+        assertTrue(publicHandler.getMessage().contains("reserved"),
                 publicHandler.getMessage());
-
-        IllegalArgumentException wrongParameter = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define actor Worker as
-                          receive(String mail): void { return; }
-                        end
-                        """)));
-        assertTrue(wrongParameter.getMessage().contains("ActorMail<T>"),
-                wrongParameter.getMessage());
-
-        IllegalArgumentException wrongReturn = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define actor Worker as
-                          receive(ActorMail<String> mail): int { return 1; }
-                        end
-                        """)));
-        assertTrue(wrongReturn.getMessage().contains("must return void"),
-                wrongReturn.getMessage());
     }
 
     @Test
-    void actorMailRequiresExplicitSendablePayloadType() {
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define actor Worker as
-                          receive(ActorMail mail): void { return; }
-                        end
-                        """)));
-
-        IllegalArgumentException closurePayload = assertThrows(
+    void endpointArgumentsAndResultsMustBeActorBoundarySendable() {
+        IllegalArgumentException closureArgument = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<Fnc<void>> mail): void { return; }
+                          pub consume(Object value): void { return; }
+                        end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          worker.send.consume(|| -> { return 1; });
+                          return;
+                        }
+                        """)));
+        assertTrue(closureArgument.getMessage().contains("sendable"),
+                closureArgument.getMessage());
+
+        IllegalArgumentException closureResult = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub callback(): (() => int) {
+                            return || -> { return 1; };
+                          }
                         end
                         """)));
-        assertTrue(closurePayload.getMessage().contains("sendable")
-                        || closurePayload.getMessage().contains("actor-boundary"),
-                closurePayload.getMessage());
+        assertTrue(closureResult.getMessage().contains("sendable"),
+                closureResult.getMessage());
     }
 
     @Test
-    void receiveCannotBeInvokedLikeAnOrdinaryActorMethod() {
+    void oneWayProxyCannotDiscardRequestReplyResult() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<String> mail): void {
-                            self.receive(mail);
-                            return;
+                          pub add(int left, int right): int {
+                            return left + right;
                           }
                         end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          worker.send.add(20, 22);
+                          return;
+                        }
                         """)));
-        assertTrue(failure.getMessage().contains("reserved actor lifecycle hook"),
+        assertTrue(failure.getMessage().contains("worker.call.add"),
+                failure.getMessage());
+    }
+
+    @Test
+    void actorRefNeverExposesEndpointsAsOrdinaryMethods() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub notify(String value): void { return; }
+                        end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          worker.notify("hello");
+                          return;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("unknown ActorRef")
+                        || failure.getMessage().contains("actor refs"),
                 failure.getMessage());
     }
 }
