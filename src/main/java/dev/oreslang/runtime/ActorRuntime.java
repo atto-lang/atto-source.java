@@ -1435,14 +1435,79 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                admitted = cell.mailbox.tryWrite(
+                /*
+                 * Runtime continuations have a separate bounded lane. A source
+                 * receive may suspend while older user messages are already in
+                 * the user FIFO; placing its resume behind those messages would
+                 * violate actor single-writer semantics.
+                 */
+                cell.continuationQueue.addLast(
                         MessageEnvelope.continuation(continuation));
+                admitted = true;
             }
             if (admitted) cell.schedule();
             return admitted;
         } finally {
             if (!admitted) cell.releaseMailboxSlot(true);
         }
+    }
+
+    /**
+     * Keep one source receive logically active across stackless suspension.
+     * Until the Future settles, later user mail remains queued and only the
+     * actor's bounded runtime-continuation lane may execute.
+     */
+    public void suspendCurrentUserMailboxUntil(OresFuture<?> future) {
+        Objects.requireNonNull(future, "future");
+        requireCallerRuntimeAffinity("suspend current actor mailbox turn");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "suspended source receive requires an executing actor turn");
+        }
+
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized) throw terminated(cell.ref);
+            if (cell.sourceReceiveSuspended) {
+                throw new IllegalStateException(
+                        "actor " + cell.ref.id()
+                                + " already has a suspended source receive");
+            }
+            if (cell.activeMail == null) {
+                throw new IllegalStateException(
+                        "only an active user-mail receive may suspend the actor mailbox");
+            }
+            cell.sourceReceiveSuspended = true;
+        }
+
+        future.whenCompleteRuntime((ignored, failure) -> {
+            if (!enqueueContinuation(cell.ref.id(), () -> {
+                synchronized (cell.lifecycleLock) {
+                    cell.sourceReceiveSuspended = false;
+                    cell.activeMail = null;
+                    cell.lifecycleLock.notifyAll();
+                }
+                if (failure != null) {
+                    Throwable terminal = OresFuture.unwrap(failure);
+                    if (terminal instanceof java.util.concurrent.CancellationException
+                            && cell.endRequested) {
+                        return;
+                    }
+                    if (terminal instanceof RuntimeException runtime) throw runtime;
+                    if (terminal instanceof Error error) throw error;
+                    throw new RuntimeException(terminal);
+                }
+            })) {
+                synchronized (cell.lifecycleLock) {
+                    if (!cell.stopped.get() && !cell.finalized) {
+                        cell.sourceReceiveSuspended = false;
+                        cell.activeMail = null;
+                        cell.fail(new IllegalStateException(
+                                "actor source receive completion could not re-enter its continuation lane"));
+                    }
+                }
+            }
+        });
     }
 
     public final class ActorRef<M> {
@@ -5196,8 +5261,13 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object mailboxAccountingLock = new Object();
         private int queuedMessages;
         private int queuedUserMessages;
+        private int queuedContinuations;
         private long nextUserMessageSequence;
         private ActorInboxMail<M> activeMail;
+        private final ArrayDeque<MessageEnvelope> continuationQueue =
+                new ArrayDeque<>();
+        /** True while one source receive owns actor state across suspension. */
+        private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -5283,7 +5353,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean reserveContinuationSlot() {
             synchronized (mailboxAccountingLock) {
+                if (queuedContinuations >= INTERNAL_CONTINUATION_SLOTS) return false;
                 if (queuedMessages >= mailboxCapacityWithControlHeadroom()) return false;
+                queuedContinuations++;
                 queuedMessages++;
                 return true;
             }
@@ -5297,7 +5369,14 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 queuedMessages--;
 
-                if (!continuation) {
+                if (continuation) {
+                    if (queuedContinuations <= 0) {
+                        queuedMessages++;
+                        throw new IllegalStateException(
+                                "actor continuation accounting underflow for " + ref.id());
+                    }
+                    queuedContinuations--;
+                } else {
                     if (queuedUserMessages <= 0) {
                         queuedMessages++;
                         throw new IllegalStateException(
@@ -5623,7 +5702,8 @@ public final class ActorRuntime implements AutoCloseable {
                             && !forceKillFenced
                             && !closed.get()
                             && !finalized
-                            && !mailbox.isEmpty();
+                            && (!continuationQueue.isEmpty()
+                                || (!sourceReceiveSuspended && !mailbox.isEmpty()));
                     lifecycleLock.notifyAll();
                 }
                 ACTOR_CARRIER.remove();
@@ -5704,10 +5784,15 @@ public final class ActorRuntime implements AutoCloseable {
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
-                        // Stop closes the mailbox under this same lock. Do not
-                        // turn a graceful stop racing the next read into a failure.
+                        // Stop closes the user mailbox under this same lock.
                         if (stopped.get() || finalized) break;
-                        envelope = mailbox.tryRead().orElse(null);
+
+                        // Continuations always outrank user mail. While a
+                        // source receive is suspended, user mail is not runnable.
+                        envelope = continuationQueue.pollFirst();
+                        if (envelope == null && !sourceReceiveSuspended) {
+                            envelope = mailbox.tryRead().orElse(null);
+                        }
                     }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
@@ -5755,7 +5840,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                activeMail = null;
+                                if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
                         if (codeExecutor == null
@@ -5804,12 +5889,19 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
+            MessageEnvelope continuation;
+            while ((continuation = continuationQueue.pollFirst()) != null) {
+                releaseMailboxSlot(true);
+                continuation.close();
+            }
             while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot(envelope.isContinuation());
+                releaseMailboxSlot(false);
                 envelope.close();
             })) {
-                // drain all committed mailbox envelopes, including after close
+                // drain all committed user-mailbox envelopes after close
             }
+            sourceReceiveSuspended = false;
+            activeMail = null;
         }
 
         private void fail(Throwable failure) {
