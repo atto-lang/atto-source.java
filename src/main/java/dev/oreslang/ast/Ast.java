@@ -511,12 +511,32 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
     public record BindingPattern(String name) implements Pattern { }
+
+    /** Nominal/runtime type pattern such as `Dog dog` or legacy `is Dog dog`. */
     public record TypePattern(TypeRef type, String binding) implements Pattern { }
+
+    /**
+     * Structural type pattern. The target is either an inline record shape
+     * (`structural { name: String } value`) or a named interface/contract
+     * whose public shape is matched without requiring nominal implementation.
+     */
+    public record StructuralPattern(TypeRef target, String binding) implements Pattern { }
+
+    /** Fixed-arity recursive tuple pattern. Lists deliberately do not participate. */
+    public record TuplePattern(List<Pattern> elements) implements Pattern {
+        public TuplePattern {
+            elements = List.copyOf(elements);
+            if (elements.size() < 2) {
+                throw new IllegalArgumentException("tuple patterns require at least two elements");
+            }
+        }
+    }
+
     public record ConstructorPattern(String constructor, List<Pattern> arguments) implements Pattern {
         public ConstructorPattern { arguments = List.copyOf(arguments); }
     }
@@ -526,8 +546,9 @@ public final class Ast {
     }
 
     /**
-     * ordered=false is the normal proof-checked form: arm predicates must be disjoint.
-     * ordered=true ("match first") is an explicit priority/first-match escape hatch.
+     * Match arms use source order: the first matching arm wins. The ordered
+     * flag is retained for AST compatibility; canonical source syntax is
+     * always ordered and the parser emits true.
      */
     public record MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) implements Stmt {
         public MatchStmt { arms = List.copyOf(arms); }
