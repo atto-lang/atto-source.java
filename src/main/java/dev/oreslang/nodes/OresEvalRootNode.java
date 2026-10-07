@@ -4349,6 +4349,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Enum<?>
                     || value instanceof java.util.UUID
                     || value instanceof Complex
+                    || value instanceof ActorRuntime.ActorId
+                    || value instanceof ActorRuntime.ActorRef<?>
                     || value instanceof OptionUnwrapError) {
                 return value;
             }
