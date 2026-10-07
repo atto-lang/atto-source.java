@@ -531,11 +531,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @FunctionalInterface
-        private interface SourceObjectCont {
-            void accept(SourceTask task, Map<String, Object> value, Throwable failure);
-        }
-
-        @FunctionalInterface
         private interface SourceFlowCont {
             void accept(SourceTask task, SourceFlow flow);
         }
@@ -3057,22 +3052,42 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayList<Object> values,
                 int index,
-                SourceObjectCont continuation) {
+                SourceValueCont continuation) {
             if (index >= object.fields().size()) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                if (object.explicitStruct()) {
+                    for (Ast.StructFieldSpec field : object.declaredFields()) {
+                        if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate explicit struct field " + field.name());
+                        }
+                    }
+                }
                 for (Object value : values) {
                     @SuppressWarnings("unchecked")
                     Map.Entry<String, Object> entry =
                             (Map.Entry<String, Object>) value;
-                    if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
+                    if (object.explicitStruct()) {
+                        if (!result.containsKey(entry.getKey())) {
+                            throw new IllegalArgumentException(
+                                    "explicit struct initializer contains undeclared field " + entry.getKey());
+                        }
+                        if (result.get(entry.getKey()) != UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "duplicate explicit struct initializer field " + entry.getKey());
+                        }
+                        result.put(entry.getKey(), entry.getValue());
+                    } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
                         throw new IllegalArgumentException(
                                 "duplicate obj field " + entry.getKey());
                     }
                 }
-                // Suspension callbacks use the declared Map<String,Object>
-                // contract. The expression wrapper decides which object shape
-                // escapes this builder; avoid widening SourceObjectCont to Object.
-                continuation.accept(task, result, null);
+                Object built = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic)
+                        ? new DynamicStructValue(result)
+                        : object.explicitStruct()
+                            ? result
+                            : Map.copyOf(result);
+                continuation.accept(task, built, null);
                 return;
             }
 
@@ -3694,7 +3709,12 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "unknown object/map key " + key);
                 }
-                return map.get(key);
+                Object value = map.get(key);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "explicit struct field '" + key + "' is read before initialization");
+                }
+                return value;
             }
             if (!(index instanceof Number number)) {
                 throw new IllegalArgumentException(
@@ -3757,7 +3777,7 @@ public final class OresEvalRootNode extends RootNode {
                             (LinkedHashMap<String, Object>) rawRecord;
                     if (!record.containsKey(member.member())) {
                         throw new IllegalArgumentException(
-                                "unknown inferred struct field " + member.member());
+                                "unknown explicit struct field " + member.member());
                     }
                     record.put(member.member(), value);
                     return value;
@@ -5424,6 +5444,14 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.ObjectExpr object) {
                 boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                if (object.explicitStruct()) {
+                    for (Ast.StructFieldSpec field : object.declaredFields()) {
+                        if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate explicit struct field " + field.name());
+                        }
+                    }
+                }
                 for (Ast.ObjectField field : object.fields()) {
                     String key;
                     if (field.isDynamic()) {
@@ -5435,12 +5463,23 @@ public final class OresEvalRootNode extends RootNode {
                     } else {
                         key = field.name();
                     }
-                    if (result.putIfAbsent(key, eval(field.value(), env)) != null) {
+                    Object value = eval(field.value(), env);
+                    if (object.explicitStruct()) {
+                        if (!result.containsKey(key)) {
+                            throw new IllegalArgumentException(
+                                    "explicit struct initializer contains undeclared field " + key);
+                        }
+                        if (result.get(key) != UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "duplicate explicit struct initializer field " + key);
+                        }
+                        result.put(key, value);
+                    } else if (result.putIfAbsent(key, value) != null) {
                         throw new IllegalArgumentException("duplicate obj field " + key);
                     }
                 }
                 return dynamicKeys ? new DynamicStructValue(result)
-                        : object.inferredStruct() ? result : Map.copyOf(result);
+                        : object.explicitStruct() ? result : Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -5792,7 +5831,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
-                return map.get(name);
+                Object value = map.get(name);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "explicit struct field '" + name + "' is read before initialization");
+                }
+                return value;
             }
             InteropLibrary foreign = InteropLibrary.getUncached(receiver);
             if (foreign.hasMembers(receiver)) {
@@ -7306,7 +7350,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
-                return map.get(name);
+                Object member = map.get(name);
+                if (member == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "explicit struct field '" + name + "' is destructured before initialization");
+                }
+                return member;
             }
             if (value instanceof OresObject object) {
                 if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
