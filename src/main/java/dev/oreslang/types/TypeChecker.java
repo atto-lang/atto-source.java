@@ -4015,55 +4015,6 @@ public final class TypeChecker {
         };
     }
 
-    private Type actorMailboxPayloadType(Named actorRef) {
-        if (actorRef.arguments().size() != 1) {
-            throw new IllegalArgumentException(
-                    "ActorRef requires exactly one actor type argument");
-        }
-        Type target = receiverDispatchType(deref(actorRef.arguments().getFirst()));
-        if (!(target instanceof Named concreteActor)) {
-            throw new IllegalArgumentException(
-                    "ActorRef target must be a concrete actor class; got " + target);
-        }
-        Ast.ClassDecl actorClass = findClass(concreteActor.name());
-        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
-            throw new IllegalArgumentException(
-                    "ActorRef target '" + concreteActor.name() + "' is not a known actor class");
-        }
-        ResolvedMethod receive = findMethodTarget(
-                actorClass,
-                concreteActor,
-                "receive",
-                1,
-                new LinkedHashSet<>());
-        if (receive == null) {
-            throw new IllegalArgumentException(
-                    "actor '" + actorClass.name()
-                            + "' has no receive(ActorMail<T>) mailbox handler");
-        }
-        Ast.MethodDecl handler = receive.method();
-        if (handler.parameters().size() != 1) {
-            throw new IllegalArgumentException(
-                    "actor '" + actorClass.name() + ".receive' has invalid mailbox arity");
-        }
-        Set<String> ownerGenerics = Set.copyOf(receive.owner().genericParameters());
-        Type mailType = resolve(
-                handler.parameters().getFirst().type(),
-                ownerGenerics,
-                receive.ownerType());
-        mailType = substituteGenerics(
-                mailType,
-                classGenericBindings(receive.owner(), receive.ownerType()));
-        if (!(mailType instanceof Named mail)
-                || !mail.name().equals("ActorMail")
-                || mail.arguments().size() != 1) {
-            throw new IllegalArgumentException(
-                    "actor '" + actorClass.name()
-                            + ".receive' must accept ActorMail<T>");
-        }
-        return mail.arguments().getFirst();
-    }
-
     private Ast.ClassDecl actorClassForRef(Named actorRef) {
         if (!actorRef.name().equals("ActorRef") || actorRef.arguments().size() != 1) {
             throw new IllegalArgumentException(
