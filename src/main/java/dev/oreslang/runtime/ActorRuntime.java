@@ -1349,6 +1349,7 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -1378,6 +1379,16 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> done() {
             return doneFuture;
+        }
+
+        /** Read-only outputs emitted by actor-local self.send(...). */
+        public ActorOutputStream<Object> outputs() {
+            ActorOutputStream<Object> stream = outputStream;
+            if (stream == null) {
+                throw new IllegalStateException(
+                        "actor output stream has not been attached");
+            }
+            return stream;
         }
 
         public boolean awaitTermination(long timeout, TimeUnit unit)
@@ -5063,11 +5074,15 @@ public final class ActorRuntime implements AutoCloseable {
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
+        private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
+        private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
+        private final AtomicLong outputBytes = new AtomicLong();
+        private long nextOutputSequence;
         private final Object mailboxAccountingLock = new Object();
         private int queuedMessages;
         private int queuedUserMessages;
@@ -5109,6 +5124,12 @@ public final class ActorRuntime implements AutoCloseable {
                     ? Integer.MAX_VALUE
                     : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
             this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
+            this.outputChannel = new ChannelRuntime.Channel<>(
+                    Math.max(1, policy.maxMailboxMessages()));
+            this.outputStream = new ActorOutputStream<>(
+                    ref.id(), outputChannel);
+            ref.outputStream = outputStream;
+            actorOutputStreams.add(outputStream);
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
