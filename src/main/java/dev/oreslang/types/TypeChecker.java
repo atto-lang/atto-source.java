@@ -1516,9 +1516,10 @@ public final class TypeChecker {
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
+            Type narrowed = preserveReadonlyRecordCapability(source, target);
             return cast.mode() == Ast.CastMode.OPTIONAL
-                    ? new Named("Option", List.of(target))
-                    : target;
+                    ? new Named("Option", List.of(narrowed))
+                    : narrowed;
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -2981,6 +2982,30 @@ public final class TypeChecker {
         }
 
         return null;
+    }
+
+    private boolean containsReadonlyRecordCapability(Type type) {
+        Type concrete = deref(type);
+        if (concrete instanceof Record record) return record.readOnly();
+        if (concrete instanceof Union union) {
+            return union.options().stream().anyMatch(this::containsReadonlyRecordCapability);
+        }
+        return false;
+    }
+
+    private Type preserveReadonlyRecordCapability(Type source, Type target) {
+        if (!containsReadonlyRecordCapability(source)) return target;
+        if (target instanceof Record record) {
+            return new Record(record.members(), true);
+        }
+        if (target instanceof Union union) {
+            return Types.unionOf(union.options().stream()
+                    .map(option -> option instanceof Record record
+                            ? new Record(record.members(), true)
+                            : option)
+                    .toList());
+        }
+        return target;
     }
 
     private void requireMutableReferentCompatible(
