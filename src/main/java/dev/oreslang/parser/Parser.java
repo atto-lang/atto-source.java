@@ -1189,6 +1189,25 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        // The 'do' prefix explicitly opts out of branch-result production.
+        // Keep this contextual so existing 'if ... do' and loop syntax survives.
+        if (check(DO) && checkNext(MATCH)) {
+            advance();
+            advance();
+            return parseMatch(false, true);
+        }
+        boolean doSelect = check(DO) && (checkNext(SELECT)
+                || ((checkNext(NB) || checkNext(TRY))
+                        && current + 2 < tokens.size()
+                        && tokens.get(current + 2).type() == SELECT));
+        if (doSelect) {
+            if (!looksLikeStaticSelectStatement(1)) {
+                throw error(peek(), "'do select' and 'do nb select' require static '{ ... }' arms; "
+                        + "dynamic 'select from' has a separate Future/SelectResult API");
+            }
+            advance();
+            return parseStaticSelectStatement();
+        }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         if (looksLikeImmediateChannelExpression()) {
             Ast.Expr expression = parseExpression();
@@ -1286,7 +1305,11 @@ public final class Parser {
     }
 
     private boolean looksLikeStaticSelectStatement() {
-        int i = current;
+        return looksLikeStaticSelectStatement(0);
+    }
+
+    private boolean looksLikeStaticSelectStatement(int offset) {
+        int i = current + offset;
         if (i >= tokens.size()) return false;
         Token.Type first = tokens.get(i).type();
         if (first == NB || first == TRY) i++;
@@ -1976,9 +1999,11 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() { return parseMatch(false); }
+    private Ast.MatchStmt parseMatch() { return parseMatch(false, false); }
 
-    private Ast.MatchStmt parseMatch(boolean valueContext) {
+    private Ast.MatchStmt parseMatch(boolean valueContext) { return parseMatch(valueContext, false); }
+
+    private Ast.MatchStmt parseMatch(boolean valueContext, boolean discardResult) {
         boolean ordered = check(IDENT) && peek().lexeme().equals("first");
         if (ordered) advance();
 
@@ -1990,22 +2015,21 @@ public final class Parser {
         } finally {
             suppressRefinementOperators = previousSuppression;
         }
-        // The 'no-return' modifier is contextual and only meaningful before
-        // the explicit 'over' separator. Bare statement matches retain legacy
-        // function-return semantics for compatibility.
-        boolean discardResult = consumeNoReturnModifier();
+        // 'do match' is the explicit statement-only form; ordinary matches
+        // remain value-producing where an expression is expected. Legacy bare
+        // statement matches retain their existing function-return semantics.
         boolean over = check(IDENT) && peek().lexeme().equals("over");
         if (over) advance();
         if (!over) match(SEMICOLON);
         if (discardResult && !over) {
-            throw error(peek(), "'no-return' requires 'over' after the match subject");
+            throw error(peek(), "'do match' requires 'over' after the match subject");
         }
         if (valueContext && discardResult) {
-            throw error(peek(), "'no-return' match produces void and cannot be used as a value");
+            throw error(peek(), "'do match' cannot be used as a value");
         }
         if (!valueContext && over && !discardResult) {
-            throw error(peek(), "standalone 'match ... over' must specify 'no-return' "
-                    + "to discard branch results");
+            throw error(peek(), "standalone value-producing 'match ... over' is not a statement; "
+                    + "use 'do match ... over' to discard branch results");
         }
 
         boolean armSuppression = suppressRefinementOperators;
@@ -2015,22 +2039,6 @@ public final class Parser {
         } finally {
             suppressRefinementOperators = armSuppression;
         }
-    }
-
-    /**
-     * Recognize exactly no-return, never no - return or a global reserved word.
-     * The modifier is legal only in the header of a statement match.
-     */
-    private boolean consumeNoReturnModifier() {
-        if (current + 2 >= tokens.size()) return false;
-        Token no = tokens.get(current);
-        Token dash = tokens.get(current + 1);
-        Token returning = tokens.get(current + 2);
-        if (no.type() != IDENT || !no.lexeme().equals("no")
-                || dash.type() != MINUS || returning.type() != RETURN
-                || !adjacent(no, dash) || !adjacent(dash, returning)) return false;
-        advance(); advance(); advance();
-        return true;
     }
 
     private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered, boolean over,
@@ -2054,11 +2062,10 @@ public final class Parser {
                 }
                 consume(RBRACE, "expected '}' after match arm block");
                 yieldsValue = !body.isEmpty() && body.getLast() instanceof Ast.ExprStmt && !lastTerminated;
-                // In 'match ... over' expressions, 'return' completes the
-                // match. In 'match ... no-return over', the same arm-local return
-                // evaluates (and discards) its value, never returning from the
-                // enclosing function. Ordinary legacy statement matches keep
-                // their historical function-return semantics.
+                // In value-producing 'match ... over', 'return' completes the
+                // match. In 'do match ... over', the same arm-local return
+                // evaluates and discards its value, without returning from
+                // the enclosing function. Legacy matches preserve old behavior.
                 if ((valueContext && over) || discardResult) {
                     boolean hasResult = !body.isEmpty()
                             && body.getLast() instanceof Ast.ReturnStmt last
@@ -2079,7 +2086,7 @@ public final class Parser {
                         body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
                     } else if (!body.isEmpty() && body.getLast() instanceof Ast.ReturnStmt) {
                         throw error(previous(), "'return;' without a value is invalid in "
-                                + "'no-return' arms; omit it to finish the arm");
+                                + "'do match' arms; omit it to finish the arm");
                     }
                     yieldsValue = valueContext;
                 }
