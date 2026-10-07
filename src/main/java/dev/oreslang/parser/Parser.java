@@ -1194,7 +1194,9 @@ public final class Parser {
         if (check(DO) && checkNext(MATCH)) {
             advance();
             advance();
-            return parseMatch(false, true);
+            Ast.MatchStmt statement = parseMatch(false, true);
+            match(SEMICOLON); // Optional statement terminator; this is not an expression.
+            return statement;
         }
         boolean doSelect = check(DO) && (checkNext(SELECT)
                 || ((checkNext(NB) || checkNext(TRY))
@@ -1206,7 +1208,9 @@ public final class Parser {
                         + "dynamic 'select from' has a separate Future/SelectResult API");
             }
             advance();
-            return parseStaticSelectStatement(true);
+            Ast.SelectStmt statement = parseStaticSelectStatement(true);
+            match(SEMICOLON);
+            return statement;
         }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement(false);
         if (looksLikeImmediateChannelExpression()) {
@@ -1372,7 +1376,7 @@ public final class Parser {
                 while (!check(CASE) && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
-                if (discardResult) lowerDoSelectArmReturns(body);
+                if (discardResult) lowerDiscardedArmReturns(body, "do select");
                 arms.add(new Ast.SelectArm(
                         operation,
                         channel,
@@ -1389,7 +1393,7 @@ public final class Parser {
                 while (!check(CASE) && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
-                if (discardResult) lowerDoSelectArmReturns(body);
+                if (discardResult) lowerDiscardedArmReturns(body, "do select");
                 arms.add(new Ast.SelectArm(
                         Ast.ChannelOperation.DEFAULT,
                         null,
@@ -1408,16 +1412,19 @@ public final class Parser {
     }
 
     /**
-     * 'do select' discards arm values: a terminal 'return value;' evaluates
-     * its operand only and must not escape the enclosing callable. Nonterminal
-     * or nested returns are rejected rather than accidentally crossing
-     * function or asynchronous continuation boundaries.
+     * A statement-only arm never returns from its enclosing callable. A
+     * terminal 'return expression;' evaluates then discards the expression;
+     * terminal 'return;' simply finishes the arm. Only an arm-local terminal
+     * return is safe to lower this way: reject all earlier or nested returns.
+     *
+     * This shared lowering keeps do match, do select and do nb select aligned
+     * without weakening lexical returns in legacy match/select statements.
      */
-    private void lowerDoSelectArmReturns(List<Ast.Stmt> body) {
+    private void lowerDiscardedArmReturns(List<Ast.Stmt> body, String construct) {
         if (body.isEmpty()) return;
         for (int i = 0; i < body.size() - 1; i++) {
             if (containsNestedReturn(body.get(i))) {
-                throw error(previous(), "'do select' arm forbids earlier or nested returns; "
+                throw error(previous(), "'" + construct + "' arm forbids earlier or nested returns; "
                         + "use a single terminal arm-local return");
             }
         }
@@ -1426,7 +1433,7 @@ public final class Parser {
             if (returned.value() == null) body.remove(body.size() - 1);
             else body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
         } else if (containsNestedReturn(last)) {
-            throw error(previous(), "'do select' arm forbids nested returns");
+            throw error(previous(), "'" + construct + "' arm forbids nested returns");
         }
     }
 
@@ -2091,29 +2098,26 @@ public final class Parser {
                 // match. In 'do match ... over', the same arm-local return
                 // evaluates and discards its value, without returning from
                 // the enclosing function. Legacy matches preserve old behavior.
-                if ((valueContext && over) || discardResult) {
+                if (discardResult) {
+                    lowerDiscardedArmReturns(body, "do match");
+                    yieldsValue = false;
+                } else if (valueContext && over) {
                     boolean hasResult = !body.isEmpty()
                             && body.getLast() instanceof Ast.ReturnStmt last
                             && last.value() != null;
-                    if (valueContext && !hasResult) {
+                    if (!hasResult) {
                         throw error(previous(), "value-producing 'match ... over' arms must end "
                                 + "with an explicit 'return <value>;' statement");
                     }
-                    int checkedPrefix = hasResult ? body.size() - 1 : body.size();
-                    for (int i = 0; i < checkedPrefix; i++) {
+                    for (int i = 0; i < body.size() - 1; i++) {
                         if (containsNestedReturn(body.get(i))) {
                             throw error(previous(), "match arm forbids earlier or nested returns; "
                                     + "use one terminal arm-local return");
                         }
                     }
-                    if (hasResult) {
-                        Ast.ReturnStmt returned = (Ast.ReturnStmt) body.getLast();
-                        body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
-                    } else if (!body.isEmpty() && body.getLast() instanceof Ast.ReturnStmt) {
-                        throw error(previous(), "'return;' without a value is invalid in "
-                                + "'do match' arms; omit it to finish the arm");
-                    }
-                    yieldsValue = valueContext;
+                    Ast.ReturnStmt returned = (Ast.ReturnStmt) body.getLast();
+                    body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
+                    yieldsValue = true;
                 }
             } else {
                 if (valueContext && over) {
