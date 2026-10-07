@@ -618,14 +618,45 @@ public final class OwnershipChecker {
                     }
                     yield source;
                 }
+                case "proxy" -> {
+                    ValueInfo owned = checkExpr(argument, scope, true);
+                    if (owned.type == null || owned.type.isBorrow()) {
+                        throw error("rt proxy requires an owned class/struct value, not a borrow");
+                    }
+                    if (owned.type.name().equals("Proxy")) {
+                        throw error("rt proxy cannot wrap an existing Proxy<T>");
+                    }
+                    Ast.ClassDecl klass = findClass(owned.type.name());
+                    boolean dynamicStruct = owned.type.name().equals("DynamicStruct")
+                            && owned.type.arguments().size() == 1;
+                    if (klass == null && !dynamicStruct) {
+                        throw error("rt proxy currently accepts class instances or DynamicStruct<T>; got "
+                                + owned.type);
+                    }
+                    Ast.TypeRef proxyType =
+                            new Ast.TypeRef("Proxy", List.of(owned.type), false);
+                    yield new ValueInfo(proxyType, ValueKind.COPY, null);
+                }
                 default -> throw error("unknown runtime operation 'rt " + runtime.operation() + "'");
             };
         }
         if (expr instanceof Ast.AssignExpr assignment) {
+            boolean proxyTarget = assignment.target() instanceof Ast.MemberExpr member
+                    && isProxyReceiver(member.receiver(), scope)
+                    || assignment.target() instanceof Ast.IndexExpr indexed
+                    && isProxyReceiver(indexed.receiver(), scope);
             checkAssignmentTarget(assignment.target(), scope);
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
+            }
+            if (proxyTarget) {
+                // Moving into Proxy<T> transfers ownership into the synchronized
+                // domain. Do not also return a raw second owner from assignment.
+                return new ValueInfo(
+                        Ast.TypeRef.simple("void"),
+                        ValueKind.COPY,
+                        null);
             }
             return assigned;
         }
@@ -2500,6 +2531,9 @@ public final class OwnershipChecker {
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             return state != null && isProxyType(state.type);
+        }
+        if (receiver instanceof Ast.RuntimeCallExpr runtime) {
+            return runtime.operation().equals("proxy");
         }
         return receiver instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.NameExpr intrinsic
