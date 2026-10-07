@@ -5835,8 +5835,7 @@ public final class TypeChecker {
             }
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "
-                            + "use struct infer{...}, struct{field: Type,...}{...}, "
-                            + "or an explicit Map<K,V> collection");
+                            + "use struct infer{...} or struct{field: Type,...}{...}");
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
