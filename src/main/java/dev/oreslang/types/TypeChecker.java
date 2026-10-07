@@ -3207,6 +3207,7 @@ public final class TypeChecker {
             // generic environment. Flattening inherited fields here is unsafe:
             // a parent T must never be resolved as an unrelated child T.
             for (Ast.FieldDecl field : klass.fields()) {
+                if (field.isStatic()) continue;
                 Type fieldType = resolveSharedGeneric(
                         resolve(field.type(), classGenerics, nominal),
                         classBindings);
@@ -4102,6 +4103,7 @@ public final class TypeChecker {
 
         Set<String> localNames = new LinkedHashSet<>();
         for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic()) continue;
             if (!localNames.add(field.name())) {
                 throw new IllegalArgumentException(
                         "duplicate field '" + klass.name() + "." + field.name() + "'");
@@ -4133,7 +4135,11 @@ public final class TypeChecker {
             Named parentType = concreteParentType(parentRef, klass, concreteType);
             for (ResolvedField field : effectiveFieldTargets(parent, parentType, stack)) fields.putIfAbsent(field.field().name(), field);
         }
-        for (Ast.FieldDecl field : klass.fields()) fields.put(field.name(), new ResolvedField(klass, concreteType, field));
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (!field.isStatic()) {
+                fields.put(field.name(), new ResolvedField(klass, concreteType, field));
+            }
+        }
         stack.remove(klass);
         return List.copyOf(fields.values());
     }
@@ -4141,7 +4147,7 @@ public final class TypeChecker {
     private ResolvedField findFieldTarget(Ast.ClassDecl klass, Named concreteType, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.name().equals(name)) {
+            if (!field.isStatic() && field.name().equals(name)) {
                 seen.remove(klass);
                 return new ResolvedField(klass, concreteType, field);
             }
