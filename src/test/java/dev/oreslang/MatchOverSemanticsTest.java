@@ -50,6 +50,37 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
+    void returnMatchOverReturnsFromTheFunctionNotTheArm() throws Exception {
+        assertEquals("9\n8\n", run("""
+                fnc choose(bool flag): int {
+                  return match flag over
+                    true -> { return 9; }
+                    false -> { return 8; }
+                  end;
+                }
+                pub fnc main(): void {
+                  stdio.println(choose(true));
+                  stdio.println(choose(false));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void noReturnDiscardsIncompatibleBranchResultTypes() throws Exception {
+        assertEquals("done\n", run("""
+                pub fnc main(): void {
+                  match true no-return over
+                    true -> { return 4; }
+                    false -> { return "different"; }
+                  end
+                  stdio.println("done");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void exhaustivelyHandlesPresentValuePresentEmptyAndMissing() throws Exception {
         assertEquals("42\n-1\n-2\n", run("""
                 fnc classify(Option<Option<int>> entry): int {
