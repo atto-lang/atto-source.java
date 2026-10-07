@@ -455,59 +455,50 @@ final class OwnershipAndClosureTest {
 
 
     @Test
-    void moveOnlyClassFieldCannotBeAliasedByProjection() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        define class Child as
-                          pub let String value = "a";
-                        end
+    void ordinaryClassFieldProjectionIsAReadNotAnImplicitPartialMove() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Child as
+                  pub let String value = "a";
+                end
 
-                        define class Holder as
-                          pub val Child child = new Child();
-                        end
+                define class Holder as
+                  pub val Child child = new Child();
+                end
 
-                        fnc bad(): void {
-                          val Holder holder = new Holder();
-                          val Child alias = holder.child;
-                          alias.value = "alias";
-                          holder.child.value = "owner";
-                          return;
-                        }
-                        """)));
-        assertTrue(error.getMessage().contains("partial moves")
-                || error.getMessage().contains("move-only field"));
+                fnc ok(): void {
+                  val Holder holder = new Holder();
+                  val Child alias = holder.child;
+                  alias.value = "alias";
+                  holder.child.value = "owner";
+                  return;
+                }
+                """)));
     }
 
     @Test
-    void moveOnlyInferredStructFieldCannotBeAliasedByProjection() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        fnc bad(): void {
-                          val outer = obj{inner: obj{value: "a"}};
-                          val alias = outer.inner;
-                          alias.value = "alias";
-                          outer.inner.value = "owner";
-                          return;
-                        }
-                        """)));
-        assertTrue(error.getMessage().contains("partial moves")
-                || error.getMessage().contains("record field"));
+    void ordinaryRecordFieldProjectionIsAReadNotAnImplicitPartialMove() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): void {
+                  val outer = obj{inner: obj{value: "a"}};
+                  val alias = outer.inner;
+                  alias.value = "alias";
+                  outer.inner.value = "owner";
+                  return;
+                }
+                """)));
     }
 
     @Test
-    void moveOnlyIndexedElementCannotBeAliasedByProjection() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        fnc bad(): void {
-                          val items = arr[obj{value: "a"}];
-                          val alias = items[0];
-                          alias.value = "alias";
-                          items[0].value = "owner";
-                          return;
-                        }
-                        """)));
-        assertTrue(error.getMessage().contains("partial moves")
-                || error.getMessage().contains("indexed element"));
+    void ordinaryIndexedProjectionIsAReadNotAnImplicitPartialMove() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): void {
+                  val items = arr[obj{value: "a"}];
+                  val alias = items[0];
+                  alias.value = "alias";
+                  items[0].value = "owner";
+                  return;
+                }
+                """)));
     }
 
     @Test
