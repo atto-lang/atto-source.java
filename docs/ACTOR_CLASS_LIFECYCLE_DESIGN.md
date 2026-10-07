@@ -125,37 +125,37 @@ rejects with the cleanup failure.
   output streams. `done` observes the existing carrier-exit finalization
   barrier rather than just a return from `receive`.
 
-## Lexical scope / no ambient file access
+## Lexical scope / actor isolation boundary
 
-Actor and ordinary class methods must not implicitly resolve sibling file-level
-`main`, `helper`, modules, classes, or actor classes. Their own members are
-accessed through their lexical owner (normally `self`); dependencies must be
-explicitly imported.
+Ordinary modules and ordinary classes retain normal source-unit lexical
+visibility. They may refer to sibling functions, modules, classes, interfaces,
+and type aliases in the same file without artificial imports.
 
-For deliberate dependencies inside one already-loaded source unit, use a named
-same-unit import such as:
+Actor classes are the exception. A define actor, shared actor, isoactor, or
+untrusted actor is a hard executable dependency boundary. Actor fields,
+signatures, methods, lifecycle hooks, and lambdas may resolve only:
 
-```ores
-import module math from "@self";
-import class Helper from "@self";
-import fnc helper from "@self";
-```
+- actor-owned fields/methods and inherited actor members;
+- explicit imports from another source unit;
+- language/compiler/runtime intrinsics admitted by the actor's capability policy;
+- parameters and locals introduced inside the actor.
 
-`@self` is a lexical permission only. It never opens the filesystem, creates a
-second evaluator, copies an import graph, or creates another code image.
-Wildcard/aliased `@self` imports are rejected. Cross-file imports retain the
-normal linker/export rules.
+An actor cannot reach a sibling file-level helper, module, class, actor, interface,
+or type alias merely because it appears in the same source file. Move reusable
+actor dependencies to an importable source unit and import them explicitly.
+Same-file import escape hatches such as @self, ., or normalized aliases that
+resolve back to the current physical file are rejected.
 
-The type checker and evaluator both enforce unqualified callable, qualified
-module, sibling-class, actor-class, async/nlex declaration-origin, and direct
-construction/spawn namespace boundaries. Built-ins remain separately
-capability-checked; an explicit import never weakens isolate policy.
+The type checker and evaluator enforce the same boundary, and declaration origin
+survives async/nlex/lambda lowering so closures cannot launder ambient file
+access. Capability checks remain a separate layer: importing code never grants a
+private or untrusted actor authority that its execution policy forbids.
 
 ## Implementation sequencing / acceptance gates
 
-1. **This branch:** parse `define actor ... as ... end`; enforce class/module
-   lexical boundaries; support explicit named `@self` dependency permissions;
-   and add regression tests.
+1. **This branch:** parse `define actor ... as ... end`; enforce actor-only
+   lexical dependency boundaries while preserving ordinary same-file class/module
+   visibility; reject self-import escape hatches; and add regression tests.
 2. **Parser/type checker now recognize `spawn Worker()`** as a distinct intrinsic and type it as `ActorRef<Worker>`; `new Worker()` and constructor-style spawn arguments remain rejected. `ready`/`done`, mailbox `send`, actor-local `self.send`/`self.end`, and the reserved non-public `on_start(): void` shape are statically checked. **Execution lowering is still pending**; a startup hook must execute on the actor's own execution domain before `ready` settles.
 3. **Host substrate implemented in this branch:** `ActorRef.ready()` and
    `ActorRef.done()` expose runtime-only completion Futures. `ready()` schedules
