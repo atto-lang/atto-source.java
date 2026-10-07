@@ -64,6 +64,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final ThreadLocal<Boolean> ACTOR_BLOCKING_IMPLEMENTATION =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
     private record ActorExecutionContext(
@@ -84,6 +86,17 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
+    }
+
+    /**
+     * True only while actor guest code is executing on the virtual
+     * implementation thread used for a source-level blocking wait.
+     *
+     * <p>This is an implementation detail, not a new concurrency identity:
+     * the actor mailbox and scheduler remain the logical execution owner.</p>
+     */
+    public static boolean isActorBlockingImplementationThread() {
+        return Boolean.TRUE.equals(ACTOR_BLOCKING_IMPLEMENTATION.get());
     }
 
     public static boolean inActorExecution() {
@@ -4375,27 +4388,44 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void runBatch() {
-            ACTOR_CARRIER.set(Boolean.TRUE);
-            boolean carrierEntered = false;
-            boolean reschedule = false;
-            try {
-                synchronized (lifecycleLock) {
-                    // shutdownNow() may leave a queued executor task that races
-                    // with explicit queued-schedule cancellation. If shutdown
-                    // won that race, this task is an inert no-op.
-                    if (!scheduled.get()) return;
+            synchronized (lifecycleLock) {
+                // shutdownNow() may leave a queued dispatcher task that races
+                // explicit schedule cancellation. If shutdown won, this task
+                // is inert.
+                if (!scheduled.get()) return;
 
-                    if (stopped.get() || closed.get() || forceKillFenced) {
-                        scheduled.set(false);
-                        if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
-                        lifecycleLock.notifyAll();
-                        return;
-                    }
-
-                    carrierActive = true;
-                    carrierEntered = true;
+                if (stopped.get() || closed.get() || forceKillFenced) {
+                    scheduled.set(false);
+                    if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                    return;
                 }
 
+                // Hold the logical actor scheduling lease while the guest turn
+                // executes on a virtual implementation thread. This immediately
+                // frees the bounded dispatcher carrier even if readch/writech/
+                // await parks.
+                carrierActive = true;
+            }
+
+            try {
+                BLOCKING_IMPLEMENTATION_THREADS.execute(this::runBatchVirtual);
+            } catch (RejectedExecutionException rejected) {
+                synchronized (lifecycleLock) {
+                    carrierActive = false;
+                    scheduled.set(false);
+                    lifecycleLock.notifyAll();
+                }
+                fail(rejected);
+                throw rejected;
+            }
+        }
+
+        private void runBatchVirtual() {
+            ACTOR_CARRIER.set(Boolean.TRUE);
+            ACTOR_BLOCKING_IMPLEMENTATION.set(Boolean.TRUE);
+            boolean reschedule = false;
+            try {
                 turnExecutor.execute(this::runBatchEntered);
             } catch (Throwable failure) {
                 fail(failure);
@@ -4403,13 +4433,8 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                // The actor remains logically scheduled until the TurnExecutor
-                // returns. OresContext's executor leaves the TruffleContext in
-                // its own finally block, so clearing this bit any earlier lets
-                // shutdown/finalization race a carrier that still owns guest
-                // context state.
                 synchronized (lifecycleLock) {
-                    if (carrierEntered) carrierActive = false;
+                    carrierActive = false;
                     if (scheduled.get()) scheduled.set(false);
                     if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                     reschedule = !stopped.get()
@@ -4419,6 +4444,7 @@ public final class ActorRuntime implements AutoCloseable {
                             && !mailbox.isEmpty();
                     lifecycleLock.notifyAll();
                 }
+                ACTOR_BLOCKING_IMPLEMENTATION.remove();
                 ACTOR_CARRIER.remove();
                 if (reschedule) schedule();
             }
