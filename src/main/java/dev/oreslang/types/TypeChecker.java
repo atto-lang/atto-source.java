@@ -1130,6 +1130,9 @@ public final class TypeChecker {
                     Type bindingType = binding.rest()
                             ? objectDestructureRestType(source, selectedMembers)
                             : objectDestructureMemberType(source, binding.name());
+                    requireMutableReferentCompatible(
+                            bindingType, binding.mutableReferent(),
+                            "destructure binding '" + binding.name() + "'");
                     env.define(binding.name(), bindingType, binding.kind());
                 }
             }
@@ -1274,6 +1277,9 @@ public final class TypeChecker {
                                 element,
                                 "writech select value");
                     } else if (arm.bindingName() != null) {
+                        requireMutableReferentCompatible(
+                                element, arm.mutableReferent(),
+                                "select binding '" + arm.bindingName() + "'");
                         armEnv.define(
                                 arm.bindingName(),
                                 element,
@@ -1336,6 +1342,9 @@ public final class TypeChecker {
                 element = iterableElementType(iterable);
             }
             Env loopEnv = new Env(env);
+            requireMutableReferentCompatible(
+                    element, loop.mutableReferent(),
+                    "for-of binding '" + loop.bindingName() + "'");
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             env.restoreInitialization(afterIterable);
@@ -1971,6 +1980,10 @@ public final class TypeChecker {
                             }
                             validateLambdaArgument(
                                     call.arguments().get(i), expected, env, generics, self);
+                            requireMutableReferentCompatible(
+                                    actuals.get(i),
+                                    fn.mutableParameters().get(i),
+                                    "argument " + (i + 1) + " to mutable structural method parameter");
                             requireAssignable(
                                     actuals.get(i),
                                     expected,
@@ -2062,8 +2075,14 @@ public final class TypeChecker {
                                 for (int i = 0; i < fn.parameters().size(); i++) {
                                     validateLambdaArgument(
                                             call.arguments().get(i), fn.parameters().get(i), env, generics, self);
+                                    Type actualArgument =
+                                            typeOf(call.arguments().get(i), env, generics, self);
+                                    requireMutableReferentCompatible(
+                                            actualArgument,
+                                            fn.mutableParameters().get(i),
+                                            "argument " + (i + 1) + " to mutable function-valued field parameter");
                                     requireAssignable(
-                                            typeOf(call.arguments().get(i), env, generics, self),
+                                            actualArgument,
                                             fn.parameters().get(i),
                                             "argument " + (i + 1));
                                 }
@@ -2143,7 +2162,12 @@ public final class TypeChecker {
             if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
             for (int i = 0; i < fn.parameters().size(); i++) {
                 validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                requireAssignable(typeOf(call.arguments().get(i), env, generics, self), fn.parameters().get(i), "argument " + (i + 1));
+                Type actualArgument = typeOf(call.arguments().get(i), env, generics, self);
+                requireMutableReferentCompatible(
+                        actualArgument,
+                        fn.mutableParameters().get(i),
+                        "argument " + (i + 1) + " to mutable function parameter");
+                requireAssignable(actualArgument, fn.parameters().get(i), "argument " + (i + 1));
             }
             return fn.result();
         }
@@ -2959,8 +2983,31 @@ public final class TypeChecker {
         return null;
     }
 
+    private void requireMutableReferentCompatible(
+            Type type,
+            boolean mutableReferent,
+            String where) {
+        if (!mutableReferent) return;
+        Type concrete = deref(type);
+        if (concrete instanceof Record record && record.readOnly()) {
+            throw new IllegalArgumentException(
+                    where + " cannot request mutable access to a struct infer value; "
+                            + "inferred structs are permanently readonly");
+        }
+        if (concrete instanceof Union union
+                && union.options().stream().anyMatch(option ->
+                        deref(option) instanceof Record record && record.readOnly())) {
+            throw new IllegalArgumentException(
+                    where + " cannot request mutable access because the value may be a readonly struct infer record");
+        }
+    }
+
     private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
-        if (!binding.isDiscard()) env.define(binding.name(), type, binding.kind());
+        if (binding.isDiscard()) return;
+        requireMutableReferentCompatible(
+                type, binding.mutableReferent(),
+                "destructure binding '" + binding.name() + "'");
+        env.define(binding.name(), type, binding.kind());
     }
 
     private List<Type> sequenceDestructureTypes(Type source, List<Ast.DestructureBinding> bindings) {
@@ -5096,8 +5143,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
             }
             validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
+            Type actual = typeOfAgainstExpected(
+                    arguments.get(i), expected, env, callerGenerics, callerSelf);
+            requireMutableReferentCompatible(
+                    actual, params.get(i).mutable(),
+                    "argument " + (i + 1) + " to mutable parameter");
             requireAssignable(
-                    typeOfAgainstExpected(arguments.get(i), expected, env, callerGenerics, callerSelf),
+                    actual,
                     expected,
                     "argument " + (i + 1));
         }
