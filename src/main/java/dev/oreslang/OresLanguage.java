@@ -80,7 +80,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // A shared Engine + SHARED language policy lets Graal reuse this parsed root
         // and optimized code across trusted/private contexts. The root contains
         // only immutable program data; evaluator/module state lives in OresContext.
-        Ast.Program program = SharedCodeRegistry.process().checkedProgramIfLive(codeUnitId, text);
+        Ast.Program program = SharedCodeRegistry.process().checkedProgramIfLive(source);
         if (program == null) program = OresCompiler.parseAndTypeCheck(text);
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
