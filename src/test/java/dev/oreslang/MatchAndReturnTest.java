@@ -35,7 +35,7 @@ final class MatchAndReturnTest {
     void localReturnSuppliesValueWithoutExitingEnclosingCallable() throws Exception {
         assertEquals("11\n12\n", run("""
                 fnc choose(bool flag): int {
-                  const int value = match-and-return flag over
+                  val int value = match-and-return flag over
                     true -> { return 1; }
                     false -> { return 2; }
                   end;
