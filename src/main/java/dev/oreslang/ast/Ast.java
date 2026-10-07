@@ -365,8 +365,14 @@ public final class Ast {
             BindingKind bindingKind,
             TypeRef type,
             List<Annotation> annotations,
-            Expr initializer) implements Decl {
+            Expr initializer,
+            boolean mutableReferent) implements Decl {
         public FieldDecl { annotations = List.copyOf(annotations); }
+        public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
+                         List<Annotation> annotations, Expr initializer) {
+            this(name, visibility, bindingKind, type, annotations, initializer,
+                    bindingKind == BindingKind.VAL);
+        }
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type, Expr initializer) {
             this(name, visibility, bindingKind, type, List.of(), initializer);
         }
@@ -440,7 +446,13 @@ public final class Ast {
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
-    public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
+    /** Binding rebinding and mutable access to the referent are independent capabilities. */
+    public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
+                              boolean mutableReferent) implements Stmt {
+        public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) {
+            this(kind, declaredType, name, initializer, kind == BindingKind.VAL);
+        }
+    }
     public record DestructureBinding(BindingKind kind, String name, boolean rest) {
         public DestructureBinding(BindingKind kind, String name) {
             this(kind, name, false);
@@ -630,8 +642,12 @@ public final class Ast {
             Expr value,
             BindingKind bindingKind,
             String bindingName,
-            List<Stmt> body) {
+            List<Stmt> body,
+            boolean mutableReferent) {
         public SelectArm {
+            if (operation == ChannelOperation.DEFAULT && mutableReferent) {
+                throw new IllegalArgumentException("default select arm cannot carry mutable binding");
+            }
             body = List.copyOf(body);
             if (operation == ChannelOperation.DEFAULT) {
                 if (channel != null || value != null || bindingKind != null || bindingName != null) {
@@ -652,6 +668,11 @@ public final class Ast {
                     throw new IllegalArgumentException("write select arm cannot bind a read value");
                 }
             }
+        }
+        public SelectArm(ChannelOperation operation, Expr channel, Expr value,
+                         BindingKind bindingKind, String bindingName, List<Stmt> body) {
+            this(operation, channel, value, bindingKind, bindingName, body,
+                    bindingKind == BindingKind.VAL);
         }
     }
 
