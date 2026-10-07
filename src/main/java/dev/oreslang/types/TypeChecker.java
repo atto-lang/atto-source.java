@@ -1290,7 +1290,9 @@ public final class TypeChecker {
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             for (Ast.SelectArm arm : selected.arms()) {
                 env.restoreInitialization(before);
-                Env armEnv = new Env(env);
+                Env armEnv = selected.mode() == Ast.WaitMode.NONBLOCKING
+                        ? new Env(env, env.descendantsNonLexical(), true)
+                        : new Env(env);
                 if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
                     Type element = channelElementType(
                             typeOf(arm.channel(), env, generics, self),
@@ -2542,7 +2544,7 @@ public final class TypeChecker {
                     }
                     checkBlock(
                             channelOp.callbackBody(),
-                            new Env(env),
+                            new Env(env, env.descendantsNonLexical(), true),
                             generics,
                             Primitive.VOID,
                             self);
@@ -2665,7 +2667,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
-            Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical);
+            Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
@@ -3382,7 +3384,7 @@ public final class TypeChecker {
         requireAssignable(expectedParameter, declared, "mutex callback parameter " + param.name());
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
-        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
+        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
@@ -3411,7 +3413,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
-        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
+        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
             Type expectedParam = expected.parameters().get(i);
@@ -6346,11 +6348,27 @@ public final class TypeChecker {
     private static final class Env {
         private final Env parent;
         private final boolean descendantsNonLexical;
+        private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
-        private Env(Env parent) { this(parent, parent != null && parent.descendantsNonLexical); }
+        private Env(Env parent) {
+            this(
+                    parent,
+                    parent != null && parent.descendantsNonLexical,
+                    parent != null && parent.deferredCaptureBoundary);
+        }
         private Env(Env parent, boolean descendantsNonLexical) {
+            this(
+                    parent,
+                    descendantsNonLexical,
+                    parent != null && parent.deferredCaptureBoundary);
+        }
+        private Env(
+                Env parent,
+                boolean descendantsNonLexical,
+                boolean deferredCaptureBoundary) {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
+            this.deferredCaptureBoundary = deferredCaptureBoundary;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Type type, Ast.BindingKind kind) {
@@ -6367,7 +6385,17 @@ public final class TypeChecker {
         }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
-            return binding != null ? binding : parent == null ? null : parent.lookup(name);
+            if (binding != null) return binding;
+            if (parent == null) return null;
+            Binding inherited = parent.lookup(name);
+            if (deferredCaptureBoundary
+                    && inherited != null
+                    && inherited.hasUninitializedFields()) {
+                throw new IllegalArgumentException(
+                        "cannot capture partially initialized explicit struct '" + name
+                                + "' in deferred code; initialize all declared fields first");
+            }
+            return inherited;
         }
         private void replace(String name, Type type, Ast.BindingKind kind) {
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
