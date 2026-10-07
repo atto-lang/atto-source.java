@@ -1247,22 +1247,29 @@ public final class ActorRuntime implements AutoCloseable {
      * authority to stop siblings or unrelated actors.
      */
     public void endCurrentActor() {
-        endCurrentActor(null);
-    }
-
-    /**
-     * Gracefully terminate the current actor and optionally register one final
-     * synchronous cleanup action. The mailbox is sealed immediately, so no
-     * later receive turn can begin. The cleanup runs exactly once after the
-     * current turn body returns, while actor-local state is still alive, and
-     * before outputs close or done settles.
-     */
-    public void endCurrentActor(Runnable finalCleanup) {
         requireCallerRuntimeAffinity("end current actor");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "self.end is only valid during an actor execution turn");
+        }
+        cell.requestEnd(null);
+    }
+
+    /**
+     * Gracefully terminate the current actor and register one final synchronous
+     * cleanup action. This is the lowering target for self.endWithCleanup(...).
+     * The mailbox is sealed immediately, so no later receive turn can begin.
+     * Cleanup runs exactly once after the current turn body returns, while
+     * actor-local state is still alive, and before outputs close or done settles.
+     */
+    public void endCurrentActorWithCleanup(Runnable finalCleanup) {
+        Objects.requireNonNull(finalCleanup, "finalCleanup");
+        requireCallerRuntimeAffinity("end current actor with cleanup");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "self.endWithCleanup is only valid during an actor execution turn");
         }
         cell.requestEnd(finalCleanup);
     }
