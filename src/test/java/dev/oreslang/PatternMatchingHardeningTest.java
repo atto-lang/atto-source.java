@@ -16,39 +16,62 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class PatternMatchingHardeningTest {
     @Test
-    void lexerAndParserSeparateTypeTestsPatternsCasesAndArrowRoles() {
-        var tokens = new Lexer("is matches match when case default first switch").scan();
+    void matchAndSwitchUseContextualArmKeywordsAndSlimArrows() {
+        var tokens = new Lexer("is matches match when case default first switch on").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IS));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.MATCHES));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.MATCH));
-        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.WHEN));
-        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.CASE));
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("when")));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.DEFAULT));
-        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("first")),
-                "first is contextual in 'match first', not a globally reserved identifier");
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc bad(bool flag): void {
-                  if flag {
-                    return;
-                  }
-                }
-                """));
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("case")));
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("on")));
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("first")));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc good(bool flag): void {
-                  if flag {
-                    return;
-                  } fi
-                  return;
+                fnc contextualNames(): int {
+                  val int on = 1;
+                  val int case = 2;
+                  val int when = 3;
+                  return on + case + when;
                 }
                 """)));
 
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc contextualArms(int value): void {
+                  do select {
+                    when readch input: {
+                    }
+                    case writech output, value: {
+                    }
+                  }
+
+                  switch value
+                    case 1 -> {
+                      return;
+                    }
+                    default -> {
+                      return;
+                    }
+                  end
+                }
+
+                fnc guarded(int value): int {
+                  match value over
+                    on int n when n > 0 -> {
+                      return n;
+                    }
+                    on _ -> {
+                      return 0;
+                    }
+                  end
+                }
+                """));
+
         IllegalArgumentException fatMatch = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Option<int> value): void {
-                  match value
-                    Some(v) => { return; }
-                    None -> { return; }
+                  match value over
+                    on Some(v) => { return; }
+                    on None -> { return; }
                   end
                 }
                 """));
@@ -108,79 +131,96 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
-    void exclusiveMatchProvesConstructorsAndRejectsOverlaps() {
+    void orderedMatchUsesFirstMatchAndRejectsProvablyDeadLaterArms() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc valueOrZero(Option<int> value): int {
+                  match value over
+                    on Some(inner) -> { return inner; }
+                    on None -> { return 0; }
+                  end
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Animal as
+                end
+
+                define class Dog extends Animal as
+                end
+
+                fnc classify(Animal animal): int {
+                  match animal over
+                    on Dog dog -> { return 1; }
+                    on Animal any -> { return 2; }
+                  end
+                }
+                """)));
+
+        IllegalArgumentException unreachable = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Animal as
+                end
+
+                define class Dog extends Animal as
+                end
+
+                fnc classify(Animal animal): int {
+                  match animal over
+                    on Animal any -> { return 2; }
+                    on Dog dog -> { return 1; }
+                  end
+                }
+                """)));
+        assertTrue(unreachable.getMessage().contains("unreachable match arm"));
+    }
+
+    @Test
+    void orderedGuardsMayOverlapAndWildcardIsTheFallback() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(int n): int {
+                  match n over
+                    on int x when x >= 0 -> { return 1; }
+                    on int x when x <= 10 -> { return 2; }
+                    on _ -> { return 3; }
+                  end
+                }
+                """)));
+
+        IllegalArgumentException dead = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(int n): int {
+                  match n over
+                    on _ -> { return 1; }
+                    on int x -> { return x; }
+                  end
+                }
+                """)));
+        assertTrue(dead.getMessage().contains("unreachable match arm"));
+    }
+
+    @Test
+    void canonicalMatchRequiresOnAndExhaustivenessWhileLegacyMatchRemainsAccepted() {
+        // Compatibility: the pre-over statement grammar remains accepted so
+        // existing Oreslang does not break merely because canonical match
+        // gained explicit "over" / "on" boundaries.
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc legacy(Option<int> value): int {
                   match value
                     Some(inner) -> { return inner; }
-                    None -> { return 0; }
                   end
                 }
-                """)));
+                """));
 
-        IllegalArgumentException overlap = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define class Animal as
-                end
-
-                define class Dog extends Animal as
-                end
-
-                fnc classify(Animal animal): int {
-                  match animal
-                    is Dog dog -> { return 1; }
-                    is Animal any -> { return 2; }
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(Option<int> value): int {
+                  match value over
+                    Some(inner) -> { return inner; }
                   end
                 }
-                """)));
-        assertTrue(overlap.getMessage().contains("overlapping match arms"));
+                """));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Animal as
-                end
-
-                define class Dog extends Animal as
-                end
-
-                fnc classify(Animal animal): int {
-                  match first animal
-                    is Dog dog -> { return 1; }
-                    is Animal any -> { return 2; }
-                  end
-                }
-                """)));
-    }
-
-    @Test
-    void exclusiveMatchCanProveSimpleGuardPartitionsAndFallbackIsComplement() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc sign(int n): int {
-                  match n
-                    is int x when x < 0 -> { return -1; }
-                    is int x when x == 0 -> { return 0; }
-                    is int x when x > 0 -> { return 1; }
-                    else -> { return 99; }
-                  end
-                }
-                """)));
-
-        IllegalArgumentException overlap = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc ambiguous(int n): int {
-                  match n
-                    is int x when x >= 0 -> { return 1; }
-                    is int x when x <= 10 -> { return 2; }
-                    else -> { return 3; }
-                  end
-                }
-                """)));
-        assertTrue(overlap.getMessage().contains("overlapping match arms"));
-    }
-
-    @Test
-    void matchRequiresExhaustivenessWithoutFallback() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc incomplete(Option<int> value): int {
-                  match value
-                    Some(inner) -> { return inner; }
+                  match value over
+                    on Some(inner) -> { return inner; }
                   end
                 }
                 """)));
@@ -257,9 +297,9 @@ final class PatternMatchingHardeningTest {
                 }
 
                 fnc fromOption(Option<int> value): int {
-                  match value
-                    Some(inner) -> { return inner; }
-                    None -> { return 0; }
+                  match value over
+                    on Some(inner) -> { return inner; }
+                    on None -> { return 0; }
                   end
                 }
 
