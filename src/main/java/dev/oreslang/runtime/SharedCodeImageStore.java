@@ -21,12 +21,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class SharedCodeImageStore implements AutoCloseable {
 
-    public record CodeImage(String codeUnitId, Ast.Program program) {
-        public CodeImage {
+    /**
+     * Opaque capability minted only by this store. Callers may observe the
+     * immutable program identity but cannot manufacture a CodeImage that
+     * bypasses publication/provenance checks.
+     */
+    public static final class CodeImage {
+        private final String codeUnitId;
+        private final Ast.Program program;
+
+        private CodeImage(String codeUnitId, Ast.Program program) {
             if (Objects.requireNonNull(codeUnitId, "codeUnitId").isBlank()) {
                 throw new IllegalArgumentException("code unit id cannot be blank");
             }
-            Objects.requireNonNull(program, "program");
+            this.codeUnitId = codeUnitId;
+            this.program = Objects.requireNonNull(program, "program");
+        }
+
+        public String codeUnitId() { return codeUnitId; }
+        public Ast.Program program() { return program; }
+
+        @Override
+        public String toString() {
+            return "CodeImage[" + codeUnitId + "]";
         }
     }
 
