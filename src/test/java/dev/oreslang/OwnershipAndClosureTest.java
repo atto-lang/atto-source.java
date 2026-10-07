@@ -483,7 +483,7 @@ final class OwnershipAndClosureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc bad(): void {
-                          val outer = struct infer{inner: struct infer{value: "a"}};
+                          val outer = obj{inner: obj{value: "a"}};
                           val alias = outer.inner;
                           alias.value = "alias";
                           outer.inner.value = "owner";
@@ -499,7 +499,7 @@ final class OwnershipAndClosureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc bad(): void {
-                          val items = arr[struct infer{value: "a"}];
+                          val items = arr[obj{value: "a"}];
                           val alias = items[0];
                           alias.value = "alias";
                           items[0].value = "owner";
