@@ -560,7 +560,15 @@ public final class OwnershipChecker {
             return;
         }
 
+        boolean readonlyRecord = value.type.isReadonlyRecordType();
+        if (readonlyRecord && binding.mutableReferent()) {
+            throw error("struct infer values are closed and readonly; mutable bindings and mutable aliases are forbidden");
+        }
+
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
+        if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
+            storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -914,6 +922,13 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.ObjectExpr object) {
             boolean dynamic = false;
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            if (object.explicitStruct()) {
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    if (members.putIfAbsent(field.name(), field.type()) != null) {
+                        throw error("duplicate explicit struct field '" + field.name() + "'");
+                    }
+                }
+            }
             for (Ast.ObjectField field : object.fields()) {
                 if (field.isDynamic()) {
                     dynamic = true;
@@ -924,11 +939,13 @@ public final class OwnershipChecker {
                 }
                 ValueInfo info = checkExpr(field.value(), scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an object/map");
-                if (!field.isDynamic()) members.put(field.name(), info.type);
+                if (!field.isDynamic() && !object.explicitStruct()) members.put(field.name(), info.type);
             }
             Ast.TypeRef type = dynamic
                     ? new Ast.TypeRef("DynamicStruct", List.of(Ast.TypeRef.inferred()), false)
-                    : Ast.TypeRef.recordType(members);
+                    : object.inferredStruct()
+                        ? Ast.TypeRef.readonlyRecordType(members)
+                        : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
@@ -1367,6 +1384,10 @@ public final class OwnershipChecker {
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
             requireUsable(state, name.name(), true);
+            if (state.type.isReadonlyRecordType()) {
+                throw error("cannot mutate struct infer value '" + name.name()
+                        + "'; inferred structs are closed and readonly");
+            }
             if (isMutexGuardType(state.type)) return;
             boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
             if (!state.mutable && !mutableBorrow) {
@@ -1419,6 +1440,10 @@ public final class OwnershipChecker {
         VarState root = ownershipRoot(owner);
         if (root.moved) throw error("cannot borrow moved value '" + owner.debugName + "'");
         if (mutable) {
+            if (owner.type.isReadonlyRecordType()) {
+                throw error("cannot mutably borrow struct infer value '" + owner.debugName
+                        + "'; inferred structs are permanently readonly");
+            }
             if (!owner.mutable) throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
             if (root.mutableBorrowed || root.immutableBorrows > 0) throw error("cannot mutably borrow '" + owner.debugName + "' while another borrow is active");
         } else if (root.mutableBorrowed) {
