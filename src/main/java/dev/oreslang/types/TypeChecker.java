@@ -4964,6 +4964,9 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(item, classGenerics, klass, method);
             }
         } else if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.StructFieldSpec field : object.declaredFields()) {
+                rejectStaticClassGenericReference(field.type(), classGenerics, klass, method);
+            }
             for (Ast.ObjectField field : object.fields()) {
                 if (field.isDynamic()) {
                     rejectStaticClassGenericReferences(field.dynamicName(), classGenerics, klass, method);
