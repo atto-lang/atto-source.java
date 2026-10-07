@@ -4,6 +4,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.PureEffectChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -342,6 +343,50 @@ final class CallableModifierCompositionTest {
                   return multiply(2);
                 }
                 """));
+    }
+
+    @Test
+    void pureCallableProvenanceCannotBeLaunderedThroughLetReassignment() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> PureEffectChecker.check(Parser.parse("""
+                        fnc impure(): int {
+                          stdio.stdout.write("effect");
+                          return 2;
+                        }
+
+                        pure fnc bad(): int {
+                          let Fnc<int> callback = pure || -> int {
+                            return 1;
+                          };
+                          callback = impure;
+                          return callback();
+                        }
+                        """)));
+
+        assertTrue(
+                error.getMessage().contains("unproven-effect")
+                        || error.getMessage().contains("statically proven pure"),
+                error.getMessage());
+    }
+
+    @Test
+    void pureAliasProvenanceCannotBeLaunderedThroughLetReassignment() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> PureEffectChecker.check(Parser.parse("""
+                        pure fnc bad(List<int> values): void {
+                          let local = [1];
+                          local = values;
+                          local[0] = 2;
+                          return;
+                        }
+                        """)));
+
+        assertTrue(
+                error.getMessage().contains("state reachable")
+                        || error.getMessage().contains("outside"),
+                error.getMessage());
     }
 
     @Test
