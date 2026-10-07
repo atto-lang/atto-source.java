@@ -34,6 +34,13 @@ final class ActorContinuationCapacityTest {
                         return OresScheduler.done(null);
                     });
                     attempted.incrementAndGet();
+                    if (i < 1024) {
+                        assertTrue(context.self().isAlive(),
+                                "control slot " + (i + 1) + " must be accepted before the boundary");
+                    } else {
+                        assertFalse(context.self().isAlive(),
+                                "the exact 1025th continuation must synchronously fail-stop");
+                    }
                 }
             });
 
