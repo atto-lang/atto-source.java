@@ -116,29 +116,43 @@ final class CallableModifierCompositionTest {
     }
 
     @Test
-    void rhsPureTrapNlexModifiersComposeInEveryOrder() {
-        for (List<String> order : permutations("pure", "trap", "nlex")) {
-            String modifiers = String.join(" ", order);
-            Ast.Program program = Parser.parse("""
-                    fnc make(): void {
-                      const Fnc<int, Option<int>> guarded = %s |int value| -> int {
-                        return value + 1;
-                      };
-                      val Option<int> answer = guarded(41);
-                      return;
-                    }
-                    """.formatted(modifiers));
+    void rhsEffectModifiersComposeInEverySupportedCombinationAndOrder() {
+        List<List<String>> effectSets = List.of(
+                List.of("pure"),
+                List.of("trap"),
+                List.of("nlex"),
+                List.of("pure", "trap"),
+                List.of("pure", "nlex"),
+                List.of("trap", "nlex"),
+                List.of("pure", "trap", "nlex"));
 
-            Ast.FunctionDecl fn =
-                    (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
-            Ast.LambdaExpr lambda =
-                    (Ast.LambdaExpr) ((Ast.BindingStmt) fn.body().getFirst()).initializer();
-            assertTrue(lambda.pure(), modifiers);
-            assertTrue(lambda.trapped(), modifiers);
-            assertTrue(lambda.nonLexical(), modifiers);
+        int cases = 0;
+        for (List<String> effects : effectSets) {
+            for (List<String> order : permutations(effects.toArray(String[]::new))) {
+                cases++;
+                String modifiers = String.join(" ", order);
+                Ast.Program program = Parser.parse("""
+                        fnc make(): void {
+                          const guarded = %s |int value| -> int {
+                            return value + 1;
+                          };
+                          return;
+                        }
+                        """.formatted(modifiers));
 
-            assertDoesNotThrow(() -> OresCompiler.analyze(program), modifiers);
+                Ast.FunctionDecl fn =
+                        (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+                Ast.LambdaExpr lambda =
+                        (Ast.LambdaExpr) ((Ast.BindingStmt) fn.body().getFirst()).initializer();
+                assertEquals(effects.contains("pure"), lambda.pure(), modifiers);
+                assertEquals(effects.contains("trap"), lambda.trapped(), modifiers);
+                assertEquals(effects.contains("nlex"), lambda.nonLexical(), modifiers);
+
+                assertDoesNotThrow(() -> OresCompiler.analyze(program), modifiers);
+            }
         }
+
+        assertEquals(15, cases);
     }
 
     @Test
@@ -179,6 +193,20 @@ final class CallableModifierCompositionTest {
                   val int a = c();
                   val Option<int> b = v();
                   val int d = n();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void lambdaStyleNamedDeclarationsPreserveCallableEffectsAndTrapResult() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pure trap nlex fnc guarded = |int value| -> int {
+                  return value + 1;
+                }
+
+                fnc use(): void {
+                  val Option<int> result = guarded(41);
                   return;
                 }
                 """));
@@ -285,6 +313,12 @@ final class CallableModifierCompositionTest {
                     """.formatted(duplicate + " " + duplicate)));
 
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                    %s fnc %s bad(): int {
+                      return 1;
+                    }
+                    """.formatted(duplicate, duplicate)));
+
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                     fnc bad(): void {
                       const f = %s || -> int {
                         return 1;
@@ -343,6 +377,21 @@ final class CallableModifierCompositionTest {
                   return multiply(2);
                 }
                 """));
+    }
+
+    @Test
+    void pureMayCarryImpureFunctionValuesWithoutInvokingThem() {
+        assertDoesNotThrow(() -> PureEffectChecker.check(Parser.parse("""
+                fnc impure(): int {
+                  stdio.stdout.write("effect");
+                  return 2;
+                }
+
+                pure fnc carry(): void {
+                  val callback = impure;
+                  return;
+                }
+                """)));
     }
 
     @Test
