@@ -15,7 +15,7 @@ final class SourceActorOutputStreamExecutionTest {
     void sourceActorStreamsOrderedOutputsAndClosesAfterFinalization() throws Exception {
         String program = """
                 define actor Worker as
-                  receive(ActorMail<String> mail): void {
+                  pub run(): void {
                     self.send("hello");
                     self.send("world");
                     self.send("!");
@@ -27,7 +27,7 @@ final class SourceActorOutputStreamExecutionTest {
                 pub async routine main(): void {
                   val worker = spawn Worker();
                   await worker.ready;
-                  worker.send("go");
+                  worker.send.run();
 
                   val firstStep = await worker.outputs.next();
                   val first = firstStep.value.unwrap();
@@ -67,7 +67,7 @@ final class SourceActorOutputStreamExecutionTest {
     void forAwaitConsumesActorOutputsUntilActorFinalization() throws Exception {
         String program = """
                 define actor Worker as
-                  receive(ActorMail<String> mail): void {
+                  pub run(): void {
                     self.send("hello");
                     self.send("world");
                     self.send("!");
@@ -79,7 +79,7 @@ final class SourceActorOutputStreamExecutionTest {
                 pub async routine main(): void {
                   val worker = spawn Worker();
                   await worker.ready;
-                  worker.send("go");
+                  worker.send.run();
 
                   for await const output of worker.outputs {
                     stdio.stdout.write(output.value);
