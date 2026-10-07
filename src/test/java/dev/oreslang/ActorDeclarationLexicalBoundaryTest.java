@@ -405,4 +405,68 @@ final class ActorDeclarationLexicalBoundaryTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void explicitSelfImportsAdmitOnlyNamedSameUnitDependencies() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                import module internal from "@self";
+                import class Helper from "@self";
+                import fnc helper from "@self";
+
+                define module internal as
+                  pub fnc value(): int { return 7; }
+                end
+
+                fnc helper(): int { return 5; }
+
+                define class Helper as
+                  pub static fnc value(): int { return 3; }
+                end
+
+                define class Worker as
+                  pub run(): int {
+                    return internal.value() + Helper.value() + helper();
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void selfImportsNeverBecomeWildcardOrAliasBackdoors() {
+        IllegalArgumentException wildcard = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import module * as everything from "@self";
+
+                        define module internal as
+                          pub fnc value(): int { return 1; }
+                        end
+                        """)));
+        assertTrue(wildcard.getMessage().contains("@self"), wildcard.getMessage());
+
+        IllegalArgumentException alias = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import module internal as hidden from "@self";
+
+                        define module internal as
+                          pub fnc value(): int { return 1; }
+                        end
+                        """)));
+        assertTrue(alias.getMessage().contains("@self"), alias.getMessage());
+    }
+
+    @Test
+    void selfImportMustActuallyNameALocalDeclaration() {
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import class Missing from "@self";
+
+                        pub routine main(): void { return; }
+                        """)));
+        assertTrue(missing.getMessage().contains("does not match a local declaration"),
+                missing.getMessage());
+    }
+
 }
