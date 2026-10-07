@@ -267,7 +267,8 @@ final class ChannelSelectSyntaxTest {
     @Test
     void nonblockingWriteCallbackUsesTheSameChannelOperationSurface() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                actor fnc write(Channel<int> output): void {
+                actor fnc write(): void {
+                  val Channel<int> output = Channel.new<int>(1);
                   nb cb writech output, 42 || -> {
                     stdio.println("write complete");
                   };
