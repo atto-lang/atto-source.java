@@ -101,7 +101,7 @@ final class MatchAndReturnTest {
 
     @Test
     void ordinaryStatementMatchSupportsVoidCallbacksAndKeepsExecuting() throws Exception {
-        assertEquals("hit\\ncontinued\\n", run("""
+        assertEquals("hit\ncontinued\n", run("""
                 pub fnc main(): void {
                   match Some(5) over
                     Some(value) -> { stdio.println("hit"); }
