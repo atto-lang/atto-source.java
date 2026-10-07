@@ -1093,6 +1093,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean expressionContainsProxyCapability(Ast.Expr expr) {
             if (expr == null) return false;
+            if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                if (runtime.operation().equals("proxy")) return true;
+                for (Ast.Expr argument : runtime.arguments()) {
+                    if (expressionContainsProxyCapability(argument)) return true;
+                }
+                return false;
+            }
             if (expr instanceof Ast.CallExpr call) {
                 if (isRuntimeProxyIntrinsic(call)) return true;
                 if (call.callee() instanceof Ast.NameExpr name) {
@@ -5885,6 +5892,7 @@ public final class OresEvalRootNode extends RootNode {
                 // Copy values on this convergence branch, so returning the immutable
                 // scalar/value representation is an independent language-level copy.
                 case "copy" -> value;
+                case "proxy" -> createRuntimeProxy(value);
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
             };
