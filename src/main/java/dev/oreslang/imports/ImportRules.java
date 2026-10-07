@@ -51,7 +51,7 @@ public final class ImportRules {
 
     private static boolean isExplicitSelfPath(String path) {
         if ("@self".equals(path)) return true;
-        String unix = path.replace('\\\\', '/').trim();
+        String unix = path.replace('\\', '/').trim();
         boolean sawDot = false;
         for (String component : unix.split("/+", -1)) {
             if (component.isEmpty()) continue;
