@@ -1347,7 +1347,7 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
-        boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
+        boolean nonLexical = lambda.nonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
 
