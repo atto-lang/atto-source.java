@@ -848,6 +848,14 @@ public final class TypeChecker {
                 currentClassOwner = klass;
                 try {
                     Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                    requireReadonlyCapabilityPreserved(
+                            actual,
+                            fieldType,
+                            "field initializer " + klass.name() + "." + field.name());
+                    requireMutableReferentCompatible(
+                            actual,
+                            field.mutableReferent(),
+                            "field '" + klass.name() + "." + field.name() + "'");
                     requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
                 } finally {
                     currentClassOwner = previousClassOwner;
@@ -1024,7 +1032,18 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
-        if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
+        requireMutableReferentCompatible(
+                actual,
+                field.mutableReferent(),
+                "module binding '" + field.name() + "'");
+        if (field.type() != null) {
+            Type expected = resolve(field.type(), Set.of(), null);
+            requireReadonlyCapabilityPreserved(
+                    actual,
+                    expected,
+                    "initializer for module binding " + field.name());
+            requireAssignable(actual, expected, "initializer for " + field.name());
+        }
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -2585,8 +2604,14 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "duplicate explicit struct initializer field '" + field.name() + "'");
                     }
+                    Type actualField =
+                            typeOf(field.value(), env, generics, self);
+                    requireReadonlyCapabilityPreserved(
+                            actualField,
+                            expected,
+                            "explicit struct field '" + field.name() + "'");
                     requireAssignable(
-                            typeOf(field.value(), env, generics, self),
+                            actualField,
                             expected,
                             "explicit struct field '" + field.name() + "'");
                 }
@@ -3391,6 +3416,10 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
                         lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                requireReadonlyCapabilityPreserved(
+                        actual,
+                        expected.result(),
+                        "lambda expression body");
                 requireAssignable(actual, expected.result(), "lambda expression body");
             } else {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
