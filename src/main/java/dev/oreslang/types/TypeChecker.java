@@ -4290,7 +4290,13 @@ public final class TypeChecker {
             throw new IllegalArgumentException("inferred field '" + klass.name() + "." + field.name()
                     + "' requires an initializer");
         }
-        return typeOf(field.initializer(), new Env(null), generics, null);
+        Ast.ClassDecl previousClassOwner = currentClassOwner;
+        currentClassOwner = klass;
+        try {
+            return typeOf(field.initializer(), new Env(null), generics, null);
+        } finally {
+            currentClassOwner = previousClassOwner;
+        }
     }
 
     private void validateFieldLayout(Ast.ClassDecl klass) {
