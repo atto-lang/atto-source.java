@@ -81,4 +81,15 @@ final class ExplicitStructDefiniteInitializationTest {
                 """)));
     }
 
+    @Test
+    void deferCannotEstablishInitializationForFollowingCode() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): bool {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  defer point.ready = true;
+                  return point.ready;
+                }
+                """)));
+    }
+
 }
