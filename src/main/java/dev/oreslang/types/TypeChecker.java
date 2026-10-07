@@ -2922,6 +2922,7 @@ public final class TypeChecker {
             }
         } finally {
             currentClassOwner = previousClassOwner;
+            currentAsyncCallable = previousAsync;
         }
     }
 
@@ -2982,7 +2983,9 @@ public final class TypeChecker {
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         Ast.ClassDecl previousClassOwner = currentClassOwner;
+        boolean previousAsync = currentAsyncCallable;
         if (nonLexical) currentClassOwner = null;
+        currentAsyncCallable = lambda.async();
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
