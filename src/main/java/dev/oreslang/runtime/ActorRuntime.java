@@ -61,6 +61,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    private static final String CODE_DISPATCH_NONCE_KEY = "\u0000ores.dispatch.nonce";
+    private static final String CODE_DISPATCH_METHOD_KEY = "\u0000ores.dispatch.method";
+    private static final String CODE_DISPATCH_ARGS_KEY = "\u0000ores.dispatch.args";
+    private static final String CODE_DISPATCH_REQUEST_KEY = "\u0000ores.dispatch.request";
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
@@ -353,6 +357,9 @@ public final class ActorRuntime implements AutoCloseable {
     /** Read-only parent-observable streams retained until drained/runtime close. */
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
+    private record PendingCodeCall(ActorId actorId, OresFuture<Object> future) { }
+    private final Map<String, PendingCodeCall> pendingCodeCalls =
+            new ConcurrentHashMap<>();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
@@ -1143,6 +1150,20 @@ public final class ActorRuntime implements AutoCloseable {
      * initializeActor after the ActorContext is installed, and subsequent
      * mailbox turns receive that actor-owned state explicitly.</p>
      */
+    public record ActorDispatchRequest(
+            String methodName,
+            List<Object> arguments,
+            boolean expectsReply) {
+        public ActorDispatchRequest {
+            if (methodName == null || methodName.isBlank()) {
+                throw new IllegalArgumentException(
+                        "actor dispatch method name cannot be blank");
+            }
+            arguments = List.copyOf(
+                    Objects.requireNonNull(arguments, "arguments"));
+        }
+    }
+
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
@@ -1150,10 +1171,18 @@ public final class ActorRuntime implements AutoCloseable {
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
 
-        void receiveActor(
+        /**
+         * Single compiler/runtime-owned source-actor entrypoint.
+         *
+         * <p>User source never implements this method and never receives a raw
+         * mailbox envelope. The compiler selects one public actor endpoint,
+         * validates its closed signature, and this dispatcher invokes it
+         * against actor-owned state.</p>
+         */
+        OresFuture<Object> dispatchActor(
                 String actorTypeName,
                 ActorOwnedGuestState state,
-                ActorInboxMail<Object> mail,
+                ActorDispatchRequest request,
                 ActorContext<Object> context) throws Exception;
     }
 
@@ -4080,6 +4109,146 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     @SuppressWarnings("unchecked")
+    public void sendCodeActor(
+            ActorRef<Object> ref,
+            String methodName,
+            List<?> arguments) {
+        enqueueCodeActorDispatch(ref, methodName, arguments, null);
+    }
+
+    public OresFuture<Object> callCodeActor(
+            ActorRef<Object> ref,
+            String methodName,
+            List<?> arguments) {
+        Objects.requireNonNull(ref, "ref");
+        String requestId = UUID.randomUUID().toString();
+        OresFuture<Object> result =
+                new OresFuture<>(
+                        () -> true,
+                        () -> pendingCodeCalls.remove(requestId));
+        PendingCodeCall pending = new PendingCodeCall(ref.id(), result);
+        if (pendingCodeCalls.putIfAbsent(requestId, pending) != null) {
+            throw new IllegalStateException("duplicate actor call request id");
+        }
+        try {
+            enqueueCodeActorDispatch(ref, methodName, arguments, requestId);
+        } catch (Throwable failure) {
+            pendingCodeCalls.remove(requestId, pending);
+            result.failFromRuntime(failure);
+        }
+        return result;
+    }
+
+    private void enqueueCodeActorDispatch(
+            ActorRef<Object> ref,
+            String methodName,
+            List<?> arguments,
+            String requestId) {
+        Objects.requireNonNull(ref, "ref");
+        if (methodName == null || methodName.isBlank()) {
+            throw new IllegalArgumentException(
+                    "actor endpoint method name cannot be blank");
+        }
+        Objects.requireNonNull(arguments, "arguments");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        @SuppressWarnings("unchecked")
+        ActorCell<Object> cell =
+                (ActorCell<Object>) actors.get(ref.id());
+        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell.codeExecutor == null) {
+            throw new IllegalArgumentException(
+                    "typed endpoint dispatch requires a compiler-spawned source actor");
+        }
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put(CODE_DISPATCH_NONCE_KEY, cell.codeDispatchNonce);
+        envelope.put(CODE_DISPATCH_METHOD_KEY, methodName);
+        envelope.put(CODE_DISPATCH_ARGS_KEY, new ArrayList<>(arguments));
+        envelope.put(
+                CODE_DISPATCH_REQUEST_KEY,
+                requestId == null ? "" : requestId);
+        send(ref, Collections.unmodifiableMap(envelope));
+    }
+
+    private ActorDispatchRequest decodeCodeActorDispatch(
+            ActorCell<?> cell,
+            Object value) {
+        if (!(value instanceof Map<?, ?> map)
+                || map.size() != 4
+                || !Objects.equals(
+                        map.get(CODE_DISPATCH_NONCE_KEY),
+                        cell.codeDispatchNonce)) {
+            throw new SecurityException(
+                    "source actor mailbox accepts only compiler-generated endpoint dispatch");
+        }
+        Object method = map.get(CODE_DISPATCH_METHOD_KEY);
+        Object arguments = map.get(CODE_DISPATCH_ARGS_KEY);
+        Object request = map.get(CODE_DISPATCH_REQUEST_KEY);
+        if (!(method instanceof String methodName)
+                || methodName.isBlank()
+                || !(arguments instanceof List<?> rawArguments)
+                || !(request instanceof String requestId)) {
+            throw new SecurityException(
+                    "malformed compiler-generated actor endpoint dispatch");
+        }
+        List<Object> copied = new ArrayList<>(rawArguments.size());
+        copied.addAll(rawArguments);
+        return new ActorDispatchRequest(
+                methodName,
+                copied,
+                !requestId.isEmpty());
+    }
+
+    private String codeActorRequestId(
+            ActorCell<?> cell,
+            Object value) {
+        if (!(value instanceof Map<?, ?> map)
+                || !Objects.equals(
+                        map.get(CODE_DISPATCH_NONCE_KEY),
+                        cell.codeDispatchNonce)) {
+            return "";
+        }
+        Object request = map.get(CODE_DISPATCH_REQUEST_KEY);
+        return request instanceof String requestId ? requestId : "";
+    }
+
+    private void settleCodeActorCall(
+            String requestId,
+            Object result,
+            Throwable failure) {
+        if (requestId == null || requestId.isEmpty()) return;
+        PendingCodeCall pending = pendingCodeCalls.remove(requestId);
+        if (pending == null) return;
+        if (failure != null) {
+            pending.future().failFromRuntime(OresFuture.unwrap(failure));
+            return;
+        }
+        try {
+            pending.future().completeFromRuntime(freeze(result));
+        } catch (Throwable transportFailure) {
+            pending.future().failFromRuntime(transportFailure);
+        }
+    }
+
+    private void failPendingCodeCalls(
+            ActorId actorId,
+            Throwable failure) {
+        Throwable terminal = failure == null
+                ? new ActorTerminatedException(actorId, ActorKind.PRIVATE, null)
+                : failure;
+        for (Map.Entry<String, PendingCodeCall> entry
+                : List.copyOf(pendingCodeCalls.entrySet())) {
+            PendingCodeCall pending = entry.getValue();
+            if (pending.actorId().equals(actorId)
+                    && pendingCodeCalls.remove(entry.getKey(), pending)) {
+                pending.future().failFromRuntime(terminal);
+            }
+        }
+    }
+
     public <M> void send(ActorRef<M> ref, M message) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
@@ -5563,6 +5732,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCodeExecutor codeExecutor;
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
+        /**
+         * Per-actor unforgeable mailbox capability used only by compiler-owned
+         * typed endpoint dispatch. User source never observes this value.
+         */
+        private final String codeDispatchNonce = UUID.randomUUID().toString();
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
@@ -5868,6 +6042,11 @@ public final class ActorRuntime implements AutoCloseable {
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
+            failPendingCodeCalls(
+                    ref.id(),
+                    terminal == null
+                            ? new ActorTerminatedException(ref.id(), kind, null)
+                            : terminal);
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
                 // readiness rejection. Only a graceful stop-before-ready has
@@ -6204,11 +6383,50 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
-                                    codeExecutor.receiveActor(
-                                            codeActorType,
-                                            codeActorState,
-                                            sourceMail,
-                                            sourceContext);
+                                    ActorDispatchRequest request =
+                                            decodeCodeActorDispatch(
+                                                    this,
+                                                    sourceMail.value());
+                                    String requestId =
+                                            codeActorRequestId(
+                                                    this,
+                                                    sourceMail.value());
+                                    OresFuture<Object> completion =
+                                            Objects.requireNonNull(
+                                                    codeExecutor.dispatchActor(
+                                                            codeActorType,
+                                                            codeActorState,
+                                                            request,
+                                                            sourceContext),
+                                                    "source actor dispatcher returned null Future");
+                                    completion.whenCompleteRuntime(
+                                            (dispatchResult, dispatchFailure) ->
+                                                    settleCodeActorCall(
+                                                            requestId,
+                                                            dispatchResult,
+                                                            dispatchFailure));
+                                    Object terminalState =
+                                            completion.runtimeTerminalStateOrNull();
+                                    if (terminalState == null) {
+                                        suspendCurrentUserMailboxUntil(
+                                                completion);
+                                    } else {
+                                        Throwable dispatchFailure =
+                                                OresFuture.runtimeTerminalFailure(
+                                                        terminalState);
+                                        if (dispatchFailure != null) {
+                                            Throwable terminal =
+                                                    OresFuture.unwrap(
+                                                            dispatchFailure);
+                                            if (terminal instanceof RuntimeException runtime) {
+                                                throw runtime;
+                                            }
+                                            if (terminal instanceof Error error) {
+                                                throw error;
+                                            }
+                                            throw new RuntimeException(terminal);
+                                        }
+                                    }
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }
