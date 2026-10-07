@@ -1099,15 +1099,9 @@ public final class TypeChecker {
                         "struct infer values are closed and readonly; they cannot be bound with mutable referent access");
             }
 
-            Type declared = declaredAhead == null ? actual : declaredAhead;
-            if (actual instanceof Record actualRecord
-                    && actualRecord.readOnly()
-                    && declared instanceof Record declaredRecord
-                    && !declaredRecord.readOnly()) {
-                // A type annotation may constrain shape, but it cannot erase a
-                // value capability carried by struct infer.
-                declared = new Record(declaredRecord.members(), true);
-            }
+            Type declared = declaredAhead == null
+                    ? actual
+                    : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
@@ -1164,6 +1158,7 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
@@ -1473,6 +1468,7 @@ public final class TypeChecker {
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
+            requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
@@ -1516,7 +1512,7 @@ public final class TypeChecker {
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
-            Type narrowed = preserveReadonlyRecordCapability(source, target);
+            Type narrowed = overlayReadonlyCapabilities(source, target);
             return cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Named("Option", List.of(narrowed))
                     : narrowed;
@@ -2993,19 +2989,141 @@ public final class TypeChecker {
         return false;
     }
 
-    private Type preserveReadonlyRecordCapability(Type source, Type target) {
-        if (!containsReadonlyRecordCapability(source)) return target;
-        if (target instanceof Record record) {
-            return new Record(record.members(), true);
+    private Type overlayReadonlyCapabilities(Type actual, Type expected) {
+        if (actual instanceof Borrow actualBorrow && expected instanceof Borrow expectedBorrow) {
+            return new Borrow(
+                    overlayReadonlyCapabilities(actualBorrow.target(), expectedBorrow.target()),
+                    expectedBorrow.mutable());
         }
-        if (target instanceof Union union) {
-            return Types.unionOf(union.options().stream()
-                    .map(option -> option instanceof Record record
-                            ? new Record(record.members(), true)
-                            : option)
-                    .toList());
+        Type source = deref(actual);
+        Type target = deref(expected);
+
+        if (source instanceof Record sourceRecord && target instanceof Record targetRecord) {
+            Map<String, Type> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> entry : targetRecord.members().entrySet()) {
+                Type sourceMember = sourceRecord.members().get(entry.getKey());
+                members.put(
+                        entry.getKey(),
+                        sourceMember == null
+                                ? entry.getValue()
+                                : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
+            }
+            return new Record(members, sourceRecord.readOnly() || targetRecord.readOnly());
         }
-        return target;
+        if (source instanceof ListType sourceList && target instanceof ListType targetList) {
+            return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
+        }
+        if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
+                && sourceTuple.kind() == targetTuple.kind()
+                && sourceTuple.elements().size() == targetTuple.elements().size()) {
+            List<Type> elements = new ArrayList<>(targetTuple.elements().size());
+            for (int i = 0; i < targetTuple.elements().size(); i++) {
+                elements.add(overlayReadonlyCapabilities(
+                        sourceTuple.elements().get(i), targetTuple.elements().get(i)));
+            }
+            return new Tuple(elements, targetTuple.kind());
+        }
+        if (source instanceof Named sourceNamed && target instanceof Named targetNamed
+                && sourceNamed.name().equals(targetNamed.name())
+                && sourceNamed.arguments().size() == targetNamed.arguments().size()) {
+            List<Type> arguments = new ArrayList<>(targetNamed.arguments().size());
+            for (int i = 0; i < targetNamed.arguments().size(); i++) {
+                arguments.add(overlayReadonlyCapabilities(
+                        sourceNamed.arguments().get(i), targetNamed.arguments().get(i)));
+            }
+            return new Named(targetNamed.name(), arguments);
+        }
+        if (target instanceof Union targetUnion) {
+            List<Type> options = new ArrayList<>(targetUnion.options().size());
+            for (Type targetOption : targetUnion.options()) {
+                Type overlaid = targetOption;
+                if (source instanceof Union sourceUnion) {
+                    for (Type sourceOption : sourceUnion.options()) {
+                        if (typesMayOverlap(sourceOption, targetOption)) {
+                            overlaid = overlayReadonlyCapabilities(sourceOption, overlaid);
+                        }
+                    }
+                } else if (typesMayOverlap(source, targetOption)) {
+                    overlaid = overlayReadonlyCapabilities(source, targetOption);
+                }
+                options.add(overlaid);
+            }
+            return Types.unionOf(options);
+        }
+        if (source instanceof Function sourceFunction && target instanceof Function targetFunction
+                && sourceFunction.parameters().size() == targetFunction.parameters().size()) {
+            return new Function(
+                    targetFunction.parameters(),
+                    targetFunction.mutableParameters(),
+                    targetFunction.async(),
+                    overlayReadonlyCapabilities(sourceFunction.result(), targetFunction.result()));
+        }
+        return expected;
+    }
+
+    private boolean readonlyCapabilityErased(Type actual, Type expected) {
+        if (actual instanceof Borrow actualBorrow && expected instanceof Borrow expectedBorrow) {
+            return readonlyCapabilityErased(actualBorrow.target(), expectedBorrow.target());
+        }
+        Type source = deref(actual);
+        Type target = deref(expected);
+
+        if (source instanceof Record sourceRecord && target instanceof Record targetRecord) {
+            if (sourceRecord.readOnly() && !targetRecord.readOnly()) return true;
+            for (Map.Entry<String, Type> entry : targetRecord.members().entrySet()) {
+                Type sourceMember = sourceRecord.members().get(entry.getKey());
+                if (sourceMember != null
+                        && readonlyCapabilityErased(sourceMember, entry.getValue())) return true;
+            }
+            return false;
+        }
+        if (source instanceof ListType sourceList && target instanceof ListType targetList) {
+            return readonlyCapabilityErased(sourceList.element(), targetList.element());
+        }
+        if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
+                && sourceTuple.kind() == targetTuple.kind()
+                && sourceTuple.elements().size() == targetTuple.elements().size()) {
+            for (int i = 0; i < sourceTuple.elements().size(); i++) {
+                if (readonlyCapabilityErased(
+                        sourceTuple.elements().get(i), targetTuple.elements().get(i))) return true;
+            }
+            return false;
+        }
+        if (source instanceof Named sourceNamed && target instanceof Named targetNamed
+                && sourceNamed.name().equals(targetNamed.name())
+                && sourceNamed.arguments().size() == targetNamed.arguments().size()) {
+            for (int i = 0; i < sourceNamed.arguments().size(); i++) {
+                if (readonlyCapabilityErased(
+                        sourceNamed.arguments().get(i), targetNamed.arguments().get(i))) return true;
+            }
+            return false;
+        }
+        if (source instanceof Union sourceUnion) {
+            return sourceUnion.options().stream()
+                    .anyMatch(option -> readonlyCapabilityErased(option, target));
+        }
+        if (target instanceof Union targetUnion) {
+            return targetUnion.options().stream()
+                    .filter(option -> typesMayOverlap(source, option))
+                    .anyMatch(option -> readonlyCapabilityErased(source, option));
+        }
+        if (source instanceof Function sourceFunction && target instanceof Function targetFunction
+                && sourceFunction.parameters().size() == targetFunction.parameters().size()) {
+            if (readonlyCapabilityErased(sourceFunction.result(), targetFunction.result())) return true;
+            for (int i = 0; i < sourceFunction.parameters().size(); i++) {
+                if (readonlyCapabilityErased(
+                        targetFunction.parameters().get(i), sourceFunction.parameters().get(i))) return true;
+            }
+        }
+        return false;
+    }
+
+    private void requireReadonlyCapabilityPreserved(Type actual, Type expected, String where) {
+        if (readonlyCapabilityErased(actual, expected)) {
+            throw new IllegalArgumentException(
+                    where + " would erase struct infer readonly capability; "
+                            + "use a generic/capability-preserving type or an explicit mutable struct instead");
+        }
     }
 
     private void requireMutableReferentCompatible(
