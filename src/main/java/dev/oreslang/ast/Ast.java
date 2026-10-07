@@ -453,9 +453,16 @@ public final class Ast {
             this(kind, declaredType, name, initializer, kind == BindingKind.VAL);
         }
     }
-    public record DestructureBinding(BindingKind kind, String name, boolean rest) {
+    public record DestructureBinding(
+            BindingKind kind,
+            String name,
+            boolean rest,
+            boolean mutableReferent) {
+        public DestructureBinding(BindingKind kind, String name, boolean rest) {
+            this(kind, name, rest, kind == BindingKind.VAL);
+        }
         public DestructureBinding(BindingKind kind, String name) {
-            this(kind, name, false);
+            this(kind, name, false, kind == BindingKind.VAL);
         }
 
         public DestructureBinding {
@@ -468,7 +475,7 @@ public final class Ast {
         }
 
         public static DestructureBinding discard() {
-            return new DestructureBinding(BindingKind.VAL, "_", false);
+            return new DestructureBinding(BindingKind.CONST, "_", false, false);
         }
 
         public boolean isDiscard() {
@@ -572,13 +579,20 @@ public final class Ast {
             String bindingName,
             Expr iterable,
             boolean asyncIteration,
-            List<Stmt> body) implements Stmt {
+            List<Stmt> body,
+            boolean mutableReferent) implements Stmt {
         public ForOfStmt {
             body = List.copyOf(body);
             requireForOfBindingKind(bindingKind);
         }
+        public ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable,
+                         boolean asyncIteration, List<Stmt> body) {
+            this(bindingKind, bindingName, iterable, asyncIteration, body,
+                    bindingKind == BindingKind.VAL);
+        }
         public ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) {
-            this(bindingKind, bindingName, iterable, false, body);
+            this(bindingKind, bindingName, iterable, false, body,
+                    bindingKind == BindingKind.VAL);
         }
     }
 
@@ -619,9 +633,7 @@ public final class Ast {
     }
 
     private static void requireForOfBindingKind(BindingKind kind) {
-        if (kind != BindingKind.CONST && kind != BindingKind.LET) {
-            throw new IllegalArgumentException("for-of bindings require const or let");
-        }
+        if (kind == null) throw new IllegalArgumentException("for-of binding kind is required");
     }
 
     public record ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) implements Stmt {
