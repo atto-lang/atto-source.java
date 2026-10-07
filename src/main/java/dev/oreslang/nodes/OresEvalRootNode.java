@@ -723,20 +723,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Runnable actorEndCleanup(List<Object> args) {
-            if (args.size() > 1) {
+            if (args.size() != 1) {
                 throw new IllegalArgumentException(
-                        "self.end expects zero arguments or one final cleanup function");
+                        "self.endWithCleanup expects exactly one final cleanup function");
             }
-            if (args.isEmpty()) return null;
             if (!(args.getFirst() instanceof Invokable cleanup)) {
                 throw new IllegalArgumentException(
-                        "self.end cleanup must be a synchronous zero-argument function");
+                        "self.endWithCleanup cleanup must be a synchronous zero-argument function");
             }
             return () -> {
                 Object result = invoke(invokableInvocation(cleanup, List.of()));
                 if (result != null) {
                     throw new IllegalStateException(
-                            "self.end cleanup must return void");
+                            "self.endWithCleanup cleanup must return void");
                 }
             };
         }
@@ -3852,12 +3851,26 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
+                    if (!args.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "self.end expects no arguments; use self.endWithCleanup(...) for final cleanup");
+                    }
+                    return object.owner.invokableInvocation(
+                            ignored -> {
+                                object.owner.context.actors()
+                                        .endCurrentActor();
+                                return null;
+                            },
+                            List.of());
+                }
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && member.member().equals("endWithCleanup")) {
                     Runnable cleanup =
                             object.owner.actorEndCleanup(args);
                     return object.owner.invokableInvocation(
                             ignored -> {
                                 object.owner.context.actors()
-                                        .endCurrentActor(cleanup);
+                                        .endCurrentActorWithCleanup(cleanup);
                                 return null;
                             },
                             List.of());
@@ -5186,12 +5199,26 @@ public final class OresEvalRootNode extends RootNode {
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
+                        if (!args.isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "self.end expects no arguments; use self.endWithCleanup(...) for final cleanup");
+                        }
+                        return object.owner.invokableInvocation(
+                                ignored -> {
+                                    object.owner.context.actors()
+                                            .endCurrentActor();
+                                    return null;
+                                },
+                                List.of());
+                    }
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && methodCall.member().equals("endWithCleanup")) {
                         Runnable cleanup =
                                 object.owner.actorEndCleanup(args);
                         return object.owner.invokableInvocation(
                                 ignored -> {
                                     object.owner.context.actors()
-                                            .endCurrentActor(cleanup);
+                                            .endCurrentActorWithCleanup(cleanup);
                                     return null;
                                 },
                                 List.of());
