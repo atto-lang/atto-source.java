@@ -104,3 +104,46 @@ a handoff must never reset a logical task's quota.
    different physical carrier.
 7. **Fail closed.** Code without a resumable continuation may be checked or
    cancelled at a safepoint, but it must not pretend to have been suspended.
+
+
+## Control-lane capacity and fail-stop admission
+
+An actor reserves **1,024 continuation slots independently** of
+`IsolatePolicy.maxMailboxMessages()`. The counters for user envelopes,
+source continuations, and their sum must satisfy:
+
+```text
+0 <= queuedUserMessages <= maxMailboxMessages
+0 <= queuedContinuations <= 1024
+queuedMessages == queuedUserMessages + queuedContinuations
+```
+
+All changes are made atomically under the accounting lock. An already-full
+control lane cannot borrow an idle user-mailbox slot; conversely, 1,024
+queued continuations must not consume even one user-mailbox slot. A failed
+internal continuation enqueue fail-stops the actor. Dispatch, stop, cancel,
+and finalization must each release every acquired reservation exactly once.
+
+Actor execution-lease admission and retirement are also fallible
+invariants. Whether `beginTurn()`, `endTurn()`, or finalization throws,
+the carrier must clear `CURRENT_ACTOR_EXECUTION`, `currentActor`, and
+`ACTOR_CARRIER` in nested `finally` scopes. A rejected carrier must
+not retain ambient actor identity when reused.
+
+## Cancellation is not physical carrier revocation
+
+Structured stop immediately rejects new mailbox admissions and drains
+queued work. It does **not** instantaneously release a carrier that is
+already running guest code. Final actor termination must be delayed until
+that carrier has left the `TurnExecutor`/Truffle boundary and the
+single-writer lease is retired.
+
+## UNTRUSTED continuation quota dependency
+
+The runtime currently meters UNTRUSTED execution per physical actor batch;
+this is not yet a sufficient quota contract for arbitrary `await` and
+resumable source-task handoffs. In particular, fuel, elapsed wall time and
+cross-carrier CPU time must belong to the logical task before automatic
+preemption can be enabled for UNTRUSTED code (issue #402). The language
+currently rejects `rt cooperate` for UNTRUSTED actors, but that guard is
+**not** proof that all resumable `await` paths are quota-continuous.
