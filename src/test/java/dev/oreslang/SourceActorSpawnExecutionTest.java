@@ -74,6 +74,54 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void sharedActorsReuseCodeWithoutSharingMutableActorState() throws Exception {
+        String program = """
+                define actor Counter as
+                  let int count;
+
+                  on_start(): void {
+                    self.count = 0;
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.count = self.count + 1;
+                    self.send(self.count);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val left = spawn Counter();
+                  val right = spawn Counter();
+
+                  await left.ready;
+                  await right.ready;
+
+                  left.send("go");
+                  right.send("go");
+
+                  val leftOut = (await left.outputs.next()).value.unwrap();
+                  val rightOut = (await right.outputs.next()).value.unwrap();
+
+                  stdio.stdout.write(leftOut.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(rightOut.value);
+
+                  await left.done;
+                  await right.done;
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "1|1",
+                run(program, "source-shared-code-distinct-state.ores"),
+                "actors may share immutable code identity but never writable actor fields");
+    }
+
+    @Test
     void readyFailsWhenOnStartLeavesActorStateUninitialized() throws Exception {
         String program = """
                 define actor Worker as
