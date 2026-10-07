@@ -216,6 +216,7 @@ select_arm      = select_arm_keyword "readch" expression ":"
                 | select_arm_keyword "writech" expression "," expression ":"
                   { statement } ;
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
+(* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
 select_default  = "default" ":" { statement } ;
 
 (* In select_arm/select_default bodies, the next when/case/default or the closing
