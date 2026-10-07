@@ -597,4 +597,51 @@ final class ActorDeclarationLexicalBoundaryTest {
                 override.getMessage());
     }
 
+
+    @Test
+    void actorMailboxRejectsMutableClassInstancesBeforeRuntimeTransport() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Payload as
+                          val int value = 1;
+                        end
+
+                        define actor Worker as
+                          receive(ActorMail<Object> mail): void {
+                            self.end();
+                            return;
+                          }
+                        end
+
+                        pub routine main(): void {
+                          val worker = spawn Worker();
+                          worker.send(new Payload());
+                          return;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("cannot transport class instance 'Payload' by value"),
+                failure.getMessage());
+    }
+
+    @Test
+    void actorCannotPublishItsMutableSelfAsData() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<String> mail): void {
+                            self.send(self);
+                            self.end();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("concrete owned/sendable")
+                        || failure.getMessage().contains("actor instance"),
+                failure.getMessage());
+    }
+
 }
