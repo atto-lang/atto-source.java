@@ -3563,13 +3563,22 @@ public final class TypeChecker {
     private boolean matchProvablyExhaustive(
             List<Ast.MatchArm> arms, Type subject, Set<String> generics, Type self) {
         for (Ast.MatchArm arm : arms) {
-            if (arm.guard() != null) continue;
-            if (arm.pattern() instanceof Ast.WildcardPattern || arm.pattern() instanceof Ast.BindingPattern) return true;
-            if (arm.pattern() instanceof Ast.TypePattern typed) {
-                Type target = deref(resolve(typed.type(), generics, self));
-                if (assignable(subject, target)) return true;
+            if (arm.guard() == null
+                    && patternCoversType(arm.pattern(), subject, generics, self)) {
+                return true;
             }
         }
+
+        // Finite unions are exhaustively covered when every alternative is
+        // completely covered by at least one unguarded arm.
+        if (subject instanceof Union union) {
+            return union.options().stream().allMatch(option ->
+                    arms.stream().anyMatch(arm ->
+                            arm.guard() == null
+                                    && patternCoversType(
+                                            arm.pattern(), option, generics, self)));
+        }
+
         if (subject == Primitive.BOOL) {
             boolean yes = false, no = false;
             for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.LiteralPattern literal) {
@@ -3593,6 +3602,44 @@ public final class TypeChecker {
                 err |= c.constructor().equals("Err");
             }
             return ok && err;
+        }
+        return false;
+    }
+
+    private boolean patternCoversType(
+            Ast.Pattern pattern,
+            Type subject,
+            Set<String> generics,
+            Type self) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) {
+            return true;
+        }
+        if (pattern instanceof Ast.TypePattern typed) {
+            Type target = deref(resolve(typed.type(), generics, self));
+            return assignable(subject, target);
+        }
+        if (pattern instanceof Ast.StructuralPattern structural) {
+            Type resolved = deref(resolve(structural.target(), generics, self));
+            Record shape = structuralPatternShape(structural.target(), resolved, generics);
+            return assignable(subject, shape);
+        }
+        if (pattern instanceof Ast.TuplePattern tuplePattern
+                && subject instanceof Tuple tuple
+                && tuple.kind() == TupleKind.TUPLE
+                && tuple.elements().size() == tuplePattern.elements().size()) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                if (!patternCoversType(
+                        tuplePattern.elements().get(i),
+                        tuple.elements().get(i),
+                        generics,
+                        self)) return false;
+            }
+            return true;
+        }
+        if (pattern instanceof Ast.LiteralPattern literal
+                && subject instanceof StringLiteral stringLiteral
+                && literal.value() instanceof String value) {
+            return stringLiteral.value().equals(value);
         }
         return false;
     }
