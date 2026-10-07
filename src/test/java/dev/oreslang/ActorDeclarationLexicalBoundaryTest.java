@@ -626,4 +626,58 @@ final class ActorDeclarationLexicalBoundaryTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void actorBoundaryAlsoAppliesToFieldInitializersAndStaticFunctions() {
+        IllegalArgumentException fieldInitializer = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc helper(): int { return 7; }
+
+                        define actor Worker as
+                          let int value = helper();
+
+                          receive(ActorMail<String> mail): void {
+                            self.end();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(fieldInitializer.getMessage().contains("actor 'Worker'"),
+                fieldInitializer.getMessage());
+
+        IllegalArgumentException staticFunction = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc helper(): int { return 7; }
+
+                        define actor Worker as
+                          pub static fnc calculate(): int {
+                            return helper();
+                          }
+                        end
+                        """)));
+        assertTrue(staticFunction.getMessage().contains("actor 'Worker'"),
+                staticFunction.getMessage());
+    }
+
+    @Test
+    void actorBoundaryRejectsSameFileInterfacesInSignatures() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface Payload as
+                          fnc id(): int;
+                        end
+
+                        define actor Worker as
+                          pub consume(Payload payload): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("same-file interface 'Payload'"),
+                failure.getMessage());
+    }
+
 }
