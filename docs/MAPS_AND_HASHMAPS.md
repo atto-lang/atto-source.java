@@ -41,37 +41,45 @@ Use a single generic representation with no implicit nullable values. The keys a
 | `size()`, `isEmpty()` | `int`, `bool` | Number of entries / emptiness. |
 | `keys()`, `values()`, `entries()` | iterators/views | Explicit iteration; entry iteration yields tuples `(K,V)` under safe borrowing rules. |
 
-### Proposed explicit optional binding in conditions
+### Explicit Option pattern bindings (no implicit unwrap)
 
-**Preferred new syntax** (requires parser/type-checker/runtime work; not currently implemented):
+**Decision:** do **not** add `if val x = option then`. Oreslang must never treat an `Option<T>` expression as a Boolean condition or perform an invisible `Some` extraction. Binding a value must be syntactically inside the `Some(...)` constructor pattern.
+
+Currently documented pattern-matching syntax:
 
 ```ores
-if val count = counts.get("widget") then
-  // count: int, newly declared only in this success branch
+if counts.get("widget") matches Some(count) then
+  // Some(count) is a constructor PATTERN:
+  // count is a fresh lexical binding of type int in this branch
   stdio.println(count);
 else
-  // count is NOT in scope here
   stdio.println("missing");
 fi
 ```
 
-The `val` keyword is essential: it announces the introduction of a **new temporary lexical binding**, in the same spirit as `if x is type Foo f then`. This avoids accidentally treating `value` in `Some(value)` as a reference to a preexisting variable. It also avoids overload of `is` (which already has identity and nominal-type-test meanings).
-
-**Formal rule:** `if val name = expr then ... fi` requires `expr: Option<T>`; evaluate `expr` **exactly once**, enter the success branch iff it evaluates to `Some(x)`, and initialize `name: T` from that payload. `None` enters the `else` or following `elif` branch. The bound name exists **only** in the successful branch, not in `else`, other `elif` branches, or after `fi`. Do not interpret this as generalized truthiness or equality assignment, and reject non-`Option` expressions. The `let` spelling may later support explicit mutable local rebinding, but start with immutable `val`. Do not use `const`, whose ordinary initializer requirements differ.
-
-**Currently documented alternative** until the optional-binding condition syntax exists:
+A useful **future explicit-declaration spelling** is `Some(val count)` (not yet parsed). This makes the declaration visible in the pattern, analogously to `if animal is type Dog dog then`:
 
 ```ores
-if counts.get("widget") matches Some(count) then
-  // 'count' is an implicitly declared pattern variable, NOT a prior variable
+if counts.get("widget") matches Some(val count) then
+  // count: int, in scope here only
   stdio.println(count);
 fi
 ```
 
-Both forms perform one lookup and bind only on success. Their typing and scoping must be identical. The formatter should not claim the new syntax is active until the compiler actually supports it; once implemented, prefer the `if val` spelling for single-Option-binding map lookups.
+Here `Some` proves which Option variant matched and `val count` declares the *payload* name. `None` is not automatically unwrapped, coerced to `false`, or confused with a present `Some(false)`. Preserve bare `Some(count)` as a backward-compatible constructor-binding pattern; supporting explicit `val` inside constructor patterns requires grammar, checker, formatter and codegen changes.
 
-Note: Oreslang brace-form condition bodies **still require the final `fi`** under the current compiler contract, e.g. `if val count = map.get(key) { ... } fi` once optional-binding headers are implemented.
+For branches covering both variants, prefer exhaustively matching the Option:
 
+```ores
+match counts.get("widget")
+  Some(count) -> { stdio.println(count); }
+  None -> { stdio.println("missing"); }
+end
+```
+
+`Some(count)` introduces a *new* pattern-bound name in its successful arm, not a reference to an existing variable. A nested `Some(None)` is possible for `Option<Option<T>>` and remains distinct from outer `None`. Neither `get` nor `take` modifies the type of the original `Option`; explicit pattern matching yields a scoped payload binding. The scrutinee is evaluated exactly once; the payload name is unavailable in `else`, other arms, or after `fi`/`end`.
+
+Oreslang brace-form `if` bodies still require their closing `fi`, consistent with the existing parser.
 
 The new `in` syntax should be:
 
@@ -94,7 +102,7 @@ For `Map<K, Option<V>>`: `get(key): Option<Option<V>>`:
 
 Never conflate `None` with missing just because the stored value is itself an `Option`. No bare `null` or `undefined` sentinel and no truthiness test.
 
-A `has(key)` branch does **not** change the declared return type of `get(key)`. It is generally a two-lookup idiom and may race with mutation or become invalid after an alias call. Prefer `if val value = map.get(key) then ... fi` **after** the new optional-binding syntax is implemented (today the existing spelling is `if map.get(key) matches Some(value) then ... fi`). Optimizers may remove redundant lookups only when effect, ownership and version proofs justify doing so.
+A `has(key)` branch does **not** change the declared return type of `get(key)`. It is generally a two-lookup idiom and may race with mutation or become invalid after an alias call. Prefer explicit `if map.get(key) matches Some(value) then ... fi`. The value name is a pattern binding; do **not** implicitly unwrap `Option` with assignment in an `if` condition. Once implemented, `Some(val value)` can make the declaration unambiguous. Optimizers may remove redundant lookups only when effect, ownership and version proofs justify doing so.
 
 ### Ownership: critical prerequisite before implementing `get` for all V
 
@@ -125,24 +133,34 @@ The type-system and standard-library implementation must settle the exact safe b
 ### Removal and retrieval in the same action
 
 ```ores
-if val job = pending.take(jobId) then
-  // job: Job, now OWNED here; jobId no longer exists in pending
+if pending.take(jobId) matches Some(job) then
+  // job: Job, a new pattern binding with OWNED removed payload
+  // jobId no longer exists in pending
   process(job);
 else
   // No entry was removed.
 fi
 ```
 
+For an explicitly marked binder, a **future** syntax could be:
+```ores
+if pending.take(jobId) matches Some(val job) then
+  process(job);
+fi
+```
+
+The type of `pending.take(jobId)` remains `Option<Job>`. Only `Some(...)` introduces the payload variable.
+
 Exactly one hash probe and one mutation (modulo implementation details); do **not** implement as `has` plus `get` plus `remove`. The returned `Some(job)` owns the removed value, so non-`Copy` values are legal if ownership transfer is permitted. `map.remove(key)` is also remove-and-return, with identical type/semantics. In an actor-owned mutable map the operation is indivisible with respect to that actor's serialized turns; a future concurrent map must define its own linearizability contract, not assume an actor guarantee.
 
 ```ores
 val maybeJob: Option<Job> = pending.take(jobId);
-// Plain extraction is an Option; conditional binding is only syntactic sugar.
+// The result remains an Option; extraction requires an explicit Some pattern or unwrap.
 ```
 
-For `MutableMap<K, Option<V>>`, a successful removal of a stored `None` is `Some(None)`; it is *not* a missing key. A binding `if val v = map.take(k) then` succeeds for `Some(None)` and binds `v: Option<V>` equal to `None`.
+For `MutableMap<K, Option<V>>`, a successful removal of a stored `None` is `Some(None)`; it is *not* a missing key. A pattern `if map.take(k) matches Some(v) then` succeeds for `Some(None)` and binds `v: Option<V>` equal to `None`. An explicit pattern spelling `Some(val v)` is proposed but not implemented.
 
-**Negative cases the compiler must reject:** (1) calling `take` on a read-only `Map`, (2) moving a value while an outstanding borrow/iterator references that slot, (3) letting a nonescaping borrow escape through an `if val` binding, (4) using the `val` binding in `else` or after `fi`, and (5) treating `Option<bool>` payload `false` as absence.
+**Negative cases the compiler must reject:** (1) calling `take` on a read-only `Map`, (2) moving a value while an outstanding borrow/iterator references that slot, (3) letting a nonescaping borrow escape through an Option pattern binding, (4) using a pattern-bound name in `else` or after `fi`, (5) treating `Option<bool>` payload `false` as absence, and (6) treating `if val v = map.get(k) then` as an implicit Option test/unwrap.
 
 Keep a clear distinction: mutable `HashMap.set` mutates, whereas future immutable/persistent `ImmutableMap.put` returns a **new** map leaving the old map unchanged. `Map` read-only interfaces must not accidentally expose mutation via aliases.
 
@@ -161,7 +179,7 @@ Do not advertise the conditional insert operation as globally atomic. For an act
 
 ### Parser / formatter / testing worklist
 
-1. Add `key in map` parsing, precedence, AST, static type checking, bytecode/native lowering and formatter, with tests for `for ... of` and identifiers named `in`. Add **explicit Option conditional binding** (`if val name = expression then ... fi`) with dedicated scope/CFG handling, no truthiness and exactly-once expression evaluation.
+1. Add `key in map` parsing, precedence, AST, static type checking, bytecode/native lowering and formatter, with tests for `for ... of` and identifiers named `in`. Preserve explicit Option patterns (`if expression matches Some(name) then ... fi`) with dedicated scope/CFG handling and exactly-once expression evaluation; consider optional explicit declaration syntax `Some(val name)` for constructor patterns, but **never** an implicit `if val name = option` unwrap.
 2. Add `Map`/ `MutableMap` interface resolution and `HashMap` intrinsic or stdlib implementation. Do not treat a host Java `Map` as the normative language behavior.
 3. Prove `get` returns `Option` and never takes ownership of a non-Copy map value accidentally. Explicitly negative-test escaping borrows and actors.
 4. Test absent/present, `Some(None)`, false/zero/empty-string stored values, replacement and removal ownership, hash collisions, unstable mutated keys, and custom `Eq/Hash`; specifically test `take`/`remove` as a single remove-and-return action and invalidated borrows.
