@@ -1933,6 +1933,37 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * A selected branch is a source block, not an exception boundary. Run
+         * it on the resumable source frame so RETURN/BREAK/CONTINUE propagate
+         * as SourceFlow rather than escaping as host RuntimeExceptions.
+         * Explicit do-select suppresses only the arm-local RETURN; errors,
+         * cancellation and other failures still propagate.
+         */
+        private void runSelectedArmSuspendable(
+                SourceTask task,
+                Ast.SelectStmt select,
+                ChannelRuntime.SelectResult selected,
+                Env parent,
+                SourceFlowCont continuation) {
+            if (selected.index() < 0 || selected.index() >= select.arms().size()) {
+                continuation.accept(task, SourceFlow.throwing(
+                        new IllegalStateException("selected arm index is out of range")));
+                return;
+            }
+            Ast.SelectArm arm = select.arms().get(selected.index());
+            Env armEnv = new Env(parent);
+            if (arm.operation() == Ast.ChannelOperation.READ
+                    && arm.bindingName() != null) {
+                armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
+            }
+            runBlock(task, arm.body(), armEnv, (t, flow) ->
+                    continuation.accept(t,
+                            select.explicitDo() && flow.kind() == SourceFlowKind.RETURN
+                                    ? SourceFlow.normal()
+                                    : flow));
+        }
+
         private void runSelectSuspendable(
                 SourceTask task,
                 Ast.SelectStmt select,
@@ -1950,13 +1981,8 @@ public final class OresEvalRootNode extends RootNode {
                     if (result.isEmpty()) {
                         continuation.accept(task, SourceFlow.normal());
                     } else {
-                        executeSelectedArm(
-                                select,
-                                result.get(),
-                                env,
-                                false,
-                                false);
-                        continuation.accept(task, SourceFlow.normal());
+                        runSelectedArmSuspendable(
+                                task, select, result.get(), env, continuation);
                     }
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(
@@ -2004,13 +2030,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (future.isDone()) {
                 try {
-                    executeSelectedArm(
-                            select,
+                    runSelectedArmSuspendable(
+                            task, select,
                             (ChannelRuntime.SelectResult) future.join(),
-                            env,
-                            false,
-                            false);
-                    continuation.accept(task, SourceFlow.normal());
+                            env, continuation);
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(
                             task,
@@ -2030,15 +2053,10 @@ public final class OresEvalRootNode extends RootNode {
                             return;
                         }
                         try {
-                            executeSelectedArm(
-                                    select,
+                            runSelectedArmSuspendable(
+                                    t, select,
                                     (ChannelRuntime.SelectResult) value,
-                                    env,
-                                    false,
-                                    false);
-                            continuation.accept(
-                                    t,
-                                    SourceFlow.normal());
+                                    env, continuation);
                         } catch (RuntimeException | Error selectFailure) {
                             continuation.accept(
                                     t,
@@ -4597,7 +4615,11 @@ public final class OresEvalRootNode extends RootNode {
             if (!detached) {
                 if (selected.explicitDo()) {
                     try {
-                        executeBlock(arm.body(), armEnv, tailBarrier);
+                        // Return values are discarded, so this arm must be a
+                        // tail-call barrier even when the caller is in tail
+                        // position. Otherwise 'return fn();' escapes as a
+                        // TailCallSignal and hijacks the enclosing callable.
+                        executeBlock(arm.body(), armEnv, true);
                     } catch (ReturnSignal ignored) {
                         // Do-select return is arm-local; expression evaluated, value discarded.
                     }
