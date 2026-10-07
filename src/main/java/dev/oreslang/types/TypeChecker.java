@@ -872,6 +872,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
+            if (field.isStatic() && field.initializer() == null) {
+                throw new IllegalArgumentException(
+                        "static field '" + klass.name() + "." + field.name()
+                                + "' requires an initializer; static storage is not initialized by instance constructors");
+            }
             Type fieldType = classFieldType(klass, field);
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
