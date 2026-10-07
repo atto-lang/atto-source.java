@@ -128,6 +128,48 @@ type semantics.
 
 See `NATIVE_RUNTIME_ABI.md` for the native/JNI boundary.
 
+## Explicit arm-local return matches
+
+The optional, contextual `match-and-return` spelling is a value-producing
+expression with *explicit* branch results. Unlike a normal `return` statement,
+its arm's terminal `return value;` completes **only the match expression**;
+the enclosing function continues afterward.
+
+```ores
+fnc classify(Option<Option<int>> entry): int {
+  val int answer = match-and-return entry over
+    Some(Some(value)) -> { return value; }
+    Some(None) -> { return -1; }
+    None -> { return -2; }
+  end;
+  return answer + 10;
+}
+```
+
+`match-and-return` is a single hyphenated contextual operator; spaces around
+its hyphens do not produce the operator. It permits `match first`-style
+ordering only when priority matching is explicitly requested separately.
+Both `over ... end` and braced-match delimiters are supported. Arm bodies
+**must** be braced, must end in a top-level `return <value>;`, and cannot use
+implicit final-expression results. `return;`, missing terminal returns, and
+unbraced result expressions are errors. The `return` is lowered to the result
+expression of the existing typed `MatchExpr`; it is not a new function exit
+or an implicit closure. Earlier direct `return` statements in the same arm
+are rejected. Any earlier control-flow statement that exits the enclosing
+callable retains its own existing lexical semantics.
+
+All branches remain subject to the same exclusivity, recursive
+`Option`/`Result` exhaustiveness, result-type compatibility, ownership, and
+capability checks. A fallback after full coverage is unreachable. `Some(inner)`
+covers *both* inner Option variants; `Some(Some(x))` does not.
+
+The statement form `match subject over ... end` is still a side-effecting
+statement, not a value assigned to a variable. The historical expression form
+`match subject { pattern -> expression ... }` remains accepted on this
+stack's compatibility branch; `match-and-return` deliberately requires
+explicit arm returns rather than implicit expression-block values. Neither
+form interprets `||` as a wildcard pattern.
+
 ## Value-producing matches
 
 Both brace-delimited and `match ... end` forms accept value-producing arms:
