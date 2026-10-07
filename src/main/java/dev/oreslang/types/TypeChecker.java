@@ -1002,6 +1002,20 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Methods have a lexical receiver scope, not ambient access to unrelated
+     * file/module callables. Imports are resolved separately from this fallback.
+     * This intentionally applies to ordinary classes and actor classes alike.
+     */
+    private void rejectImplicitClassCallable(String name) {
+        if (currentClassOwner != null) {
+            throw new IllegalArgumentException(
+                    "class '" + currentClassOwner.name() + "' cannot implicitly access "
+                            + "file/module callable '" + name + "'; declare an explicit import "
+                            + "or invoke a method through self");
+        }
+    }
+
     private Env moduleBindingEnv(String moduleName) {
         Env env = new Env(null);
         Ast.ModuleDecl module = modules.get(moduleName);
@@ -1319,6 +1333,7 @@ public final class TypeChecker {
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
+                rejectImplicitClassCallable(name.name());
                 if (fn.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException("actor callable '" + fn.name()
                             + "' is an actor entry point, not an ordinary function value; spawn it through the actor runtime");
@@ -1525,6 +1540,7 @@ public final class TypeChecker {
                     && env.lookup(functionName.name()) == null) {
                 Ast.FunctionDecl target = findFunction(functionName.name(), call.arguments().size());
                 if (target != null) {
+                    rejectImplicitClassCallable(functionName.name());
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
