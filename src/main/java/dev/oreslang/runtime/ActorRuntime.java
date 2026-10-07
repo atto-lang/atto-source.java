@@ -789,16 +789,27 @@ public final class ActorRuntime implements AutoCloseable {
     private record MessageEnvelope(
             Object value,
             Runnable release,
-            Runnable continuation) implements AutoCloseable {
-        private static MessageEnvelope message(Object value, Runnable release) {
-            return new MessageEnvelope(value, release, null);
+            Runnable continuation,
+            ActorId sender,
+            long sequence) implements AutoCloseable {
+        private static MessageEnvelope message(
+                Object value,
+                Runnable release,
+                ActorId sender,
+                long sequence) {
+            if (sequence < 0) {
+                throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
+            }
+            return new MessageEnvelope(value, release, null, sender, sequence);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
             return new MessageEnvelope(
                     null,
                     null,
-                    Objects.requireNonNull(continuation, "continuation"));
+                    Objects.requireNonNull(continuation, "continuation"),
+                    null,
+                    -1L);
         }
 
         private boolean isContinuation() {
@@ -931,6 +942,31 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Immutable metadata for one admitted actor mailbox message.
+     *
+     * <p>The payload has already crossed the runtime transport boundary:
+     * private/untrusted actors observe an isolated copy, while shared actors
+     * observe a deeply frozen/sendable graph. This envelope is the runtime
+     * substrate for the future source-level ActorMail<T> type and is distinct
+     * from the ActorGroup Mailman ActorMail record.</p>
+     */
+    public record ActorInboxMail<M>(
+            ActorId recipient,
+            Optional<ActorId> sender,
+            long sequence,
+            M value) {
+        public ActorInboxMail {
+            Objects.requireNonNull(recipient, "recipient");
+            sender = sender == null ? Optional.empty() : sender;
+            Objects.requireNonNull(sender, "sender");
+            if (sequence < 0) {
+                throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
+            }
+            Objects.requireNonNull(value, "actor mailbox values cannot be null; use Option<T>");
+        }
+    }
+
     @FunctionalInterface
     public interface Behavior<M> {
         void onMessage(M message, ActorContext<M> context) throws Exception;
@@ -961,6 +997,14 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /**
+         * Current admitted mailbox envelope, present only while onMessage is
+         * executing. Startup/factory code has no current mail.
+         */
+        default Optional<ActorInboxMail<M>> currentMail() {
+            return Optional.empty();
+        }
 
         /**
          * Resolve a group the current actor has already joined. ActorGroupId is
@@ -3304,7 +3348,8 @@ public final class ActorRuntime implements AutoCloseable {
             release = () -> cell.releaseSharedMailbox(bytes);
         }
 
-        MessageEnvelope envelope = MessageEnvelope.message(prepared, release);
+        ActorId sender = currentActorId().orElse(null);
+        MessageEnvelope envelope = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
         try {
@@ -3322,9 +3367,13 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor " + ref.id()
                                         + " is fenced while force cancellation is pending");
                     }
+                    long sequence = cell.nextUserMessageSequence;
+                    envelope = MessageEnvelope.message(
+                            prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
+                    cell.nextUserMessageSequence = Math.addExact(sequence, 1L);
                     mailboxSlotTransferred = true;
                     admitted = true;
                     commitSharedMutexBindings(sharedMutexReservations);
@@ -3333,7 +3382,8 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             if (!admitted) {
                 abortSharedMutexBindings(sharedMutexReservations);
-                envelope.close();
+                if (envelope != null) envelope.close();
+                else release.run();
             }
         }
         cell.schedule();
@@ -4705,6 +4755,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object mailboxAccountingLock = new Object();
         private int queuedMessages;
         private int queuedUserMessages;
+        private long nextUserMessageSequence;
+        private ActorInboxMail<M> activeMail;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -5040,6 +5092,9 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
+                    @Override public Optional<ActorInboxMail<M>> currentMail() {
+                        return Optional.ofNullable(activeMail);
+                    }
                 };
 
                 if (behavior == null) {
@@ -5086,7 +5141,17 @@ public final class ActorRuntime implements AutoCloseable {
                         if (envelope.isContinuation()) {
                             envelope.continuation().run();
                         } else {
-                            behavior.onMessage((M) envelope.value(), context);
+                            ActorInboxMail<M> mail = new ActorInboxMail<>(
+                                    ref.id(),
+                                    Optional.ofNullable(envelope.sender()),
+                                    envelope.sequence(),
+                                    (M) envelope.value());
+                            activeMail = mail;
+                            try {
+                                behavior.onMessage(mail.value(), context);
+                            } finally {
+                                activeMail = null;
+                            }
                         }
                         if (isPrivateKind(kind) && !trustedFactory) {
                             // Private state that survives a mailbox turn must
