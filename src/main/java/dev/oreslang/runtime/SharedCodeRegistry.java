@@ -11,7 +11,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
-import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.Objects;
@@ -37,7 +36,6 @@ public final class SharedCodeRegistry {
     private static final SharedCodeRegistry PROCESS = new SharedCodeRegistry();
 
     private final Map<Key, Entry> images = new HashMap<>();
-    private final IdentityHashMap<Source, Entry> imagesBySource = new IdentityHashMap<>();
     private final Set<Key> adversarialShareAllowlist = new HashSet<>();
 
     /** This registry is owned by the supervisor, never exposed to guest code. */
@@ -108,7 +106,6 @@ public final class SharedCodeRegistry {
                     .buildLiteral();
             entry = new Entry(key, source, sourceText);
             images.put(key, entry);
-            imagesBySource.put(source, entry);
         } else if (!entry.originalText.equals(sourceText)) {
             // Never accept digest equivalence as authority to execute different
             // text. A cryptographic collision must fail closed.
@@ -156,33 +153,22 @@ public final class SharedCodeRegistry {
     }
 
     /**
-     * Identity-based lookup is the safe parse hook: an unapproved adversarial
-     * load uses a fresh Source and therefore cannot attach to a trusted cached
-     * AST merely by matching the same path and bytes.
+     * Called only from OresLanguage.parse. It is diagnostic, not an admission
+     * decision: the trusted host chooses the Source and Engine before parse.
+     * If a live shared image exists, count how often Graal actually calls the
+     * parser for this exact code identity and digest.
      */
-    public Ast.Program checkedProgramIfLive(Source source) {
-        Objects.requireNonNull(source, "source");
-        Entry entry;
-        synchronized (this) {
-            entry = imagesBySource.get(source);
-            if (entry == null) return null;
+    public synchronized void recordParse(String codeUnitId, String sourceText) {
+        requireIdentity(codeUnitId, sourceText);
+        Entry entry = images.get(new Key(codeUnitId, digest(sourceText)));
+        if (entry != null && entry.originalText.equals(sourceText)) {
+            entry.parseInvocations++;
         }
-        return entry.checkedProgram();
     }
 
-    /**
-     * Called only from OresLanguage.parse. With one explicit Engine and
-     * ContextPolicy.SHARED, evaluating the same admitted Source in many
-     * contexts should increment this once, proving a single parse/call-target
-     * cache entry rather than one compiled tree per context.
-     */
-    public synchronized void recordParse(Source source) {
-        Entry entry = imagesBySource.get(source);
-        if (entry != null) entry.parseInvocations++;
-    }
-
-    public synchronized long parseInvocations(Source source) {
-        Entry entry = imagesBySource.get(source);
+    public synchronized long parseInvocations(String codeUnitId, String sourceText) {
+        requireIdentity(codeUnitId, sourceText);
+        Entry entry = images.get(new Key(codeUnitId, digest(sourceText)));
         return entry == null ? 0L : entry.parseInvocations;
     }
 
@@ -198,7 +184,6 @@ public final class SharedCodeRegistry {
         }
         if (--entry.references == 0) {
             images.remove(entry.key);
-            imagesBySource.remove(entry.source);
         }
     }
 
