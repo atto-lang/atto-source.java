@@ -5,6 +5,50 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
+    private static final String SYMBOL_MEMBER_PREFIX = "\u0000symbol:";
+
+    /**
+     * Internal collision-proof key for a Symbol-named structural/class member.
+     * Source String/identifier members never use the NUL-prefixed namespace.
+     */
+    public static String symbolMemberKey(String scope, String key) {
+        if (!"process".equals(scope) && !"stable".equals(scope)) {
+            throw new IllegalArgumentException("symbol member scope must be process or stable");
+        }
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("symbol member key cannot be blank");
+        }
+        String encoded = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return SYMBOL_MEMBER_PREFIX + scope + ":" + encoded;
+    }
+
+    public static boolean isSymbolMemberKey(String value) {
+        return value != null && value.startsWith(SYMBOL_MEMBER_PREFIX);
+    }
+
+    public static String symbolMemberScope(String value) {
+        if (!isSymbolMemberKey(value)) throw new IllegalArgumentException("not a Symbol member key");
+        int start = SYMBOL_MEMBER_PREFIX.length();
+        int colon = value.indexOf(':', start);
+        if (colon < 0) throw new IllegalArgumentException("malformed Symbol member key");
+        return value.substring(start, colon);
+    }
+
+    public static String symbolMemberName(String value) {
+        if (!isSymbolMemberKey(value)) throw new IllegalArgumentException("not a Symbol member key");
+        int start = SYMBOL_MEMBER_PREFIX.length();
+        int colon = value.indexOf(':', start);
+        if (colon < 0) throw new IllegalArgumentException("malformed Symbol member key");
+        byte[] decoded = java.util.Base64.getUrlDecoder().decode(value.substring(colon + 1));
+        return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    public static String displayMemberKey(String value) {
+        if (!isSymbolMemberKey(value)) return value;
+        return "[Symbol." + symbolMemberScope(value) + "(\"" + symbolMemberName(value) + "\")]";
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
@@ -852,6 +896,8 @@ public final class Ast {
     }
 
     public record ObjectField(String name, Expr dynamicName, Expr value) {
+        private static final String SYMBOL_KEY_OPERATOR = "$symbol_key$";
+
         public ObjectField {
             if ((name == null) == (dynamicName == null)) {
                 throw new IllegalArgumentException("object field must have exactly one static or dynamic key");
@@ -863,7 +909,19 @@ public final class Ast {
         public static ObjectField dynamic(Expr key, Expr value) {
             return new ObjectField(null, java.util.Objects.requireNonNull(key, "key"), value);
         }
+        public static ObjectField symbol(Expr key, Expr value) {
+            return dynamic(new UnaryExpr(SYMBOL_KEY_OPERATOR,
+                    java.util.Objects.requireNonNull(key, "key")), value);
+        }
         public boolean isDynamic() { return dynamicName != null; }
+        public boolean isSymbolKey() {
+            return dynamicName instanceof UnaryExpr unary
+                    && unary.operator().equals(SYMBOL_KEY_OPERATOR);
+        }
+        public Expr keyExpression() {
+            if (dynamicName == null) throw new IllegalStateException("static object field has no key expression");
+            return isSymbolKey() ? ((UnaryExpr) dynamicName).operand() : dynamicName;
+        }
     }
 
     public enum ObjectKind { OBJECT, INFERRED_STRUCT, EXPLICIT_STRUCT }
