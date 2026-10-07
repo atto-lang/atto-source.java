@@ -2561,8 +2561,6 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
-                                    ChannelRuntime.SelectSet set =
-                                            asSelectSet(cases);
                                     ChannelRuntime.SelectPolicy policy =
                                             runtimeSelectPolicy(
                                                     selected.policy());
@@ -2570,7 +2568,9 @@ public final class OresEvalRootNode extends RootNode {
                                             == Ast.WaitMode.IMMEDIATE) {
                                         java.util.Optional<
                                                 ChannelRuntime.SelectResult> result =
-                                                set.trySelect(policy);
+                                                cases instanceof ChannelRuntime.SelectPlan plan
+                                                        ? plan.trySelect(policy)
+                                                        : asSelectSet(cases).trySelect(policy);
                                         continuation.accept(
                                                 t,
                                                 result.isPresent()
@@ -2585,7 +2585,9 @@ public final class OresEvalRootNode extends RootNode {
                                     }
                                     OresFuture<
                                             ChannelRuntime.SelectResult> future =
-                                            set.selectAsync(policy);
+                                            cases instanceof ChannelRuntime.SelectPlan plan
+                                                    ? plan.selectAsync(policy)
+                                                    : asSelectSet(cases).selectAsync(policy);
                                     if (selected.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
                                         continuation.accept(
