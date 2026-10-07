@@ -8,6 +8,8 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SourceActorEndCleanupExecutionTest {
 
@@ -80,6 +82,27 @@ final class SourceActorEndCleanupExecutionTest {
         assertEquals(
                 "turn|after|cleanup",
                 run(program, "source-untrusted-actor-end-cleanup.ores"));
+    }
+
+    @Test
+    void finalCleanupMayCaptureActorSelfButNotAnOrdinaryBorrow() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<String> mail): void {
+                            let int value = 7;
+                            val view = rt borrow value;
+                            self.endWithCleanup(|| -> {
+                              stdio.println(view);
+                            });
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("closure cannot capture borrowed value 'view'"),
+                failure.getMessage());
     }
 
     private static String run(String program, String name) throws Exception {
