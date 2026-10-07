@@ -1085,6 +1085,52 @@ public final class OwnershipChecker {
                     if (isMutexGuardType(receiverType) && member.member().equals("is_released") && call.arguments().isEmpty()) {
                         return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
                     }
+                    if (isMutexGuardType(receiverType)) {
+                        Ast.TypeRef protectedType = receiverType.arguments().getFirst();
+                        if ((protectedType.name().equals("List") || protectedType.name().equals("Array"))
+                                && protectedType.arguments().size() == 1) {
+                            Ast.TypeRef element = protectedType.arguments().getFirst();
+                            switch (member.member()) {
+                                case "size" -> {
+                                    if (call.arguments().isEmpty()) {
+                                        return new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+                                    }
+                                }
+                                case "get" -> {
+                                    if (call.arguments().size() == 1) {
+                                        checkExpr(call.arguments().getFirst(), scope, false);
+                                        if (!isCopyType(element)) {
+                                            throw error("cannot extract move-only List element through a MutexGuard; "
+                                                    + "mutate it under the guard or replace it as a whole");
+                                        }
+                                        return new ValueInfo(element, ValueKind.COPY, null);
+                                    }
+                                }
+                                case "add" -> {
+                                    if (call.arguments().size() == 1) {
+                                        ValueInfo value = checkExpr(call.arguments().getFirst(), scope, true);
+                                        if (containsMutexGuardType(value.type)) {
+                                            throw error("MutexGuard cannot be stored inside protected List state");
+                                        }
+                                        return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                                    }
+                                }
+                                case "set" -> {
+                                    if (call.arguments().size() == 2) {
+                                        checkExpr(call.arguments().get(0), scope, false);
+                                        ValueInfo value = checkExpr(call.arguments().get(1), scope, true);
+                                        if (containsMutexGuardType(value.type)) {
+                                            throw error("MutexGuard cannot be stored inside protected List state");
+                                        }
+                                        return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                                    }
+                                }
+                                default -> {
+                                    // Fall through to class/unknown guarded-member handling.
+                                }
+                            }
+                        }
+                    }
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
