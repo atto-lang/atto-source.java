@@ -730,10 +730,15 @@ public final class PureEffectChecker {
         Lookup found = scope.lookup(name.name());
         if (found == null) {
             if (name.name().equals("None")) return;
+
+            // A named fnc value is immutable code identity, not ambient runtime
+            // state. Merely passing an impure callback through a pure callable
+            // is allowed; invoking it is still rejected by assertPureCall().
             Ast.FunctionDecl target = ambiguousFunctions.contains(name.name())
                     ? null
                     : functions.get(name.name());
-            if (target != null && target.pure()) return;
+            if (target != null) return;
+
             throw error("pure callable '" + callable
                     + "' cannot read unresolved/ambient binding '" + name.name() + "'");
         }
