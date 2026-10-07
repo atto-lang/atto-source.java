@@ -8,6 +8,12 @@ import java.util.regex.Pattern;
 /** Shared invariants for source imports and capability-gated Java host imports. */
 public final class ImportRules {
     public static final String JAVA_PREFIX = "java:";
+    /**
+     * Explicit dependency on a declaration in the current source code unit.
+     * This is a lexical permission only: it never creates another evaluator,
+     * filesystem lookup, heap copy, or code-image copy.
+     */
+    public static final String SELF_PATH = "@self";
     private static final Pattern JAVA_BINARY_NAME =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
 
@@ -15,6 +21,10 @@ public final class ImportRules {
 
     public static boolean isJavaPath(String path) {
         return path != null && path.startsWith(JAVA_PREFIX);
+    }
+
+    public static boolean isSelfPath(String path) {
+        return SELF_PATH.equals(path);
     }
 
     public static String javaClassName(String path) {
@@ -63,6 +73,17 @@ public final class ImportRules {
         }
         if (imported.path().length() > 4096 || imported.path().chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("import path contains invalid control characters or is too long");
+        }
+
+        if (isSelfPath(imported.path())) {
+            if (imported.wildcard() || imported.kind() == Ast.ImportKind.ALL) {
+                throw new IllegalArgumentException(
+                        "same-code-unit imports from '@self' must name explicit declarations");
+            }
+            if (imported.namespace() != null) {
+                throw new IllegalArgumentException(
+                        "same-code-unit imports from '@self' do not support aliases; import the declaration by its local name");
+            }
         }
 
         if (imported.wildcard()) {
