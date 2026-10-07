@@ -128,9 +128,9 @@ type semantics.
 
 See `NATIVE_RUNTIME_ABI.md` for the native/JNI boundary.
 
-## Value-producing matches and explicit no-return matches
+## Value-producing `match` and statement-only `do match`
 
-The canonical, value-producing form is `match subject over ... end`.
+The canonical value-producing form is `match subject over ... end`.
 It can be used in a binding, as an argument, or directly after `return`:
 
 ```ores
@@ -145,60 +145,70 @@ return match entry over
 end;
 ```
 
-In a **value-producing** `match ... over`, the last top-level
-`return value;` in each braced arm produces the **match expression's**
-value, not a function return. The enclosing `return match ...`
-performs the function return only after the match finishes. Results must
-be non-`void`, type compatible (or explicitly declared union), and
-exhaustive.
+In a value-producing `match ... over`, the terminal top-level
+`return value;` in each braced arm produces **the match expression's**
+value, not a function return. The enclosing `return match ...` exits
+the function only after match evaluation. Results must be non-`void`,
+type compatible (or an explicitly declared union), and exhaustive.
 
-To execute branches without producing an overall match value, use the
-explicit contextual modifier **`no-return`**:
+The **`do match`** statement explicitly executes an arm for side
+effects without producing a match result:
 
 ```ores
-match entry no-return over
+do match entry over
   Some(value) -> { process(value); }
   None -> { handleMissing(); }
 end
 
-// An arm may produce a value, but the match discards it.
-match entry no-return over
+// Values are evaluated and discarded; the containing function continues.
+do match entry over
   Some(value) -> { return new Foo(1); }
   None -> { return new Foo(2); }
 end
 ```
 
-In a `no-return` match, a terminal `return value;` is an **arm-local
-return**: its expression is evaluated and discarded. An arm can
-instead simply finish after its side-effect statements. A
-`no-return` match has type `void`, and cannot be assigned, returned
-as a value, or used in any expression context. This avoids confusing
-"discarding a branch result" with returning from the enclosing function.
+Within `do match`, a terminal `return value;` is **arm-local**:
+its expression runs, its result is discarded, and the enclosing function
+continues. An arm may instead finish normally after side effects.
+`return;` without a value is not an arm result; omit it. Earlier or nested
+returns which could escape the containing callable are rejected.
+Nested lambda bodies retain their own lexical return scopes.
 
-`no-return` is a contextual, hyphenated modifier **after the match
-subject and before `over`**, not an expression operator or a global
-reserved identifier. `no - return` with spaces is not the modifier,
-and `no-return` requires `over`. Standalone `match ... over`
-without `no-return` is rejected to prevent silently discarding a value.
-Legacy bare statement matches (`match value ... end` without `over`)
-retain their original function-level `return` behavior for source
-compatibility; the new `no-return` form has deliberate arm-local behavior.
+`do match ... over` is a statement, never an expression: assigning it or
+returning it as a value is a compile error. `do match` requires `over`.
+Standalone `match ... over` without `do` is rejected in statement position
+to prevent silent discarding. The retired `no-return` spelling is invalid.
 
-Arms with a local `return value;` must place it at the end of the
-arm. Earlier or nested `return` statements that might exit the
-enclosing callable are rejected. Lambda bodies have their own
-lexical return scope. `return;` is not an arm result; for a
-`no-return` match, simply omit it. Branch decisions evaluate the
-scrutinee once, execute only one chosen arm, and retain existing
-ownership/capability checks.
+For source compatibility, legacy bare statement `match value ... end`
+without `over` still retains enclosing-function `return` semantics.
+This compatibility form is not synonymous with `do match`.
 
-Both modes enforce recursive nested `Option`/`Result` coverage,
-exclusive pattern disjointness, and unreachable finite-constructor
-arm diagnostics. The pattern `Some(inner)` covers both inner
-`Option` variants; `Some(Some(value))` does not. Fallback
-patterns remain `_`, `else`, `default`, and `Symbol.default`.
-`||` remains lambda syntax, never a wildcard. No `match-and-return`
-or `match ... with` form is accepted.
+The same `do` marker explicitly opts into side-effect-only **static**
+channel selects:
+
+```ores
+do select {
+  case readch incoming: val item
+    process(item);
+}
+
+do nb select {
+  case readch incoming: val item
+    process(item);
+}
+```
+
+Static `select { ... }` and `nb select { ... }` also remain accepted
+in the current runtime for backward compatibility. Static `nb select`
+schedules a detached actor continuation and requires an actor domain;
+it **does not yet** return a completion `Future<void>`. Dynamic
+`select from cases` produces `SelectResult`, while
+`nb select from cases` produces `Future<SelectResult>`. Consequently,
+`do select from cases` and `do nb select from cases` are rejected
+rather than silently detaching or dropping a result/future. Value-producing
+static select arms and future-backed static `do nb select` require a
+separate runtime/AST change, not merely a parser alias.
+
 
 ## Value-producing matches
 
