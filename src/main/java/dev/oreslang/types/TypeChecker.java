@@ -848,6 +848,25 @@ public final class TypeChecker {
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
+        Set<String> localStaticFieldNames = new LinkedHashSet<>();
+        Set<String> localStaticCallableNames = new LinkedHashSet<>();
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic() && !localStaticFieldNames.add(field.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate static field '" + klass.name() + "." + field.name() + "'");
+            }
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic()) localStaticCallableNames.add(method.name());
+        }
+        for (String name : localStaticFieldNames) {
+            if (localStaticCallableNames.contains(name)) {
+                throw new IllegalArgumentException(
+                        "class static member '" + klass.name() + "." + name
+                                + "' cannot be both a field and a static function");
+            }
+        }
+
         for (Ast.FieldDecl field : klass.fields()) {
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
@@ -858,8 +877,19 @@ public final class TypeChecker {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 currentClassOwner = klass;
                 try {
-                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
-                    requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
+                    Set<String> fieldGenerics =
+                            field.isStatic() ? Set.of() : classGenerics;
+                    Type fieldSelf = field.isStatic() ? null : self;
+                    Type actual = typeOf(
+                            field.initializer(),
+                            new Env(null),
+                            fieldGenerics,
+                            fieldSelf);
+                    requireAssignable(
+                            actual,
+                            fieldType,
+                            (field.isStatic() ? "static field initializer " : "field initializer ")
+                                    + klass.name() + "." + field.name());
                 } finally {
                     currentClassOwner = previousClassOwner;
                 }
