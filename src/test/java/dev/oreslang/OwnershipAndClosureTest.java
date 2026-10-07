@@ -73,6 +73,52 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void explicitMutableMethodReceiverMayMutateSelf() throws Exception {
+        String output = run("""
+                define class Counter as
+                  pub let int value = 0;
+
+                  pub bump(self &mut Counter)(): void {
+                    self.value = self.value + 1;
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  let Counter counter = new Counter();
+                  counter.bump();
+                  counter.bump();
+                  stdio.stdout.write(counter.value);
+                  return;
+                }
+                """);
+        assertEquals("2", output);
+    }
+
+    @Test
+    void explicitMutableMethodReceiverRejectsImmutableOwner() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub let int value = 0;
+
+                          pub bump(self &mut Counter)(): void {
+                            self.value = self.value + 1;
+                            return;
+                          }
+                        end
+
+                        fnc bad(): void {
+                          val Counter counter = new Counter();
+                          counter.bump();
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("mutable method receiver"));
+    }
+
+    @Test
     void mutableBorrowAllowsMutationWithoutMovingOwner() throws Exception {
         String output = run("""
                 define class Bar as
