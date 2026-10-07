@@ -590,6 +590,22 @@ public final class OwnershipChecker {
             return checkExpr(unary.operand(), scope, false);
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals("spawn")) {
+                if (runtime.arguments().size() != 1
+                        || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
+                    throw error("internal spawn intrinsic requires exactly one actor target");
+                }
+                if (!created.arguments().isEmpty()) {
+                    throw error("actor spawn arguments are not enabled; initialize actor-local state with fields and on_start()");
+                }
+                return new ValueInfo(
+                        new Ast.TypeRef(
+                                "ActorRef",
+                                List.of(created.type()),
+                                false),
+                        ValueKind.COPY,
+                        null);
+            }
             if (runtime.operation().equals("cooperate")) {
                 if (!runtime.arguments().isEmpty()) {
                     throw error("rt cooperate takes no arguments");
