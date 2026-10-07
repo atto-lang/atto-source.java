@@ -1025,6 +1025,9 @@ public final class OwnershipChecker {
                             if (lambda.parameters().size() != 1) {
                                 throw error(member.member() + " callback must accept exactly one protected-value parameter");
                             }
+                            if (lambda.async()) {
+                                throw error(member.member() + " protected callbacks cannot be async: a mutex guard must not cross await");
+                            }
                             Ast.Param original = lambda.parameters().getFirst();
                             Ast.Param protectedParam = new Ast.Param(
                                     Ast.TypeRef.borrowed(element, true),
@@ -1032,7 +1035,8 @@ public final class OwnershipChecker {
                                     original.structural(),
                                     false);
                             Ast.LambdaExpr protectedLambda = new Ast.LambdaExpr(
-                                    List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
+                                    List.of(protectedParam), lambda.expressionBody(), lambda.blockBody(),
+                                    lambda.nonLexical(), lambda.returnType(), false);
                             mutexCriticalSectionDepth++;
                             try {
                                 checkLambda(protectedLambda, scope, null);
