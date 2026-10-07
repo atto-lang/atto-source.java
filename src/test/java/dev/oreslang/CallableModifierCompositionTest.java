@@ -43,7 +43,7 @@ final class CallableModifierCompositionTest {
             String modifiers = String.join(" ", order);
             Ast.Program program = Parser.parse("""
                     fnc make(): void {
-                      const Fnc<Option<int>, int> guarded = %s |int value| -> int {
+                      const Fnc<int, Option<int>> guarded = %s |int value| -> int {
                         return value + 1;
                       };
                       val Option<int> answer = guarded(41);
