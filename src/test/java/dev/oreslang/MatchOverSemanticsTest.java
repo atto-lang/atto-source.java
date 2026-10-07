@@ -215,6 +215,20 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
+    void doTrySelectLocalReturnCannotExitEnclosingFunction() throws Exception {
+        assertEquals("continued\n", run("""
+                pub fnc main(): void {
+                  do try select {
+                  default:
+                    return 999;
+                  }
+                  stdio.println("continued");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void rejectsLegacyHyphenatedNoReturnAndDoMatchWithoutOver() {
         reject("""
                 pub fnc main(): void {
