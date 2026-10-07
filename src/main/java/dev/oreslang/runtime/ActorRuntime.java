@@ -350,6 +350,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    /** Read-only parent-observable streams retained until drained/runtime close. */
+    private final Set<ActorOutputStream<?>> actorOutputStreams =
+            ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
@@ -981,6 +984,121 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
             Objects.requireNonNull(value, "actor mailbox values cannot be null; use Option<T>");
+        }
+    }
+
+    /**
+     * Immutable parent-facing actor output. Output ordering is FIFO per actor;
+     * no global ordering is promised across different actors.
+     */
+    public record ActorOutput<M>(
+            ActorId actorId,
+            long sequence,
+            M value) {
+        public ActorOutput {
+            Objects.requireNonNull(actorId, "actorId");
+            if (sequence < 0) {
+                throw new IllegalArgumentException(
+                        "actor output sequence cannot be negative");
+            }
+            Objects.requireNonNull(
+                    value,
+                    "actor output values cannot be null; use Option<T>");
+        }
+    }
+
+    /**
+     * Read-only bounded stream for one actor's parent-observable outputs.
+     *
+     * <p>The raw Channel is deliberately hidden so holders of ActorRef cannot
+     * forge actor outputs. Only the executing actor may publish through
+     * self.send/emitCurrentActorOutput().</p>
+     */
+    public final class ActorOutputStream<M> {
+        private final ActorId actorId;
+        private final ChannelRuntime.Channel<ActorOutputEnvelope> channel;
+
+        private ActorOutputStream(
+                ActorId actorId,
+                ChannelRuntime.Channel<ActorOutputEnvelope> channel) {
+            this.actorId = Objects.requireNonNull(actorId, "actorId");
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        public ActorId actorId() {
+            return actorId;
+        }
+
+        public boolean isDone() {
+            return channel.isClosed() && channel.isEmpty();
+        }
+
+        public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
+            OresFuture<ActorOutputEnvelope> read = channel.readAsync();
+            OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
+                    new OresFuture<>(() -> read.cancel(false));
+            read.whenCompleteRuntime((envelope, failure) -> {
+                if (failure != null) {
+                    Throwable terminal = OresFuture.unwrap(failure);
+                    if (terminal instanceof ChannelRuntime.ChannelClosedException
+                            && terminal.getCause() == null) {
+                        result.completeFromRuntime(
+                                GeneratorRuntime.Step.doneStep());
+                    } else if (terminal instanceof java.util.concurrent.CancellationException) {
+                        result.cancel(false);
+                    } else {
+                        result.failFromRuntime(
+                                terminal instanceof ChannelRuntime.ChannelClosedException
+                                        && terminal.getCause() != null
+                                                ? terminal.getCause()
+                                                : terminal);
+                    }
+                    if (isDone()) actorOutputStreams.remove(this);
+                    return;
+                }
+
+                @SuppressWarnings("unchecked")
+                ActorOutput<M> output = (ActorOutput<M>) envelope.output();
+                envelope.close();
+                result.completeFromRuntime(
+                        GeneratorRuntime.Step.yielded(output));
+                if (isDone()) actorOutputStreams.remove(this);
+            });
+            return result;
+        }
+
+        private void close(Throwable cause) {
+            channel.close(cause);
+        }
+
+        private void closeAndDrainFromRuntime() {
+            channel.close();
+            while (channel.drainOne(ActorOutputEnvelope::close)) {
+                // release all queued transport reservations on runtime teardown
+            }
+            actorOutputStreams.remove(this);
+        }
+    }
+
+    private static final class ActorOutputEnvelope implements AutoCloseable {
+        private final ActorOutput<Object> output;
+        private final Runnable release;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private ActorOutputEnvelope(
+                ActorOutput<Object> output,
+                Runnable release) {
+            this.output = Objects.requireNonNull(output, "output");
+            this.release = Objects.requireNonNull(release, "release");
+        }
+
+        private ActorOutput<Object> output() {
+            return output;
+        }
+
+        @Override
+        public void close() {
+            if (closed.compareAndSet(false, true)) release.run();
         }
     }
 
