@@ -3608,6 +3608,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method = actor.owner().findMethod(actor.klass(),
                         CallableSelector.instance(member.member(), args.size()), new LinkedHashSet<>());
                 if (method == null) throw new IllegalArgumentException("unknown actor method " + member.member());
+                if (method.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "private actor method '" + actor.klass().name() + "." + method.name()
+                                    + "' is self-only and cannot be invoked through an actor capability");
+                }
                 actor.owner().requireClassMemberVisible(method.visibility(), actor.owner().declaringClass(method),
                         env.accessClass(), "method", method.name());
                 return invokableInvocation(values -> actor.actor().request(method.name(), objectArguments(values)), args);
@@ -3883,6 +3888,11 @@ public final class OresEvalRootNode extends RootNode {
                         Ast.MethodDecl method = actorOwner.findMethod(actorClass,
                                 CallableSelector.instance(name, arguments.size()), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("unknown actor method " + name);
+                        if (method.visibility() != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException(
+                                    "private actor method '" + actorClass.name() + "." + method.name()
+                                            + "' is self-only and cannot be dispatched through the mailbox");
+                        }
                         return actorOwner.callMethod(state, method, arguments);
                     }
                 };

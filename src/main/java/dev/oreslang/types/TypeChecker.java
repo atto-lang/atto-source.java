@@ -964,6 +964,16 @@ public final class TypeChecker {
                             "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                     + "pass an owned nominal value or copy the required fields");
                 }
+                if (!method.isStatic()
+                        && klass.actorKind() != Ast.ActorKind.NONE
+                        && method.visibility() == Ast.Visibility.PUBLIC) {
+                    validateActorCallableBoundaryType(
+                            parameterType,
+                            klass.actorKind(),
+                            false,
+                            "parameter '" + param.name() + "' of public actor method '"
+                                    + klass.name() + "." + method.name() + "'");
+                }
                 if (method.async()) {
                     validateAsyncBoundaryType(
                             parameterType,
@@ -973,6 +983,16 @@ public final class TypeChecker {
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (!method.isStatic()
+                    && klass.actorKind() != Ast.ActorKind.NONE
+                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                validateActorCallableBoundaryType(
+                        returns,
+                        klass.actorKind(),
+                        true,
+                        "return type of public actor method '"
+                                + klass.name() + "." + method.name() + "'");
+            }
             if (method.async()) {
                 validateAsyncBoundaryType(
                         returns,
@@ -2001,6 +2021,11 @@ public final class TypeChecker {
                         boolean remoteActor = klass.actorKind() != Ast.ActorKind.NONE
                                 && !(receiverValueType instanceof SelfType);
                         if (remoteActor) {
+                            if (method.visibility() != Ast.Visibility.PUBLIC) {
+                                throw new IllegalArgumentException(
+                                        "private actor method '" + owner.name() + "." + method.name()
+                                                + "' is self-only and cannot be invoked through an actor capability");
+                            }
                             for (Ast.Expr argument : call.arguments()) {
                                 validateActorCallableBoundaryType(typeOf(argument, env, generics, self),
                                         klass.actorKind(), false, "actor method argument");

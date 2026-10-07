@@ -149,6 +149,50 @@ final class StructuredSpawnLanguageTest {
                 """)));
     }
 
+    @Test void invalidPublicActorApiIsRejectedEvenWhenUnused() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define shared actor Worker as
+                  pub fnc expose(): SharedMutex<int> { return SharedMutex.new(1); }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  val int value;
+                end
+                define shared actor Worker as
+                  pub fnc accept(Box value): int { return 1; }
+                end
+                """)));
+    }
+
+    @Test void privateActorMethodsAreSelfOnlyAndMayUseTurnLocalTypes() throws Exception {
+        assertEquals("7", run("""
+                define isolated actor Worker as
+                  private fnc local(Mutex<int> value): int { return 7; }
+                  pub fnc run(): int {
+                    val local = Mutex.new(1);
+                    return self.local(local);
+                  }
+                end
+                pub routine main(): void {
+                  val worker = spawn Worker();
+                  stdio.stdout.write(await worker.run());
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define isolated actor Worker as
+                  private fnc secret(): int { return 7; }
+                  pub fnc try_other(): int {
+                    val other = spawn Worker();
+                    return await other.secret();
+                  }
+                end
+                """)));
+    }
+
     @Test void actorConstructorsRemainForbidden() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Worker as
