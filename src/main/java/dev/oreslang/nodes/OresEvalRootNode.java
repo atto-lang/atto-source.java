@@ -524,7 +524,7 @@ public final class OresEvalRootNode extends RootNode {
                                 + request.arguments().size());
             }
 
-            if (methodContainsPotentialSuspension(endpoint)) {
+            if (endpoint.async() || methodContainsPotentialSuspension(endpoint)) {
                 /*
                  * The source scheduler unwinds cooperate/await into a heap-owned
                  * continuation. ActorRuntime keeps this one logical endpoint
@@ -546,7 +546,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private static boolean isReservedActorRuntimeMember(String name) {
             return switch (name) {
-                case "receive", "send", "call", "ready", "done", "outputs",
+                case "receive", "dispatch", "send", "call", "ready", "done", "outputs",
                         "id", "kind", "stop", "cancel", "kill",
                         "end", "endWithCleanup" -> true;
                 default -> false;
