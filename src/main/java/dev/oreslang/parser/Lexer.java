@@ -103,6 +103,7 @@ public final class Lexer {
                 if (isAtEnd()) throw error("unterminated string escape");
                 char escaped = advance();
                 value.append(switch (escaped) {
+                    case 'u' -> unicodeEscape();
                     case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\'' -> '\''; case '\\' -> '\\'; default -> escaped;
                 });
             } else value.append(c);
@@ -110,6 +111,20 @@ public final class Lexer {
         if (isAtEnd()) throw error("unterminated string");
         advance();
         tokens.add(new Token(STRING, value.toString(), line, startColumn));
+    }
+
+    private char unicodeEscape() {
+        int code = 0;
+        for (int i = 0; i < 4; i++) {
+            if (isAtEnd()) throw error("incomplete Unicode escape");
+            char digit = advance();
+            int hex = digit >= '0' && digit <= '9' ? digit - '0'
+                    : digit >= 'a' && digit <= 'f' ? digit - 'a' + 10
+                    : digit >= 'A' && digit <= 'F' ? digit - 'A' + 10 : -1;
+            if (hex < 0) throw error("invalid Unicode escape");
+            code = (code << 4) | hex;
+        }
+        return (char) code;
     }
 
     private void number() {

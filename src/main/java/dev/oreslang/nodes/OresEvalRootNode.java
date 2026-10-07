@@ -5998,6 +5998,8 @@ public final class OresEvalRootNode extends RootNode {
                     case "actor_startup_ns" -> exchange.startupNanos();
                     case "move_to_claim_ns" -> exchange.transferNanos();
                     case "request_id" -> exchange.requestId();
+                    case "admitted_ns" -> exchange.admittedNanos();
+                    case "completion" -> exchange.completion();
                     case "operation_id" -> exchange.operationId();
                     case "pipeline_id" -> (long) exchange.pipelineId();
                     case "contract_id" -> (long) exchange.contractId();
@@ -6090,6 +6092,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
+                    case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
+                    case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
+                    case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
