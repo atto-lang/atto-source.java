@@ -916,7 +916,12 @@ public final class OwnershipChecker {
                 }
             }
             for (Ast.ObjectField field : object.fields()) {
-                if (field.isDynamic()) {
+                if (field.isSymbolKey()) {
+                    ValueInfo key = checkExpr(field.keyExpression(), scope, false);
+                    if (containsMutexGuardType(key.type)) {
+                        throw error("Symbol object keys cannot contain MutexGuard");
+                    }
+                } else if (field.isDynamic()) {
                     dynamic = true;
                     ValueInfo key = checkExpr(field.dynamicName(), scope, false);
                     if (containsMutexGuardType(key.type)) {
@@ -939,6 +944,24 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr symbolFactory
+                && symbolFactory.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Symbol")
+                && (symbolFactory.member().equals("create")
+                    || symbolFactory.member().equals("process")
+                    || symbolFactory.member().equals("stable"))) {
+            if (call.typeArgumentsPresent()) {
+                throw error("Symbol." + symbolFactory.member() + " does not accept type arguments");
+            }
+            if (call.arguments().size() != 1) {
+                throw error("Symbol." + symbolFactory.member() + " expects exactly one string key");
+            }
+            ValueInfo key = checkExpr(call.arguments().getFirst(), scope, false);
+            if (containsMutexGuardType(key.type)) {
+                throw error("Symbol keys cannot contain MutexGuard");
+            }
+            return new ValueInfo(Ast.TypeRef.simple("Symbol"), ValueKind.COPY, null);
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -2334,7 +2357,7 @@ public final class OwnershipChecker {
         if (klass == null) return concrete;
 
         ResolvedMethod iterator =
-                findMethodTarget(klass, concrete, "Symbol.iterator", 0, new LinkedHashSet<>());
+                findMethodTarget(klass, concrete, Ast.symbolMemberKey("process", "Symbol.iterator"), 0, new LinkedHashSet<>());
         if (iterator == null) return concrete;
 
         Ast.TypeRef result = substituteType(
@@ -2489,7 +2512,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","SharedMutex",
+                    "bool","Bool","string","String","Symbol","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
