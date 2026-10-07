@@ -1178,13 +1178,11 @@ public final class TypeChecker {
 
         Ast.ClassDecl localClass = findClass(name);
         if (localClass != null) {
-            if (localClass != lexicalClassOrigin) {
-                throw new IllegalArgumentException(
-                        "actor '" + lexicalClassOrigin.name()
-                                + "' cannot use same-file type '" + name
-                                + "'; move the type to another source unit and import it explicitly");
-            }
-            return;
+            if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)) return;
+            throw new IllegalArgumentException(
+                    "actor '" + lexicalClassOrigin.name()
+                            + "' cannot use same-file type '" + name
+                            + "'; move the type to another source unit and import it explicitly");
         }
 
         Ast.InterfaceDecl localInterface = findInterface(name);
@@ -1203,6 +1201,23 @@ public final class TypeChecker {
                             + "' cannot use same-file type alias '" + name
                             + "'; move the type to another source unit and import it explicitly");
         }
+    }
+
+    /**
+     * An extends clause is a declaration-time dependency edge, not an ambient
+     * lexical lookup. Permit the directly named parent so actor inheritance can
+     * be typechecked, then let the actor-kind/inheritance rules below reject
+     * unsafe cross-domain inheritance.
+     */
+    private boolean isExplicitActorParent(Ast.ClassDecl candidate) {
+        if (!insideActorLexicalBoundary() || candidate == null) return false;
+        for (Ast.TypeRef parent : lexicalClassOrigin.parents()) {
+            if (parent.name().equals(candidate.name())
+                    || parent.name().equals(qualifiedClassName(candidate))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Env moduleBindingEnv(String moduleName) {
