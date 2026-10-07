@@ -3081,7 +3081,7 @@ public final class TypeChecker {
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
             boolean fallback = isFallbackArm(arm);
-            if (!matched.ordered() && i > 0
+            if (!matched.ordered() && i > 0 && hasFiniteMatchDomain(subject)
                     && matchProvablyExhaustive(arms.subList(0, i), subject, generics, self)) {
                 throw new IllegalArgumentException("unreachable match arm " + (i + 1)
                         + ": preceding arms already cover " + subject);
@@ -3119,6 +3119,19 @@ public final class TypeChecker {
                     "non-exhaustive match for " + subject
                             + "; add an unguarded '_'/'else' arm or cover every known constructor/value");
         }
+    }
+
+    /**
+     * Unreachable-after-completion diagnostics are sound only for closed
+     * constructor domains. Structural and nominal conformance checks can
+     * statically accept a shape without proving runtime constructor identity.
+     * Ordinary fallback-last and overlap rules still apply to open domains.
+     */
+    private boolean hasFiniteMatchDomain(Type subject) {
+        if (subject == Primitive.BOOL) return true;
+        if (!(subject instanceof Named named)) return false;
+        return (named.name().equals("Option") && named.arguments().size() == 1)
+                || (named.name().equals("Result") && named.arguments().size() == 2);
     }
 
     private Type checkMatchValue(Ast.MatchStmt matched, Type expected, Env env, Set<String> generics, Type self) {
