@@ -392,21 +392,17 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void forOfAstRejectsValEvenWhenParserIsBypassed() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new Ast.ForOfStmt(
-                        Ast.BindingKind.VAL,
-                        "item",
-                        new Ast.NameExpr("items"),
-                        java.util.List.of()));
+    void forOfAstAcceptsValAndStillRejectsMalformedDestructuring() {
+        assertDoesNotThrow(() -> new Ast.ForOfStmt(
+                Ast.BindingKind.VAL,
+                "item",
+                new Ast.NameExpr("items"),
+                java.util.List.of()));
 
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new Ast.ForOfDestructureStmt(
-                        java.util.List.of(new Ast.DestructureBinding(Ast.BindingKind.VAL, "item")),
-                        new Ast.NameExpr("items"),
-                        java.util.List.of()));
+        assertDoesNotThrow(() -> new Ast.ForOfDestructureStmt(
+                java.util.List.of(new Ast.DestructureBinding(Ast.BindingKind.VAL, "item")),
+                new Ast.NameExpr("items"),
+                java.util.List.of()));
 
         IllegalArgumentException duplicate = assertThrows(
                 IllegalArgumentException.class,
