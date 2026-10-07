@@ -631,7 +631,11 @@ public final class TreeShaker {
                         : evaluate(initializer, module, locals);
                 locals.put(binding.name(), value);
                 return List.of(new Ast.BindingStmt(
-                        binding.kind(), binding.declaredType(), binding.name(), initializer));
+                        binding.kind(),
+                        binding.declaredType(),
+                        binding.name(),
+                        initializer,
+                        binding.mutableReferent()));
             }
             if (statement instanceof Ast.DestructureStmt destructure) {
                 Ast.Expr initializer = rewriteExpression(destructure.initializer(), module, locals);
@@ -744,7 +748,8 @@ public final class TreeShaker {
                             rewriteExpression(arm.value(), module, locals),
                             arm.bindingKind(),
                             arm.bindingName(),
-                            rewriteStatements(arm.body(), module, armLocals)));
+                            rewriteStatements(arm.body(), module, armLocals),
+                            arm.mutableReferent()));
                 }
                 return List.of(new Ast.SelectStmt(
                         selected.mode(),
@@ -781,7 +786,8 @@ public final class TreeShaker {
                         loop.bindingName(),
                         iterable,
                         loop.asyncIteration(),
-                        rewriteStatements(loop.body(), module, bodyLocals)));
+                        rewriteStatements(loop.body(), module, bodyLocals),
+                        loop.mutableReferent()));
             }
             if (statement instanceof Ast.ForStmt loop) {
                 LinkedHashMap<String, Object> loopLocals = new LinkedHashMap<>(locals);
