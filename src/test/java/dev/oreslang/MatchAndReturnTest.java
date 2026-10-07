@@ -100,6 +100,36 @@ final class MatchAndReturnTest {
     }
 
     @Test
+    void ordinaryStatementMatchSupportsVoidCallbacksAndKeepsExecuting() throws Exception {
+        assertEquals("hit\\ncontinued\\n", run("""
+                pub fnc main(): void {
+                  match Some(5) over
+                    Some(value) -> { stdio.println("hit"); }
+                    None -> { stdio.println("miss"); }
+                  end
+                  stdio.println("continued");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void explicitMatchReturnRejectsVoidArmResults() {
+        assertTrue(reject("""
+                fnc noop(): void {
+                  return;
+                }
+                fnc bad(bool flag): void {
+                  val result = match-and-return flag over
+                    true -> { return noop(); }
+                    false -> { return noop(); }
+                  end;
+                  return;
+                }
+                """).getMessage().contains("returns void"));
+    }
+
+    @Test
     void rejectsMissingOrValuelessArmReturns() {
         assertTrue(reject("""
                 fnc bad(bool flag): int {
