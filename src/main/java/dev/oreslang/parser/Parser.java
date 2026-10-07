@@ -2814,12 +2814,13 @@ public final class Parser {
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
-        if (match(OBJ)) return parseObjectLiteral(false);
+        if (match(OBJ)) return parseObjectLiteral(Ast.ObjectKind.OBJECT, List.of());
         if (match(STRUCT)) {
-            if (!matchContextualKeyword("infer")) {
-                throw error(peek(), "struct expression requires 'struct infer{...}'");
+            if (matchContextualKeyword("infer")) {
+                return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
             }
-            return parseObjectLiteral(true);
+            if (check(LBRACE)) return parseExplicitStructLiteral();
+            throw error(peek(), "struct expression requires 'struct infer{...}' or 'struct{field: Type,...}{...}'");
         }
         if (match(ARR)) {
             consume(LBRACKET, "expected '[' after arr");
@@ -2854,17 +2855,47 @@ public final class Parser {
         throw error(peek(), "expected expression");
     }
 
-    private Ast.ObjectExpr parseObjectLiteral(boolean inferredStruct) {
+    private Ast.ObjectExpr parseExplicitStructLiteral() {
+        consume(LBRACE, "expected '{' after struct");
+        List<Ast.StructFieldSpec> declared = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        if (!check(RBRACE)) {
+            do {
+                String name = consumeStaticObjectKeyName("expected explicit struct field name");
+                if (!names.add(name)) {
+                    throw error(previous(), "duplicate explicit struct field '" + name + "'");
+                }
+                consume(COLON, "expected ':' after explicit struct field name");
+                declared.add(new Ast.StructFieldSpec(name, parseTypeRef()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after explicit struct shape");
+        if (!check(LBRACE)) {
+            throw error(peek(), "explicit struct shape must be followed by an initializer: struct{field: Type}{field: value}");
+        }
+        return parseObjectLiteral(Ast.ObjectKind.EXPLICIT_STRUCT, declared);
+    }
+
+    private Ast.ObjectExpr parseObjectLiteral(
+            Ast.ObjectKind kind,
+            List<Ast.StructFieldSpec> declaredFields) {
+        boolean inferredStruct = kind == Ast.ObjectKind.INFERRED_STRUCT;
+        boolean explicitStruct = kind == Ast.ObjectKind.EXPLICIT_STRUCT;
         consume(LBRACE, inferredStruct
                 ? "expected '{' after struct infer"
-                : "expected '{' after obj");
+                : explicitStruct
+                    ? "expected '{' after explicit struct shape"
+                    : "expected '{' after obj");
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
                 Ast.ObjectField field;
                 if (match(BACKTICK)) {
-                    if (inferredStruct) {
-                        throw error(previous(), "struct infer requires statically named fields");
+                    if (inferredStruct || explicitStruct) {
+                        throw error(previous(),
+                                inferredStruct
+                                        ? "struct infer requires statically named fields"
+                                        : "explicit struct initializers require statically named declared fields");
                     }
                     Ast.Expr key = parseExpression();
                     consume(BACKTICK, "expected closing backtick after dynamic object key");
@@ -2878,8 +2909,12 @@ public final class Parser {
                 fields.add(field);
             } while (match(COMMA));
         }
-        consume(RBRACE, "expected '}' after obj literal");
-        return new Ast.ObjectExpr(fields, inferredStruct);
+        consume(RBRACE, explicitStruct
+                ? "expected '}' after explicit struct initializer"
+                : inferredStruct
+                    ? "expected '}' after struct infer literal"
+                    : "expected '}' after obj literal");
+        return new Ast.ObjectExpr(fields, kind, declaredFields);
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
