@@ -335,7 +335,8 @@ public final class LinkedProgramRunner {
 
         Ast.Program program = Parser.parse(mixed.oresSource());
         for (Ast.ImportDecl imported : program.imports()) {
-            if (ImportRules.isJavaPath(imported.path())) continue;
+            if (ImportRules.isSelfPath(imported.path())
+                    || ImportRules.isJavaPath(imported.path())) continue;
 
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
