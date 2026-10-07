@@ -4255,6 +4255,12 @@ public final class TypeChecker {
             if (named.name().equals("AsyncIterator") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
+            if (named.name().equals("ActorOutputStream")
+                    && named.arguments().size() == 1) {
+                return new Named(
+                        "ActorOutput",
+                        List.of(named.arguments().getFirst()));
+            }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 ResolvedMethod iteratorTarget =
