@@ -130,9 +130,13 @@ public final class AsyncRuntime implements AutoCloseable {
     public static <T> T await(CompletionStage<T> stage) {
         Objects.requireNonNull(stage, "stage");
         CompletableFuture<T> future = stage.toCompletableFuture();
-        if (ActorRuntime.inActorExecution() && !future.isDone()) {
+        if (ActorRuntime.inActorExecution()
+                && !ActorRuntime.isActorBlockingImplementationThread()
+                && !future.isDone()) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "await would block a bounded actor dispatcher carrier; "
+                            + "source-level suspension must run on the actor's "
+                            + "virtual implementation turn");
         }
 
         try {
