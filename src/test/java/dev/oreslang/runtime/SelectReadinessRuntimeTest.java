@@ -115,7 +115,7 @@ final class SelectReadinessRuntimeTest {
     @Test
     void reusableSelectPlanRestartsRelativeTimeoutPerInvocation() throws Exception {
         ChannelRuntime.SelectPlan plan = new ChannelRuntime.SelectPlan(List.of(
-                ChannelRuntime.timeout(TimeUnit.MILLISECONDS.toNanos(5))));
+                ChannelRuntime.timeout(TimeUnit.MILLISECONDS.toNanos(40))));
 
         ChannelRuntime.SelectResult first =
                 plan.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY)
@@ -129,7 +129,8 @@ final class SelectReadinessRuntimeTest {
         long elapsed = System.nanoTime() - started;
 
         assertEquals(ChannelRuntime.SelectOperation.TIMEOUT, second.operation());
-        assertTrue(elapsed > 0L);
+        assertTrue(elapsed >= TimeUnit.MILLISECONDS.toNanos(20),
+                "reused plan must start a fresh relative timeout generation");
     }
 
     @Test
