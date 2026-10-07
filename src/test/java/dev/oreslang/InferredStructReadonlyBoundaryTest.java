@@ -104,4 +104,33 @@ final class InferredStructReadonlyBoundaryTest {
                 """)));
     }
 
+    @Test void typeTestBindingPreservesReadonlyCapability() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                  const source = struct infer{foo: "a"};
+                  if source is type {foo: string} narrowed then
+                    let mut alias = narrowed;
+                    alias.foo = "b";
+                  fi
+                  return;
+                }
+                """)));
+    }
+
+    @Test void typedMatchBindingPreservesReadonlyCapability() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                  const source = struct infer{foo: "a"};
+                  match source
+                    is {foo: string} narrowed -> {
+                      let mut alias = narrowed;
+                      alias.foo = "b";
+                      return;
+                    }
+                    else -> { return; }
+                  end
+                }
+                """)));
+    }
+
 }
