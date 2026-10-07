@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -75,8 +74,13 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(String name, String sourceText) {
         validateAdmissionInputs(name, sourceText);
-        OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText);
+        // Admission is policy-specific, but the checked code tree is one
+        // immutable process-owned image shared across all actor contexts.
+        try (SharedCodeRegistry.Lease image =
+                     SharedCodeRegistry.process().acquire(name, sourceText)) {
+            CapabilityChecker.check(image.checkedProgram(), guestPolicy);
+            return stage(name, image.sha256(), sourceText);
+        }
     }
 
     /**
