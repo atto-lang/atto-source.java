@@ -145,7 +145,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
-        private final IdentityHashMap<Ast.SelectStmt, AtomicLong> staticSelectCursors =
+        // Root/non-actor executions retain process-root fairness state here.
+        // Actor executions keep their cursor in ActorCell so shared immutable
+        // code never implies shared mutable scheduler state.
+        private final IdentityHashMap<Ast.SelectStmt, AtomicLong> rootStaticSelectCursors =
                 new IdentityHashMap<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
@@ -4599,8 +4602,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private long staticSelectTicket(Ast.SelectStmt selected) {
-            synchronized (staticSelectCursors) {
-                return staticSelectCursors
+            ActorRuntime actorRuntime = ActorRuntime.currentActorRuntime();
+            if (actorRuntime != null) {
+                if (actorRuntime != context.actors()) {
+                    throw new SecurityException(
+                            "static select attempted to cross ActorRuntime ownership");
+                }
+                return actorRuntime.nextActorLocalSelectTicket(selected);
+            }
+            synchronized (rootStaticSelectCursors) {
+                return rootStaticSelectCursors
                         .computeIfAbsent(selected, ignored -> new AtomicLong())
                         .getAndIncrement();
             }
