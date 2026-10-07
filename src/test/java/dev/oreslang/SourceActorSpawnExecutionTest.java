@@ -106,13 +106,40 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
-    void suspendingReceiveIsRejectedUntilMailboxTurnSuspensionIsSerialized()
-            throws Exception {
+    void suspendingReceiveResumesBeforeLaterUserMail() throws Exception {
         String program = """
                 define actor Worker as
+                  let int phase;
+
+                  on_start(): void {
+                    self.phase = 0;
+                    return;
+                  }
+
                   receive(ActorMail<String> mail): void {
-                    rt cooperate;
-                    self.end();
+                    if mail.value == "first"; do
+                      self.phase = 1;
+                      self.send("before");
+                      rt cooperate;
+
+                      if self.phase != 1; do
+                        self.send("interleaved");
+                        return;
+                      fi
+
+                      self.phase = 2;
+                      self.send("after");
+                      return;
+                    fi
+
+                    if mail.value == "second"; do
+                      if self.phase == 2; do
+                        self.send("second");
+                      else
+                        self.send("interleaved");
+                      fi
+                      self.end();
+                    fi
                     return;
                   }
                 end
@@ -120,20 +147,28 @@ final class SourceActorSpawnExecutionTest {
                 pub async routine main(): void {
                   val worker = spawn Worker();
                   await worker.ready;
-                  worker.send("stop");
+
+                  // Queue both messages before the first receive cooperates.
+                  worker.send("first");
+                  worker.send("second");
+
+                  val a = (await worker.outputs.next()).value.unwrap();
+                  val b = (await worker.outputs.next()).value.unwrap();
+                  val c = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(a.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(b.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(c.value);
+
                   await worker.done;
                   return;
                 }
                 """;
 
-        PolyglotException failure =
-                assertThrows(
-                        PolyglotException.class,
-                        () -> run(program, "source-actor-suspending-receive.ores"));
-        assertTrue(
-                failure.getMessage().contains(
-                        "suspending actor receive is not executable yet"),
-                failure.getMessage());
+        assertEquals(
+                "before|after|second",
+                run(program, "source-actor-suspending-receive.ores"));
     }
 
     private static String run(String sourceText, String name) throws Exception {
