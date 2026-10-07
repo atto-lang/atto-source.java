@@ -1262,14 +1262,7 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) {
-            if (consumeMatchAndReturnSuffix()) {
-                Ast.Expr result = new Ast.MatchExpr(parseMatch(true));
-                consumeStatementTerminator("match-and-return expression should end with ';'");
-                return new Ast.ExprStmt(result);
-            }
-            return parseMatch();
-        }
+        if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
@@ -1985,30 +1978,7 @@ public final class Parser {
 
     private Ast.MatchStmt parseMatch() { return parseMatch(false); }
 
-    /**
-     * The hyphenated spelling is a single contextual operator, not arithmetic.
-     * Insist on token adjacency so "match - and - return" is not silently
-     * misinterpreted as a match expression.
-     */
-    private boolean consumeMatchAndReturnSuffix() {
-        if (current + 3 >= tokens.size()) return false;
-        Token leading = previous();
-        Token firstDash = tokens.get(current);
-        Token and = tokens.get(current + 1);
-        Token secondDash = tokens.get(current + 2);
-        Token returning = tokens.get(current + 3);
-        if (leading.type() != MATCH || firstDash.type() != MINUS
-                || and.type() != IDENT || !and.lexeme().equals("and")
-                || secondDash.type() != MINUS || returning.type() != RETURN
-                || !adjacent(leading, firstDash) || !adjacent(firstDash, and)
-                || !adjacent(and, secondDash) || !adjacent(secondDash, returning)) {
-            return false;
-        }
-        advance(); advance(); advance(); advance();
-        return true;
-    }
-
-    private Ast.MatchStmt parseMatch(boolean armLocalReturns) {
+    private Ast.MatchStmt parseMatch(boolean valueContext) {
         boolean ordered = check(IDENT) && peek().lexeme().equals("first");
         if (ordered) advance();
 
@@ -2028,13 +1998,13 @@ public final class Parser {
         boolean armSuppression = suppressRefinementOperators;
         suppressRefinementOperators = false;
         try {
-            return parseMatchArms(subject, ordered, over, armLocalReturns);
+            return parseMatchArms(subject, ordered, over, valueContext);
         } finally {
             suppressRefinementOperators = armSuppression;
         }
     }
 
-    private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered, boolean over, boolean armLocalReturns) {
+    private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered, boolean over, boolean valueContext) {
         boolean braces = !over && match(LBRACE);
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(braces ? RBRACE : END) && !check(EOF)) {
@@ -2054,23 +2024,29 @@ public final class Parser {
                 }
                 consume(RBRACE, "expected '}' after match arm block");
                 yieldsValue = !body.isEmpty() && body.getLast() instanceof Ast.ExprStmt && !lastTerminated;
-                if (armLocalReturns) {
+                // In a *value-context* "match ... over", terminal "return"
+                // yields from the match expression only. A statement match
+                // retains ordinary function returns. Existing brace-delimited
+                // expression matches retain their established return semantics.
+                if (valueContext && over) {
                     if (body.isEmpty() || !(body.getLast() instanceof Ast.ReturnStmt returned)
                             || returned.value() == null) {
-                        throw error(previous(), "match-and-return arms must end with an explicit 'return <value>;' statement");
+                        throw error(previous(), "value-producing 'match ... over' arms must end "
+                                + "with an explicit 'return <value>;' statement");
                     }
                     for (int i = 0; i < body.size() - 1; i++) {
                         if (containsNestedReturn(body.get(i))) {
-                            throw error(previous(), "match-and-return forbids earlier or nested callable returns; "
-                                    + "the one final return must supply the match result");
+                            throw error(previous(), "value-producing 'match ... over' forbids "
+                                    + "earlier or nested returns; use one terminal arm-local return");
                         }
                     }
                     body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
                     yieldsValue = true;
                 }
             } else {
-                if (armLocalReturns) {
-                    throw error(peek(), "match-and-return requires braced arms containing 'return <value>;' ");
+                if (valueContext && over) {
+                    throw error(peek(), "value-producing 'match ... over' requires braced arms "
+                            + "containing a terminal 'return <value>;' ");
                 }
                 body.add(new Ast.ExprStmt(parseExpression()));
                 yieldsValue = true;
@@ -2085,7 +2061,7 @@ public final class Parser {
     }
 
     /**
-     * A strict match-and-return arm cannot hide an ordinary function-return in
+     * A value-producing match-over arm cannot hide an ordinary function-return in
      * earlier control flow. Nested lambda returns are independent lexical
      * functions and are intentionally not traversed here.
      */
@@ -2616,9 +2592,7 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        if (match(MATCH)) {
-            return new Ast.MatchExpr(parseMatch(consumeMatchAndReturnSuffix()));
-        }
+        if (match(MATCH)) return new Ast.MatchExpr(parseMatch(true));
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
