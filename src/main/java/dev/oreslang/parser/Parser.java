@@ -620,6 +620,12 @@ public final class Parser {
         return match(CASE) || matchContextualIdentifier("case");
     }
 
+    private boolean matchWhenKeyword() {
+        // WHEN is retained for token-stream/backward compatibility, but the
+        // lexer emits ordinary IDENT for "when" so it remains legal elsewhere.
+        return match(WHEN) || matchContextualIdentifier("when");
+    }
+
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
@@ -1561,7 +1567,7 @@ public final class Parser {
 
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
-            if (matchCaseKeyword()) {
+            if (matchWhenKeyword() || matchCaseKeyword()) {
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -2245,7 +2251,7 @@ public final class Parser {
             }
 
             Ast.Pattern pattern = parsePattern();
-            Ast.Expr guard = match(WHEN) ? parseExpression() : null;
+            Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
