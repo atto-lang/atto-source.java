@@ -1,10 +1,15 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -92,5 +97,87 @@ final class RhsLambdaScopeTest {
                         value + 2;
                 }
                 """));
+    }
+
+    @Test
+    void asyncRhsLambdasHaveFutureResultsAndMayAwait() {
+        assertDoesNotThrow(() -> check("""
+                pub async fnc answer(): int {
+                    return 42;
+                }
+                pub fnc example(): void {
+                    const create = async || -> int {
+                        return await answer();
+                    };
+                    val result = await create();
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub fnc example(): void {
+                    const create = async || -> int {
+                        return await 1;
+                    };
+                }
+                """));
+    }
+
+    @Test
+    void asyncAndNlexOrderIsIndependentAndDuplicatesFail() {
+        for (String modifiers : new String[] {"async nlex", "nlex async"}) {
+            Ast.Program program = Parser.parse("""
+                    pub fnc foo(): void {
+                        const f = %s || -> int {
+                            return 1;
+                        };
+                    }
+                    """.formatted(modifiers));
+            Ast.FunctionDecl outer =
+                    (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+            Ast.LambdaExpr lambda =
+                    (Ast.LambdaExpr) ((Ast.BindingStmt) outer.body().getFirst()).initializer();
+            assertTrue(lambda.async());
+            assertTrue(lambda.nonLexical());
+        }
+        for (String modifiers : new String[] {"async async", "nlex nlex"}) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                    pub fnc foo(): void {
+                        const f = %s || -> int {
+                            return 1;
+                        };
+                    }
+                    """.formatted(modifiers)));
+        }
+    }
+
+    @Test
+    void asyncLambdaAndNlexInnerCaptureExecute() throws Exception {
+        String program = """
+                pub async fnc answer(): int {
+                    return 42;
+                }
+                pub nlex fnc captured(): int {
+                    const xyz = 5;
+                    const f = || -> int {
+                        return xyz;
+                    };
+                    return f();
+                }
+                pub fnc main(): void {
+                    const create = async || -> int {
+                        return await answer();
+                    };
+                    stdio.stdout.write(await create());
+                    stdio.stdout.write(captured());
+                    return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "rhs-lambda-async.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            context.eval(source);
+        }
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("425"));
     }
 }
