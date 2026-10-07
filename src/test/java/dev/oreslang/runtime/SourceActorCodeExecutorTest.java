@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -39,26 +40,39 @@ final class SourceActorCodeExecutorTest {
         }
 
         @Override
-        public void receiveActor(
+        public OresFuture<Object> dispatchActor(
                 String actorTypeName,
                 ActorRuntime.ActorOwnedGuestState rawState,
-                ActorRuntime.ActorInboxMail<Object> mail,
+                ActorRuntime.ActorDispatchRequest request,
                 ActorRuntime.ActorContext<Object> context) {
             assertEquals("Worker", actorTypeName);
             State state = assertInstanceOf(State.class, rawState);
             assertEquals(context.self().id(), state.ownerActorId());
-            assertEquals(context.self().id(), mail.recipient());
-            assertEquals(0L, mail.sequence());
-            assertEquals("stop", mail.value());
-            assertEquals(mail, context.currentMail().orElseThrow());
+            assertTrue(context.currentMail().isPresent(),
+                    "runtime may retain its private transport envelope, but source dispatch only receives the typed request");
             state.messages++;
-            assertEquals(1, state.messages);
-            context.self().stop();
+
+            return switch (request.methodName()) {
+                case "stop" -> {
+                    assertFalse(request.expectsReply());
+                    assertEquals(List.of(), request.arguments());
+                    context.self().stop();
+                    yield OresFuture.completed(null);
+                }
+                case "echo" -> {
+                    assertTrue(request.expectsReply());
+                    assertEquals(1, request.arguments().size());
+                    yield OresFuture.completed(request.arguments().getFirst());
+                }
+                default -> OresFuture.failed(
+                        new IllegalArgumentException(
+                                "unexpected endpoint " + request.methodName()));
+            };
         }
     }
 
     @Test
-    void sourceActorStateIsCreatedOnActorDomainAndReceivesTypedEnvelope()
+    void sourceActorStateIsCreatedOnActorDomainAndUsesGeneratedTypedDispatch()
             throws Exception {
         Ast.Program program =
                 Parser.parse("pub routine main(): void { return; }");
@@ -81,7 +95,7 @@ final class SourceActorCodeExecutorTest {
                 assertNull(ref.ready().join());
                 assertTrue(ref.isAlive());
 
-                ref.send("stop");
+                runtime.sendCodeActor(ref, "stop", List.of());
                 assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS),
                         "actor kind " + kind);
                 assertTrue(ref.failure().isEmpty(), "actor kind " + kind);
@@ -90,6 +104,36 @@ final class SourceActorCodeExecutorTest {
 
             assertEquals(1, store.imageCount(),
                     "source actors must reuse the exact shared code image");
+        }
+    }
+
+    @Test
+    void compilerOwnedCallDispatchCompletesReplyFutureWithoutExposingRawMailbox() {
+        Ast.Program program =
+                Parser.parse("pub routine main(): void { return; }");
+
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage image =
+                    store.publish("app/main.ores", program);
+            Executor executor = new Executor(image);
+            ActorRuntime.ActorRef<Object> ref =
+                    runtime.spawnCodeActor(
+                            ActorRuntime.ActorKind.SHARED,
+                            IsolatePolicy.developer(),
+                            executor,
+                            "Worker");
+
+            assertNull(ref.ready().join());
+            assertEquals(
+                    "hello",
+                    runtime.callCodeActor(
+                            ref,
+                            "echo",
+                            List.of("hello")).join());
+
+            runtime.sendCodeActor(ref, "stop", List.of());
+            assertNull(ref.done().join());
         }
     }
 
@@ -121,12 +165,14 @@ final class SourceActorCodeExecutorTest {
                         }
 
                         @Override
-                        public void receiveActor(
+                        public OresFuture<Object> dispatchActor(
                                 String actorTypeName,
                                 ActorRuntime.ActorOwnedGuestState state,
-                                ActorRuntime.ActorInboxMail<Object> mail,
+                                ActorRuntime.ActorDispatchRequest request,
                                 ActorRuntime.ActorContext<Object> context) {
-                            fail("mailbox handler must not run after startup ownership failure");
+                            fail("generated dispatcher must not run after startup ownership failure");
+                            return OresFuture.failed(
+                                    new IllegalStateException("unreachable"));
                         }
                     };
 
