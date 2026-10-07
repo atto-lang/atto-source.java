@@ -295,6 +295,56 @@ final class CallableModifierCompositionTest {
     }
 
     @Test
+    void pureRejectsAmbientRuntimeBindingsButAllowsCompileTimeConstants() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                const FIXED = 7;
+
+                pure fnc read_fixed(): int {
+                  return FIXED;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                val runtime_value = 7;
+
+                pure fnc read_runtime(): int {
+                  return runtime_value;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                let mutable_global = 7;
+
+                pure fnc read_runtime(): int {
+                  return mutable_global;
+                }
+                """));
+    }
+
+    @Test
+    void pureFunctionExpressionsAllowImmutableCapturesButRejectMutableCaptures() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                fnc use(int multiplier): int {
+                  val factor = multiplier;
+                  val multiply = pure |int value| -> int {
+                    return value * factor;
+                  };
+                  return multiply(2);
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc use(int multiplier): int {
+                  let factor = multiplier;
+                  val multiply = pure |int value| -> int {
+                    return value * factor;
+                  };
+                  return multiply(2);
+                }
+                """));
+    }
+
+    @Test
     void pureAndNlexRemainOrthogonalWhenCombinedWithTrap() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pure trap fnc lexical(int value): int {
