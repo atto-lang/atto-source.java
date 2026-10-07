@@ -5874,6 +5874,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof String text) {
+                if (!name.equals("replace_literal")) {
+                    throw new IllegalArgumentException("unknown string member " + name);
+                }
+                return (Invokable) args -> {
+                    if (args.size() != 2 || !(args.get(0) instanceof String needle)
+                            || !(args.get(1) instanceof String replacement)) {
+                        throw new IllegalArgumentException("string.replace_literal expects two strings");
+                    }
+                    if (needle.isEmpty()) {
+                        throw new IllegalArgumentException("string.replace_literal needle must not be empty");
+                    }
+                    // Storage-level operation only: literal, non-recursive, no regex/host interop.
+                    // Context-sensitive escaping policy belongs in Oreslang libraries.
+                    return text.replace(needle, replacement);
+                };
+            }
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host class " + host.className());
