@@ -2891,37 +2891,23 @@ public final class Parser {
         boolean explicitStruct = kind == Ast.ObjectKind.EXPLICIT_STRUCT;
         consume(LBRACE, inferredStruct
                 ? "expected '{' after struct infer"
-                : explicitStruct
-                    ? "expected '{' after explicit struct shape"
-                    : "expected '{' after obj");
+                : "expected '{' after explicit struct shape");
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
-                Ast.ObjectField field;
-                if (match(BACKTICK)) {
-                    if (inferredStruct || explicitStruct) {
-                        throw error(previous(),
-                                inferredStruct
-                                        ? "struct infer requires statically named fields"
-                                        : "explicit struct initializers require statically named declared fields");
-                    }
-                    Ast.Expr key = parseExpression();
-                    consume(BACKTICK, "expected closing backtick after dynamic object key");
-                    consume(COLON, "expected ':' after dynamic object key");
-                    field = Ast.ObjectField.dynamic(key, parseExpression());
-                } else {
-                    String name = consumeStaticObjectKeyName("expected object field name");
-                    consume(COLON, "expected ':' after object field name");
-                    field = Ast.ObjectField.named(name, parseExpression());
+                if (check(BACKTICK)) {
+                    throw error(peek(),
+                            "struct fields must be statically named for AOT compilation; "
+                                    + "computed/backtick field names are not supported");
                 }
-                fields.add(field);
+                String name = consumeStaticObjectKeyName("expected struct field name");
+                consume(COLON, "expected ':' after struct field name");
+                fields.add(Ast.ObjectField.named(name, parseExpression()));
             } while (match(COMMA));
         }
         consume(RBRACE, explicitStruct
                 ? "expected '}' after explicit struct initializer"
-                : inferredStruct
-                    ? "expected '}' after struct infer literal"
-                    : "expected '}' after obj literal");
+                : "expected '}' after struct infer literal");
         return new Ast.ObjectExpr(fields, kind, declaredFields);
     }
 
@@ -3133,7 +3119,6 @@ public final class Parser {
         }
         if (expression instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) {
-                if (field.isDynamic() && containsExpressionBodyLambda(field.dynamicName())) return true;
                 if (containsExpressionBodyLambda(field.value())) return true;
             }
         }
