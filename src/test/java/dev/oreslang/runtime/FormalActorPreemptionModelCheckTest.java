@@ -68,6 +68,16 @@ final class FormalActorPreemptionModelCheckTest {
 
         for (State state : states) {
             assertSafety(state);
+            assertTrue(canReachTerminalWithoutNewStop(state),
+                    () -> "nonterminal state has no eventual completion path: " + state);
+            if (state.continuationQueued()) {
+                assertTrue(step(state, Action.RUN_USER_MESSAGE).isEmpty(),
+                        "user mailbox may not bypass a queued continuation");
+            }
+            if (state.phase() == Phase.STOP_REQUESTED) {
+                assertTrue(step(state, Action.QUEUE_USER_MESSAGE).isEmpty(),
+                        "no new messages may enter after stop is requested");
+            }
             if (state.phase() == Phase.HANDOFF && state.userQueued()) {
                 sawHandoffWithUserWaiting = true;
             }
@@ -211,6 +221,29 @@ final class FormalActorPreemptionModelCheckTest {
                         s.completedEffects(), s.continuationEntries(), s.userEntries()));
             }
         };
+    }
+
+    /**
+     * Existential weak progress without counting STOP itself as a shortcut.
+     * Scheduling fairness remains an independent runtime obligation.
+     */
+    private static boolean canReachTerminalWithoutNewStop(State start) {
+        Set<State> seen = new HashSet<>();
+        ArrayDeque<State> queue = new ArrayDeque<>();
+        seen.add(start);
+        queue.addLast(start);
+        while (!queue.isEmpty()) {
+            State state = queue.removeFirst();
+            if (state.terminal()) return true;
+            for (Action action : Action.values()) {
+                if (action == Action.STOP) continue;
+                Optional<State> next = step(state, action);
+                if (next.isPresent() && seen.add(next.orElseThrow())) {
+                    queue.addLast(next.orElseThrow());
+                }
+            }
+        }
+        return false;
     }
 
     private static void assertSafety(State state) {
