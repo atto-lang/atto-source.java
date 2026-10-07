@@ -198,6 +198,12 @@ do nb select {
 }
 ```
 
+In `do select` / `do nb select` arms, a terminal
+`return value;` evaluates and discards its value **within that arm**,
+never returning from its enclosing function. Terminal `return;` simply
+finishes the arm. Earlier or nested returns are rejected. Unprefixed
+legacy static selects preserve their historical return behavior.
+
 Static `select { ... }` and `nb select { ... }` also remain accepted
 in the current runtime for backward compatibility. Static `nb select`
 schedules a detached actor continuation and requires an actor domain;
