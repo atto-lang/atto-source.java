@@ -4316,8 +4316,10 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
+                || named.name().equals("Channel") || named.name().equals("CancellationToken")
+                || named.name().equals("SelectCase") || named.name().equals("SelectSet")
+                || named.name().equals("SelectPlan") || named.name().equals("Select")
+                || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
@@ -4401,6 +4403,9 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+        if (named.name().equals("CancellationToken")) {
+            return named.arguments().isEmpty();
+        }
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -4615,6 +4620,12 @@ public final class TypeChecker {
                         ? List.of(named.arguments().get(0)) : null;
                 case "Err" -> named.name().equals("Result") && named.arguments().size() == 2
                         ? List.of(named.arguments().get(1)) : null;
+                case "Read", "Await" ->
+                        named.name().equals("Select") && named.arguments().size() == 1
+                                ? List.of(named.arguments().getFirst()) : null;
+                case "Write", "Timeout", "Cancelled", "Default" ->
+                        named.name().equals("Select") && named.arguments().size() == 1
+                                ? List.of() : null;
                 default -> null;
             };
             if (args == null) {
@@ -4783,6 +4794,13 @@ public final class TypeChecker {
         return false;
     }
 
+    private boolean isSelectConstructor(String constructor) {
+        return switch (constructor) {
+            case "Read", "Write", "Await", "Timeout", "Cancelled", "Default" -> true;
+            default -> false;
+        };
+    }
+
     private boolean patternsProvablyDisjoint(
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
@@ -4796,6 +4814,12 @@ public final class TypeChecker {
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
                         || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                if (subject instanceof Named selected
+                        && selected.name().equals("Select")
+                        && isSelectConstructor(a.constructor())
+                        && isSelectConstructor(b.constructor())) {
+                    return true;
+                }
             }
             return false;
         }
@@ -4883,6 +4907,18 @@ public final class TypeChecker {
                 err |= c.constructor().equals("Err");
             }
             return ok && err;
+        }
+        if (subject instanceof Named named && named.name().equals("Select")) {
+            Set<String> constructors = new HashSet<>();
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() == null
+                        && arm.pattern() instanceof Ast.ConstructorPattern c
+                        && isSelectConstructor(c.constructor())) {
+                    constructors.add(c.constructor());
+                }
+            }
+            return constructors.containsAll(
+                    Set.of("Read", "Write", "Await", "Timeout", "Cancelled", "Default"));
         }
         return false;
     }
@@ -7045,6 +7081,17 @@ public final class TypeChecker {
         if (actual instanceof Generic actualGeneric) {
             return expected instanceof Generic expectedGeneric
                     && actualGeneric.name().equals(expectedGeneric.name());
+        }
+        if (actual instanceof Named sourceNamed
+                && expected instanceof Named targetNamed) {
+            if (sourceNamed.name().equals("Select")
+                    && targetNamed.name().equals("SelectResult")) {
+                return true;
+            }
+            if (sourceNamed.name().equals("SelectResult")
+                    && targetNamed.name().equals("Select")) {
+                return true;
+            }
         }
         if (actual instanceof Union source) {
             return source.options().stream().allMatch(option -> assignable(option, expected));
