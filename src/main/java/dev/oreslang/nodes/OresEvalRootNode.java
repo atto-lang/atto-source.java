@@ -648,6 +648,7 @@ public final class OresEvalRootNode extends RootNode {
                                 function != null
                                         ? null
                                         : declaringClass(method),
+                                null,
                                 function == null
                                         ? null
                                         : declarationModules.get(function));
@@ -4074,7 +4075,7 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, fn.async());
             }
 
-            Env env = new Env(null, fn.nonLexical(), null, declarationModules.get(fn));
+            Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -4114,7 +4115,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl fn,
                 List<?> args,
                 GeneratorRuntime.Emitter<Object> emitter) {
-            Env env = new Env(null, fn.nonLexical(), null, declarationModules.get(fn));
+            Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -7419,13 +7420,6 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject constructingObject) {
             this(parent, descendantsNonLexical, accessClass, constructingObject,
                     parent == null ? null : parent.lexicalModule);
-        }
-        private Env(
-                Env parent,
-                boolean descendantsNonLexical,
-                Ast.ClassDecl accessClass,
-                String lexicalModule) {
-            this(parent, descendantsNonLexical, accessClass, null, lexicalModule);
         }
         private Env(
                 Env parent,
