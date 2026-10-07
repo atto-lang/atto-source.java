@@ -1,6 +1,6 @@
 # Actor class lifecycle and parent-facing output streams (design + implementation status)
 
-**Status (2026-10-06): actor declarations plus `spawn Actor()`/`ActorRef<Actor>` static semantics, lexical-boundary enforcement, host-side actor ready/done Futures, and shared-code image registry; source-level spawn execution/output streaming are NOT lowered yet.**
+**Status (2026-10-07): actor declarations, source `spawn Actor()` execution, `ActorRef<Actor>`, actor-local `on_start()`, typed mailbox dispatch, bounded parent-facing outputs, `self.send`, `self.end`/`self.endWithCleanup`, ready/done lifecycle barriers, actor-only lexical dependency boundaries, and same-OresVM immutable shared-code images are implemented and regression-tested. Stream merge/`for await` integration remains a separate acceptance gate.**
 
 The existing `ActorRuntime` already has `ActorRef.send/stop/cancel/forceCancel`,
 bounded channel-backed mailboxes, actor identity, child supervision, and
@@ -8,11 +8,12 @@ bounded channel-backed mailboxes, actor identity, child supervision, and
 **already used for ActorGroup Mailman outbox messages**. Do not silently
 repurpose it as a class actor's inbound message.
 
-## Target `main.ores` (proposed source API, not runnable yet)
+## Target `main.ores` (partially implemented end-to-end target)
 
 ```ores
-// The compiler must eventually lower this class and its lifecycle hooks.
-// This is a contract example and must NOT be treated as an executable fixture.
+// Actor creation, lifecycle hooks, mailbox delivery, outputs, ready/done,
+// self.send and self.end are executable today. The merge/for-await portion
+// remains a contract target until stream-composition lowering is complete.
 define actor Worker as
   on_start(): void {
     // Actor-local startup hook; actor constructors stay forbidden.
@@ -55,9 +56,10 @@ pub async routine main(): void {
 }
 ```
 
-This illustration uses proposed `spawn`, `ActorMail`, `outputs`, `ready`,
-`done`, `merge`, and `for await` integrations. Some unrelated
-syntax/runtime pieces may also need work before it can compile. In particular,
+This illustration uses implemented `spawn`, `ActorMail`, `outputs`, `ready`
+and `done` actor surfaces plus still-evolving `merge`/`for await` stream
+composition. The actor lifecycle/transport subset is covered by executable
+source tests; the complete illustration is not yet an acceptance fixture. In particular,
 `return await w.ready` returns a readiness result, **not** `w` or a list
 of output strings.
 
@@ -136,6 +138,8 @@ untrusted actor is a hard executable dependency boundary. Actor fields,
 signatures, methods, lifecycle hooks, and lambdas may resolve only:
 
 - actor-owned fields/methods and inherited actor members;
+- a directly declared `extends` parent (an explicit declaration edge, still
+  subject to actor-kind/isolation compatibility checks);
 - explicit imports from another source unit;
 - language/compiler/runtime intrinsics admitted by the actor's capability policy;
 - parameters and locals introduced inside the actor.
@@ -153,24 +157,29 @@ private or untrusted actor authority that its execution policy forbids.
 
 ## Implementation sequencing / acceptance gates
 
-1. **This branch:** parse `define actor ... as ... end`; enforce actor-only
-   lexical dependency boundaries while preserving ordinary same-file class/module
-   visibility; reject self-import escape hatches; and add regression tests.
-2. **Parser/type checker now recognize `spawn Worker()`** as a distinct intrinsic and type it as `ActorRef<Worker>`; `new Worker()` and constructor-style spawn arguments remain rejected. `ready`/`done`, mailbox `send`, actor-local `self.send`/`self.end`, and the reserved non-public `on_start(): void` shape are statically checked. **Execution lowering is still pending**; a startup hook must execute on the actor's own execution domain before `ready` settles.
-3. **Host substrate implemented in this branch:** `ActorRef.ready()` and
-   `ActorRef.done()` expose runtime-only completion Futures. `ready()` schedules
-   actor initialization even with no first message; stop-before-start and
-   initializer failure settle the Future exceptionally. Before source exposure,
-   still verify force-cancel and parent/child termination races with CI.
-4. Implement inbox dispatch and bounded parent outbox with serialization,
-   per-worker sequence counters, EOF and failure forwarding; lift `self.send`
-   into asynchronous nonblocking flow control.
-5. Expose parent-side `outputs` and async-generator/channel adapters;
-   interoperate with `select`/`nb select`, `Future.all`, and stream merge.
-6. Test actual source-level `main.ores` end-to-end with 3+ workers,
-   `rt cooperate` interleavings, output order, overflow/backpressure,
-   cancellation, actor startup/on_start failures, object/pointer/closure rejection,
-   private/shared/untrusted policies, and module/import isolation.
+1. **Implemented in this branch:** parse actor declarations; preserve ordinary
+   same-file module/class visibility while enforcing actor-only lexical dependency
+   boundaries; reject self-import escape hatches; and enforce explicit actor
+   inheritance edges without granting ambient sibling access.
+2. **Implemented source execution:** `spawn Worker()` lowers to a runtime-owned
+   source actor with actor-local field initialization and `on_start()`.
+   Constructors and constructor-style spawn arguments remain rejected.
+3. **Implemented lifecycle/transport:** `ready`/`done`, typed mailbox
+   `ActorMail<T>`, `ActorRef.send`, bounded read-only `outputs`,
+   `self.send`, `self.end`, and synchronous `self.endWithCleanup`.
+   Mail/output graphs are copied/frozen under actor-boundary rules and live
+   domain-local capabilities remain rejected.
+4. **Implemented state/code separation:** linked source units publish immutable
+   code-image identities once per OresVM. Shared/private/untrusted actors reuse
+   those identities while actor fields, select fairness cursors, mailboxes and
+   lifecycle state remain actor-owned. Explicit imports form the executable
+   linked-code dependency closure; guest code cannot enumerate the code store.
+5. **Still separate:** generalized parent-side stream merge/`for await`
+   composition and any stronger proof of physical Graal machine-code-page
+   sharing across engines or OS processes.
+6. Keep exercising overflow/backpressure, cancellation, startup/cleanup
+   failures, capability rejection, shared-state isolation, private/untrusted
+   policy enforcement, and import isolation in exact-tree CI.
 7. Only after green tests for the *exact* head SHA consider merging. If the
    source org cannot allocate a GitHub Actions runner, mirror the **exact Git
    tree** into a funded test org's temporary branch, verify blob/tree identity,
@@ -181,7 +190,8 @@ form. Parser and runtime support for async RHS lambdas and the full worker-strea
 example are separate gates; do not silently substitute fat arrows.
 
 ```ores
-// Proposed syntax; not executable until async RHS lambda/spawn lowering.
+// Canonical slim-arrow spelling; actor spawn is executable. Async RHS-lambda
+// completeness remains independently gated where syntax/runtime coverage is missing.
 const create = async || -> {
   const worker = spawn Worker();
   await worker.ready;
@@ -189,9 +199,9 @@ const create = async || -> {
 };
 ```
 
-Returning `await worker.ready` would return the readiness result (void), not the
-actor reference. For a runnable acceptance fixture target, see
-`docs/proposals/actor-worker-streaming/main.ores` (design-only today).
+Returning `await worker.ready` returns the readiness result (void), not the
+actor reference. The proposal fixture still contains stream-composition pieces
+that are broader than the now-runnable actor spawn/lifecycle subset.
 
 `SharedCodeImageStore` and `OresContext` now hold one immutable `Ast.Program`
 reference per linked source unit for the same OresVM, and `Evaluator.link()`
@@ -205,4 +215,8 @@ to follow for any future inline cache or scheduler metadata—shared code may
 reference actor-local runtime state, but must not become a writable state bag
 shared by isolated actors.
 
-Do not mark this milestone as executing source-level `spawn Worker()` or streamed worker output. The source parser/type checker now admit and validate `spawn Worker()`, `w.ready`/`w.done`, typed `ActorMail<T>`/`receive`, `ActorRef.send`, `self.send`, and `self.end`, but evaluator lowering into `ActorRuntime` remains a separate acceptance gate.
+Source-level `spawn Worker()`, actor startup, mailbox receive, bounded worker
+output, `self.send`, `self.end`, `self.endWithCleanup`, and `ready`/`done`
+are evaluator-lowered into `ActorRuntime` and covered by executable regression
+tests. Do not extend that claim to generalized stream merge/`for await` or
+cross-process/native machine-code sharing.
