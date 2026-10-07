@@ -489,10 +489,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override
-        public void receiveActor(
+        public OresFuture<Object> dispatchActor(
                 String actorTypeName,
                 ActorRuntime.ActorOwnedGuestState rawState,
-                ActorRuntime.ActorInboxMail<Object> mail,
+                ActorRuntime.ActorDispatchRequest request,
                 ActorRuntime.ActorContext<Object> actorContext) {
             SourceActorState state =
                     rawState instanceof SourceActorState source
@@ -500,47 +500,57 @@ public final class OresEvalRootNode extends RootNode {
                             : null;
             if (state == null
                     || !state.ownerActorId().equals(actorContext.self().id())
-                    || !state.actorTypeName().equals(actorTypeName)
-                    || !mail.recipient().equals(actorContext.self().id())) {
+                    || !state.actorTypeName().equals(actorTypeName)) {
                 throw new SecurityException(
-                        "source actor mailbox dispatch does not match actor-owned state");
+                        "source actor dispatch does not match actor-owned state");
             }
 
-            Ast.MethodDecl receive =
+            Ast.MethodDecl endpoint =
                     findMethod(
                             state.object().klass,
-                            CallableSelector.instance("receive", 1),
+                            CallableSelector.instance(
+                                    request.methodName(),
+                                    request.arguments().size()),
                             new LinkedHashSet<>());
-            if (receive == null) {
-                throw new IllegalStateException(
+            if (endpoint == null
+                    || endpoint.isStatic()
+                    || endpoint.visibility() != Ast.Visibility.PUBLIC
+                    || endpoint.name().equals("on_start")
+                    || isReservedActorRuntimeMember(endpoint.name())) {
+                throw new IllegalArgumentException(
                         "actor '" + state.object().klass.name()
-                                + "' has no receive(ActorMail<T>) handler");
+                                + "' has no public endpoint '"
+                                + request.methodName() + "' at arity "
+                                + request.arguments().size());
             }
-            if (methodContainsPotentialSuspension(receive)) {
+
+            if (methodContainsPotentialSuspension(endpoint)) {
                 /*
-                 * The source scheduler unwinds every cooperate/await into a
-                 * heap-owned continuation. ActorRuntime then gates later user
-                 * mail until this Future completes, while prioritizing only
-                 * this actor's bounded internal continuation lane.
+                 * The source scheduler unwinds cooperate/await into a heap-owned
+                 * continuation. ActorRuntime keeps this one logical endpoint
+                 * dispatch active and gates later user mail until completion.
                  */
-                OresFuture<Object> completion =
-                        startSourceMethodTask(
-                                receive,
-                                state.object(),
-                                List.of(mail));
-                context.actors().suspendCurrentUserMailboxUntil(completion);
-                return;
+                return startSourceMethodTask(
+                        endpoint,
+                        state.object(),
+                        request.arguments());
             }
 
             Object result =
                     invoke(methodInvocation(
                             state.object(),
-                            receive,
-                            List.of(mail)));
-            if (result != null) {
-                throw new IllegalStateException(
-                        "actor receive must complete with void");
-            }
+                            endpoint,
+                            request.arguments()));
+            return OresFuture.completed(result);
+        }
+
+        private static boolean isReservedActorRuntimeMember(String name) {
+            return switch (name) {
+                case "receive", "send", "call", "ready", "done", "outputs",
+                        "id", "kind", "stop", "cancel", "kill",
+                        "end", "endWithCleanup" -> true;
+                default -> false;
+            };
         }
 
         private Ast.ClassDecl requireLocalActorClass(String actorTypeName) {
@@ -6041,11 +6051,8 @@ public final class OresEvalRootNode extends RootNode {
                     case "outputs" -> actorRef.outputs();
                     case "id" -> actorRef.id();
                     case "kind" -> actorRef.kind();
-                    case "send" -> (Invokable) args -> {
-                        requireOne(args, "ActorRef.send");
-                        typedRef.send(args.getFirst());
-                        return null;
-                    };
+                    case "send" -> new ActorSendProxy(typedRef);
+                    case "call" -> new ActorCallProxy(typedRef);
                     case "stop" -> (Invokable) args -> {
                         requireZero(args, "ActorRef.stop");
                         actorRef.stop();
@@ -6060,8 +6067,26 @@ public final class OresEvalRootNode extends RootNode {
                         return actorRef.kill();
                     };
                     default -> throw new IllegalArgumentException(
-                            "unknown ActorRef member " + name);
+                            "actor refs do not expose ordinary method '"
+                                    + name + "'; use .call." + name
+                                    + "(...) or .send." + name + "(...)");
                 };
+            }
+            if (receiver instanceof ActorSendProxy proxy) {
+                return (Invokable) args -> {
+                    context.actors().sendCodeActor(
+                            proxy.ref(),
+                            name,
+                            args);
+                    return null;
+                };
+            }
+            if (receiver instanceof ActorCallProxy proxy) {
+                return (Invokable) args ->
+                        context.actors().callCodeActor(
+                                proxy.ref(),
+                                name,
+                                args);
             }
             if (receiver instanceof ActorRuntime.ActorOutputStream<?> outputs) {
                 return switch (name) {
@@ -8302,6 +8327,16 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
+    private record ActorSendProxy(ActorRuntime.ActorRef<Object> ref) {
+        private ActorSendProxy {
+            Objects.requireNonNull(ref, "ref");
+        }
+    }
+    private record ActorCallProxy(ActorRuntime.ActorRef<Object> ref) {
+        private ActorCallProxy {
+            Objects.requireNonNull(ref, "ref");
+        }
+    }
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
