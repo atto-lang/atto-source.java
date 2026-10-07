@@ -2405,6 +2405,9 @@ public final class TypeChecker {
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
+                if (lambda.async() && (param.mutable() || param.structural())) {
+                    throw new IllegalArgumentException("async lambda parameters must not be mutable or structural until task-safe ownership transfer is available");
+                }
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
