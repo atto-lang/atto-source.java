@@ -2060,8 +2060,9 @@ public final class Parser {
                         throw error(previous(), "match-and-return arms must end with an explicit 'return <value>;' statement");
                     }
                     for (int i = 0; i < body.size() - 1; i++) {
-                        if (body.get(i) instanceof Ast.ReturnStmt) {
-                            throw error(previous(), "match-and-return must have exactly one terminal arm-local return");
+                        if (containsNestedReturn(body.get(i))) {
+                            throw error(previous(), "match-and-return forbids earlier or nested callable returns; "
+                                    + "the one final return must supply the match result");
                         }
                     }
                     body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
@@ -2081,6 +2082,57 @@ public final class Parser {
         consume(braces ? RBRACE : END, "expected closing delimiter for match");
         if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
         return new Ast.MatchStmt(subject, ordered, arms);
+    }
+
+    /**
+     * A strict match-and-return arm cannot hide an ordinary function-return in
+     * earlier control flow. Nested lambda returns are independent lexical
+     * functions and are intentionally not traversed here.
+     */
+    private boolean containsNestedReturn(Ast.Stmt statement) {
+        if (statement == null) return false;
+        if (statement instanceof Ast.ReturnStmt) return true;
+        if (statement instanceof Ast.BlockStmt block) return containsNestedReturn(block.body());
+        if (statement instanceof Ast.IfStmt conditional) {
+            if (containsNestedReturn(conditional.elseBody())) return true;
+            for (Ast.IfBranch branch : conditional.branches()) {
+                if (containsNestedReturn(branch.body())) return true;
+            }
+        }
+        if (statement instanceof Ast.MatchStmt nested) {
+            for (Ast.MatchArm arm : nested.arms()) {
+                if (containsNestedReturn(arm.body())) return true;
+            }
+        }
+        if (statement instanceof Ast.SwitchStmt switched) {
+            if (containsNestedReturn(switched.defaultBody())) return true;
+            for (Ast.SwitchCase arm : switched.cases()) {
+                if (containsNestedReturn(arm.body())) return true;
+            }
+        }
+        if (statement instanceof Ast.TryStmt attempt) {
+            return containsNestedReturn(attempt.body()) || containsNestedReturn(attempt.catchBody())
+                    || containsNestedReturn(attempt.finallyBody());
+        }
+        if (statement instanceof Ast.ForStmt loop) {
+            return containsNestedReturn(loop.initializer()) || containsNestedReturn(loop.body());
+        }
+        if (statement instanceof Ast.ForOfStmt loop) return containsNestedReturn(loop.body());
+        if (statement instanceof Ast.ForOfDestructureStmt loop) return containsNestedReturn(loop.body());
+        if (statement instanceof Ast.LoopStmt loop) return containsNestedReturn(loop.body());
+        if (statement instanceof Ast.SelectStmt selection) {
+            for (Ast.SelectArm arm : selection.arms()) {
+                if (containsNestedReturn(arm.body())) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsNestedReturn(List<Ast.Stmt> statements) {
+        for (Ast.Stmt statement : statements) {
+            if (containsNestedReturn(statement)) return true;
+        }
+        return false;
     }
 
     /** Match-only fallback markers; Symbol.default is not a runtime field access. */
