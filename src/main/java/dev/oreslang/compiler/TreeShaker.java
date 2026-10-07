@@ -1311,6 +1311,10 @@ public final class TreeShaker {
                 locals.put(binding.name(), UNKNOWN);
             } else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) {
                 locals.put(typed.binding(), UNKNOWN);
+            } else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
+                locals.put(structural.binding(), UNKNOWN);
+            } else if (pattern instanceof Ast.TuplePattern tuple) {
+                for (Ast.Pattern nested : tuple.elements()) addPatternLocals(nested, locals);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {
                 for (Ast.Pattern nested : constructor.arguments()) addPatternLocals(nested, locals);
             }
@@ -1321,6 +1325,10 @@ public final class TreeShaker {
                 locals.add(binding.name());
             } else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) {
                 locals.add(typed.binding());
+            } else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
+                locals.add(structural.binding());
+            } else if (pattern instanceof Ast.TuplePattern tuple) {
+                for (Ast.Pattern nested : tuple.elements()) addPatternLocalNames(nested, locals);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {
                 for (Ast.Pattern nested : constructor.arguments()) addPatternLocalNames(nested, locals);
             }
@@ -1329,6 +1337,10 @@ public final class TreeShaker {
         private void scanPatternTypes(Ast.Pattern pattern) {
             if (pattern instanceof Ast.TypePattern typed) {
                 scanType(typed.type());
+            } else if (pattern instanceof Ast.StructuralPattern structural) {
+                scanType(structural.target());
+            } else if (pattern instanceof Ast.TuplePattern tuple) {
+                for (Ast.Pattern nested : tuple.elements()) scanPatternTypes(nested);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {
                 for (Ast.Pattern nested : constructor.arguments()) scanPatternTypes(nested);
             }
