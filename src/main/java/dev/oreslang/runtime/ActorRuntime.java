@@ -4981,23 +4981,25 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                // The actor remains logically scheduled until the TurnExecutor
-                // returns. OresContext's executor leaves the TruffleContext in
-                // its own finally block, so clearing this bit any earlier lets
-                // shutdown/finalization race a carrier that still owns guest
-                // context state.
-                synchronized (lifecycleLock) {
-                    if (carrierEntered) carrierActive = false;
-                    if (scheduled.get()) scheduled.set(false);
-                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                    reschedule = !stopped.get()
-                            && !forceKillFenced
-                            && !closed.get()
-                            && !finalized
-                            && hasQueuedWorkLocked();
-                    lifecycleLock.notifyAll();
+                try {
+                    // The actor remains logically scheduled until TurnExecutor
+                    // returns. Truffle context exit belongs to that boundary.
+                    synchronized (lifecycleLock) {
+                        if (carrierEntered) carrierActive = false;
+                        if (scheduled.get()) scheduled.set(false);
+                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                        reschedule = !stopped.get()
+                                && !forceKillFenced
+                                && !closed.get()
+                                && !finalized
+                                && hasQueuedWorkLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                } finally {
+                    // Finalization hooks and reservation checks are allowed to
+                    // fail closed; neither may strand carrier-local VM identity.
+                    ACTOR_CARRIER.remove();
                 }
-                ACTOR_CARRIER.remove();
                 if (reschedule) schedule();
             }
         }
