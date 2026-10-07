@@ -34,6 +34,31 @@ final class InferredStructMutabilityTest {
         assertEquals("after2", output.toString(StandardCharsets.UTF_8));
     }
 
+    @Test void inferredStructCanMutateAfterAsyncSuspension() throws Exception {
+        String program = """
+                async fnc answer(): int { return 7; }
+
+                pub async fnc main(): void {
+                  val point = struct infer{label: "before", count: 1};
+                  val value = await answer();
+                  point.label = "after";
+                  point.count = value;
+                  stdio.stdout.write(point.label);
+                  stdio.stdout.write(point.count);
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "struct-async-mutation.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("after7", output.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void readOnlyStructFieldMutationIsRejectedTransitively() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
