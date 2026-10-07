@@ -76,39 +76,31 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void ordinaryClassCannotReadFileLevelCallable() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc helper(): int { return 42; }
+    void ordinaryClassCanReadFileLevelCallable() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc helper(): int { return 42; }
 
-                        define class Box as
-                          pub calculate(): int {
-                            return helper();
-                          }
-                        end
-                        """)));
-        assertTrue(failure.getMessage().contains("class 'Box' cannot implicitly access"),
-                failure.getMessage());
+                define class Box as
+                  pub calculate(): int {
+                    return helper();
+                  }
+                end
+                """)));
     }
 
     @Test
-    void ordinaryClassCannotCaptureSameFileFunctionValue() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc helper(): int { return 42; }
+    void ordinaryClassCanCaptureSameFileFunctionValue() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc helper(): int { return 42; }
 
-                        define class Box as
-                          pub consume(): void {
-                            val callback = helper;
-                            callback();
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(failure.getMessage().contains("class 'Box' cannot implicitly access"),
-                failure.getMessage());
+                define class Box as
+                  pub consume(): void {
+                    val callback = helper;
+                    callback();
+                    return;
+                  }
+                end
+                """)));
     }
 
     @Test
@@ -130,41 +122,33 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void siblingModulesCannotAccessEachOthersNamespacesByPlacement() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module internal as
-                          pub fnc secret(): int { return 42; }
-                        end
+    void siblingModulesCanAccessEachOthersNamespacesInSameFile() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module internal as
+                  pub fnc secret(): int { return 42; }
+                end
 
-                        define module worker as
-                          pub fnc run(): int {
-                            return internal.secret();
-                          }
-                        end
-                        """)));
-        assertTrue(failure.getMessage().contains("module 'worker' cannot implicitly access module 'internal'"),
-                failure.getMessage());
+                define module worker as
+                  pub fnc run(): int {
+                    return internal.secret();
+                  }
+                end
+                """)));
     }
 
     @Test
-    void moduleCannotReadUniqueCallableFromSiblingModuleByPlacement() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module internal as
-                          pub fnc secret(): int { return 42; }
-                        end
+    void moduleCanReadUniqueCallableFromSiblingModuleInSameFile() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module internal as
+                  pub fnc secret(): int { return 42; }
+                end
 
-                        define module worker as
-                          pub fnc run(): int {
-                            return secret();
-                          }
-                        end
-                        """)));
-        assertTrue(failure.getMessage().contains("module 'worker' cannot implicitly access callable 'secret'"),
-                failure.getMessage());
+                define module worker as
+                  pub fnc run(): int {
+                    return secret();
+                  }
+                end
+                """)));
     }
 
     @Test
@@ -178,55 +162,43 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void ordinaryClassCannotUseSameFileModuleOrSiblingClassNamespaces() {
-        IllegalArgumentException moduleFailure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module other as
-                          pub fnc value(): int { return 9; }
-                        end
+    void ordinaryClassCanUseSameFileModuleAndSiblingClassNamespaces() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module other as
+                  pub fnc value(): int { return 9; }
+                end
 
-                        define class Worker as
-                          pub run(): int {
-                            return other.value();
-                          }
-                        end
-                        """)));
-        assertTrue(moduleFailure.getMessage().contains("class 'Worker' cannot implicitly access module 'other'"),
-                moduleFailure.getMessage());
+                define class Worker as
+                  pub run(): int {
+                    return other.value();
+                  }
+                end
+                """)));
 
-        IllegalArgumentException classFailure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Helper as
-                          pub static fnc value(): int { return 3; }
-                        end
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Helper as
+                  pub static fnc value(): int { return 3; }
+                end
 
-                        define class Worker as
-                          pub run(): int {
-                            return Helper.value();
-                          }
-                        end
-                        """)));
-        assertTrue(classFailure.getMessage().contains("class 'Worker' cannot implicitly access sibling class 'Helper'"),
-                classFailure.getMessage());
+                define class Worker as
+                  pub run(): int {
+                    return Helper.value();
+                  }
+                end
+                """)));
     }
 
     @Test
-    void ordinaryClassLexicalBoundarySurvivesNonlexicalLambda() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc globalHelper(): int { return 4; }
+    void ordinaryClassNonlexicalLambdaRetainsSameFileAmbientVisibility() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc globalHelper(): int { return 4; }
 
-                        define class Worker as
-                          pub callback(): (() => int) {
-                            return nlex || -> { return globalHelper(); };
-                          }
-                        end
-                        """)));
-        assertTrue(failure.getMessage().contains("class 'Worker' cannot implicitly access"),
-                failure.getMessage());
+                define class Worker as
+                  pub callback(): (() => int) {
+                    return nlex || -> { return globalHelper(); };
+                  }
+                end
+                """)));
     }
 
     @Test
@@ -267,61 +239,45 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void ordinaryClassCannotUseSameFileTypesWithoutImports() {
-        IllegalArgumentException aliasFailure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        type Payload = int;
+    void ordinaryClassCanUseSameFileTypesWithoutImports() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Payload = int;
 
-                        define class Worker as
-                          pub run(Payload payload): int { return payload; }
-                        end
-                        """)));
-        assertTrue(aliasFailure.getMessage().contains("same-file type alias 'Payload'"),
-                aliasFailure.getMessage());
+                define class Worker as
+                  pub run(Payload payload): int { return payload; }
+                end
+                """)));
 
-        IllegalArgumentException classFailure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Payload as
-                        end
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Payload as
+                end
 
-                        define class Worker as
-                          pub run(Payload payload): void { return; }
-                        end
-                        """)));
-        assertTrue(classFailure.getMessage().contains("same-file type 'Payload'"),
-                classFailure.getMessage());
+                define class Worker as
+                  pub run(Payload payload): void { return; }
+                end
+                """)));
 
-        IllegalArgumentException interfaceFailure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define interface Payload as
-                        end
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface Payload as
+                end
 
-                        define class Worker as
-                          pub run(Payload payload): void { return; }
-                        end
-                        """)));
-        assertTrue(interfaceFailure.getMessage().contains("same-file interface 'Payload'"),
-                interfaceFailure.getMessage());
+                define class Worker as
+                  pub run(Payload payload): void { return; }
+                end
+                """)));
     }
 
     @Test
-    void moduleCannotUseTypeFromSiblingModuleWithoutImport() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module model as
-                          type Payload = int;
-                        end
+    void moduleCanUseTypeFromSiblingModuleInSameFile() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model as
+                  type Payload = int;
+                end
 
-                        define module worker as
-                          pub fnc run(Payload payload): int { return payload; }
-                        end
-                        """)));
-        assertTrue(failure.getMessage().contains("module 'worker' cannot use type alias 'Payload'"),
-                failure.getMessage());
+                define module worker as
+                  pub fnc run(Payload payload): int { return payload; }
+                end
+                """)));
     }
 
     @Test
