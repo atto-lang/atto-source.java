@@ -23,7 +23,7 @@ import java.nio.file.Path;
         version = "0.1.0",
         defaultMimeType = OresLanguage.MIME_TYPE,
         characterMimeTypes = OresLanguage.MIME_TYPE,
-        contextPolicy = TruffleLanguage.ContextPolicy.EXCLUSIVE,
+        contextPolicy = TruffleLanguage.ContextPolicy.SHARED,
         sandbox = SandboxPolicy.UNTRUSTED,
         website = "https://github.com/ores-truffle-oreslang/oreslang-source.java")
 public final class OresLanguage extends TruffleLanguage<OresContext> {
@@ -77,9 +77,9 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             }
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
-        // Reuse only immutable, checked definitions pinned by the trusted
-        // code loader. Mutable evaluators, module slots and import bindings
-        // remain private to this Graal context / semantic actor domain.
+        // A shared Engine + SHARED language policy lets Graal reuse this parsed root
+        // and optimized code across trusted/private contexts. The root contains
+        // only immutable program data; evaluator/module state lives in OresContext.
         Ast.Program program = SharedCodeRegistry.process().checkedProgramIfLive(codeUnitId, text);
         if (program == null) program = OresCompiler.parseAndTypeCheck(text);
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
