@@ -1545,7 +1545,7 @@ public final class Parser {
 
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
-            if (match(CASE)) {
+            if (match(CASE, WHEN)) {
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -1555,24 +1555,24 @@ public final class Parser {
                 if (match(READCH)) {
                     operation = Ast.ChannelOperation.READ;
                     channel = parseExpression();
-                    consume(COLON, "readch select case requires ':'");
+                    consume(COLON, "readch select arm requires ':'");
                     if (isBindingKind(peek().type())) {
                         bindingKind = parseBindingKind();
-                        bindingName = consume(IDENT, "readch case binding requires a name").lexeme();
+                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
                         match(SEMICOLON);
                     }
                 } else if (match(WRITECH)) {
                     operation = Ast.ChannelOperation.WRITE;
                     channel = parseExpression();
-                    consume(COMMA, "writech select case requires 'channel, value'");
+                    consume(COMMA, "writech select arm requires 'channel, value'");
                     value = parseExpression();
-                    consume(COLON, "writech select case requires ':'");
+                    consume(COLON, "writech select arm requires ':'");
                 } else {
-                    throw error(peek(), "select case must start with readch or writech");
+                    throw error(peek(), "select arm must start with readch or writech");
                 }
 
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select case requires a braced body '{ ... }'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -1601,7 +1601,7 @@ public final class Parser {
                 continue;
             }
 
-            throw error(peek(), "expected case/default inside select");
+            throw error(peek(), "expected when/case/default inside select");
         }
 
         consume(RBRACE, "expected '}' after select");
