@@ -362,38 +362,78 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.SelectStmt selected) {
             if (selected.mode() != Ast.WaitMode.IMMEDIATE
-                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
-                throw error("cannot suspend or arm nb select while holding a MutexGuard");
+                    && (mutexCriticalSectionDepth > 0
+                        || scope.hasLiveMutexGuard())) {
+                throw error(
+                        "cannot suspend or arm nb select while holding a MutexGuard");
             }
 
-            // Case operands are evaluated once when the selection is armed.
-            // Public Channel/SelectSet capabilities are execution-domain local
-            // in the current model, so channel references are borrowed for the
-            // registration lifetime and cannot cross an actor boundary. This
-            // prevents writech from becoming an implicit shared-memory escape
-            // hatch while preserving ordinary actor-local channel use.
-            List<Ast.TypeRef> elementTypes = new ArrayList<>(selected.arms().size());
+            List<Ast.TypeRef> resultTypes =
+                    new ArrayList<>(selected.arms().size());
             for (Ast.SelectArm arm : selected.arms()) {
-                if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
-                    elementTypes.add(Ast.TypeRef.inferred());
-                    continue;
-                }
-                ValueInfo channel = checkExpr(arm.channel(), scope, false);
-                Ast.TypeRef element = channelElementType(channel.type);
-                elementTypes.add(element);
-                if (arm.operation() == Ast.ChannelOperation.WRITE) {
-                    // Blocking/immediate select can conditionally move only the winning
-                    // send. Nonblocking select returns before settlement, so its
-                    // registration must own every candidate write payload immediately.
-                    ValueInfo payload = checkExpr(
-                            arm.value(),
-                            scope,
-                            selected.mode() == Ast.WaitMode.NONBLOCKING);
-                    if (containsMutexGuardType(payload.type)) {
-                        throw error("writech cannot transport MutexGuard");
+                switch (arm.operation()) {
+                    case DEFAULT, TIMEOUT ->
+                            resultTypes.add(Ast.TypeRef.inferred());
+                    case READ -> {
+                        ValueInfo channel =
+                                checkExpr(arm.source(), scope, false);
+                        resultTypes.add(channelElementType(channel.type));
                     }
-                    if (isBorrowValue(payload)) {
-                        throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
+                    case WRITE -> {
+                        ValueInfo channel =
+                                checkExpr(arm.source(), scope, false);
+                        Ast.TypeRef element = channelElementType(channel.type);
+                        resultTypes.add(Ast.TypeRef.inferred());
+
+                        // nb-select returns before settlement and therefore
+                        // owns every candidate payload immediately. Blocking
+                        // and try-select only move the winning write below.
+                        ValueInfo payload = checkExpr(
+                                arm.value(),
+                                scope,
+                                selected.mode() == Ast.WaitMode.NONBLOCKING);
+                        if (containsMutexGuardType(payload.type)) {
+                            throw error("writech cannot transport MutexGuard");
+                        }
+                        if (isBorrowValue(payload)) {
+                            throw error(
+                                    "writech cannot transport a borrowed reference; "
+                                            + "channel payloads must own/copy/share their data");
+                        }
+                    }
+                    case AWAIT -> {
+                        ValueInfo future = checkExpr(
+                                arm.source(),
+                                scope,
+                                selected.mode() == Ast.WaitMode.NONBLOCKING);
+                        Ast.TypeRef concrete = future.type.isBorrow()
+                                ? future.type.borrowedTarget()
+                                : future.type;
+                        if (!concrete.name().equals("Future")
+                                || concrete.arguments().size() != 1) {
+                            throw error(
+                                    "select await arm requires Future<T>");
+                        }
+                        Ast.TypeRef result = concrete.arguments().getFirst();
+                        if (arm.bindingName() != null
+                                && result.name().equals("void")) {
+                            throw error(
+                                    "select await Future<void> cannot bind a result value");
+                        }
+                        resultTypes.add(result);
+                    }
+                    case CANCELLED -> {
+                        ValueInfo token =
+                                checkExpr(arm.source(), scope, false);
+                        Ast.TypeRef concrete = token.type.isBorrow()
+                                ? token.type.borrowedTarget()
+                                : token.type;
+                        if (!concrete.name().equals("CancellationToken")
+                                || !concrete.arguments().isEmpty()) {
+                            throw error(
+                                    "select cancelled arm requires CancellationToken");
+                        }
+                        resultTypes.add(Ast.TypeRef.inferred());
                     }
                 }
             }
@@ -411,40 +451,45 @@ public final class OwnershipChecker {
             for (int i = 0; i < selected.arms().size(); i++) {
                 Ast.SelectArm arm = selected.arms().get(i);
                 restoreState(base);
-                Scope armScope = selected.mode() == Ast.WaitMode.NONBLOCKING
-                        ? deferredSelectArmScope(deferredArmCaptures.get(i))
-                        : new Scope(scope);
-                if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
+                Scope armScope =
+                        selected.mode() == Ast.WaitMode.NONBLOCKING
+                                ? deferredSelectArmScope(
+                                        deferredArmCaptures.get(i))
+                                : new Scope(scope);
+
+                if (arm.operation() == Ast.SelectOperation.DEFAULT) {
                     hasDefault = true;
-                } else if (arm.operation() == Ast.ChannelOperation.WRITE
+                } else if (arm.operation() == Ast.SelectOperation.WRITE
                         && selected.mode() != Ast.WaitMode.NONBLOCKING) {
-                    // Only the winning blocking/immediate arm commits the send.
-                    // Join possible exits so outer values become maybe-moved
-                    // (represented conservatively as moved) after selection.
-                    ValueInfo outgoing = checkExpr(arm.value(), armScope, true);
+                    ValueInfo outgoing =
+                            checkExpr(arm.value(), armScope, true);
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
-                } else if (arm.operation() == Ast.ChannelOperation.READ
+                } else if ((arm.operation() == Ast.SelectOperation.READ
+                                || arm.operation() == Ast.SelectOperation.AWAIT)
                         && arm.bindingName() != null) {
-                    Ast.TypeRef element = elementTypes.get(i);
+                    Ast.TypeRef result = resultTypes.get(i);
                     armScope.define(
                             arm.bindingName(),
                             new VarState(
-                                    element,
+                                    result,
                                     arm.mutableReferent(),
                                     arm.bindingKind() == Ast.BindingKind.LET,
-                                    kindOfType(element),
+                                    kindOfType(result),
                                     Origin.LOCAL));
                 }
 
-                if (selected.mode() == Ast.WaitMode.NONBLOCKING || selected.explicitDo()) {
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                        || selected.explicitDo()) {
                     int previousLoopDepth = loopDepth;
                     boolean previousDiscard = discardingSelectReturn;
                     loopDepth = 0;
                     discardingSelectReturn = selected.explicitDo();
                     try {
-                        checkBlock(arm.body(), armScope,
+                        checkBlock(
+                                arm.body(),
+                                armScope,
                                 selected.explicitDo()
                                         ? Ast.TypeRef.inferred()
                                         : Ast.TypeRef.simple("void"));
@@ -456,7 +501,8 @@ public final class OwnershipChecker {
                     checkBlock(arm.body(), armScope, returnType);
                 }
                 armScope.close();
-                Map<VarState, StateSnapshot> exit = stateSnapshot(scope);
+                Map<VarState, StateSnapshot> exit =
+                        stateSnapshot(scope);
 
                 if (selected.mode() != Ast.WaitMode.NONBLOCKING) {
                     exits.add(exit);
@@ -464,12 +510,10 @@ public final class OwnershipChecker {
             }
 
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                // Captures were transferred before base was snapshotted.
-                // Arm-local moves happen in detached capture scopes and do not
-                // mutate the continuing outer ownership state.
                 restoreState(base);
             } else {
-                if (selected.mode() == Ast.WaitMode.IMMEDIATE && !hasDefault) {
+                if (selected.mode() == Ast.WaitMode.IMMEDIATE
+                        && !hasDefault) {
                     exits.add(base);
                 }
                 mergeBranchState(base, exits);
