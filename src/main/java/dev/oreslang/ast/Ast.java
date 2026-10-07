@@ -681,46 +681,100 @@ public final class Ast {
         public LoopStmt { body = List.copyOf(body); }
     }
 
-    public enum ChannelOperation { READ, WRITE, DEFAULT }
+    public enum ChannelOperation { READ, WRITE }
+    public enum SelectOperation { READ, WRITE, AWAIT, TIMEOUT, CANCELLED, DEFAULT }
     public enum WaitMode { BLOCKING, NONBLOCKING, IMMEDIATE }
     public enum SelectPolicy { FAIR, PRIORITY, RANDOM }
 
     public record SelectArm(
-            ChannelOperation operation,
-            Expr channel,
+            SelectOperation operation,
+            Expr source,
             Expr value,
+            long timeoutNanos,
             BindingKind bindingKind,
             String bindingName,
             List<Stmt> body,
             boolean mutableReferent) {
         public SelectArm {
-            if (operation == ChannelOperation.DEFAULT && mutableReferent) {
-                throw new IllegalArgumentException("default select arm cannot carry mutable binding");
+            if (operation == null) {
+                throw new IllegalArgumentException("select arm operation is required");
             }
             body = List.copyOf(body);
-            if (operation == ChannelOperation.DEFAULT) {
-                if (channel != null || value != null || bindingKind != null || bindingName != null) {
-                    throw new IllegalArgumentException("default select arm cannot carry channel/value/binding metadata");
+            if ((bindingKind == null) != (bindingName == null)) {
+                throw new IllegalArgumentException("select binding kind/name must appear together");
+            }
+            if (bindingName == null && mutableReferent) {
+                throw new IllegalArgumentException(
+                        "select arm cannot mark a missing binding mutable");
+            }
+
+            switch (operation) {
+                case DEFAULT -> {
+                    if (source != null || value != null || timeoutNanos != 0L
+                            || bindingKind != null || bindingName != null || mutableReferent) {
+                        throw new IllegalArgumentException(
+                                "default select arm cannot carry source/value/timeout/binding metadata");
+                    }
                 }
-            } else {
-                if (channel == null) throw new IllegalArgumentException("channel select arm requires a channel");
-                if (operation == ChannelOperation.READ && value != null) {
-                    throw new IllegalArgumentException("read select arm cannot carry a write value");
+                case READ -> {
+                    if (source == null) {
+                        throw new IllegalArgumentException("read select arm requires a channel");
+                    }
+                    if (value != null || timeoutNanos != 0L) {
+                        throw new IllegalArgumentException(
+                                "read select arm cannot carry write/timeout metadata");
+                    }
                 }
-                if (operation == ChannelOperation.WRITE && value == null) {
-                    throw new IllegalArgumentException("write select arm requires a value");
+                case WRITE -> {
+                    if (source == null || value == null) {
+                        throw new IllegalArgumentException(
+                                "write select arm requires channel and value");
+                    }
+                    if (timeoutNanos != 0L || bindingName != null || mutableReferent) {
+                        throw new IllegalArgumentException(
+                                "write select arm cannot carry timeout/binding metadata");
+                    }
                 }
-                if ((bindingKind == null) != (bindingName == null)) {
-                    throw new IllegalArgumentException("select binding kind/name must appear together");
+                case AWAIT -> {
+                    if (source == null) {
+                        throw new IllegalArgumentException(
+                                "await select arm requires a Future");
+                    }
+                    if (value != null || timeoutNanos != 0L) {
+                        throw new IllegalArgumentException(
+                                "await select arm cannot carry write/timeout metadata");
+                    }
                 }
-                if (operation == ChannelOperation.WRITE && bindingName != null) {
-                    throw new IllegalArgumentException("write select arm cannot bind a read value");
+                case TIMEOUT -> {
+                    if (source != null || value != null || timeoutNanos < 0L
+                            || bindingKind != null || bindingName != null || mutableReferent) {
+                        throw new IllegalArgumentException(
+                                "timeout select arm only carries a non-negative duration");
+                    }
+                }
+                case CANCELLED -> {
+                    if (source == null) {
+                        throw new IllegalArgumentException(
+                                "cancelled select arm requires a token");
+                    }
+                    if (value != null || timeoutNanos != 0L
+                            || bindingKind != null || bindingName != null || mutableReferent) {
+                        throw new IllegalArgumentException(
+                                "cancelled select arm cannot carry write/timeout/binding metadata");
+                    }
                 }
             }
         }
-        public SelectArm(ChannelOperation operation, Expr channel, Expr value,
-                         BindingKind bindingKind, String bindingName, List<Stmt> body) {
-            this(operation, channel, value, bindingKind, bindingName, body,
+
+        public SelectArm(
+                SelectOperation operation,
+                Expr source,
+                Expr value,
+                long timeoutNanos,
+                BindingKind bindingKind,
+                String bindingName,
+                List<Stmt> body) {
+            this(operation, source, value, timeoutNanos, bindingKind, bindingName, body,
                     bindingKind == BindingKind.VAL);
         }
     }
@@ -749,7 +803,7 @@ public final class Ast {
             }
             arms = List.copyOf(arms);
             if (arms.isEmpty()) throw new IllegalArgumentException("select requires at least one arm");
-            long defaults = arms.stream().filter(arm -> arm.operation() == ChannelOperation.DEFAULT).count();
+            long defaults = arms.stream().filter(arm -> arm.operation() == SelectOperation.DEFAULT).count();
             if (defaults > 1) throw new IllegalArgumentException("select permits at most one default arm");
         }
     }
