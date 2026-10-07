@@ -1990,21 +1990,51 @@ public final class Parser {
         } finally {
             suppressRefinementOperators = previousSuppression;
         }
-        // Contextual separator: it must not reserve "over" elsewhere.
+        // The 'no-return' modifier is contextual and only meaningful before
+        // the explicit 'over' separator. Bare statement matches retain legacy
+        // function-return semantics for compatibility.
+        boolean discardResult = consumeNoReturnModifier();
         boolean over = check(IDENT) && peek().lexeme().equals("over");
         if (over) advance();
         if (!over) match(SEMICOLON);
+        if (discardResult && !over) {
+            throw error(peek(), "'no-return' requires 'over' after the match subject");
+        }
+        if (valueContext && discardResult) {
+            throw error(peek(), "'no-return' match produces void and cannot be used as a value");
+        }
+        if (!valueContext && over && !discardResult) {
+            throw error(peek(), "standalone 'match ... over' must specify 'no-return' "
+                    + "to discard branch results");
+        }
 
         boolean armSuppression = suppressRefinementOperators;
         suppressRefinementOperators = false;
         try {
-            return parseMatchArms(subject, ordered, over, valueContext);
+            return parseMatchArms(subject, ordered, over, valueContext, discardResult);
         } finally {
             suppressRefinementOperators = armSuppression;
         }
     }
 
-    private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered, boolean over, boolean valueContext) {
+    /**
+     * Recognize exactly no-return, never no - return or a global reserved word.
+     * The modifier is legal only in the header of a statement match.
+     */
+    private boolean consumeNoReturnModifier() {
+        if (current + 2 >= tokens.size()) return false;
+        Token no = tokens.get(current);
+        Token dash = tokens.get(current + 1);
+        Token returning = tokens.get(current + 2);
+        if (no.type() != IDENT || !no.lexeme().equals("no")
+                || dash.type() != MINUS || returning.type() != RETURN
+                || !adjacent(no, dash) || !adjacent(dash, returning)) return false;
+        advance(); advance(); advance();
+        return true;
+    }
+
+    private Ast.MatchStmt parseMatchArms(Ast.Expr subject, boolean ordered, boolean over,
+                                        boolean valueContext, boolean discardResult) {
         boolean braces = !over && match(LBRACE);
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(braces ? RBRACE : END) && !check(EOF)) {
@@ -2024,24 +2054,34 @@ public final class Parser {
                 }
                 consume(RBRACE, "expected '}' after match arm block");
                 yieldsValue = !body.isEmpty() && body.getLast() instanceof Ast.ExprStmt && !lastTerminated;
-                // In a *value-context* "match ... over", terminal "return"
-                // yields from the match expression only. A statement match
-                // retains ordinary function returns. Existing brace-delimited
-                // expression matches retain their established return semantics.
-                if (valueContext && over) {
-                    if (body.isEmpty() || !(body.getLast() instanceof Ast.ReturnStmt returned)
-                            || returned.value() == null) {
+                // In 'match ... over' expressions, 'return' completes the
+                // match. In 'match ... no-return over', the same arm-local return
+                // evaluates (and discards) its value, never returning from the
+                // enclosing function. Ordinary legacy statement matches keep
+                // their historical function-return semantics.
+                if ((valueContext && over) || discardResult) {
+                    boolean hasResult = !body.isEmpty()
+                            && body.getLast() instanceof Ast.ReturnStmt last
+                            && last.value() != null;
+                    if (valueContext && !hasResult) {
                         throw error(previous(), "value-producing 'match ... over' arms must end "
                                 + "with an explicit 'return <value>;' statement");
                     }
-                    for (int i = 0; i < body.size() - 1; i++) {
+                    int checkedPrefix = hasResult ? body.size() - 1 : body.size();
+                    for (int i = 0; i < checkedPrefix; i++) {
                         if (containsNestedReturn(body.get(i))) {
-                            throw error(previous(), "value-producing 'match ... over' forbids "
-                                    + "earlier or nested returns; use one terminal arm-local return");
+                            throw error(previous(), "match arm forbids earlier or nested returns; "
+                                    + "use one terminal arm-local return");
                         }
                     }
-                    body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
-                    yieldsValue = true;
+                    if (hasResult) {
+                        Ast.ReturnStmt returned = (Ast.ReturnStmt) body.getLast();
+                        body.set(body.size() - 1, new Ast.ExprStmt(returned.value()));
+                    } else if (!body.isEmpty() && body.getLast() instanceof Ast.ReturnStmt) {
+                        throw error(previous(), "'return;' without a value is invalid in "
+                                + "'no-return' arms; omit it to finish the arm");
+                    }
+                    yieldsValue = valueContext;
                 }
             } else {
                 if (valueContext && over) {
@@ -2049,7 +2089,7 @@ public final class Parser {
                             + "containing a terminal 'return <value>;' ");
                 }
                 body.add(new Ast.ExprStmt(parseExpression()));
-                yieldsValue = true;
+                yieldsValue = !discardResult;
             }
             arms.add(new Ast.MatchArm(pattern, guard, body, yieldsValue));
             match(SEMICOLON);
@@ -2061,7 +2101,7 @@ public final class Parser {
     }
 
     /**
-     * A value-producing match-over arm cannot hide an ordinary function-return in
+     * Match-over arm-local returns must not hide outer function exits in
      * earlier control flow. Nested lambda returns are independent lexical
      * functions and are intentionally not traversed here.
      */
