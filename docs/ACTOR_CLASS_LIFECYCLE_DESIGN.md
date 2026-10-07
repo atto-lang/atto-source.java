@@ -1,6 +1,6 @@
 # Actor class lifecycle and parent-facing output streams (design + implementation status)
 
-**Status (2026-10-07): actor declarations, source `spawn Actor()` execution, `ActorRef<Actor>`, actor-local `on_start()`, typed mailbox dispatch, bounded parent-facing outputs, `self.send`, `self.end`/`self.endWithCleanup`, ready/done lifecycle barriers, actor-only lexical dependency boundaries, and same-OresVM immutable shared-code images are implemented and regression-tested. Stream merge/`for await` integration remains a separate acceptance gate.**
+**Status (2026-10-07): actor declarations, source `spawn Actor()`, `ActorRef<Actor>`, actor-local `on_start()`, compiler-owned typed endpoint dispatch, bounded parent-facing outputs, `self.send`, `self.end`/`self.endWithCleanup`, ready/done lifecycle barriers, actor-only lexical dependency boundaries, and same-OresVM immutable shared-code images are implemented on the working branch. Exact-head CI remains required before merge.**
 
 The existing `ActorRuntime` already has `ActorRef.send/stop/cancel/forceCancel`,
 bounded channel-backed mailboxes, actor identity, child supervision, and
@@ -8,60 +8,50 @@ bounded channel-backed mailboxes, actor identity, child supervision, and
 **already used for ActorGroup Mailman outbox messages**. Do not silently
 repurpose it as a class actor's inbound message.
 
-## Target `main.ores` (partially implemented end-to-end target)
+## Target `main.ores`
 
 ```ores
-// Actor creation, lifecycle hooks, mailbox delivery, outputs, ready/done,
-// self.send and self.end are executable today. The merge/for-await portion
-// remains a contract target until stream-composition lowering is complete.
 define actor Worker as
   on_start(): void {
-    // Actor-local startup hook; actor constructors stay forbidden.
     return;
   }
 
-  receive(ActorMail<String> mail): void {
-    if mail.value != "start"; do
-      return;
-    fi
+  pub run(Job job): Result {
+    self.send("started");
+    const result = process(job);
+    self.send("finished");
+    return result;
+  }
 
-    self.send("hello");
-    rt cooperate;
-    self.send("world");
-    rt cooperate;
-    self.send("!");
+  pub notify(Event event): void {
+    record(event);
+    return;
+  }
+
+  pub shutdown(): void {
     self.end();
     return;
   }
 end
 
 pub async routine main(): void {
-  val workers = [spawn Worker(), spawn Worker(), spawn Worker()];
-  await Future.all([workers[0].ready, workers[1].ready, workers[2].ready]);
+  const worker = spawn Worker();
+  await worker.ready;
 
-  // Creating an actor does not automatically send a receive() message.
-  for const worker of workers do
-    worker.send("start");
-  done
+  worker.send.notify(event);              // one-way
+  const result = await worker.call.run(job); // request/reply
 
-  // A parent may subscribe/merge all three bounded output streams. Each
-  // worker's per-stream order is hello, world, !; cross-worker order is free.
-  val streams = [workers[0].outputs, workers[1].outputs, workers[2].outputs];
-  for await const output of merge(streams) do
-    stdio.println(output.actor_id, output.sequence, output.value);
-  done
-
-  await Future.all([workers[0].done, workers[1].done, workers[2].done]);
+  worker.send.shutdown();
+  await worker.done;
   return;
 }
 ```
 
-This illustration uses implemented `spawn`, `ActorMail`, `outputs`, `ready`
-and `done` actor surfaces plus still-evolving `merge`/`for await` stream
-composition. The actor lifecycle/transport subset is covered by executable
-source tests; the complete illustration is not yet an acceptance fixture. In particular,
-`return await w.ready` returns a readiness result, **not** `w` or a list
-of output strings.
+The actor class does **not** define `receive()`, `dispatch()`, or a mailbox
+loop. For every actor type, the compiler/runtime owns one hidden dispatch
+entrypoint. Public actor instance methods form the typed endpoint table.
+`worker.endpoint(...)` is deliberately invalid so actor dispatch can never be
+mistaken for ordinary object method invocation.
 
 ## Canonical API split
 
@@ -70,16 +60,22 @@ of output strings.
 | `spawn Worker()` | `ActorRef<Worker>` | Allocates actor identity; reserved on_start hook runs in actor execution context, not the caller |
 | `w.id`, `w.kind` | `ActorId`, `ActorKind` | Immutable identity/diagnostics |
 | `w.ready` | `Future<void>` | Completes once actor-local field initialization and reserved `on_start()` succeed; fails if startup fails/stops |
-| `w.send(mail)` | `void` or explicit nonblocking variant | **Inbound**, serialized, bounded actor mailbox; reject capability/pointer/function payloads |
+| `w.send.endpoint(args...)` | `void` | One-way typed endpoint dispatch. The endpoint must return `void`; arguments cross the bounded actor transport boundary. |
+| `w.call.endpoint(args...)` | `Future<R>` | Typed request/reply dispatch. Arguments are transported into the actor and the data-only result is transported back through a runtime-owned reply capability. |
 | `w.outputs` | `AsyncIterator<ActorOutput<T>>` or read-only `Channel<ActorOutput<T>>` | **Outbound**, bounded, async/backpressure-capable, parent-observable stream |
 | `w.done` | `Future<void>` | Settles after actor finalization and isolate/carrier cleanup |
 | `w.stop()`, `w.cancel()` | `void`, `bool` | Graceful stop vs structured cancellation (supervisor authority checks apply) |
 | `w.kill()` | `bool` | Force-isolated cancellation only if revoker is configured; never thread interruption masquerading as isolation |
 | `self.send(value)` | `Future<void>` or nonblocking admission acknowledgement | **Outbound** from actor to its output stream; NOT recursive delivery to own inbox |
-| `self.end()` | `void` | Non-blocking graceful stop request; seals/drains the inbox immediately so no later `receive()` starts; current turn may finish, then finalization closes outputs after admitted values drain |
+| `self.end()` | `void` | Non-blocking graceful stop request; seals/drains the inbox immediately so no later endpoint dispatch starts; current turn may finish, then finalization closes outputs after admitted values drain |
 | `self.endWithCleanup(|| -> { ... })` | `void` | Same immediate inbox fence as `self.end()`, plus one synchronous zero-arg final cleanup action after the current turn unwinds and before outputs close / `done` settles |
-| `receive(ActorMail<T>)` | `void` | Lifecycle handler invoked once per incoming envelope, serialized and actor-local |
+| compiler-owned dispatcher | hidden | The single standardized worker entrypoint. User source cannot declare or invoke it. |
 | `rt cooperate` | `void` scheduling effect | Suspension/safepoint; no implicit publication or message delivery |
+
+The names `receive`, `send`, `call`, `ready`, `done`, `outputs`,
+`id`, `kind`, `stop`, `cancel`, `kill`, `end`, and
+`endWithCleanup` are reserved on actor classes for compiler/runtime transport
+and lifecycle semantics. `on_start` is the sole source-declared lifecycle hook.
 
 `self.send(value)`, `self.end()`, and `self.endWithCleanup(...)` are **non-overridable runtime actor operations**. Actor classes may not declare instance methods named `send`, `end`, or `endWithCleanup`, and source code does not use `super.send(...)` to reach transport.
 This keeps quota checks, serialization, termination fences, and output-stream
@@ -96,19 +92,19 @@ self.endWithCleanup(|| -> {
 
 The end request itself does not block. As soon as either end API is called, the
 actor mailbox is sealed and queued-but-not-started mail is discarded; no later
-`receive()` invocation may begin. Code already executing in the current
-`receive()` may continue until that turn returns. For `endWithCleanup`, the
+endpoint dispatch may begin. Code already executing in the current
+endpoint invocation may continue until that turn returns. For `endWithCleanup`, the
 cleanup then runs exactly once as the final guest action while actor-local state
 is still available. Cleanup cannot be async/suspending; if it throws, `done`
 rejects with the cleanup failure.
 
 ## Message identities and transport
 
-- Source `ActorMail<T>` is now statically modeled with immutable
-  `recipient: ActorId`, `sender: Option<ActorId>`, `sequence: int`, and
-  `value: T`. Runtime delivery uses `ActorRuntime.ActorInboxMail<T>`, which
-  is deliberately distinct from the existing
-  `dev.oreslang.runtime.ActorMail` Group Mailman record.
+- Raw inbox envelopes are a runtime implementation detail. Source actor code
+  does not receive `ActorMail<T>` and cannot implement `receive()`.
+  `ActorRuntime.ActorInboxMail<T>` remains internal metadata for scheduling,
+  accounting, sender identity, and diagnostics; the existing
+  `dev.oreslang.runtime.ActorMail` remains the separate ActorGroup Mailman type.
 - Introduce `ActorOutput<T>(actor_id, sequence, value)` for output. The
   output sender is the *emitting* actor, not its parent.
 - Send values through the same strict graph walker/serializer/copy rules
@@ -164,11 +160,12 @@ private or untrusted actor authority that its execution policy forbids.
 2. **Implemented source execution:** `spawn Worker()` lowers to a runtime-owned
    source actor with actor-local field initialization and `on_start()`.
    Constructors and constructor-style spawn arguments remain rejected.
-3. **Implemented lifecycle/transport:** `ready`/`done`, typed mailbox
-   `ActorMail<T>`, `ActorRef.send`, bounded read-only `outputs`,
-   `self.send`, `self.end`, and synchronous `self.endWithCleanup`.
-   Mail/output graphs are copied/frozen under actor-boundary rules and live
-   domain-local capabilities remain rejected.
+3. **Implemented lifecycle/transport on the working branch:** `ready`/`done`,
+   compiler-owned endpoint dispatch, `ActorRef.send.endpoint(...)`,
+   `ActorRef.call.endpoint(...)`, bounded read-only `outputs`, `self.send`,
+   `self.end`, and synchronous `self.endWithCleanup`. Raw `receive()` is
+   reserved. Mail/output/reply graphs are copied/frozen under actor-boundary
+   rules and live domain-local capabilities remain rejected.
 4. **Implemented state/code separation:** linked source units publish immutable
    code-image identities once per OresVM. Shared/private/untrusted actors reuse
    those identities while actor fields, select fairness cursors, mailboxes and
@@ -215,7 +212,7 @@ to follow for any future inline cache or scheduler metadata—shared code may
 reference actor-local runtime state, but must not become a writable state bag
 shared by isolated actors.
 
-Source-level `spawn Worker()`, actor startup, mailbox receive, bounded worker
+Source-level `spawn Worker()`, actor startup, typed endpoint dispatch, bounded worker
 output, `self.send`, `self.end`, `self.endWithCleanup`, and `ready`/`done`
 are evaluator-lowered into `ActorRuntime` and covered by executable regression
 tests. Do not extend that claim to generalized stream merge/`for await` or
