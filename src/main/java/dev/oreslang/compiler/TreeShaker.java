@@ -739,17 +739,26 @@ public final class TreeShaker {
                     }
                     arms.add(new Ast.SelectArm(
                             arm.operation(),
-                            rewriteExpression(arm.channel(), module, locals),
-                            rewriteExpression(arm.value(), module, locals),
+                            arm.source() == null
+                                    ? null
+                                    : rewriteExpression(
+                                            arm.source(), module, locals),
+                            arm.value() == null
+                                    ? null
+                                    : rewriteExpression(
+                                            arm.value(), module, locals),
+                            arm.timeoutNanos(),
                             arm.bindingKind(),
                             arm.bindingName(),
-                            rewriteStatements(arm.body(), module, armLocals),
+                            rewriteStatements(
+                                    arm.body(), module, armLocals),
                             arm.mutableReferent()));
                 }
                 return List.of(new Ast.SelectStmt(
                         selected.mode(),
                         selected.policy(),
-                        arms));
+                        arms,
+                        selected.explicitDo()));
             }
             if (statement instanceof Ast.TryStmt tried) {
                 LinkedHashMap<String, Object> catchLocals = new LinkedHashMap<>(locals);
@@ -1169,8 +1178,12 @@ public final class TreeShaker {
                     scanStatements(module, switched.defaultBody(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.SelectStmt selected) {
                     for (Ast.SelectArm arm : selected.arms()) {
-                        scanExpression(module, arm.channel(), locals);
-                        scanExpression(module, arm.value(), locals);
+                        if (arm.source() != null) {
+                            scanExpression(module, arm.source(), locals);
+                        }
+                        if (arm.value() != null) {
+                            scanExpression(module, arm.value(), locals);
+                        }
                         LinkedHashSet<String> armLocals =
                                 new LinkedHashSet<>(locals);
                         if (arm.bindingName() != null) {
