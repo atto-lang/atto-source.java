@@ -31,6 +31,7 @@ public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy supervisorPolicy;
     private final IsolatePolicy guestPolicy;
     private final ExecutionProfile executionProfile;
+    private final UntrustedCodeShareAllowlist untrustedCodeShareAllowlist;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
@@ -39,19 +40,29 @@ public final class HotReloadManager implements AutoCloseable {
     public HotReloadManager(
             IsolatePolicy supervisorPolicy,
             ExecutionProfile executionProfile) {
-        this(supervisorPolicy, supervisorPolicy, executionProfile);
+        this(supervisorPolicy, supervisorPolicy, executionProfile, UntrustedCodeShareAllowlist.none());
     }
 
     public HotReloadManager(
             IsolatePolicy supervisorPolicy,
             IsolatePolicy guestPolicy,
             ExecutionProfile executionProfile) {
+        this(supervisorPolicy, guestPolicy, executionProfile, UntrustedCodeShareAllowlist.none());
+    }
+
+    public HotReloadManager(
+            IsolatePolicy supervisorPolicy,
+            IsolatePolicy guestPolicy,
+            ExecutionProfile executionProfile,
+            UntrustedCodeShareAllowlist untrustedCodeShareAllowlist) {
         this.supervisorPolicy =
                 java.util.Objects.requireNonNull(supervisorPolicy);
         this.guestPolicy =
                 java.util.Objects.requireNonNull(guestPolicy);
         this.executionProfile =
                 java.util.Objects.requireNonNull(executionProfile);
+        this.untrustedCodeShareAllowlist =
+                java.util.Objects.requireNonNull(untrustedCodeShareAllowlist);
         this.supervisorPolicy.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
                 "HotReloadManager");
@@ -60,10 +71,19 @@ public final class HotReloadManager implements AutoCloseable {
     public static HotReloadManager forUntrustedActors(
             IsolatePolicy supervisorPolicy,
             ExecutionProfile executionProfile) {
+        return forUntrustedActors(
+                supervisorPolicy, executionProfile, UntrustedCodeShareAllowlist.none());
+    }
+
+    public static HotReloadManager forUntrustedActors(
+            IsolatePolicy supervisorPolicy,
+            ExecutionProfile executionProfile,
+            UntrustedCodeShareAllowlist untrustedCodeShareAllowlist) {
         return new HotReloadManager(
                 supervisorPolicy,
                 IsolatePolicy.untrustedActor(),
-                executionProfile);
+                executionProfile,
+                untrustedCodeShareAllowlist);
     }
 
     public IsolatePolicy supervisorPolicy() { return supervisorPolicy; }
@@ -171,7 +191,10 @@ public final class HotReloadManager implements AutoCloseable {
             Source source;
             if (shareCodeImage) {
                 // One immutable image is reused across eligible contexts.
-                codeImage = SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
+                codeImage = untrusted
+                    ? SharedCodeRegistry.process().acquireUntrusted(
+                            codeUnitId, sourceText, untrustedCodeShareAllowlist)
+                    : SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
                 if (!codeImage.sha256().equals(sourceDigest)) {
                     throw new IllegalArgumentException("compiled code-unit source digest mismatch");
                 }
@@ -200,6 +223,42 @@ public final class HotReloadManager implements AutoCloseable {
                 failure.addSuppressed(closeFailure);
             } finally {
                 if (codeImage != null) codeImage.close();
+            }
+            throw failure;
+        }
+    }
+
+    private Generation stageUnshared(
+            String codeUnitId, String sourceDigest, String sourceText) {
+        if (guestPolicy.adversarial()
+                && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
+            throw new IllegalStateException(
+                    "adversarial hot-load live generation limit exceeded: "
+                            + MAX_ADVERSARIAL_LIVE_GENERATIONS);
+        }
+        long id = sequence.incrementAndGet();
+        Context context =
+                guestPolicy.restrictedContextBuilder(executionProfile).build();
+        try {
+            // Fail closed for unapproved adversarial source. cached(false)
+            // prevents accidental engine-level parse/JIT reuse if the embedding
+            // configuration later changes to a shared sandbox engine.
+            Source source = Source.newBuilder(
+                            dev.oreslang.OresLanguage.ID, sourceText, codeUnitId)
+                    .mimeType(dev.oreslang.OresLanguage.MIME_TYPE)
+                    .cached(false)
+                    .buildLiteral();
+            Generation generation = new Generation(
+                    id, codeUnitId, sourceDigest, context, source, null, executionProfile);
+            generations.put(id, generation);
+            activeByCodeUnit.put(codeUnitId, generation);
+            active.set(generation);
+            return generation;
+        } catch (RuntimeException | Error failure) {
+            try {
+                context.close(true);
+            } catch (RuntimeException closeFailure) {
+                failure.addSuppressed(closeFailure);
             }
             throw failure;
         }
