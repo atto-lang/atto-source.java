@@ -866,7 +866,7 @@ public final class Ast {
         public boolean isDynamic() { return dynamicName != null; }
     }
 
-    public enum ObjectKind { OBJECT, INFERRED_STRUCT, EXPLICIT_STRUCT }
+    public enum ObjectKind { INFERRED_STRUCT, EXPLICIT_STRUCT }
 
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
@@ -877,12 +877,13 @@ public final class Ast {
     }
 
     /**
-     * Structural object expression.
+     * Anonymous struct expression.
      *
-     * <p>OBJECT is the existing obj{...} form. INFERRED_STRUCT is a closed,
-     * readonly shape inferred entirely from its initializer. EXPLICIT_STRUCT
-     * carries a separately declared closed shape so declared fields may be
-     * initialized after construction under an owned mutable binding.
+     * <p>INFERRED_STRUCT is a closed, permanently readonly shape inferred
+     * entirely from its initializer. EXPLICIT_STRUCT carries a separately
+     * declared closed shape so declared fields may be initialized after
+     * construction under an owned mutable binding. Oreslang has no open-ended
+     * dynamic struct/object shape.</p>
      */
     public record ObjectExpr(
             List<ObjectField> fields,
@@ -897,10 +898,17 @@ public final class Ast {
             }
         }
         public ObjectExpr(List<ObjectField> fields) {
-            this(fields, ObjectKind.OBJECT, List.of());
+            this(fields, ObjectKind.INFERRED_STRUCT, List.of());
         }
         public ObjectExpr(List<ObjectField> fields, boolean inferredStruct) {
-            this(fields, inferredStruct ? ObjectKind.INFERRED_STRUCT : ObjectKind.OBJECT, List.of());
+            this(fields, requireInferredStructKind(inferredStruct), List.of());
+        }
+        private static ObjectKind requireInferredStructKind(boolean inferredStruct) {
+            if (!inferredStruct) {
+                throw new IllegalArgumentException(
+                        "legacy non-struct ObjectExpr has been removed; use an inferred or explicit struct");
+            }
+            return ObjectKind.INFERRED_STRUCT;
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
