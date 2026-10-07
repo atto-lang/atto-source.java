@@ -978,7 +978,9 @@ public final class OwnershipChecker {
                 }
                 Ast.TypeRef result = signature.result().name().equals("self")
                         ? concreteReceiver : signature.result();
-                Ast.TypeRef callResult = callableResultType(result, method.async(), false);
+                boolean remoteActor = klass.actorKind() != Ast.ActorKind.NONE
+                        && !isRootedAtActorSelf(member.receiver(), scope);
+                Ast.TypeRef callResult = callableResultType(result, method.async() || remoteActor, false);
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }

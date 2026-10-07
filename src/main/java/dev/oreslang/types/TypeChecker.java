@@ -1873,7 +1873,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -1882,6 +1882,17 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        boolean remoteActor = klass.actorKind() != Ast.ActorKind.NONE
+                                && !(receiverValueType instanceof SelfType);
+                        if (remoteActor) {
+                            for (Ast.Expr argument : call.arguments()) {
+                                validateActorCallableBoundaryType(typeOf(argument, env, generics, self),
+                                        klass.actorKind(), false, "actor method argument");
+                            }
+                            validateActorCallableBoundaryType(result, klass.actorKind(), true, "actor method result");
+                            return new Named("Future", List.of(result));
+                        }
+                        return callableResult(method.async(), false, result);
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -2067,6 +2078,10 @@ public final class TypeChecker {
                 if (klass != null) {
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && !(member.receiver() instanceof Ast.NameExpr n && n.name().equals("self"))) {
+                            throw new IllegalArgumentException("actor state is accessible only through self inside its mailbox turn");
+                        }
                         requireClassMemberVisible(
                                 field.field().visibility(), field.owner(), "field", field.field().name());
                         Type pattern = classFieldType(field.owner(), field.field());
@@ -2122,7 +2137,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("indexing requires an array/list, tuple, or DynamicStruct");
         }
         if (expr instanceof Ast.NewExpr created) {
-            if (created.type().name().equals("DynamicStruct")) {
+            if (!created.actorSpawn() && created.type().name().equals("DynamicStruct")) {
                 Type dynamic = resolve(created.type(), generics, self);
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
@@ -2130,13 +2145,22 @@ public final class TypeChecker {
                 return dynamic;
             }
             Ast.ClassDecl klass = findClass(created.type().name());
+            if (created.actorSpawn()) {
+                if (klass == null || klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("spawn requires a declared actor: " + created.type().name());
+                }
+                for (Ast.Expr argument : created.arguments()) {
+                    validateActorCallableBoundaryType(typeOf(argument, env, generics, self),
+                            klass.actorKind(), false, "spawn argument");
+                }
+            }
             if (klass == null) return resolve(created.type(), generics, self);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
             }
-            if (klass.actorKind() != Ast.ActorKind.NONE) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && !created.actorSpawn()) {
                 throw new IllegalArgumentException("actor '" + klass.name()
-                        + "' cannot be constructed with new; actor instances must be created through the actor runtime");
+                        + "' cannot be constructed with new; use spawn " + klass.name() + "(...)");
             }
 
             Named nominal;
@@ -2779,6 +2803,10 @@ public final class TypeChecker {
             if (klass != null) {
                 ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                 if (field != null) {
+                    if (klass.actorKind() != Ast.ActorKind.NONE
+                            && !(member.receiver() instanceof Ast.NameExpr n && n.name().equals("self"))) {
+                        throw new IllegalArgumentException("actor state is accessible only through self inside its mailbox turn");
+                    }
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());

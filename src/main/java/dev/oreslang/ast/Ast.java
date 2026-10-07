@@ -698,8 +698,10 @@ public final class Ast {
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
-    public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
+    /** Named creation: actorSpawn distinguishes the source spawn operation from new. */
+    public record NewExpr(TypeRef type, List<Expr> arguments, boolean actorSpawn) implements Expr {
         public NewExpr { arguments = List.copyOf(arguments); }
+        public NewExpr(TypeRef type, List<Expr> arguments) { this(type, arguments, false); }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
