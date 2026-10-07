@@ -12,6 +12,10 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(15)
 final class ActorOutputStreamTest {
 
+    private static final class MutableOutputBox {
+        int value = 1;
+    }
+
     @Test
     void privateAndSharedActorsPublishCopiedFrozenOrderedData() {
         for (ActorRuntime.ActorKind kind :
@@ -108,14 +112,11 @@ final class ActorOutputStreamTest {
 
     @Test
     void outputStreamRejectsUnknownMutableObjectIdentity() {
-        final class MutableBox {
-            int value = 1;
-        }
-
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
                     context -> (message, turn) ->
-                            turn.runtime().emitCurrentActorOutput(new MutableBox()));
+                            turn.runtime().emitCurrentActorOutput(
+                                    new MutableOutputBox()));
 
             ref.ready().join();
             ref.send("go");
