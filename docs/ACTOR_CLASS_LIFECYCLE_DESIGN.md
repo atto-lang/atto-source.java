@@ -1,6 +1,6 @@
 # Actor class lifecycle and parent-facing output streams (design + implementation status)
 
-**Status (2026-10-06): parser/lexical-boundary groundwork, host-side actor ready/done Futures, and shared-code image registry; NOT an executable source-level actor-class API.**
+**Status (2026-10-06): actor declarations plus `spawn Actor()`/`ActorRef<Actor>` static semantics, lexical-boundary enforcement, host-side actor ready/done Futures, and shared-code image registry; source-level spawn execution/output streaming are NOT lowered yet.**
 
 The existing `ActorRuntime` already has `ActorRef.send/stop/cancel/forceCancel`,
 bounded channel-backed mailboxes, actor identity, child supervision, and
@@ -14,7 +14,7 @@ repurpose it as a class actor's inbound message.
 // The compiler must eventually lower this class and its lifecycle hooks.
 // This is a contract example and must NOT be treated as an executable fixture.
 define actor Worker as
-  pub on_start(): void {
+  on_start(): void {
     // Actor-local startup hook; actor constructors stay forbidden.
     return;
   }
@@ -67,7 +67,7 @@ of output strings.
 | --- | --- | --- |
 | `spawn Worker()` | `ActorRef<Worker>` | Allocates actor identity; reserved on_start hook runs in actor execution context, not the caller |
 | `w.id`, `w.kind` | `ActorId`, `ActorKind` | Immutable identity/diagnostics |
-| `w.ready` | `Future<void>` | Completes once constructor and initialization succeed, fails if initialization fails/stops |
+| `w.ready` | `Future<void>` | Completes once actor-local field initialization and reserved `on_start()` succeed; fails if startup fails/stops |
 | `w.send(mail)` | `void` or explicit nonblocking variant | **Inbound**, serialized, bounded actor mailbox; reject capability/pointer/function payloads |
 | `w.outputs` | `AsyncIterator<ActorOutput<T>>` or read-only `Channel<ActorOutput<T>>` | **Outbound**, bounded, async/backpressure-capable, parent-observable stream |
 | `w.done` | `Future<void>` | Settles after actor finalization and isolate/carrier cleanup |
@@ -127,10 +127,7 @@ weakens isolate policy.
 
 1. **This branch:** parse `define actor ... as ... end`, enforce first-pass
    implicit class-to-file callable boundary, and add regression tests.
-2. Keep actor class constructors **rejected**. Extend AST/parser/type checker
-   with `spawn` expressions, reserved `on_start()` hook,
-   `ActorRef<Worker>` and envelope/stream types; reject `new Worker()`.
-   A startup hook executes on the actor's own execution domain.
+2. **Parser/type checker now recognize `spawn Worker()`** as a distinct intrinsic and type it as `ActorRef<Worker>`; `new Worker()` and constructor-style spawn arguments remain rejected. `ready`/`done`, mailbox `send`, actor-local `self.send`/`self.end`, and the reserved non-public `on_start(): void` shape are statically checked. **Execution lowering is still pending**; a startup hook must execute on the actor's own execution domain before `ready` settles.
 3. **Host substrate implemented in this branch:** `ActorRef.ready()` and
    `ActorRef.done()` expose runtime-only completion Futures. `ready()` schedules
    actor initialization even with no first message; stop-before-start and
@@ -174,6 +171,4 @@ This is a real same-process JVM code-image reference invariant, not proof that
 Graal native/JIT machine-code pages are shared among independent Truffle engines
 or OS processes. Actor state and mailbox payloads stay outside the code store.
 
-Do not mark this milestone as implementing source-level `spawn Worker()`,
-`w.ready`, `self.send`, `self.end`, or streamed worker output: they remain
-future gates.
+Do not mark this milestone as executing source-level `spawn Worker()` or streamed worker output. The source parser/type checker now admit and validate `spawn Worker()`, `w.ready`/`w.done`, `ActorRef.send`, `self.send`, and `self.end`, but evaluator lowering into `ActorRuntime` remains a separate acceptance gate.
