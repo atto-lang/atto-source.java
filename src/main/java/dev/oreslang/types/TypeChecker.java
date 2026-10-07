@@ -59,6 +59,9 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Source modules have their own lexical value namespace. File-level
+    // declarations (the synthetic ROOT_MODULE) remain the composition root.
+    private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private int loopDepth;
@@ -189,17 +192,23 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
-            validateModuleValueNamespace(module);
-            checkModuleAdherence(module);
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
-                else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
-                else if (decl instanceof Ast.TypeAliasDecl alias) {
-                    Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
-                    resolve(alias.target(), aliasGenerics, null);
+            String previousModule = currentLexicalModule;
+            currentLexicalModule = module.name();
+            try {
+                validateModuleValueNamespace(module);
+                checkModuleAdherence(module);
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
+                    else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
+                    else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
+                    else if (decl instanceof Ast.TypeAliasDecl alias) {
+                        Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
+                        resolve(alias.target(), aliasGenerics, null);
+                    }
+                    else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
-                else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+            } finally {
+                currentLexicalModule = previousModule;
             }
         }
     }
@@ -1014,6 +1023,49 @@ public final class TypeChecker {
                             + "file/module callable '" + name + "'; declare an explicit import "
                             + "or invoke a method through self");
         }
+        String owner = unqualifiedFunctionOwners.get(name);
+        if (owner != null && scopedModule()
+                && !owner.equals(currentLexicalModule)) {
+            throw new IllegalArgumentException(
+                    "module '" + currentLexicalModule + "' cannot implicitly access "
+                            + "callable '" + name + "' from module '" + owner
+                            + "'; use an explicit import");
+        }
+    }
+
+    private boolean scopedModule() {
+        return currentLexicalModule != null
+                && !Parser.ROOT_MODULE.equals(currentLexicalModule);
+    }
+
+    private void rejectUnimportedModuleNamespace(String name) {
+        if (currentClassOwner != null) {
+            throw new IllegalArgumentException(
+                    "class '" + currentClassOwner.name() + "' cannot read "
+                            + "module '" + name + "' without an explicit import");
+        }
+        if (scopedModule() && !name.equals(currentLexicalModule)) {
+            throw new IllegalArgumentException(
+                    "module '" + currentLexicalModule + "' cannot read "
+                            + "module '" + name + "' without an explicit import");
+        }
+    }
+
+    private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
+        if (currentClassOwner != null && currentClassOwner != target) {
+            // Ancestor methods can still be reached through self/super;
+            // arbitrary sibling class namespaces have no lexical authority.
+            throw new IllegalArgumentException(
+                    "class '" + currentClassOwner.name() + "' cannot read class '"
+                            + target.name() + "' without an explicit import");
+        }
+        String owner = classOwners.get(target);
+        if (scopedModule() && owner != null && !owner.equals(currentLexicalModule)) {
+            throw new IllegalArgumentException(
+                    "module '" + currentLexicalModule + "' cannot read "
+                            + "class '" + target.name() + "' from module '" + owner
+                            + "' without an explicit import");
+        }
     }
 
     private Env moduleBindingEnv(String moduleName) {
@@ -1327,9 +1379,15 @@ public final class TypeChecker {
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
-            if (moduleNamespace != null) return moduleShape(moduleNamespace);
+            if (moduleNamespace != null) {
+                rejectUnimportedModuleNamespace(name.name());
+                return moduleShape(moduleNamespace);
+            }
             Ast.ClassDecl classNamespace = findClass(name.name());
-            if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
+            if (classNamespace != null) {
+                rejectUnimportedClassNamespace(classNamespace);
+                return new ClassNamespace(qualifiedClassName(classNamespace));
+            }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
@@ -1570,6 +1628,7 @@ public final class TypeChecker {
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
+                rejectUnimportedModuleNamespace(namespace.name());
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
                         call.arguments().size());
@@ -2055,6 +2114,7 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
+                rejectUnimportedModuleNamespace(namespace.name());
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
                         namespace.name() + "." + member.member());
                 if (moduleFunction != null) {
@@ -2249,6 +2309,7 @@ public final class TypeChecker {
             }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
+            rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
             }
