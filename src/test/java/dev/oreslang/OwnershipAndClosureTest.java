@@ -453,6 +453,80 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("cannot escape its mailbox turn as a bound method"));
     }
 
+
+    @Test
+    void moveOnlyClassFieldCannotBeAliasedByProjection() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Child as
+                          pub let String value = "a";
+                        end
+
+                        define class Holder as
+                          pub val Child child = new Child();
+                        end
+
+                        fnc bad(): void {
+                          val Holder holder = new Holder();
+                          val Child alias = holder.child;
+                          alias.value = "alias";
+                          holder.child.value = "owner";
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("partial moves")
+                || error.getMessage().contains("move-only field"));
+    }
+
+    @Test
+    void moveOnlyInferredStructFieldCannotBeAliasedByProjection() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          val outer = struct infer{inner: struct infer{value: "a"}};
+                          val alias = outer.inner;
+                          alias.value = "alias";
+                          outer.inner.value = "owner";
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("partial moves")
+                || error.getMessage().contains("record field"));
+    }
+
+    @Test
+    void moveOnlyIndexedElementCannotBeAliasedByProjection() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          val items = arr[struct infer{value: "a"}];
+                          val alias = items[0];
+                          alias.value = "alias";
+                          items[0].value = "owner";
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("partial moves")
+                || error.getMessage().contains("indexed element"));
+    }
+
+    @Test
+    void copyFieldAndIndexedElementExtractionRemainLegal() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Numbers as
+                  pub val int answer = 42;
+                end
+
+                fnc ok(): int {
+                  val Numbers numbers = new Numbers();
+                  val int from_field = numbers.answer;
+                  val values = arr[1, 2, 3];
+                  val int from_index = values[1];
+                  return from_field + from_index;
+                }
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
