@@ -74,12 +74,21 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(String name, String sourceText) {
         validateAdmissionInputs(name, sourceText);
-        // Admission is policy-specific, but the checked code tree is one
-        // immutable process-owned image shared across all actor contexts.
+        boolean shared = !guestPolicy.adversarial()
+                || SharedCodeRegistry.process()
+                        .approvedForAdversarialSharing(name, sourceText);
+        if (!shared) {
+            // Unapproved adversarial code is intentionally parsed/checked on a
+            // private path and cannot attach to a trusted process-wide image.
+            CapabilityChecker.check(
+                    dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(sourceText),
+                    guestPolicy);
+            return stage(name, digest(sourceText), sourceText, false);
+        }
         try (SharedCodeRegistry.Lease image =
                      SharedCodeRegistry.process().acquire(name, sourceText)) {
             CapabilityChecker.check(image.checkedProgram(), guestPolicy);
-            return stage(name, image.sha256(), sourceText);
+            return stage(name, image.sha256(), sourceText, true);
         }
     }
 
@@ -91,8 +100,17 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
-        CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        boolean shared = !guestPolicy.adversarial()
+                || SharedCodeRegistry.process().approvedForAdversarialSharing(
+                        unit.unitId(), unit.sourceText());
+        if (shared) {
+            CapabilityChecker.check(unit.program(), guestPolicy);
+        } else {
+            CapabilityChecker.check(
+                    dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(unit.sourceText()),
+                    guestPolicy);
+        }
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), shared);
     }
 
     private void validateAdmissionInputs(
@@ -116,7 +134,29 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
-    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+    public void approveGuestCodeSharing(String codeUnitId, String sourceText) {
+        if (!guestPolicy.adversarial()) {
+            throw new IllegalStateException(
+                    "guest code-sharing approval is only required for adversarial guests");
+        }
+        SharedCodeRegistry.process().approveForAdversarialSharing(
+                supervisorPolicy, codeUnitId, sourceText);
+    }
+
+    public void revokeGuestCodeSharing(String codeUnitId, String sourceText) {
+        if (!guestPolicy.adversarial()) {
+            throw new IllegalStateException(
+                    "guest code-sharing revocation is only required for adversarial guests");
+        }
+        SharedCodeRegistry.process().revokeForAdversarialSharing(
+                supervisorPolicy, codeUnitId, sourceText);
+    }
+
+    private Generation stage(
+            String codeUnitId,
+            String sourceDigest,
+            String sourceText,
+            boolean shareCodeImage) {
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
             throw new IllegalStateException(
@@ -128,15 +168,27 @@ public final class HotReloadManager implements AutoCloseable {
                 guestPolicy.restrictedContextBuilder(executionProfile).build();
         SharedCodeRegistry.Lease codeImage = null;
         try {
-            // One immutable code image is reused across otherwise independent
-            // actor/isolate contexts. Never reuse guest execution state here.
-            codeImage = SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
-            if (!codeImage.sha256().equals(sourceDigest)) {
-                throw new IllegalArgumentException("compiled code-unit source digest mismatch");
+            Source source;
+            if (shareCodeImage) {
+                // One immutable image is reused across eligible contexts.
+                codeImage = SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
+                if (!codeImage.sha256().equals(sourceDigest)) {
+                    throw new IllegalArgumentException("compiled code-unit source digest mismatch");
+                }
+                source = codeImage.source();
+            } else {
+                // Deliberately unique source identity: OresLanguage.parse cannot
+                // attach this adversarial load to a trusted shared AST.
+                if (!digest(sourceText).equals(sourceDigest)) {
+                    throw new IllegalArgumentException("compiled code-unit source digest mismatch");
+                }
+                source = Source.newBuilder(dev.oreslang.OresLanguage.ID, sourceText, codeUnitId)
+                        .mimeType(dev.oreslang.OresLanguage.MIME_TYPE)
+                        .buildLiteral();
             }
-            Source source = codeImage.source();
             Generation generation = new Generation(
-                    id, codeUnitId, sourceDigest, context, source, codeImage, executionProfile);
+                    id, codeUnitId, sourceDigest, context, source, codeImage,
+                    executionProfile, shareCodeImage);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
@@ -208,12 +260,15 @@ public final class HotReloadManager implements AutoCloseable {
         private final Source source;
         private final SharedCodeRegistry.Lease codeImage;
         private final ExecutionProfile executionProfile;
+        private final boolean sharedCodeImage;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
         private Generation(long id, String codeUnitId, String sha256,
                            Context context, Source source,
-                           SharedCodeRegistry.Lease codeImage, ExecutionProfile executionProfile) {
+                           SharedCodeRegistry.Lease codeImage,
+                           ExecutionProfile executionProfile,
+                           boolean sharedCodeImage) {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
@@ -221,6 +276,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.source = source;
             this.codeImage = codeImage;
             this.executionProfile = executionProfile;
+            this.sharedCodeImage = sharedCodeImage;
         }
 
         public long id() { return id; }
@@ -229,6 +285,7 @@ public final class HotReloadManager implements AutoCloseable {
         public Context context() { return context; }
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
+        public boolean sharedCodeImage() { return sharedCodeImage; }
         public boolean started() { return started.get(); }
         public boolean closed() { return closed.get(); }
 
@@ -250,7 +307,7 @@ public final class HotReloadManager implements AutoCloseable {
                 try {
                     context.close(true);
                 } finally {
-                    codeImage.close();
+                    if (codeImage != null) codeImage.close();
                 }
             }
         }
