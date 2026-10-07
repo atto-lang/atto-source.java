@@ -1949,10 +1949,6 @@ public final class TypeChecker {
                 requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
                 return Primitive.VOID;
             }
-            if (call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
-                throw new IllegalArgumentException(
-                        "spread arguments require a variadic callable; fixed-arity Oreslang callables do not accept dynamic spread");
-            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -1967,7 +1963,10 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
-                Ast.FunctionDecl target = findFunction(functionName.name(), call.arguments().size());
+                int arity = fixedCallArity(
+                        call.arguments(), env, generics, self,
+                        "function " + functionName.name());
+                Ast.FunctionDecl target = findFunction(functionName.name(), arity);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
                     if (target.actorKind() != Ast.ActorKind.NONE
@@ -2000,9 +1999,12 @@ public final class TypeChecker {
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
                 rejectUnimportedModuleNamespace(namespace.name());
+                int arity = fixedCallArity(
+                        call.arguments(), env, generics, self,
+                        "function " + namespace.name() + "." + qualifiedCall.member());
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
-                        call.arguments().size());
+                        arity);
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -6143,6 +6145,54 @@ public final class TypeChecker {
         return bindings;
     }
 
+    private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
+
+    private List<ExpandedCallArgument> expandFixedCallArguments(
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String label) {
+        List<ExpandedCallArgument> expanded = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (!(argument instanceof Ast.SpreadExpr spread)) {
+                expanded.add(new ExpandedCallArgument(argument, null));
+                continue;
+            }
+
+            Type spreadType = deref(typeOf(spread.expression(), env, generics, self));
+            if (!(spreadType instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException(
+                        label + " spread requires a statically known tuple; got " + spreadType
+                                + ". Runtime-length collections require an explicitly variadic callable.");
+            }
+            for (Type element : tuple.elements()) {
+                expanded.add(new ExpandedCallArgument(null, element));
+            }
+        }
+        return List.copyOf(expanded);
+    }
+
+    private int fixedCallArity(
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String label) {
+        return expandFixedCallArguments(arguments, env, generics, self, label).size();
+    }
+
+    private Type expandedCallArgumentType(
+            ExpandedCallArgument argument,
+            Type expected,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        return argument.expression() == null
+                ? argument.staticType()
+                : typeOfAgainstExpected(argument.expression(), expected, env, generics, self);
+    }
+
     private Type checkGenericCallable(
             List<String> genericNames,
             List<Ast.Param> params,
@@ -6154,28 +6204,37 @@ public final class TypeChecker {
             Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
-        if (params.size() != arguments.size()) throw new IllegalArgumentException(label + " arity mismatch");
+        List<ExpandedCallArgument> expanded =
+                expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
+        if (params.size() != expanded.size()) {
+            throw new IllegalArgumentException(
+                    label + " arity mismatch: expected " + params.size()
+                            + " argument(s), got " + expanded.size());
+        }
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
         Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
         List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
-        for (int i = 0; i < arguments.size(); i++) {
-            Type actual = typeOfAgainstExpected(
-                    arguments.get(i), patterns.get(i), env, callerGenerics, callerSelf);
+        for (int i = 0; i < expanded.size(); i++) {
+            Type actual = expandedCallArgumentType(
+                    expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
 
-        for (int i = 0; i < arguments.size(); i++) {
+        for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
             if (containsGenericNamed(expected, unbound)) {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
             }
-            validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
-            Type actual = typeOfAgainstExpected(
-                    arguments.get(i), expected, env, callerGenerics, callerSelf);
+            ExpandedCallArgument argument = expanded.get(i);
+            if (argument.expression() != null) {
+                validateLambdaArgument(argument.expression(), expected, env, callerGenerics, callerSelf);
+            }
+            Type actual = expandedCallArgumentType(
+                    argument, expected, env, callerGenerics, callerSelf);
             if (!params.get(i).structural()) {
                 requireReadonlyCapabilityPreserved(
                         actual,
