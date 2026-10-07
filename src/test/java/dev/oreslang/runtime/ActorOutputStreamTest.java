@@ -105,4 +105,34 @@ final class ActorOutputStreamTest {
                 () -> ActorRuntime.ActorOutputStream.class.getMethod(
                         "send", Object.class));
     }
+
+    @Test
+    void outputStreamRejectsUnknownMutableObjectIdentity() {
+        final class MutableBox {
+            int value = 1;
+        }
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) ->
+                            turn.runtime().emitCurrentActorOutput(new MutableBox()));
+
+            ref.ready().join();
+            ref.send("go");
+
+            CompletionException failed =
+                    assertThrows(CompletionException.class, () -> ref.done().join());
+            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertTrue(
+                    failed.getCause().getMessage().contains("not Sendable"),
+                    failed.getCause().getMessage());
+
+            CompletionException outputFailure =
+                    assertThrows(
+                            CompletionException.class,
+                            () -> ref.outputs().next().join());
+            assertSame(failed.getCause(), outputFailure.getCause());
+        }
+    }
+
 }
