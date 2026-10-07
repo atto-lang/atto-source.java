@@ -1648,6 +1648,30 @@ public final class OwnershipChecker {
             if (typed.binding() != null) defineRefinementAlias(typed.binding(), typed.type(), source, destination);
             return;
         }
+        if (pattern instanceof Ast.StructuralPattern structural) {
+            if (structural.binding() != null) {
+                defineRefinementAlias(structural.binding(), structural.target(), source, destination);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            List<Ast.TypeRef> elementTypes =
+                    subjectType != null && subjectType.isTupleType()
+                            ? subjectType.arguments()
+                            : List.of();
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                Ast.TypeRef elementType =
+                        i < elementTypes.size()
+                                ? elementTypes.get(i)
+                                : Ast.TypeRef.inferred();
+                definePatternAliases(
+                        tuple.elements().get(i),
+                        elementType,
+                        source,
+                        destination);
+            }
+            return;
+        }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
             for (int i = 0; i < constructor.arguments().size(); i++) {
@@ -1690,7 +1714,11 @@ public final class OwnershipChecker {
     private void collectPatternBindingNames(Ast.Pattern pattern, Set<String> names) {
         if (pattern instanceof Ast.BindingPattern binding) names.add(binding.name());
         else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) names.add(typed.binding());
-        else if (pattern instanceof Ast.ConstructorPattern constructor) {
+        else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
+            names.add(structural.binding());
+        } else if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern nested : tuple.elements()) collectPatternBindingNames(nested, names);
+        } else if (pattern instanceof Ast.ConstructorPattern constructor) {
             for (Ast.Pattern nested : constructor.arguments()) collectPatternBindingNames(nested, names);
         }
     }
