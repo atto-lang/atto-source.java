@@ -1312,7 +1312,7 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if ((cell.stopped.get() && !cell.finalCleanupActive)
+                if ((cell.stopped.get() && !cell.endRequested)
                         || cell.finalized) {
                     throw terminated(cell.ref);
                 }
@@ -3817,7 +3817,7 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
-        if (cell != null && cell.stopped.get() && !cell.finalCleanupActive) {
+        if (cell != null && cell.stopped.get() && !cell.endRequested) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
