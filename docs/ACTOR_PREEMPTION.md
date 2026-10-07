@@ -51,6 +51,26 @@ A future compiler pass that preempts a persistent actor turn must retain the
 logical turn lease across the suspension, or otherwise prove an equivalent
 non-reentrant actor protocol.
 
+### Actor-local continuation handoff
+
+Actor-backed source schedulers use a VM-owned continuation lane distinct from
+the ordinary user-message FIFO. When the currently executing actor envelope
+publishes a resumable source continuation, that continuation has priority over
+later user messages and the current actor batch must leave its
+`TurnExecutor`/carrier boundary before the continuation is admitted.
+
+This prevents two otherwise subtle violations:
+
+1. `rt cooperate` cannot be implemented as "append to the mailbox and keep
+   draining the same batch", because that would retain the physical carrier.
+2. A later user message cannot overtake an immediately-ready preemption
+   continuation and mutate the actor before the preempted logical task resumes.
+
+A genuinely pending `await` is different: while no continuation is runnable,
+the runtime may apply the language's eventual actor-reentrancy policy. Automatic
+preemption itself is stricter: once its continuation is ready, it resumes ahead
+of later mailbox mutations.
+
 ## Safe automatic preemption
 
 Automatic quantum/budget preemption is valid only at a point whose execution
@@ -76,8 +96,11 @@ a handoff must never reset a logical task's quota.
 3. **No overlap.** A logical scheduler task has one execution lease and one
    actor has one active execution boundary.
 4. **Carrier release first.** A cooperate resume cannot be admitted until the
-   previous guest/Truffle boundary has fully unwound.
-5. **Carrier identity is irrelevant.** A resumed task may run on the same or a
+   previous guest/Truffle and actor `TurnExecutor` boundaries have fully
+   unwound.
+5. **Actor continuation priority.** An immediately-ready preemption
+   continuation cannot be overtaken by a later user mailbox message.
+6. **Carrier identity is irrelevant.** A resumed task may run on the same or a
    different physical carrier.
-6. **Fail closed.** Code without a resumable continuation may be checked or
+7. **Fail closed.** Code without a resumable continuation may be checked or
    cancelled at a safepoint, but it must not pretend to have been suspended.
