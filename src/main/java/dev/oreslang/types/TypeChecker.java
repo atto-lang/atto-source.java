@@ -1183,24 +1183,39 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
         if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
         if (stmt instanceof Ast.IfStmt conditional) {
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             for (Ast.IfBranch branch : conditional.branches()) {
+                env.restoreInitialization(before);
                 requireAssignable(typeOfCondition(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
                 Env branchEnv = new Env(env);
                 defineConditionBindings(branch.condition(), branchEnv, env, generics, self);
                 checkBlock(branch.body(), branchEnv, generics, expectedReturn, self);
+                exits.add(env.initializationSnapshot());
             }
+            env.restoreInitialization(before);
             checkBlock(conditional.elseBody(), env, generics, expectedReturn, self);
+            exits.add(env.initializationSnapshot());
+            env.mergeInitialization(exits);
             return;
         }
         if (stmt instanceof Ast.MatchStmt matched) {
             Type subject = deref(typeOf(matched.subject(), env, generics, self));
+            Map<Env.Binding, Set<String>> afterSubject = env.initializationSnapshot();
             checkMatch(matched, subject, env, generics, expectedReturn, self);
+            // Match-arm flow is checked independently by checkMatch. Until it
+            // returns per-arm state, do not let one arm establish definite
+            // initialization for code after the match.
+            env.restoreInitialization(afterSubject);
             return;
         }
         if (stmt instanceof Ast.SwitchStmt switched) {
             Type subject = deref(typeOf(switched.subject(), env, generics, self));
+            Map<Env.Binding, Set<String>> beforeCases = env.initializationSnapshot();
+            List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             Set<String> seen = new HashSet<>();
             for (Ast.SwitchCase arm : switched.cases()) {
+                env.restoreInitialization(beforeCases);
                 if (arm.constants().isEmpty()) throw new IllegalArgumentException("switch case requires at least one constant");
                 for (Ast.Expr constant : arm.constants()) {
                     if (!constant(constant)) throw new IllegalArgumentException("switch case must be a compile-time constant");
@@ -1212,15 +1227,27 @@ public final class TypeChecker {
                     if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + key);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
+                exits.add(env.initializationSnapshot());
             }
+            env.restoreInitialization(beforeCases);
             checkBlock(switched.defaultBody(), env, generics, expectedReturn, self);
+            exits.add(env.initializationSnapshot());
+            env.mergeInitialization(exits);
             return;
         }
         if (stmt instanceof Ast.TryStmt attempted) {
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            env.restoreInitialization(before);
             checkBlock(attempted.body(), env, generics, expectedReturn, self);
+            Map<Env.Binding, Set<String>> normalExit = env.initializationSnapshot();
+
+            env.restoreInitialization(before);
             Env caught = new Env(env);
             caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
             checkBlock(attempted.catchBody(), caught, generics, expectedReturn, self);
+            Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
+
+            env.mergeInitialization(List.of(normalExit, caughtExit));
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
             return;
         }
@@ -1232,7 +1259,10 @@ public final class TypeChecker {
                                 + "because its selected branch executes later; "
                                 + "use 'nb select from cases' when only a Future<SelectResult> is needed");
             }
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             for (Ast.SelectArm arm : selected.arms()) {
+                env.restoreInitialization(before);
                 Env armEnv = new Env(env);
                 if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
                     Type element = channelElementType(
@@ -1262,12 +1292,19 @@ public final class TypeChecker {
                             self);
                 } else {
                     checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    exits.add(env.initializationSnapshot());
                 }
+            }
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                env.restoreInitialization(before);
+            } else {
+                env.mergeInitialization(exits);
             }
             return;
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
+            Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
                 if (!currentAsyncCallable) {
@@ -1283,10 +1320,12 @@ public final class TypeChecker {
                 defineDestructureBinding(loopEnv, loop.bindings().get(i), elementTypes.get(i));
             }
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            env.restoreInitialization(afterIterable);
             return;
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
+            Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
                 if (!currentAsyncCallable) {
@@ -1299,18 +1338,23 @@ public final class TypeChecker {
             Env loopEnv = new Env(env);
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            env.restoreInitialization(afterIterable);
             return;
         }
         if (stmt instanceof Ast.ForStmt loop) {
             Env loopEnv = new Env(env);
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopEnv, generics, expectedReturn, self);
             if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
+            Map<Env.Binding, Set<String>> afterEntryCheck = env.initializationSnapshot();
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            env.restoreInitialization(afterEntryCheck);
             return;
         }
         if (stmt instanceof Ast.LoopStmt loop) {
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
             checkLoopBlock(loop.body(), env, generics, expectedReturn, self);
+            env.restoreInitialization(before);
         }
     }
 
@@ -1429,8 +1473,17 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             requireAssignable(typeOf(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
+            Map<Env.Binding, Set<String>> afterCondition = env.initializationSnapshot();
+
+            env.restoreInitialization(afterCondition);
             Type left = typeOf(conditional.whenTrue(), env, generics, self);
+            Map<Env.Binding, Set<String>> leftExit = env.initializationSnapshot();
+
+            env.restoreInitialization(afterCondition);
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
+            Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
+
+            env.mergeInitialization(List.of(leftExit, rightExit));
             return commonType(left, right);
         }
         if (expr instanceof Ast.TypeTestExpr test) {
@@ -1475,9 +1528,19 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             Type left = typeOf(binary.left(), env, generics, self);
+            if (binary.operator().equals("&&") || binary.operator().equals("||")) {
+                requireAssignable(left, Primitive.BOOL, "logical operand");
+                Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
+                Type right = typeOf(binary.right(), env, generics, self);
+                requireAssignable(right, Primitive.BOOL, "logical operand");
+                // RHS is short-circuited, so it cannot establish definite
+                // initialization for subsequent code.
+                env.restoreInitialization(afterLeft);
+                return Primitive.BOOL;
+            }
             Type right = typeOf(binary.right(), env, generics, self);
             return switch (binary.operator()) {
-                case "&&", "||", "^^" -> {
+                case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
                     requireAssignable(right, Primitive.BOOL, "logical operand");
                     yield Primitive.BOOL;
@@ -6017,6 +6080,37 @@ public final class TypeChecker {
             if (binding != null) binding.markInitialized(field);
         }
 
+        private Map<Binding, Set<String>> initializationSnapshot() {
+            Map<Binding, Set<String>> snapshot = new IdentityHashMap<>();
+            collectInitialization(snapshot);
+            return snapshot;
+        }
+
+        private void collectInitialization(Map<Binding, Set<String>> snapshot) {
+            if (parent != null) parent.collectInitialization(snapshot);
+            for (Binding binding : bindings.values()) {
+                snapshot.put(binding, new LinkedHashSet<>(binding.uninitializedFields));
+            }
+        }
+
+        private void restoreInitialization(Map<Binding, Set<String>> snapshot) {
+            for (Map.Entry<Binding, Set<String>> entry : snapshot.entrySet()) {
+                entry.getKey().setUninitializedFields(entry.getValue());
+            }
+        }
+
+        private void mergeInitialization(List<Map<Binding, Set<String>>> exits) {
+            if (exits.isEmpty()) return;
+            for (Binding binding : exits.getFirst().keySet()) {
+                LinkedHashSet<String> maybeUninitialized = new LinkedHashSet<>();
+                for (Map<Binding, Set<String>> exit : exits) {
+                    Set<String> state = exit.get(binding);
+                    if (state != null) maybeUninitialized.addAll(state);
+                }
+                binding.setUninitializedFields(maybeUninitialized);
+            }
+        }
+
         private static final class Binding {
             private final Type type;
             private final Ast.BindingKind kind;
@@ -6035,6 +6129,10 @@ public final class TypeChecker {
                 return java.util.Collections.unmodifiableSet(uninitializedFields);
             }
             private void markInitialized(String field) { uninitializedFields.remove(field); }
+            private void setUninitializedFields(Set<String> fields) {
+                uninitializedFields.clear();
+                uninitializedFields.addAll(fields);
+            }
         }
     }
 }
