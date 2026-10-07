@@ -247,3 +247,106 @@ Do not advertise the conditional insert operation as globally atomic. For an act
 - No implicit cross-actor synchronized mutable hash map.
 - No promise that bracket `map[key]` exists. If later introduced, it must have an unambiguous safe/throwing contract.
 - No silent copies of non-Copy map values, no raw pointer/reference notation, and no false claim that unimplemented stdlib methods already work.
+
+
+## Audit hardening: API and compiler integration gates (2026-10-06)
+
+**Implementation boundary:** This draft's `NestedOptionMatchSyntaxTest` proves
+pattern semantics using `Option` values, **not** operational `Map.get`,
+`Map.take`, or `HashMap.remove`. Do not describe the map APIs as implemented
+until native collection storage, member resolution, borrow checking, formatter,
+and runtime tests all agree. Generic key/value maps must not be confused with
+object-record property access or host Java maps.
+
+### Composition with value-producing and side-effect-only match
+
+The newer #404 contract distinguishes `match` (a value expression) from
+`do match` (side-effect-only). After #404 lands, map examples that call
+handlers **without producing a value** should use:
+
+```ores
+do match pending.take(key) over
+  Some(Some(value)) -> { process(value); }
+  Some(None) -> { handleEmptyValue(); }
+  None -> { handleMissingKey(); }
+end
+```
+
+If the caller needs a value, use the value-producing expression with explicit
+arm-local returns (not implicit last-expression returns):
+
+```ores
+val int classification = match pending.get(key) over
+  Some(Some(value)) -> { return classify(value); }
+  Some(None) -> { return -1; }
+  None -> { return -2; }
+end;
+```
+
+**Compatibility:** #398's existing executable tests use the legacy
+statement-level `match` and its function-level `return` semantics; they do
+not prove that the #404 expression/statement split has landed or that the map
+API is executable. Rebase/reconcile these branches and migrate tests before
+merging. A `return` in a value-producing match arm returns **from the match**,
+not from the enclosing function. An effect-only arm should not require a dummy
+value; it must not implicitly expose a return value or bypass function control
+flow. Never use `||` as a fallback; it starts a function literal. Function
+matching with `for` remains a *separate future grammar design* and must not
+alter `for ... of` or value-pattern syntax.
+
+### Required single-operation invariants
+
+| Call | Absent key | Present key with stored `None` | Ownership/effect |
+| --- | --- | --- | --- |
+| `has(k)` | `false` | `true` | one membership probe |
+| `get(k)` on `Map<K,Option<V>>` | `None` | `Some(None)` | no move or hidden clone |
+| `take(k)` on `MutableMap<K,Option<V>>` | `None` | `Some(None)` | atomically remove and transfer owned payload |
+| `remove(k)` | `false` | `true` | atomically delete; release payload without returning it |
+| `set(k,v)` | `None` | `Some(None)` | atomically replace; transfer owned prior payload |
+
+The phrase *atomic* here means **one indivisible operation in the local
+actor-owned map**, not a promise of thread-safe sharing between actors.
+Never implement `take` or `remove` as a public `has/get/remove` sequence.
+The hash/equality policy must not invoke arbitrary user code while an internal
+slot is in a partially committed state. Preserve map integrity on exceptions,
+cancellation and ownership-check failures; define exact cleanup of the replaced
+or removed value on every exit path. `getOrElse`/insertion factories must
+execute zero times on a hit and exactly once for a successful miss, and must
+have explicit failure/reentrancy guarantees. Never await under a mutable map
+guard or hold such a guard across an actor turn.
+
+### Compiler and backend negative gates
+
+- Reject `Option` truthiness, implicit `if val x = map.get(k)` unwrapping,
+  unbound or out-of-scope pattern names, and a `Some(None)` pattern against
+  `Option<V>` when `V` is non-optional.
+- Check nested constructor exhaustiveness *recursively*. For
+  `Option<Option<bool>>`, `Some(Some(false))`, `Some(Some(true))`,
+  `Some(None)`, and outer `None` form four distinct exhaustive cases.
+  A guarded `Some(x) when ...` does not cover every `Some` automatically.
+- Reject overlapping constructor arms, unreachable fallback arms, wrong
+  constructor arity, unknown constructors, and `|| ->` wildcard impostors.
+  `Symbol.default`, `default`, `else`, and `_` must behave consistently
+  as match-only final fallbacks.
+- Evaluate the scrutinee and lookup key once, before arm selection. Bind names
+  only on the successful branch; never hide `Some(None)` as a missing key.
+- For move-only `V`, `get` must fail closed rather than wrap a borrow in an
+  owned `Option<V>`. `take` may move an owned `V` out only when there is no
+  live conflicting borrow/iterator. Cover class identity, struct copies,
+  frozen `rt share`, actor messaging, and async suspension independently.
+- Require consistent compiler/interpreter/AOT/JIT outcomes and a real
+  map-runtime integration test. Green tests of `Option` constructors alone
+  are insufficient evidence of a completed map implementation.
+
+### Test proof obligations before merge
+
+The matrix must include every present/missing/optional-value combination,
+`false`, zero, empty strings, nested `Result`, non-exhaustive partitions,
+side-effect-only and value-producing matches, exact-once evaluation,
+hash collisions, invalid/mutable keys, unknown comparers, insertion failure,
+reentrant callbacks, iterator invalidation, ownership transfer, alias
+invalidation, actor isolation, GC cleanup, and failure/cancellation
+atomicity. Run against an **exact recorded source tree**; if source Actions
+cannot allocate a runner, a cross-organization carrier must contain identical
+Git blob contents and must not assume a private cross-org `GITHUB_TOKEN`
+checkout will work. A design-only or blocked workflow is not a passing test.
