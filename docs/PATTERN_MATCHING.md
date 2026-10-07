@@ -154,9 +154,10 @@ Both `over ... end` and braced-match delimiters are supported. Arm bodies
 implicit final-expression results. `return;`, missing terminal returns, and
 unbraced result expressions are errors. The `return` is lowered to the result
 expression of the existing typed `MatchExpr`; it is not a new function exit
-or an implicit closure. Earlier direct `return` statements in the same arm
-are rejected. Any earlier control-flow statement that exits the enclosing
-callable retains its own existing lexical semantics.
+or an implicit closure. Earlier or nested `return` statements inside an arm's preceding
+control-flow statements are rejected, rather than silently escaping the
+enclosing function. A `return` inside an independently nested lambda still
+belongs to that lambda.
 
 All branches remain subject to the same exclusivity, recursive
 `Option`/`Result` exhaustiveness, result-type compatibility, ownership, and
