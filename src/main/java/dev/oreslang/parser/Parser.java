@@ -2814,9 +2814,17 @@ public final class Parser {
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
-        if (match(OBJ)) return parseObjectLiteral(Ast.ObjectKind.OBJECT, List.of());
+        if (match(OBJ)) {
+            throw error(previous(),
+                    "obj{...} has been removed; use struct infer{...} for a closed inferred struct "
+                            + "or struct{field: Type,...}{...} for an explicit closed struct");
+        }
+        if (match(INFER)) {
+            consume(STRUCT, "infer in expression position must be followed by struct");
+            return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+        }
         if (match(STRUCT)) {
-            if (matchContextualKeyword("infer")) {
+            if (matchContextualKeyword("infer") || match(INFER)) {
                 return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
             }
             if (check(LBRACE)) return parseExplicitStructLiteral();
