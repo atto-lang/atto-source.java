@@ -440,6 +440,13 @@ public final class TypeChecker {
         }
     }
 
+    private void defineImplicitArguments(Env env, List<Type> parameterTypes) {
+        env.define(
+                "arguments",
+                new Tuple(List.copyOf(parameterTypes), TupleKind.TUPLE),
+                Ast.BindingKind.CONST);
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         if (fn.trapped()) {
             if (fn.async()) {
@@ -493,8 +500,10 @@ public final class TypeChecker {
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
+        List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
@@ -523,6 +532,7 @@ public final class TypeChecker {
                     parameterType,
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
+        defineImplicitArguments(env, argumentTypes);
 
         // Generator declarations may spell either the yielded element type
         // (: int) or the public iterator protocol (: Iterator<int> /
@@ -916,13 +926,16 @@ public final class TypeChecker {
 
             Env constructorEnv = new Env(null);
             constructorEnv.define("self", self, Ast.BindingKind.VAL);
+            List<Type> constructorArgumentTypes = new ArrayList<>(constructor.parameters().size());
             for (Ast.Param param : constructor.parameters()) {
                 Type parameterType = resolveParam(param, classGenerics, self);
+                constructorArgumentTypes.add(parameterType);
                 constructorEnv.define(
                         param.name(),
                         parameterType,
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            defineImplicitArguments(constructorEnv, constructorArgumentTypes);
 
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
@@ -1069,8 +1082,10 @@ public final class TypeChecker {
             Type callableSelf = method.isStatic() ? null : new SelfType(self);
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
+            List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
@@ -1103,6 +1118,7 @@ public final class TypeChecker {
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            defineImplicitArguments(env, methodArgumentTypes);
             Type returns = resolve(method.returnType(), generics, callableSelf);
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
@@ -3144,6 +3160,7 @@ public final class TypeChecker {
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
@@ -3856,6 +3873,7 @@ public final class TypeChecker {
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
         try {
@@ -3884,6 +3902,7 @@ public final class TypeChecker {
         }
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        List<Type> lambdaArgumentTypes = new ArrayList<>(lambda.parameters().size());
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
             Type expectedParam = expected.parameters().get(i);
@@ -3893,10 +3912,12 @@ public final class TypeChecker {
                         "lambda parameter '" + param.name() + "' mutability does not match expected callable contract");
             }
             Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
+            lambdaArgumentTypes.add(declared);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
+        defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
         try {
