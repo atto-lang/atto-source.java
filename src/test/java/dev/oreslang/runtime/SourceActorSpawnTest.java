@@ -118,6 +118,45 @@ final class SourceActorSpawnTest {
         }
     }
 
+    @Test void sourceActorResultsRejectLiveSharedCapabilitiesWithoutKillingActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), 8)) {
+            OresMutex.Shared<int[]> shared = OresMutex.shared(new int[]{1});
+            ActorRuntime.SourceActor actor = runtime.spawnSource(
+                    ActorRuntime.ActorKind.SHARED,
+                    List.of(),
+                    (initial, context) -> (method, arguments) ->
+                            method.equals("bad") ? shared : 7L);
+
+            OresFuture<Object> rejected = actor.request("bad", List.of());
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> rejected.get(2, TimeUnit.SECONDS));
+            assertTrue(failure.getCause().getMessage().contains("data values only")
+                    || failure.getCause().getMessage().contains("capabilities"));
+            assertTrue(actor.isAlive());
+            assertEquals(7L, actor.request("good", List.of()).get(2, TimeUnit.SECONDS));
+            actor.stop();
+        }
+    }
+
+    @Test void sharedSourceActorTransportPreservesExplicitSharedMutexCapability() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), 8)) {
+            OresMutex.Shared<int[]> shared = OresMutex.shared(new int[]{1});
+            ActorRuntime.SourceActor actor = runtime.spawnSource(
+                    ActorRuntime.ActorKind.SHARED,
+                    List.of(shared),
+                    (initial, context) -> {
+                        assertSame(shared, initial.getFirst());
+                        return (method, arguments) -> {
+                            assertSame(shared, arguments.getFirst());
+                            return 1L;
+                        };
+                    });
+            assertEquals(1L, actor.request("accept", List.of(shared)).get(2, TimeUnit.SECONDS));
+            actor.stop();
+        }
+    }
+
     @Test void initialStateAndRequestArgumentsCannotSmuggleLiveCapabilities() {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), 32)) {
             ActorRuntime.SourceActor actor = runtime.spawnSource(ActorRuntime.ActorKind.UNTRUSTED, List.of(),

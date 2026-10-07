@@ -3042,24 +3042,24 @@ public final class TypeChecker {
         }
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
-            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
+            validateActorCallableBoundaryType(list.element(), actorKind, returnPosition, where + " element");
             return;
         }
         if (type instanceof Tuple tuple) {
             for (int i = 0; i < tuple.elements().size(); i++) {
-                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i);
+                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, returnPosition, where + " tuple element " + i);
             }
             return;
         }
         if (type instanceof Union union) {
             for (Type option : union.options()) {
-                validateActorCallableBoundaryType(option, actorKind, false, where + " union member");
+                validateActorCallableBoundaryType(option, actorKind, returnPosition, where + " union member");
             }
             return;
         }
         if (type instanceof Record record) {
             for (Map.Entry<String, Type> member : record.members().entrySet()) {
-                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'");
+                validateActorCallableBoundaryType(member.getValue(), actorKind, returnPosition, where + " field '" + member.getKey() + "'");
             }
             return;
         }
@@ -3082,11 +3082,15 @@ public final class TypeChecker {
             validateActorCallableBoundaryType(
                     named.arguments().getFirst(),
                     actorKind,
-                    false,
+                    returnPosition,
                     where + " value");
             return;
         }
         if (named.name().equals("SharedMutex")) {
+            if (returnPosition) {
+                throw new IllegalArgumentException(
+                        where + " must be data-only; SharedMutex<T> is a live shared capability and cannot be returned from an actor method");
+            }
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
@@ -3100,7 +3104,7 @@ public final class TypeChecker {
         }
 
         for (Type argument : named.arguments()) {
-            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
+            validateActorCallableBoundaryType(argument, actorKind, returnPosition, where + " type argument");
         }
 
         // Built-in sum/container values are data-only when their arguments pass.
@@ -3122,10 +3126,13 @@ public final class TypeChecker {
                     where + " cannot transport an actor instance by value; pass an actor capability/reference");
         }
 
-        if (!isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
-            throw new IllegalArgumentException(
-                    where + " contains state that is not safe to transport across an actor boundary");
-        }
+        // Source class objects are evaluator-owned mutable objects. The runtime
+        // transport currently supports scalar/container data and explicit
+        // capabilities, not arbitrary OresObject serialization. Reject these
+        // statically even when every declared field is individually shared-safe.
+        throw new IllegalArgumentException(
+                where + " cannot transport source class instance '" + klass.name()
+                        + "' by value yet; serialize/copy it into a data container first");
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
