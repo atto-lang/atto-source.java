@@ -1199,12 +1199,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ObjectExpr object) {
                 return object.fields().stream().anyMatch(
-                        field ->
-                                (field.isDynamic()
-                                        && expressionContainsPotentialSuspension(
-                                                field.dynamicName(), seen))
-                                        || expressionContainsPotentialSuspension(
-                                                field.value(), seen));
+                        field -> expressionContainsPotentialSuspension(field.value(), seen));
             }
             return false;
         }
@@ -3084,59 +3079,30 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Object built = object.explicitStruct()
                         ? result
-                        : object.inferredStruct()
-                            ? new ReadonlyRecordValue(result)
-                            : throwRemovedObjectLiteral();
+                        : new ReadonlyRecordValue(result);
                 continuation.accept(task, built, null);
                 return;
             }
 
             Ast.ObjectField field = object.fields().get(index);
-            SourceValueCont afterKey =
-                    (t, key, failure) -> {
+            evalSuspendableExpr(
+                    task,
+                    field.value(),
+                    env,
+                    (t, value, failure) -> {
                         if (failure != null) {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        if (field.isDynamic()) {
-                            continuation.accept(
-                                    t,
-                                    null,
-                                    new IllegalArgumentException(
-                                            "struct fields must be statically named for AOT compilation"));
-                            return;
-                        }
-                        final String actualKey = field.name();
-                        evalSuspendableExpr(
+                        values.add(Map.entry(field.name(), value));
+                        evalSuspendableObjectField(
                                 t,
-                                field.value(),
+                                object,
                                 env,
-                                (t2, value, failure2) -> {
-                                    if (failure2 != null) {
-                                        continuation.accept(t2, null, failure2);
-                                        return;
-                                    }
-                                    values.add(
-                                            Map.entry(actualKey, value));
-                                    evalSuspendableObjectField(
-                                            t2,
-                                            object,
-                                            env,
-                                            values,
-                                            index + 1,
-                                            continuation);
-                                });
-                    };
-
-            if (field.isDynamic()) {
-                evalSuspendableExpr(
-                        task,
-                        field.dynamicName(),
-                        env,
-                        afterKey);
-            } else {
-                afterKey.accept(task, field.name(), null);
-            }
+                                values,
+                                index + 1,
+                                continuation);
+                    });
         }
 
         private void suspendOnAwaitable(
@@ -5394,10 +5360,6 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 for (Ast.ObjectField field : object.fields()) {
-                    if (field.isDynamic()) {
-                        throw new IllegalArgumentException(
-                                "struct fields must be statically named for AOT compilation");
-                    }
                     String key = field.name();
                     Object value = eval(field.value(), env);
                     if (object.explicitStruct()) {
@@ -5415,8 +5377,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 if (object.explicitStruct()) return result;
-                if (object.inferredStruct()) return new ReadonlyRecordValue(result);
-                return throwRemovedObjectLiteral();
+                return new ReadonlyRecordValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -7511,12 +7472,6 @@ public final class OresEvalRootNode extends RootNode {
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
         private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
-    }
-
-    private static Object throwRemovedObjectLiteral() {
-        throw new IllegalStateException(
-                "legacy obj/ObjectExpr reached runtime; source must use struct infer{...} "
-                        + "or struct{field: Type,...}{...}");
     }
 
     /**
