@@ -5448,8 +5448,10 @@ public final class OresEvalRootNode extends RootNode {
                 // it must never occupy an actor dispatcher worker while awaiting.
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
-                    List<Object> supplied = List.copyOf(args);
-                    return context.asyncRuntime().submit(() -> invoke(invokableInvocation(bodyCallable, supplied)));
+                    List<?> supplied = detachAsyncArguments(args);
+                    return context.asyncRuntime().submit(() -> detachAsyncValue(
+                            invoke(invokableInvocation(bodyCallable, supplied)),
+                            new IdentityHashMap<>()));
                 });
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
