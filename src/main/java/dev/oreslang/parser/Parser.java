@@ -810,15 +810,25 @@ public final class Parser {
 
         Ast.TypeRef receiverType = null;
         List<Ast.Param> params;
-        if (mods.isStatic && check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
+        boolean mutableReceiver = check(MUT) && checkNext(SELF);
+        if (mods.isStatic && (check(SELF) || mutableReceiver)) {
+            throw error(peek(), "static class functions do not have a self receiver");
+        }
 
         // `self` is both the receiver keyword and a receiver-polymorphic type.
-        // Disambiguate by the explicit-receiver form's second parameter list:
-        //   method(self Foo)(int x)  -> explicit receiver
-        //   method(self other)       -> ordinary parameter typed `self`
+        // Canonical pointerless mutation uses:
+        //   method(mut self)(params)
+        // The older explicit read-receiver form remains:
+        //   method(self Foo)(params)
         int parameterStart = current;
         boolean explicitReceiver = false;
-        if (check(SELF)) {
+        if (mutableReceiver) {
+            advance(); // mut
+            consume(SELF, "mutable receiver syntax is 'mut self'");
+            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+            receiverType = Ast.TypeRef.borrowed(target, true);
+            explicitReceiver = true;
+        } else if (check(SELF)) {
             advance();
             Ast.TypeRef candidateReceiver = parseTypeRef();
             if (check(RPAREN) && checkNext(LPAREN)) {
@@ -831,7 +841,9 @@ public final class Parser {
 
         if (explicitReceiver) {
             consume(RPAREN, "expected ')' after explicit self receiver");
-            consume(LPAREN, "explicit receiver form is method(self Type)(params)");
+            consume(LPAREN, mutableReceiver
+                    ? "explicit mutable receiver form is method(mut self)(params)"
+                    : "explicit receiver form is method(self Type)(params)");
             params = parseParametersUntil(RPAREN);
             consume(RPAREN, "expected ')' after method parameters");
         } else {
@@ -2445,6 +2457,7 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
+        if (match(RT)) return parseRuntimeExpression();
         if (match(BANG, TILDE, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             boolean mutable = match(MUT);
@@ -2570,6 +2583,32 @@ public final class Parser {
                 "dynamic select requires 'select from cases'; static select uses 'select { case ... }'");
         Ast.Expr cases = parseUnary();
         return new Ast.DynamicSelectExpr(mode, policy, cases);
+    }
+
+    /**
+     * Runtime ownership operations use command form (rt proxy x) or call form
+     * (rt proxy(x)). They lower to an unspellable compiler intrinsic so the
+     * ordinary AST/call machinery stays closed-world while source code cannot
+     * shadow or forge the operation.
+     */
+    private Ast.Expr parseRuntimeExpression() {
+        Token operation = consume(IDENT, "expected runtime operation after 'rt'");
+        if (!operation.lexeme().equals("proxy")) {
+            throw error(operation,
+                    "current runtime supports 'rt proxy'; copy/take/borrow/share/publish "
+                            + "are being converged separately with allocation-domain semantics");
+        }
+
+        Ast.Expr operand;
+        if (match(LPAREN)) {
+            operand = parseExpression();
+            consume(RPAREN, "expected ')' after rt " + operation.lexeme() + " operand");
+        } else {
+            operand = parseUnary();
+        }
+        return new Ast.CallExpr(
+                new Ast.NameExpr("$rt$" + operation.lexeme()),
+                List.of(operand));
     }
 
     private Ast.Expr parsePostfix() {
