@@ -46,7 +46,11 @@ public final class Ast {
     }
 
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
-        public TypeRef { arguments = List.copyOf(arguments); }
+        public TypeRef {
+            // Both source spellings denote one primitive throughout every compiler pass.
+            if (name.equals("boolean")) name = "bool";
+            arguments = List.copyOf(arguments);
+        }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
@@ -190,6 +194,7 @@ public final class Ast {
             boolean generator,
             boolean structural,
             boolean nonLexical,
+            boolean trapped,
             ActorKind actorKind,
             List<String> genericParameters,
             List<Param> parameters,
@@ -207,7 +212,17 @@ public final class Ast {
                             boolean generator, boolean nonLexical, ActorKind actorKind,
                             List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, generator, false, nonLexical, actorKind,
+            this(name, kind, visibility, async, generator, false, nonLexical, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
+
+        /** Compatibility constructor for callers that already carry structural metadata. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean structural, boolean nonLexical,
+                            ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType,
+                            List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, generator, structural, nonLexical, false, actorKind,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
@@ -216,27 +231,27 @@ public final class Ast {
                             boolean nonLexical, ActorKind actorKind, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations,
                             List<Stmt> body) {
-            this(name, kind, visibility, async, false, nonLexical, actorKind,
+            this(name, kind, visibility, async, false, false, nonLexical, false, actorKind,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             ActorKind actorKind, List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, false, actorKind,
+            this(name, kind, visibility, async, false, false, false, false, actorKind,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, false, ActorKind.NONE,
+            this(name, kind, visibility, async, false, false, false, false, ActorKind.NONE,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, false, ActorKind.NONE,
+            this(name, CallableKind.FNC, visibility, async, false, false, false, false, ActorKind.NONE,
                     genericParameters, parameters, returnType, annotations, body);
         }
     }
@@ -462,7 +477,11 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
-    public record YieldStmt(Expr value) implements Stmt {
+    public record YieldStmt(Expr value, boolean delegated) implements Stmt {
+        public YieldStmt(Expr value) {
+            this(value, false);
+        }
+
         public YieldStmt {
             if (value == null) throw new IllegalArgumentException("yield requires a value");
         }
@@ -650,7 +669,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -692,6 +711,16 @@ public final class Ast {
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+    }
+
+    /** Compiler-owned runtime namespace operation. The rt prefix cannot be rebound or shadowed. */
+    public record RuntimeCallExpr(String operation, List<Expr> arguments) implements Expr {
+        public RuntimeCallExpr {
+            if (operation == null || operation.isBlank()) {
+                throw new IllegalArgumentException("runtime operation cannot be blank");
+            }
+            arguments = List.copyOf(arguments);
         }
     }
 
@@ -798,6 +827,10 @@ public final class Ast {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
+            if ((expressionBody == null) == (blockBody == null)) {
+                throw new IllegalArgumentException(
+                        "lambda requires exactly one expression body or block body");
+            }
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
             this(parameters, expressionBody, blockBody, false);

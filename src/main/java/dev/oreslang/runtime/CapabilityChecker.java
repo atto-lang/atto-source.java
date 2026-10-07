@@ -383,6 +383,17 @@ public final class CapabilityChecker {
             Ast.FunctionDecl referenced = findFunction(n.name());
             if (referenced != null) checkReferencedFunction(referenced, policy);
         }
+        else if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (!Set.of("copy", "take", "borrow", "share", "cooperate").contains(runtime.operation())) {
+                throw new SecurityException(
+                        "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
+            }
+            if (runtime.operation().equals("cooperate") && isZeroAuthorityAdversarial(policy)) {
+                throw new SecurityException(
+                        "untrusted actor cannot use rt cooperate until continuation quota state survives scheduler handoffs");
+            }
+            for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
+        }
         else if (expr instanceof Ast.CallExpr c) {
             String target = memberPath(c.callee());
             if (isZeroAuthorityAdversarial(policy) && target != null) {

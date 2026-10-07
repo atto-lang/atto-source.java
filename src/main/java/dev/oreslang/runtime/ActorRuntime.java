@@ -58,6 +58,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final int UNTRUSTED_YIELD_QUANTUM = 64;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -65,6 +66,19 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
+            new ThreadLocal<>();
+    /**
+     * Narrow internal escape hatch used only by ActorGroupContext.send().
+     * A Mailman callback otherwise has no ambient ActorRuntime authority even
+     * though it executes on a CONTROL carrier.
+     */
+    private static final ThreadLocal<Boolean> ACTOR_GROUP_MAILMAN_CONTEXT_SEND =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    private record ActorGroupMailmanExecution(
+            ActorRuntime runtime,
+            ActorGroupId groupId) { }
 
     private record ActorExecutionContext(
             ActorRuntime runtime,
@@ -82,12 +96,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Admission boundary for runtime CONTROL work such as ActorGroup Mailmen.
+     *
+     * Implementations must enqueue onto a VM-owned CONTROL scheduler/pool; they
+     * must not create a scheduler or carrier pool per ActorGroup.
+     */
+    @FunctionalInterface
+    public interface ControlDispatcher {
+        OresFuture<Void> execute(Runnable turn);
+
+        static ControlDispatcher unavailable() {
+            return turn -> {
+                throw new RejectedExecutionException(
+                        "ActorGroup Mailman CONTROL dispatcher is not configured");
+            };
+        }
+    }
+
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
     }
 
     public static boolean inActorExecution() {
         return CURRENT_ACTOR_EXECUTION.get() != null;
+    }
+
+    public static boolean inActorGroupMailmanExecution() {
+        return CURRENT_ACTOR_GROUP_MAILMAN.get() != null;
     }
 
     public static IsolatePolicy currentActorPolicy() {
@@ -317,6 +353,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
+    private final ControlDispatcher controlDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
 
     /**
@@ -362,9 +399,22 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor) {
+        this(
+                policyCeiling,
+                dispatcherConfig,
+                turnExecutor,
+                ControlDispatcher.unavailable());
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
                 dispatcherConfig.maxActors(),
@@ -402,6 +452,7 @@ public final class ActorRuntime implements AutoCloseable {
      * domain is retired. Guest code cannot mutate this hook.
      */
     public void setActorExitHook(Consumer<Object> actorExitHook) {
+        requireSupervisorContext("install actor exit hook");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
@@ -1329,6 +1380,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
+        private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
         private UUID joinSecret = UUID.randomUUID();
 
         private ActorGroup(
@@ -1377,6 +1429,55 @@ public final class ActorRuntime implements AutoCloseable {
             requireObserver("access ActorGroup events");
             requireOpen();
             return eventBus;
+        }
+
+        /**
+         * Install the group's one logical serialized Mailman and bounded MPSC
+         * outbox. The Mailman executes on the VM CONTROL scheduler supplied to
+         * this ActorRuntime; it never owns a carrier thread or scheduler.
+         */
+        public <Out> void installMailman(
+                int outboxCapacity,
+                ActorMailman<Out> mailman) {
+            requireManager("install an ActorGroup Mailman");
+            requireOpen();
+            if (outboxCapacity <= 0) {
+                throw new IllegalArgumentException("ActorGroup Mailman outbox capacity must be > 0");
+            }
+            GroupMailmanState<Out> next =
+                    new GroupMailmanState<>(this, outboxCapacity, mailman);
+            if (!mailmanState.compareAndSet(null, next)) {
+                throw new IllegalStateException("ActorGroup already has a Mailman: " + id);
+            }
+            if (groupClosed.get() || closed.get()) {
+                if (mailmanState.compareAndSet(next, null)) next.close();
+                throw new IllegalStateException("ActorGroup closed while installing Mailman: " + id);
+            }
+        }
+
+        public boolean hasMailman() {
+            requireObserver("inspect ActorGroup Mailman");
+            GroupMailmanState<?> state = mailmanState.get();
+            return state != null && !state.stopped();
+        }
+
+        /**
+         * Emit one data-only value to this group's bounded Mailman outbox.
+         * Actor identity is captured as metadata; the immutable payload is
+         * quota-accounted until the Mailman consumes or teardown drains it.
+         */
+        public void emit(Object output) {
+            ActorId sender = requireCurrentMember("emit to an ActorGroup Mailman");
+            GroupMailmanState<?> state = mailmanState.get();
+            if (state == null) {
+                throw new IllegalStateException("ActorGroup has no configured Mailman: " + id);
+            }
+            state.emitUntyped(sender, output);
+        }
+
+        int mailmanOutboxSize() {
+            GroupMailmanState<?> state = mailmanState.get();
+            return state == null ? 0 : state.outboxSize();
         }
 
         public ActorGroupJoinCapability joinCapability() {
@@ -1478,6 +1579,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorId currentMemberOrSystem(String operation) {
             requireCallerRuntimeAffinity(operation);
+            requireNotActorGroupMailman(operation);
             ActorId actorId = currentActorId().orElse(null);
             if (actorId != null && !isMember(actorId)) {
                 throw new SecurityException("actor " + actorId + " is not a member of ActorGroup " + id);
@@ -1487,6 +1589,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         void requireManager(String operation) {
             requireCallerRuntimeAffinity(operation);
+            requireNotActorGroupMailman(operation);
             ActorId caller = currentActorId().orElse(null);
             if (caller != null && !Objects.equals(caller, creator)) {
                 throw new SecurityException(
@@ -1541,6 +1644,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
             }
+            GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
+            if (mailman != null) mailman.close();
             eventBus.closeFromGroup();
             members.clear();
             actorGroups.remove(id, this);
@@ -1549,6 +1654,274 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public String toString() {
             return "ActorGroup[" + id.value() + ",closed=" + groupClosed.get() + "]";
+        }
+    }
+
+    private static final class GroupMailmanEnvelope<Out> {
+        private final ActorMail<Out> mail;
+        private final ActorGroupEventReservation reservation;
+
+        private GroupMailmanEnvelope(
+                ActorMail<Out> mail,
+                ActorGroupEventReservation reservation) {
+            this.mail = Objects.requireNonNull(mail, "mail");
+            this.reservation = Objects.requireNonNull(reservation, "reservation");
+        }
+
+        private void release() {
+            reservation.close();
+        }
+    }
+
+    private final class GroupMailmanState<Out> implements AutoCloseable {
+        private final ActorGroup group;
+        private final ActorMailman<Out> mailman;
+        private final ChannelRuntime.Channel<GroupMailmanEnvelope<Out>> outbox;
+        private final Object admissionLock = new Object();
+        private final AtomicLong nextSequence = new AtomicLong();
+        private final AtomicBoolean scheduled = new AtomicBoolean();
+        private final AtomicBoolean stopped = new AtomicBoolean();
+        private final AtomicReference<Thread> executionLease = new AtomicReference<>();
+        private final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        private GroupMailmanState(
+                ActorGroup group,
+                int outboxCapacity,
+                ActorMailman<Out> mailman) {
+            this.group = Objects.requireNonNull(group, "group");
+            this.mailman = Objects.requireNonNull(mailman, "mailman");
+            this.outbox = new ChannelRuntime.Channel<>(outboxCapacity);
+        }
+
+        private boolean stopped() {
+            return stopped.get();
+        }
+
+        @SuppressWarnings("unchecked")
+        private void emitUntyped(ActorId sender, Object output) {
+            emit(sender, (Out) output);
+        }
+
+        private void emit(ActorId sender, Out output) {
+            Objects.requireNonNull(sender, "sender");
+            Throwable priorFailure = failure.get();
+            if (priorFailure != null) {
+                throw new IllegalStateException(
+                        "ActorGroup Mailman has failed for " + group.id,
+                        priorFailure);
+            }
+            if (stopped.get() || group.closed() || closed.get()) {
+                throw new IllegalStateException("ActorGroup Mailman is stopped for " + group.id);
+            }
+
+            FrozenActorGroupEventPayload frozen = freezeActorGroupEventPayload(output);
+            GroupMailmanEnvelope<Out> envelope;
+            synchronized (admissionLock) {
+                if (stopped.get() || group.closed() || closed.get()) {
+                    frozen.reservation().close();
+                    throw new IllegalStateException(
+                            "ActorGroup Mailman stopped during admission for " + group.id);
+                }
+                long sequence = nextSequence.getAndIncrement();
+                envelope =
+                        new GroupMailmanEnvelope<>(
+                                new ActorMail<>(
+                                        sender,
+                                        group.id,
+                                        sequence,
+                                        (Out) frozen.value()),
+                                frozen.reservation());
+
+                if (!outbox.tryWrite(envelope)) {
+                    envelope.release();
+                    throw new IllegalStateException(
+                            "ActorGroup Mailman outbox capacity exceeded for " + group.id);
+                }
+            }
+
+            try {
+                schedule();
+            } catch (RuntimeException | Error admissionFailure) {
+                failAndDrain(admissionFailure);
+                throw admissionFailure;
+            }
+        }
+
+        private void schedule() {
+            if (stopped.get() || outbox.size() == 0) return;
+            if (!scheduled.compareAndSet(false, true)) return;
+
+            final OresFuture<Void> dispatch;
+            try {
+                dispatch = Objects.requireNonNull(
+                        controlDispatcher.execute(this::runQuantum),
+                        "ActorGroup Mailman CONTROL dispatcher returned null Future");
+            } catch (RuntimeException | Error submissionFailure) {
+                scheduled.set(false);
+                throw submissionFailure;
+            }
+
+            dispatch.whenCompleteRuntime((ignored, dispatchFailure) -> {
+                if (dispatchFailure != null) {
+                    failAndDrain(OresFuture.unwrap(dispatchFailure));
+                }
+            });
+        }
+
+        private void runQuantum() {
+            if (stopped.get()) {
+                scheduled.set(false);
+                return;
+            }
+
+            Thread carrier = Thread.currentThread();
+            if (!executionLease.compareAndSet(null, carrier)) {
+                throw new IllegalStateException(
+                        "single-Mailman execution lease violated for ActorGroup " + group.id);
+            }
+
+            ActorGroupMailmanExecution prior = CURRENT_ACTOR_GROUP_MAILMAN.get();
+            if (prior != null) {
+                executionLease.compareAndSet(carrier, null);
+                throw new IllegalStateException(
+                        "nested ActorGroup Mailman execution is not permitted");
+            }
+            CURRENT_ACTOR_GROUP_MAILMAN.set(
+                    new ActorGroupMailmanExecution(ActorRuntime.this, group.id));
+
+            try {
+                int handled = 0;
+                long startedAt = System.nanoTime();
+                while (!stopped.get()
+                        && handled < dispatcherConfig.throughput()
+                        && (handled == 0
+                                || System.nanoTime() - startedAt < MAILMAN_MAX_BATCH_NANOS)) {
+                    GroupMailmanEnvelope<Out> envelope;
+                    try {
+                        envelope = outbox.tryRead().orElse(null);
+                    } catch (ChannelRuntime.ChannelClosedException closedOutbox) {
+                        if (stopped.get()) break;
+                        throw closedOutbox;
+                    }
+                    if (envelope == null) break;
+                    AtomicBoolean callbackActive = new AtomicBoolean(true);
+                    ActorGroupContext context = new ActorGroupContext() {
+                        private void requireActive() {
+                            if (!callbackActive.get() || executionLease.get() != Thread.currentThread()) {
+                                throw new SecurityException(
+                                        "ActorGroupContext requires its active Mailman callback");
+                            }
+                            ActorGroupMailmanExecution execution = CURRENT_ACTOR_GROUP_MAILMAN.get();
+                            if (execution == null || execution.runtime() != ActorRuntime.this
+                                    || !execution.groupId().equals(group.id)) {
+                                throw new SecurityException("ActorGroupContext belongs to another execution");
+                            }
+                        }
+
+                        @Override
+                        public ActorGroupId groupId() {
+                            requireActive();
+                            return group.id;
+                        }
+
+                        @Override
+                        public int memberCount() {
+                            requireActive();
+                            if (stopped.get() || group.closed() || closed.get()) {
+                                throw new IllegalStateException(
+                                        "ActorGroup Mailman is stopped for " + group.id);
+                            }
+                            return group.members.size();
+                        }
+
+                        @Override
+                        public <M> void send(ActorRef<M> target, M message) {
+                            requireActive();
+                            Objects.requireNonNull(target, "target");
+                            synchronized (admissionLock) {
+                                if (stopped.get() || group.closed() || closed.get()) {
+                                    throw new IllegalStateException(
+                                            "ActorGroup Mailman is stopped for " + group.id);
+                                }
+                                sendFromActorGroupMailman(group, target, message);
+                            }
+                        }
+                    };
+
+                    try {
+                        mailman.receiveMail(envelope.mail, context);
+                    } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                        failure.compareAndSet(null, fatal);
+                        stopped.set(true);
+                        throw fatal;
+                    } catch (Throwable mailmanFailure) {
+                        failure.compareAndSet(null, mailmanFailure);
+                        stopped.set(true);
+                    } finally {
+                        callbackActive.set(false);
+                        envelope.release();
+                    }
+                    handled++;
+                }
+            } finally {
+                CURRENT_ACTOR_GROUP_MAILMAN.remove();
+                if (!executionLease.compareAndSet(carrier, null)) {
+                    failure.compareAndSet(
+                            null,
+                            new IllegalStateException(
+                                    "ActorGroup Mailman execution lease ownership changed for "
+                                            + group.id));
+                    stopped.set(true);
+                }
+                scheduled.set(false);
+                if (stopped.get()) {
+                    drainOutbox();
+                } else if (outbox.size() != 0) {
+                    try {
+                        schedule();
+                    } catch (RuntimeException | Error rescheduleFailure) {
+                        failAndDrain(rescheduleFailure);
+                    }
+                }
+            }
+        }
+
+        private void failAndDrain(Throwable cause) {
+            synchronized (admissionLock) {
+                failure.compareAndSet(
+                        null,
+                        cause == null
+                                ? new IllegalStateException("ActorGroup Mailman CONTROL dispatch failed")
+                                : cause);
+                stopped.set(true);
+                scheduled.set(false);
+                drainOutboxLocked();
+            }
+        }
+
+        private void drainOutbox() {
+            synchronized (admissionLock) {
+                drainOutboxLocked();
+            }
+        }
+
+        private void drainOutboxLocked() {
+            outbox.close();
+            while (outbox.drainOne(GroupMailmanEnvelope::release)) {
+                // Closing the channel preserves buffered envelopes; teardown owns their release.
+            }
+        }
+
+        private int outboxSize() {
+            return outbox.size();
+        }
+
+        @Override
+        public void close() {
+            synchronized (admissionLock) {
+                stopped.set(true);
+                drainOutboxLocked();
+            }
         }
     }
 
@@ -1578,6 +1951,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     public ActorGroup createActorGroup() {
         requireCallerRuntimeAffinity("create an ActorGroup");
+        requireNotActorGroupMailman("create an ActorGroup");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         ActorId creator = currentActorId().orElse(null);
@@ -1619,6 +1993,32 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private <M> void sendFromActorGroupMailman(
+            ActorGroup group,
+            ActorRef<M> target,
+            M message) {
+        ActorGroupMailmanExecution mailman = CURRENT_ACTOR_GROUP_MAILMAN.get();
+        if (mailman == null
+                || mailman.runtime() != this
+                || !mailman.groupId().equals(group.id)) {
+            throw new SecurityException(
+                    "ActorGroupContext.send requires the owning Mailman execution context");
+        }
+
+        boolean priorPermit =
+                Boolean.TRUE.equals(ACTOR_GROUP_MAILMAN_CONTEXT_SEND.get());
+        ACTOR_GROUP_MAILMAN_CONTEXT_SEND.set(Boolean.TRUE);
+        try {
+            send(target, message);
+        } finally {
+            if (priorPermit) {
+                ACTOR_GROUP_MAILMAN_CONTEXT_SEND.set(Boolean.TRUE);
+            } else {
+                ACTOR_GROUP_MAILMAN_CONTEXT_SEND.remove();
+            }
+        }
+    }
+
     private void requireCallerRuntimeAffinity(String operation) {
         requireNoForceCancellationHookReentry(operation);
         ActorRuntime caller = currentActorRuntime();
@@ -1626,10 +2026,32 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException(
                     "actor cannot " + operation + " through another ActorRuntime");
         }
+        ActorGroupMailmanExecution mailman = CURRENT_ACTOR_GROUP_MAILMAN.get();
+        if (mailman != null) {
+            if (mailman.runtime() != this) {
+                throw new SecurityException(
+                        "ActorGroup Mailman cannot " + operation + " through another ActorRuntime");
+            }
+            if (!Boolean.TRUE.equals(ACTOR_GROUP_MAILMAN_CONTEXT_SEND.get())) {
+                throw new SecurityException(
+                        "ActorGroup Mailman cannot " + operation
+                                + " through ambient ActorRuntime authority; use ActorGroupContext");
+            }
+        }
+    }
+
+    private void requireNotActorGroupMailman(String operation) {
+        ActorGroupMailmanExecution mailman = CURRENT_ACTOR_GROUP_MAILMAN.get();
+        if (mailman != null) {
+            throw new SecurityException(
+                    "ActorGroup Mailman cannot " + operation
+                            + "; CONTROL carrier identity does not confer host/supervisor authority");
+        }
     }
 
     private void requireSupervisorContext(String operation) {
         requireNoForceCancellationHookReentry(operation);
+        requireNotActorGroupMailman(operation);
         if (inActorExecution()) {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
@@ -1637,11 +2059,14 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireBlockingHostContext(String operation) {
-        if (inActorExecution() || OresScheduler.current() != null) {
+        if (inActorExecution()
+                || inActorGroupMailmanExecution()
+                || OresScheduler.current() != null) {
             throw new SecurityException(
                     operation
-                            + " is a host/embedder blocking operation; actor and scheduler turns "
-                            + "must use nonblocking cancellation plus Future/Awaitable suspension");
+                            + " is a host/embedder blocking operation; actor, Mailman CONTROL, "
+                            + "and scheduler turns must use nonblocking cancellation plus "
+                            + "Future/Awaitable suspension");
         }
     }
 
@@ -2271,6 +2696,7 @@ public final class ActorRuntime implements AutoCloseable {
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
         requireCallerRuntimeAffinity("spawn actors");
+        requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
@@ -2492,6 +2918,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         IsolatePolicy policy = defaultSpawnPolicy();
+
+        /*
+         * The guest result is deliberately staged separately from the Future
+         * exposed to the caller. A one-shot actor may compute its result while
+         * its carrier still owns a TruffleContext. Publishing that result here
+         * would let an awaiting root frame resume, return from Context.eval(),
+         * and close the Polyglot Context before TurnExecutor.execute(...) has
+         * crossed its leave boundary.
+         *
+         * ActorCell.finalizedFuture is settled only after carrierActive is
+         * false, scheduled is clear, actor teardown is complete, and the
+         * TurnExecutor has returned. The externally visible Future therefore
+         * becomes terminal only after that barrier.
+         */
+        OresFuture<R> staged = new OresFuture<>();
         OresFuture<R> completion = new OresFuture<>();
 
         ActorRef<M> ref = spawnInternal(
@@ -2512,14 +2953,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     (value, failure) -> {
                                         try {
                                             if (failure != null) {
-                                                completion.failFromRuntime(
+                                                staged.failFromRuntime(
                                                         OresFuture.unwrap(failure));
                                             } else {
                                                 R frozen = (R) freeze(value);
-                                                completion.completeFromRuntime(frozen);
+                                                staged.completeFromRuntime(frozen);
                                             }
                                         } catch (Throwable callbackFailure) {
-                                            completion.failFromRuntime(callbackFailure);
+                                            staged.failFromRuntime(callbackFailure);
                                         } finally {
                                             turnContext.self().stop();
                                         }
@@ -2528,28 +2969,68 @@ public final class ActorRuntime implements AutoCloseable {
                         }
 
                         R frozen = (R) freeze(result);
-                        completion.completeFromRuntime(frozen);
+                        staged.completeFromRuntime(frozen);
                         turnContext.self().stop();
                     } catch (VirtualMachineError fatal) {
-                        completion.failFromRuntime(fatal);
+                        staged.failFromRuntime(fatal);
                         throw fatal;
                     } catch (ThreadDeath fatal) {
-                        completion.failFromRuntime(fatal);
+                        staged.failFromRuntime(fatal);
                         throw fatal;
                     } catch (LinkageError fatal) {
-                        completion.failFromRuntime(fatal);
+                        staged.failFromRuntime(fatal);
                         throw fatal;
                     } catch (Throwable failure) {
-                        completion.failFromRuntime(failure);
+                        staged.failFromRuntime(failure);
                         turnContext.self().stop();
                     }
                 },
                 true);
 
+        @SuppressWarnings("unchecked")
+        ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        if (cell == null) {
+            completion.failFromRuntime(
+                    new IllegalStateException(
+                            "one-shot actor disappeared before finalization barrier registration"));
+            return completion;
+        }
+
+        cell.finalizedFuture.whenCompleteRuntime((ignored, barrierFailure) -> {
+            if (completion.isDone()) return;
+
+            Object terminal = staged.runtimeTerminalStateOrNull();
+            if (terminal != null) {
+                Throwable failure = OresFuture.runtimeTerminalFailure(terminal);
+                if (failure == null) {
+                    completion.completeFromRuntime(
+                            (R) OresFuture.runtimeTerminalValue(terminal));
+                } else if (failure instanceof CancellationException) {
+                    completion.cancel(false);
+                } else {
+                    completion.failFromRuntime(failure);
+                }
+                return;
+            }
+
+            Throwable termination = ref.terminationCause.get();
+            if (termination instanceof CancellationException) {
+                completion.cancel(false);
+            } else if (termination != null) {
+                completion.failFromRuntime(termination);
+            } else if (barrierFailure != null) {
+                completion.failFromRuntime(OresFuture.unwrap(barrierFailure));
+            } else {
+                completion.failFromRuntime(
+                        new IllegalStateException(
+                                "one-shot actor finalized before producing a result"));
+            }
+        });
+
         try {
             send(ref, message);
         } catch (Throwable failure) {
-            completion.failFromRuntime(failure);
+            staged.failFromRuntime(failure);
             try {
                 if (ref.isAlive()) stop(ref);
             } catch (RuntimeException cleanup) {
@@ -4377,6 +4858,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         private volatile long sourceStateBytes;
+        /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
+        private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -4545,6 +5028,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
+            finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
         }
 

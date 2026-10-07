@@ -36,10 +36,12 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
+    private boolean currentAsyncGenerator;
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -53,6 +55,7 @@ public final class OwnershipChecker {
 
     private void index(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
@@ -83,8 +86,14 @@ public final class OwnershipChecker {
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
         }
-        checkBlock(fn.body(), scope, fn.returnType());
-        scope.close();
+        boolean previousAsyncGenerator = currentAsyncGenerator;
+        currentAsyncGenerator = fn.generator() && fn.async();
+        try {
+            checkBlock(fn.body(), scope, fn.returnType());
+        } finally {
+            currentAsyncGenerator = previousAsyncGenerator;
+            scope.close();
+        }
     }
 
     private Ast.ClassDecl initializingClass;
@@ -120,10 +129,36 @@ public final class OwnershipChecker {
                             ValueKind.MUT_BORROW,
                             Origin.PARAM));
                 } else {
-                    ValueKind receiverKind = AnnotationExpander.isGeneratedFromJsonSetter(method)
-                            ? ValueKind.MUT_BORROW
-                            : ValueKind.IMM_BORROW;
-                    scope.define("self", new VarState(Ast.TypeRef.simple(klass.name()), false, receiverKind, Origin.PARAM));
+                    Ast.TypeRef explicitReceiver = method.explicitReceiverType();
+                    if (explicitReceiver != null && explicitReceiver.isBorrow()) {
+                        Ast.TypeRef target = explicitReceiver.borrowedTarget();
+                        if (target.name().equals("self")) {
+                            target = Ast.TypeRef.simple(klass.name());
+                        }
+                        ValueKind receiverKind = explicitReceiver.mutableBorrow()
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
+                        scope.define(
+                                "self",
+                                new VarState(
+                                        Ast.TypeRef.borrowed(
+                                                target,
+                                                explicitReceiver.mutableBorrow()),
+                                        false,
+                                        receiverKind,
+                                        Origin.PARAM));
+                    } else {
+                        ValueKind receiverKind = AnnotationExpander.isGeneratedFromJsonSetter(method)
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
+                        scope.define(
+                                "self",
+                                new VarState(
+                                        Ast.TypeRef.simple(klass.name()),
+                                        false,
+                                        receiverKind,
+                                        Origin.PARAM));
+                    }
                 }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
@@ -223,8 +258,13 @@ public final class OwnershipChecker {
                 throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
             }
             ValueInfo value = checkExpr(yielded.value(), scope, true);
-            if (containsMutexGuardType(value.type)) {
-                throw error("MutexGuard values cannot be yielded from a generator");
+            Ast.TypeRef exposed = yielded.delegated()
+                    ? iterableElementType(value.type, currentAsyncGenerator)
+                    : value.type;
+            if (containsMutexGuardType(exposed)) {
+                throw error(yielded.delegated()
+                        ? "MutexGuard values cannot cross a yield* delegation boundary"
+                        : "MutexGuard values cannot be yielded from a generator");
             }
             return;
         }
@@ -470,7 +510,19 @@ public final class OwnershipChecker {
         }
 
         ValueInfo value;
-        if (binding.initializer() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+        if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("borrow")) {
+            if (runtime.arguments().size() != 1) {
+                throw error("rt borrow expects exactly one argument");
+            }
+            VarState owner = borrowOwner(runtime.arguments().getFirst(), scope);
+            beginPersistentBorrow(owner, false);
+            value = new ValueInfo(
+                    Ast.TypeRef.borrowed(owner.type, false),
+                    ValueKind.IMM_BORROW,
+                    ownershipRoot(owner));
+        } else if (binding.initializer() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
             VarState owner = borrowOwner(unary.operand(), scope);
             beginPersistentBorrow(owner, mutableBorrow);
@@ -536,6 +588,55 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.borrowed(owner.type, mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(owner));
             }
             return checkExpr(unary.operand(), scope, false);
+        }
+        if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals("cooperate")) {
+                if (!runtime.arguments().isEmpty()) {
+                    throw error("rt cooperate takes no arguments");
+                }
+                return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            }
+            if (runtime.arguments().size() != 1) {
+                throw error("rt " + runtime.operation() + " expects exactly one argument");
+            }
+            Ast.Expr argument = runtime.arguments().getFirst();
+            return switch (runtime.operation()) {
+                case "borrow" -> {
+                    VarState owner = borrowOwner(argument, scope);
+                    validateBorrow(owner, false);
+                    yield new ValueInfo(
+                            Ast.TypeRef.borrowed(owner.type, false),
+                            ValueKind.IMM_BORROW,
+                            ownershipRoot(owner));
+                }
+                case "take" -> {
+                    ValueInfo taken = checkExpr(argument, scope, true);
+                    if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
+                            || (taken.type != null && taken.type.isBorrow())) {
+                        throw error("rt take requires owned data; a borrow cannot regain ownership");
+                    }
+                    yield taken;
+                }
+                case "copy" -> {
+                    ValueInfo source = checkExpr(argument, scope, false);
+                    if (source.kind != ValueKind.COPY) {
+                        throw error(
+                                "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
+                                        + "this current-main convergence patch fails closed instead of aliasing");
+                    }
+                    yield source;
+                }
+                case "share" -> {
+                    ValueInfo source = checkExpr(argument, scope, false);
+                    if (source.kind != ValueKind.COPY) {
+                        throw error(
+                                "rt share of move-only values requires the owning Shared<T> convergence; "
+                                        + "this current-main patch fails closed instead of manufacturing shared mutable aliasing");
+                    }
+                    yield source;
+                }
+                default -> throw error("unknown runtime operation 'rt " + runtime.operation() + "'");
+            };
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
@@ -782,6 +883,12 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (isBooleanIntrinsicCall(call, scope)) {
+            for (Ast.Expr argument : call.arguments()) {
+                checkExpr(argument, scope, false);
+            }
+            return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+        }
         if (isBuiltinStdoutCall(call, "log", scope) || isBuiltinStdoutCall(call, "logList", scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 Ast.Expr value = argument instanceof Ast.SpreadExpr spread ? spread.expression() : argument;
@@ -956,7 +1063,18 @@ public final class OwnershipChecker {
             if (target != null) {
                 Ast.MethodDecl method = target.method();
                 if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
-                    ensureMutableReceiver(member.receiver(), scope, "generated JSON setter '" + method.name() + "'");
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "generated JSON setter '" + method.name() + "'");
+                }
+                if (method.explicitReceiverType() != null
+                        && method.explicitReceiverType().isBorrow()
+                        && method.explicitReceiverType().mutableBorrow()) {
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "mutable method receiver '" + method.name() + "'");
                 }
                 boolean protectedReceiver = false;
                 if (member.receiver() instanceof Ast.NameExpr receiverName) {
@@ -985,7 +1103,29 @@ public final class OwnershipChecker {
             }
         }
 
-        checkExpr(call.callee(), scope, false);
+        ValueInfo callee = checkExpr(call.callee(), scope, false);
+        Ast.TypeRef callableType = callee.type;
+        if (callableType != null
+                && !callableType.isBorrow()
+                && (callableType.name().equals("Fnc") || callableType.name().equals("Function"))
+                && !callableType.arguments().isEmpty()) {
+            int parameterCount = callableType.arguments().size() - 1;
+            if (parameterCount == call.arguments().size()) {
+                for (int i = 0; i < call.arguments().size(); i++) {
+                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
+                    if (containsMutexGuardType(argument.type)) {
+                        throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
+                    }
+                    if (argument.kind == ValueKind.MUT_BORROW) {
+                        throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                    }
+                }
+                Ast.TypeRef result = callableType.arguments().getLast();
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+        }
+
+        // Unknown host/dynamic callables remain conservative and consuming.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
             if (containsMutexGuardType(argument.type)) {
@@ -993,6 +1133,25 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.NameExpr name) {
+            return isBooleanIntrinsicName(name.name())
+                    && scope.lookup(name.name()) == null
+                    && !functions.containsKey(name.name())
+                    && !ambiguousFunctions.contains(name.name());
+        }
+        return call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("BooleanOps")
+                && isBooleanIntrinsicName(member.member())
+                && scope.lookup("BooleanOps") == null
+                && !modules.contains("BooleanOps");
+    }
+
+    private static boolean isBooleanIntrinsicName(String name) {
+        return name.equals("And") || name.equals("Or") || name.equals("Xor");
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Scope scope) {
@@ -1223,7 +1382,18 @@ public final class OwnershipChecker {
         int previousLoopDepth = loopDepth;
         loopDepth = 0;
         try {
-            for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
+            if (lambda.expressionBody() != null) {
+                // An expression body has return-value ownership semantics even
+                // though it has no explicit return statement in source.
+                ValueInfo returned = checkExpr(lambda.expressionBody(), closure, true);
+                if (containsMutexGuardType(returned.type)) {
+                    throw error("MutexGuard values are lexical and cannot be returned from a lambda");
+                }
+            } else {
+                for (Ast.Stmt stmt : lambda.blockBody()) {
+                    checkStatement(stmt, closure, Ast.TypeRef.inferred());
+                }
+            }
         } finally {
             loopDepth = previousLoopDepth;
             closure.close();
@@ -1235,7 +1405,11 @@ public final class OwnershipChecker {
         CaptureSet captures = new CaptureSet();
         Set<String> locals = new HashSet<>();
         for (Ast.Param param : lambda.parameters()) locals.add(param.name());
-        scanStatements(lambda.blockBody(), locals, outer, recursiveBinding, captures);
+        if (lambda.expressionBody() != null) {
+            scanExpr(lambda.expressionBody(), locals, outer, recursiveBinding, captures, false);
+        } else {
+            scanStatements(lambda.blockBody(), locals, outer, recursiveBinding, captures);
+        }
         return captures;
     }
 
@@ -1367,6 +1541,10 @@ public final class OwnershipChecker {
             scanExpr(e.condition(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenTrue(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenFalse(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.RuntimeCallExpr e) {
+            for (Ast.Expr arg : e.arguments()) {
+                scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+            }
         } else if (expr instanceof Ast.CallExpr e) {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
@@ -1397,8 +1575,37 @@ public final class OwnershipChecker {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
         }
-        else if (expr instanceof Ast.LambdaExpr) {
-            // Nested lambda performs its own capture analysis when checked.
+        else if (expr instanceof Ast.LambdaExpr lambda) {
+            // A lexical nested closure can reference values that belong to an
+            // activation outside the current lambda. Those are transitive
+            // captures of the current closure: it must keep/move them alive so
+            // the nested closure can subsequently capture them from its parent.
+            //
+            // Parameters and locals of the current lambda are deliberately kept
+            // in nestedLocals so references such as |x| -> |y| -> x + y do not
+            // become captures of the outer activation. An explicit nlex nested
+            // lambda is a capture barrier and therefore contributes nothing.
+            if (lambda.nonLexical()) return;
+            Set<String> nestedLocals = new HashSet<>(locals);
+            for (Ast.Param parameter : lambda.parameters()) {
+                nestedLocals.add(parameter.name());
+            }
+            if (lambda.expressionBody() != null) {
+                scanExpr(
+                        lambda.expressionBody(),
+                        nestedLocals,
+                        outer,
+                        recursiveBinding,
+                        captures,
+                        false);
+            } else {
+                scanStatements(
+                        lambda.blockBody(),
+                        nestedLocals,
+                        outer,
+                        recursiveBinding,
+                        captures);
+            }
         }
     }
 
@@ -2117,12 +2324,26 @@ public final class OwnershipChecker {
             boolean async,
             boolean generator) {
         if (generator) {
+            Ast.TypeRef element = generatorYieldType(result, async);
             return new Ast.TypeRef(
                     async ? "AsyncIterator" : "Iterator",
-                    List.of(result),
+                    List.of(element),
                     false);
         }
         if (async) return new Ast.TypeRef("Future", List.of(result), false);
+        return result;
+    }
+
+    private Ast.TypeRef generatorYieldType(Ast.TypeRef result, boolean async) {
+        if (result != null && result.arguments().size() == 1) {
+            boolean syncProtocol =
+                    result.name().equals("Iterator") || result.name().equals("Generator");
+            boolean asyncProtocol =
+                    result.name().equals("AsyncIterator") || result.name().equals("AsyncGenerator");
+            if ((async && asyncProtocol) || (!async && syncProtocol)) {
+                return result.arguments().getFirst();
+            }
+        }
         return result;
     }
 

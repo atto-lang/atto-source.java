@@ -126,7 +126,7 @@ A module contract is not a class/struct interface and cannot be implemented by a
 
 ## Functions and returns
 
-Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+Functions use `fnc` and are private by default. `pub` exports them. Named callables and braced lambda bodies use explicit return statements; a non-`void` named callable or braced lambda must return on every control-flow path. Expression-bodied lambdas are the deliberate compact exception: their sole expression is the return value.
 
 Class fields, instance methods, and `static fnc` members are also private by default unless marked `pub`. Private class-member access is scoped to the **declaring class**, not to a particular receiver instance: code declared in class `A` may access an `A` private member on another `A` instance, but subclasses and external callers may not. A lexical lambda created inside an `A` method retains that private-access authority with its lexical environment; an explicit or inherited `nlex` lambda does not. Runtime member dispatch enforces the same rule for dynamically linked/wildcard-imported values whose static type is `Unknown`, so imports cannot bypass private visibility. Public/structural class shapes expose only public members.
 
@@ -599,9 +599,17 @@ never erased into an ordinary structural object.
 
 ## Boolean combinator intrinsics
 
+`bool` and `boolean` are interchangeable spellings of the same primitive
+type. Both work in parameters, return types, bindings, casts, type tests,
+and nested types such as `Array<boolean>` or `Option<boolean>`. They have
+the same Copy ownership semantics. Boolean primitives do not accept type
+arguments; `boolean<int>` and `bool<>` are invalid.
+
 `And`, `Or`, and `Xor` are compiler-provided overload families in the
 built-in `BooleanOps` namespace and are also available as globals, like
 `Some`, `None`, `Ok`, and `Err`.
+No imports or declarations are needed to call `And(...)`, `Or(...)`, or
+`Xor(...)` directly. The qualified `BooleanOps` forms are also built in.
 
 Conceptually, each family has these two arity-selected overloads:
 
@@ -649,6 +657,9 @@ control-flow IR as the operators.
 The one-argument list overload has ordinary eager argument evaluation, then
 reduces the already-created list. Empty lists are valid: `And([])` is
 `true`, `Or([])` is `false`, and `Xor([])` is `false`.
+The intrinsic reads its list without consuming ownership, so the same array
+can be reused in subsequent calls. User-defined functions that shadow these
+names retain their declared parameter ownership rules.
 
 Module/top-level `fnc` and `routine` overload identity is also name + exact
 arity. Same-name/different-arity declarations are valid; same-name/same-arity
@@ -712,14 +723,34 @@ Numeric widening is loss-aware; real values can widen toward complex values, but
 
 ## Lambdas
 
-Lambdas are lexical closures by default and use `->`. The canonical block
-form keeps returns explicit:
+Lambdas are lexical closures by default and use `->`. The braced form keeps
+control flow explicit:
 
 ```ores
 val Fnc<int, int> inc = |int x| -> {
   return x + 1;
 };
 ```
+
+A braced lambda never treats its final statement as an implicit return. If its
+result type is non-`void`, every control-flow path must execute an explicit
+`return <value>;`.
+
+For a single returned expression, the full expression-body form omits the braces
+and `return`:
+
+```ores
+val Fnc<int, int> twice = |value| -> value * 2;
+
+val Fnc<int, int> shifted = |value| ->
+  value * 2 + 1;
+```
+
+The containing statement must end with an explicit semicolon. A newline alone
+does not terminate a statement that contains an expression-bodied lambda. Only
+an immediate `{` after `->` starts the block form; any other token begins the
+expression. This keeps prefix expressions unambiguous, including future forms
+such as `struct{...}{...}`.
 
 A normal lambda may capture activation-local bindings from its enclosing
 function or block. Captured mutable state remains part of the closure.
@@ -1603,13 +1634,12 @@ fnc sink(): ((bool foo) => void) {
 
 Parameter names inside function types are documentation-only; structural function compatibility is determined by parameter/result types.
 
-The canonical lambda syntax is pipe-delimited and block-only:
+The canonical lambda parameter syntax is pipe-delimited. The body may be a
+braced statement block or one returned expression:
 
 ```ores
 fnc find(bool found): F {
-  return || -> {
-    return found ? 5 : 6;
-  };
+  return || -> found ? 5 : 6;
 }
 
 fnc callback(): ((bool foo) => void) {
@@ -1622,9 +1652,12 @@ fnc callback(): ((bool foo) => void) {
 
 Lambda parameters may be inferred from a contextual function type (`|foo|`) or typed explicitly (`|bool foo|`).
 
-There are no expression-body lambdas. Every lambda has braces. When the contextual result type is non-void, every control-flow path must contain an explicit `return <value>;`. Void lambdas may use `return;`.
-
-This means higher-order functions and functors do not introduce a second return convention: named functions, methods, static functions, and anonymous functions all use the same explicit `return` statement semantics.
+Expression-bodied lambdas return exactly their sole expression. Braced lambdas
+retain ordinary statement semantics: there is no implicit last-expression
+return, non-`void` results require explicit `return <value>;` on every path,
+and `void` lambdas may use `return;`. A statement containing an
+expression-bodied lambda must use an explicit trailing semicolon, including when
+the lambda body is laid out across multiple lines.
 
 
 ## Lexical closures

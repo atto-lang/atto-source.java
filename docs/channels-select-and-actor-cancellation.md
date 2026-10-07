@@ -113,6 +113,13 @@ val Channel<int> input = Channel.new<int>(64);
 
 Capacity zero is a rendezvous/unbuffered channel.
 
+Channel payloads are data, not executable capabilities. `Fnc<...>` / function
+values cannot be channel element types, including when nested inside Options,
+tuples, records, collections, or nominal objects with callable state. A closure
+may capture execution-domain-local authority, so moving it through a channel
+would make the transport boundary depend on hidden capture state. Keep callbacks
+local and send explicit data describing the requested operation instead.
+
 ### Blocking/suspending forms
 
 ```ores
@@ -176,14 +183,15 @@ Canonical static syntax:
 
 ```ores
 select {
-case readch incoming: let msg
-  stdio.println("Received:", msg);
-
-case writech outgoing, payload:
-  stdio.println("Sent payload successfully");
-
-case readch shutdown: const signal
-  return;
+  case readch incoming: let msg {
+    stdio.println("Received:", msg);
+  }
+  case writech outgoing, payload: {
+    stdio.println("Sent payload successfully");
+  }
+  case readch shutdown: const signal {
+    return;
+  }
 }
 ```
 
@@ -191,7 +199,21 @@ A read arm may bind with `let`, `val`, or `const`. `const` means the
 selected runtime value is bound immutably; it does not imply the message was a
 compile-time constant.
 
-A select may include one `default:` arm.
+Every `case` and `default` arm requires its own `{ ... }` body, including
+empty arms. Canonical source uses two spaces per indentation level and no tabs
+for indentation: arms sit one level inside `select`, and their statements sit
+one level inside the arm. The same rules apply to `nb select` and `try select`.
+Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
+
+A select may include one `default: { ... }` arm.
+
+A static select arm is a non-throwing control-flow boundary. An ordinary
+`throw` may be handled by a local `try/catch`, or absorbed by a called
+`trap` callable before control returns to the arm, but an ordinary throw that
+can escape the selected arm is rejected by the compiler. `raise` and `panic`
+are distinct nonlocal control signals and bypass select; runtime
+cancellation/termination likewise retains its runtime control identity rather
+than becoming normal select completion.
 
 ### Deterministic selection policy
 
@@ -212,10 +234,12 @@ Explicit strict priority:
 
 ```ores
 select first {
-case readch control: const command
-  ...
-case readch data: let value
-  ...
+  case readch control: const command {
+    ...
+  }
+  case readch data: let value {
+    ...
+  }
 }
 ```
 
@@ -234,14 +258,15 @@ It cannot reverse a case that has already atomically won a readiness race.
 
 ```ores
 nb select {
-case readch incoming: let msg
-  stdio.println("Received:", msg);
-
-case readch payload: const body
-  stdio.println("Received payload:", body);
-
-case readch shutdown: const signal
-  return;
+  case readch incoming: let msg {
+    stdio.println("Received:", msg);
+  }
+  case readch payload: const body {
+    stdio.println("Received payload:", body);
+  }
+  case readch shutdown: const signal {
+    return;
+  }
 }
 ```
 
@@ -297,8 +322,8 @@ val Array<SelectCase> cases = [
   SelectCase.write(b, 42)
 ];
 
-val SelectResult result = select from cases;
-val Future<SelectResult> pending = nb select from cases;
+val Option<SelectResult> result = select from cases;
+val Future<Option<SelectResult>> pending = nb select from cases;
 val Option<SelectResult> ready = try select from cases;
 ```
 
@@ -306,7 +331,7 @@ A reusable set can retain its fairness cursor:
 
 ```ores
 val set = SelectSet.new(cases);
-val result = select from set;
+val Option<SelectResult> result = select from set;
 ```
 
 Runtime list/array and map values are accepted. For maps, value iteration order
@@ -323,11 +348,25 @@ nb select first from cases
 try select from cases
 ```
 
+`select from` is a blocking source expression, but "blocking" means the
+current Ores continuation yields to its scheduler/actor pool while the select is
+pending; it does not park a carrier thread. Once a case commits, the continuation
+resumes and the expression returns `Some(SelectResult)`.
+
+`nb select from` registers the same arbitration and returns immediately with
+the native Ores `Future<Option<SelectResult>>`. Awaiting that Future follows the
+same scheduler resumption path. `try select from` is an immediate probe: it
+returns `None` when no case is ready and leaves no registration behind.
+
 `SelectResult` exposes:
 
 - `index`
 - `operation` (`read`, `write`, or `default`)
 - `value` for a read result
+
+The outer `Option` is intentionally part of the language-facing selection
+contract. It also composes uniformly with `trap` and Future APIs; the runtime
+must not flatten nested `Option` values.
 
 ## Cancellation
 
@@ -449,3 +488,51 @@ Remaining compiler/runtime integration:
   when that stack is reconciled onto current main;
 - migrate transitional free-standing async backend behavior so every source
   async continuation is explicitly owned by an actor/root-actor domain.
+
+## Streaming writes to channels
+
+A stream is a sequence of individual writes. Use `for ... of ...` for an array
+or synchronous iterator, or `for await ... of ...` for an `AsyncIterator<T>` in
+an async callable. No bulk-write syntax is needed:
+
+```ores
+fnc send_values(Channel<int> output, Array<int> values) -> void {
+  for const value of values do
+    writech output, value;
+  done
+  return;
+}
+
+async generator fnc events() -> int {
+  yield 1;
+  yield 2;
+  return;
+}
+
+pub async routine main() -> void {
+  val Channel<int> output = Channel.new<int>(2);
+  val AsyncIterator<int> source = events();
+  for await const value of source {
+    await nb writech output, value;
+  }
+  stdio.println(readch output);
+  stdio.println(readch output);
+  return;
+}
+```
+
+`writech` waits for each write to complete. `await nb writech` also waits for
+each write's completion before pulling the next value, preserving order and
+backpressure without accumulating pending writes. An unawaited `nb writech`
+returns a `Future<void>` immediately; retain and await it when completion
+matters. A full bounded channel or a zero-capacity rendezvous channel needs a
+reader to make progress. The example buffers the whole two-element stream;
+longer streams should have an active reader in the owning concurrency domain.
+Channels cannot be passed as ordinary async-callable parameters. An async
+iterator is consumed in its owning task; it is not transferred to another task.
+Breaking the loop closes the iterator activation and runs its cleanup.
+
+See `examples/channel-streaming.ores` for an executable example of both loop
+forms. Streaming tests cover arrays, synchronous and asynchronous iterators,
+blocking and awaited nonblocking writes, rendezvous backpressure, early iterator
+cleanup, braced select dispatch, and invalid element/iterator types.
