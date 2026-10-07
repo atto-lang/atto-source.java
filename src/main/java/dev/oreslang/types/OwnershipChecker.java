@@ -2405,7 +2405,9 @@ public final class OwnershipChecker {
         for (Ast.DestructureBinding binding : bindings) {
             if (!binding.rest() && !binding.isDiscard()) remainder.remove(binding.name());
         }
-        return Ast.TypeRef.recordType(remainder);
+        return concrete.isReadonlyRecordType()
+                ? Ast.TypeRef.readonlyRecordType(remainder)
+                : Ast.TypeRef.recordType(remainder);
     }
 
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
