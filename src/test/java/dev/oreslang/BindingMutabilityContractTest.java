@@ -144,4 +144,25 @@ final class BindingMutabilityContractTest {
                 """)));
     }
 
+
+    @Test void valDoesNotOverrideLiveImmutableBorrow() {
+        rejects("""
+                  val Box x = new Box();
+                  val view = rt borrow x;
+                  x.foo = "blocked";
+                  stdio.println(view.foo);
+                """);
+    }
+
+    @Test void immutableBorrowEndingAtInnerScopeRestoresValMutationPermission() {
+        accepts("""
+                  val Box x = new Box();
+                  if true; do
+                    val view = rt borrow x;
+                    stdio.println(view.foo);
+                  fi
+                  x.foo = "allowed";
+                """);
+    }
+
 }
