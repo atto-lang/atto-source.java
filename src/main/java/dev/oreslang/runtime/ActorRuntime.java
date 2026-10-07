@@ -4604,7 +4604,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                for (Object child : transported.actorTransportChildren()) {
+                    requireMutexTransport(target, child, visiting, depth + 1);
+                }
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) requireMutexTransport(target, item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireMutexTransport(target, item, visiting, depth + 1);
@@ -4739,7 +4743,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                for (Object child : transported.actorTransportChildren()) {
+                    requireOwnedActorRefs(child, visiting, depth + 1);
+                }
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) requireOwnedActorRefs(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireOwnedActorRefs(item, visiting, depth + 1);
@@ -4806,7 +4814,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                for (Object child : transported.actorTransportChildren()) {
+                    requireOwnedSharedHandles(child, visiting, depth + 1);
+                }
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) requireOwnedSharedHandles(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireOwnedSharedHandles(item, visiting, depth + 1);
@@ -4878,7 +4890,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                for (Object child : transported.actorTransportChildren()) {
+                    collectSharedMutexes(child, out, visiting, depth + 1);
+                }
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) collectSharedMutexes(item, out, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) collectSharedMutexes(item, out, visiting, depth + 1);
@@ -4929,7 +4945,11 @@ public final class ActorRuntime implements AutoCloseable {
                     "cyclic values cannot cross an untrusted actor boundary");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                for (Object child : transported.actorTransportChildren()) {
+                    rejectUntrustedInboundCapabilities(child, visiting, depth + 1);
+                }
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) {
                     rejectUntrustedInboundCapabilities(item, visiting, depth + 1);
                 }
@@ -4984,7 +5004,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot be shared read-only");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                for (Object child : transported.actorTransportChildren()) {
+                    rejectSharedMutableHandles(child, visiting, depth + 1);
+                }
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) rejectSharedMutableHandles(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) rejectSharedMutableHandles(item, visiting, depth + 1);
@@ -5053,7 +5077,13 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof ActorTransportValue transported) {
+                List<?> children = transported.actorTransportChildren();
+                requireGraphNodeCapacity(nodes[0], children.size());
+                for (Object child : children) {
+                    validateMessageGraph(child, visiting, depth + 1, nodes);
+                }
+            } else if (value instanceof List<?> list) {
                 requireGraphNodeCapacity(nodes[0], list.size());
                 for (Object item : list) validateMessageGraph(item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
