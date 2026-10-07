@@ -2642,8 +2642,14 @@ public final class TypeChecker {
                             typeOf(field.dynamicName(), env, generics, self),
                             Primitive.STRING,
                             "dynamic obj key");
-                } else if (members.putIfAbsent(field.name(), object.inferredStruct()
-                        ? widenCollectionElement(exactValueType) : exactValueType) != null) {
+                } else if (members.putIfAbsent(
+                        field.name(),
+                        widenCollectionElement(exactValueType)) != null) {
+                    // Both ordinary obj{...} records and readonly struct infer
+                    // records infer a stable field type, not a singleton string
+                    // literal type. Otherwise a mutable obj{value: "a"} could
+                    // never accept value = "b" even though its inferred field
+                    // type is String.
                     throw new IllegalArgumentException("duplicate obj field '" + field.name() + "'");
                 }
             }
