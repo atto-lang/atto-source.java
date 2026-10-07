@@ -1,6 +1,6 @@
 # Binding, referent mutability and transport conformance
 
-Oreslang's proposed canonical contract, agreed 2026-10-06. Code is normative only after compiler, borrow checker, runtime and tests converge.
+Oreslang's proposed canonical contract, agreed 2026-10-06. The compiler and ownership checks are authoritative only after validation; unsafe or unproved paths must fail closed.
 
 | Declaration | Reassign name | Mutate referent |
 | --- | --- | --- |
