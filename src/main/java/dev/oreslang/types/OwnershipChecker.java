@@ -396,6 +396,7 @@ public final class OwnershipChecker {
                             arm.bindingName(),
                             new VarState(
                                     element,
+                                    arm.mutableReferent(),
                                     arm.bindingKind() == Ast.BindingKind.LET,
                                     kindOfType(element),
                                     Origin.LOCAL));
@@ -503,6 +504,7 @@ public final class OwnershipChecker {
         if (recursiveLambda) {
             placeholder = new VarState(
                     binding.declaredType() == null ? Ast.TypeRef.inferred() : binding.declaredType(),
+                    binding.mutableReferent(),
                     binding.kind() == Ast.BindingKind.LET,
                     ValueKind.MOVE_ONLY,
                     Origin.LOCAL);
@@ -548,6 +550,7 @@ public final class OwnershipChecker {
         ValueKind storedKind = binding.declaredType() == null ? value.kind : kindOfType(storedType);
         VarState state = new VarState(
                 storedType,
+                binding.mutableReferent(),
                 binding.kind() == Ast.BindingKind.LET,
                 storedKind,
                 Origin.LOCAL);
@@ -1267,7 +1270,7 @@ public final class OwnershipChecker {
         if (target instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
             requireUsable(state, name.name(), true);
-            if (!state.mutable) throw error("cannot assign immutable binding '" + name.name() + "'; use let or a mut parameter");
+            if (!state.rebindable) throw error("cannot reassign fixed binding '" + name.name() + "'; use let or let mut");
             if (state.immutableBorrows > 0 || state.mutableBorrowed) throw error("cannot assign '" + name.name() + "' while it is borrowed");
             return;
         }
@@ -1300,7 +1303,7 @@ public final class OwnershipChecker {
             if (isMutexGuardType(state.type)) return;
             boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
             if (!state.mutable && !mutableBorrow) {
-                throw error("cannot mutate " + what + " through immutable parameter/binding '" + name.name() + "'; declare the owned parameter as 'mut' or pass '&mut'");
+                throw error("cannot mutate " + what + " through read-only binding '" + name.name() + "'; use val, const mut, or let mut with valid ownership");
             }
             if (state.kind == ValueKind.IMM_BORROW || (state.type.isBorrow() && !state.type.mutableBorrow())) {
                 throw error("cannot mutate " + what + " through immutable borrow '" + name.name() + "'");
@@ -1315,7 +1318,24 @@ public final class OwnershipChecker {
             validateBorrow(owner, true);
             return;
         }
-        throw error("mutation target must be rooted in a mutable local/parameter or &mut borrow");
+        if (receiver instanceof Ast.MemberExpr member) {
+            // Do not silently regain mutation rights through a read-only intermediate field.
+            Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
+            if (klass != null) {
+                Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
+                if (field != null && !field.mutableReferent()) {
+                    throw error("cannot mutate through read-only field '" + member.member() + "'");
+                }
+            }
+            ensureMutableReceiver(member.receiver(), scope, what);
+            return;
+        }
+        if (receiver instanceof Ast.IndexExpr indexed) {
+            ensureMutableReceiver(indexed.receiver(), scope, what);
+            checkExpr(indexed.index(), scope, false);
+            return;
+        }
+        throw error("mutation target must be rooted in a mutable local/parameter or exclusive borrow");
     }
 
     private VarState borrowOwner(Ast.Expr operand, Scope scope) {
@@ -2466,6 +2486,7 @@ public final class OwnershipChecker {
     private static final class VarState {
         private Ast.TypeRef type;
         private final boolean mutable;
+        private final boolean rebindable;
         private ValueKind kind;
         private final Origin origin;
         private boolean moved;
@@ -2477,8 +2498,12 @@ public final class OwnershipChecker {
         private String debugName = "<value>";
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
+            this(type, mutable, mutable, kind, origin);
+        }
+        private VarState(Ast.TypeRef type, boolean mutable, boolean rebindable, ValueKind kind, Origin origin) {
             this.type = type;
             this.mutable = mutable;
+            this.rebindable = rebindable;
             this.kind = kind;
             this.origin = origin;
         }
