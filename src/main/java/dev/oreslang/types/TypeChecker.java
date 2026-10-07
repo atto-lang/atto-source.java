@@ -59,6 +59,11 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Unlike private-member access, declaration origin must survive nlex.
+    private Ast.ClassDecl lexicalClassOrigin;
+    // Source modules have their own lexical value namespace. File-level
+    // declarations (the synthetic ROOT_MODULE) remain the composition root.
+    private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private int loopDepth;
@@ -85,6 +90,7 @@ public final class TypeChecker {
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -189,17 +195,23 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
-            validateModuleValueNamespace(module);
-            checkModuleAdherence(module);
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
-                else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
-                else if (decl instanceof Ast.TypeAliasDecl alias) {
-                    Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
-                    resolve(alias.target(), aliasGenerics, null);
+            String previousModule = currentLexicalModule;
+            currentLexicalModule = module.name();
+            try {
+                validateModuleValueNamespace(module);
+                checkModuleAdherence(module);
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
+                    else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
+                    else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
+                    else if (decl instanceof Ast.TypeAliasDecl alias) {
+                        Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
+                        resolve(alias.target(), aliasGenerics, null);
+                    }
+                    else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
-                else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+            } finally {
+                currentLexicalModule = previousModule;
             }
         }
     }
@@ -773,6 +785,16 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+        lexicalClassOrigin = klass;
+        try {
+            checkClassBody(module, klass);
+        } finally {
+            lexicalClassOrigin = previousLexicalClass;
+        }
+    }
+
+    private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
@@ -837,12 +859,15 @@ public final class TypeChecker {
             Type fieldType = classFieldType(klass, field);
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
+                Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
                 currentClassOwner = klass;
+                lexicalClassOrigin = klass;
                 try {
                     Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
                     requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
                 } finally {
                     currentClassOwner = previousClassOwner;
+                    lexicalClassOrigin = previousLexicalClass;
                 }
             }
             if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
@@ -875,17 +900,94 @@ public final class TypeChecker {
 
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = Ast.ActorKind.NONE;
             currentClassOwner = klass;
+            lexicalClassOrigin = klass;
             try {
                 checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                lexicalClassOrigin = previousLexicalClass;
             }
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic()
+                    && (method.name().equals("send")
+                            || method.name().equals("end")
+                            || method.name().equals("endWithCleanup"))) {
+                throw new IllegalArgumentException(
+                        "actor method name '" + method.name()
+                                + "' is reserved by the non-overridable actor transport/lifecycle API");
+            }
+
+            boolean actorStartupHook = method.name().equals("on_start");
+            boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("receive");
+            if (actorStartupHook) {
+                if (klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "reserved lifecycle hook 'on_start' may only be declared by an actor class");
+                }
+                if (method.isStatic()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must be an instance method");
+                }
+                if (method.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' is actor-local and cannot be public");
+                }
+                if (method.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must have an implementation");
+                }
+                if (method.async()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must be synchronous; "
+                                    + "readiness settles only after startup completes on the actor execution domain");
+                }
+                if (!method.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' cannot declare generic parameters");
+                }
+                if (!method.parameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must take zero arguments");
+                }
+            }
+
+            if (actorReceiveHook) {
+                if (method.isStatic()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' must be an instance method");
+                }
+                if (method.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' is actor-local and cannot be public");
+                }
+                if (method.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' must have an implementation");
+                }
+                if (method.async()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' uses actor-turn suspension; "
+                                    + "declare it synchronously and use explicit await/rt cooperate safepoints");
+                }
+                if (!method.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name() + ".receive' cannot declare generic parameters");
+                }
+                if (method.parameters().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox handler '" + klass.name()
+                                    + ".receive' must take exactly one ActorMail<T> parameter");
+                }
+            }
+
             if (method.async() && !method.isStatic()) {
                 throw new IllegalArgumentException(
                         "async instance method '" + klass.name() + "." + method.name()
@@ -959,9 +1061,31 @@ public final class TypeChecker {
                             false,
                             "parameter '" + param.name() + "' of async static function '" + klass.name() + "." + method.name() + "'");
                 }
+                if (actorReceiveHook) {
+                    if (!(parameterType instanceof Named mail)
+                            || !mail.name().equals("ActorMail")
+                            || mail.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "actor mailbox handler '" + klass.name()
+                                        + ".receive' parameter must be ActorMail<T>");
+                    }
+                    validateActorCallableBoundaryType(
+                            mail.arguments().getFirst(),
+                            klass.actorKind(),
+                            false,
+                            "mailbox payload of actor '" + klass.name() + ".receive'");
+                }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (actorStartupHook && returns != Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
+            }
+            if (actorReceiveHook && returns != Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "actor mailbox handler '" + klass.name() + ".receive' must return void");
+            }
             if (method.async()) {
                 validateAsyncBoundaryType(
                         returns,
@@ -970,13 +1094,16 @@ public final class TypeChecker {
             }
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
+            lexicalClassOrigin = klass;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                lexicalClassOrigin = previousLexicalClass;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1002,17 +1129,52 @@ public final class TypeChecker {
         }
     }
 
-    /**
-     * Methods have a lexical receiver scope, not ambient access to unrelated
-     * file/module callables. Imports are resolved separately from this fallback.
-     * This intentionally applies to ordinary classes and actor classes alike.
-     */
+    /** Actor classes are lexical isolation boundaries; ordinary classes/modules are not. */
+    private boolean insideActorLexicalBoundary() {
+        return lexicalClassOrigin != null && lexicalClassOrigin.actorKind() != Ast.ActorKind.NONE;
+    }
+
     private void rejectImplicitClassCallable(String name) {
-        if (currentClassOwner != null) {
-            throw new IllegalArgumentException(
-                    "class '" + currentClassOwner.name() + "' cannot implicitly access "
-                            + "file/module callable '" + name + "'; declare an explicit import "
-                            + "or invoke a method through self");
+        if (!insideActorLexicalBoundary()) return;
+        throw new IllegalArgumentException("actor '" + lexicalClassOrigin.name()
+                + "' cannot implicitly access file/module callable '" + name
+                + "'; move the dependency to another source unit and import it explicitly");
+    }
+
+    private void rejectUnimportedModuleNamespace(String name) {
+        if (!insideActorLexicalBoundary()) return;
+        throw new IllegalArgumentException("actor '" + lexicalClassOrigin.name()
+                + "' cannot implicitly access same-file module '" + name
+                + "'; actor dependencies must come from explicit imports");
+    }
+
+    private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
+        if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
+        throw new IllegalArgumentException("actor '" + lexicalClassOrigin.name()
+                + "' cannot implicitly access same-file "
+                + (target.actorKind() == Ast.ActorKind.NONE ? "class '" : "actor '")
+                + target.name() + "'; actor dependencies must come from explicit imports");
+    }
+
+    private void rejectUnimportedActorTypeDependency(String name) {
+        if (!insideActorLexicalBoundary()) return;
+        Ast.ClassDecl localClass = findClass(name);
+        if (localClass != null && localClass != lexicalClassOrigin) {
+            throw new IllegalArgumentException("actor '" + lexicalClassOrigin.name()
+                    + "' cannot use same-file type '" + name
+                    + "'; move the type to another source unit and import it explicitly");
+        }
+        Ast.InterfaceDecl localInterface = findInterface(name);
+        if (localInterface != null) {
+            throw new IllegalArgumentException("actor '" + lexicalClassOrigin.name()
+                    + "' cannot use same-file type '" + name
+                    + "'; move the type to another source unit and import it explicitly");
+        }
+        Ast.TypeAliasDecl localAlias = findTypeAlias(name);
+        if (localAlias != null) {
+            throw new IllegalArgumentException("actor '" + lexicalClassOrigin.name()
+                    + "' cannot use same-file type alias '" + name
+                    + "'; move the type to another source unit and import it explicitly");
         }
     }
 
@@ -1327,9 +1489,15 @@ public final class TypeChecker {
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
-            if (moduleNamespace != null) return moduleShape(moduleNamespace);
+            if (moduleNamespace != null) {
+                rejectUnimportedModuleNamespace(name.name());
+                return moduleShape(moduleNamespace);
+            }
             Ast.ClassDecl classNamespace = findClass(name.name());
-            if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
+            if (classNamespace != null) {
+                rejectUnimportedClassNamespace(classNamespace);
+                return new ClassNamespace(qualifiedClassName(classNamespace));
+            }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
@@ -1474,6 +1642,37 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals("spawn")) {
+                if (runtime.arguments().size() != 1
+                        || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
+                    throw new IllegalArgumentException(
+                            "internal spawn intrinsic requires exactly one actor target");
+                }
+                Ast.ClassDecl actorClass = findClass(created.type().name());
+                if (actorClass == null) {
+                    throw new IllegalArgumentException(
+                            "spawn target '" + created.type().name()
+                                    + "' is not a source actor visible to this compilation unit");
+                }
+                rejectUnimportedClassNamespace(actorClass);
+                if (actorClass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "spawn requires an actor class; '" + actorClass.name()
+                                    + "' is an ordinary class");
+                }
+                if (actorClass.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "cannot spawn abstract actor '" + actorClass.name() + "'");
+                }
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + actorClass.name()
+                                    + "' does not accept constructor/startup arguments; "
+                                    + "initialize actor-local state with fields and on_start()");
+                }
+                Type actorType = resolve(created.type(), generics, self);
+                return new Named("ActorRef", List.of(actorType));
+            }
             if (runtime.operation().equals("cooperate")) {
                 if (!runtime.arguments().isEmpty()) {
                     throw new IllegalArgumentException("rt cooperate takes no arguments");
@@ -1570,6 +1769,7 @@ public final class TypeChecker {
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
+                rejectUnimportedModuleNamespace(namespace.name());
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
                         call.arguments().size());
@@ -1742,6 +1942,156 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+
+                boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
+                        && member.receiver() instanceof Ast.NameExpr selfName
+                        && selfName.name().equals("self");
+                if (actorSelf && (member.member().equals("on_start")
+                        || member.member().equals("receive"))) {
+                    throw new IllegalArgumentException(
+                            member.member()
+                                    + " is a reserved actor lifecycle hook and cannot be called directly");
+                }
+                if (actorSelf
+                        && (member.member().equals("send")
+                            || member.member().equals("end")
+                            || member.member().equals("endWithCleanup"))) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "self." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    if (member.member().equals("send")) {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "self.send expects exactly one outbound value");
+                        }
+                        Type payload = typeOf(call.arguments().getFirst(), env, generics, self);
+                        validateActorCallableBoundaryType(
+                                payload,
+                                currentActorKind,
+                                false,
+                                "self.send outbound value");
+                        return Primitive.VOID;
+                    }
+                    if (member.member().equals("end")) {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "self.end expects no arguments; use self.endWithCleanup(...) for final cleanup");
+                        }
+                        return Primitive.VOID;
+                    }
+
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.endWithCleanup expects exactly one final cleanup function");
+                    }
+                    Ast.Expr cleanup = call.arguments().getFirst();
+                    Function expectedCleanup =
+                            new Function(List.of(), Primitive.VOID);
+                    if (cleanup instanceof Ast.LambdaExpr lambda) {
+                        validateLambdaAgainstExpected(
+                                lambda,
+                                expectedCleanup,
+                                env,
+                                generics,
+                                self);
+                    } else {
+                        Type cleanupType =
+                                typeOf(cleanup, env, generics, self);
+                        if (!(cleanupType instanceof Function function)
+                                || function.async()
+                                || !function.parameters().isEmpty()
+                                || function.result() != Primitive.VOID) {
+                            throw new IllegalArgumentException(
+                                    "self.endWithCleanup cleanup must be a synchronous zero-argument function returning void");
+                        }
+                    }
+                    return Primitive.VOID;
+                }
+
+                if (receiver instanceof Named actorRef
+                        && actorRef.name().equals("ActorRef")) {
+                    Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "ActorRef." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    return switch (member.member()) {
+                        case "send" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.send expects exactly one mailbox value");
+                            }
+                            Type payload = typeOf(
+                                    call.arguments().getFirst(), env, generics, self);
+                            validateActorCallableBoundaryType(
+                                    payload,
+                                    actorClass.actorKind(),
+                                    false,
+                                    "ActorRef.send mailbox value");
+                            Type expectedPayload = actorMailboxPayloadType(actorRef);
+                            requireAssignable(
+                                    payload,
+                                    expectedPayload,
+                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
+                            yield Primitive.VOID;
+                        }
+                        case "stop" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.stop expects no arguments");
+                            }
+                            yield Primitive.VOID;
+                        }
+                        case "cancel", "kill" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " expects no arguments");
+                            }
+                            yield Primitive.BOOL;
+                        }
+                        case "ready", "done", "outputs", "id", "kind" ->
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " is a property and is not callable");
+                        default -> throw new IllegalArgumentException(
+                                "unknown ActorRef callable member '"
+                                        + member.member() + "'");
+                    };
+                }
+
+                if (receiver instanceof Named outputStream
+                        && outputStream.name().equals("ActorOutputStream")) {
+                    if (outputStream.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "ActorOutputStream<T> requires exactly one payload type");
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "ActorOutputStream." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    if (member.member().equals("next")) {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "ActorOutputStream.next expects no arguments");
+                        }
+                        Type output = new Named(
+                                "ActorOutput",
+                                List.of(outputStream.arguments().getFirst()));
+                        return new Named(
+                                "Future",
+                                List.of(new Named(
+                                        "IteratorResult",
+                                        List.of(output))));
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown ActorOutputStream callable member '"
+                                    + member.member() + "'");
+                }
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
@@ -2055,6 +2405,7 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
+                rejectUnimportedModuleNamespace(namespace.name());
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
                         namespace.name() + "." + member.member());
                 if (moduleFunction != null) {
@@ -2082,6 +2433,69 @@ public final class TypeChecker {
             Type sumReceiver = receiverDispatchType(deref(receiver));
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            if (sumReceiver instanceof Named actorRef
+                    && actorRef.name().equals("ActorRef")) {
+                actorClassForRef(actorRef);
+                return switch (member.member()) {
+                    case "ready", "done" -> new Named("Future", List.of(Primitive.VOID));
+                    case "outputs" -> new Named(
+                            "ActorOutputStream",
+                            List.of(Unknown.INSTANCE));
+                    case "id" -> new Named("ActorId", List.of());
+                    case "kind" -> new Named("ActorKind", List.of());
+                    case "send", "stop", "cancel", "kill" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef." + member.member()
+                                            + " is direct-call-only; invoke it with (...)");
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorRef member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named outputStream
+                    && outputStream.name().equals("ActorOutputStream")) {
+                if (outputStream.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorOutputStream<T> requires exactly one payload type");
+                }
+                return switch (member.member()) {
+                    case "is_done" -> Primitive.BOOL;
+                    case "next" -> throw new IllegalArgumentException(
+                            "ActorOutputStream.next is direct-call-only; invoke it with ()");
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorOutputStream member '"
+                                    + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named output
+                    && output.name().equals("ActorOutput")) {
+                if (output.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorOutput<T> requires exactly one payload type");
+                }
+                return switch (member.member()) {
+                    case "actor_id" -> new Named("ActorId", List.of());
+                    case "sequence" -> Primitive.INT;
+                    case "value" -> output.arguments().getFirst();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorOutput member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named mail
+                    && mail.name().equals("ActorMail")) {
+                if (mail.arguments().size() != 1) {
+                    throw new IllegalArgumentException("ActorMail<T> requires exactly one payload type");
+                }
+                return switch (member.member()) {
+                    case "value" -> mail.arguments().getFirst();
+                    case "recipient" -> new Named("ActorId", List.of());
+                    case "sender" -> new Named(
+                            "Option",
+                            List.of(new Named("ActorId", List.of())));
+                    case "sequence" -> Primitive.INT;
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorMail member '" + member.member() + "'");
+                };
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
@@ -2249,6 +2663,7 @@ public final class TypeChecker {
             }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
+            rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
             }
@@ -2971,6 +3386,74 @@ public final class TypeChecker {
             return new Record(members);
         }
         return type;
+    }
+
+    private Type actorMailboxPayloadType(Named actorRef) {
+        if (actorRef.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "ActorRef requires exactly one actor type argument");
+        }
+        Type target = receiverDispatchType(deref(actorRef.arguments().getFirst()));
+        if (!(target instanceof Named concreteActor)) {
+            throw new IllegalArgumentException(
+                    "ActorRef target must be a concrete actor class; got " + target);
+        }
+        Ast.ClassDecl actorClass = findClass(concreteActor.name());
+        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "ActorRef target '" + concreteActor.name() + "' is not a known actor class");
+        }
+        ResolvedMethod receive = findMethodTarget(
+                actorClass,
+                concreteActor,
+                "receive",
+                1,
+                new LinkedHashSet<>());
+        if (receive == null) {
+            throw new IllegalArgumentException(
+                    "actor '" + actorClass.name()
+                            + "' has no receive(ActorMail<T>) mailbox handler");
+        }
+        Ast.MethodDecl handler = receive.method();
+        if (handler.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + actorClass.name() + ".receive' has invalid mailbox arity");
+        }
+        Set<String> ownerGenerics = Set.copyOf(receive.owner().genericParameters());
+        Type mailType = resolve(
+                handler.parameters().getFirst().type(),
+                ownerGenerics,
+                receive.ownerType());
+        mailType = substituteGenerics(
+                mailType,
+                classGenericBindings(receive.owner(), receive.ownerType()));
+        if (!(mailType instanceof Named mail)
+                || !mail.name().equals("ActorMail")
+                || mail.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + actorClass.name()
+                            + ".receive' must accept ActorMail<T>");
+        }
+        return mail.arguments().getFirst();
+    }
+
+    private Ast.ClassDecl actorClassForRef(Named actorRef) {
+        if (!actorRef.name().equals("ActorRef") || actorRef.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "ActorRef requires exactly one actor type argument");
+        }
+        Type target = receiverDispatchType(deref(actorRef.arguments().getFirst()));
+        if (!(target instanceof Named namedTarget)) {
+            throw new IllegalArgumentException(
+                    "ActorRef target must be a concrete actor class; got " + target);
+        }
+        Ast.ClassDecl actorClass = findClass(namedTarget.name());
+        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "ActorRef target '" + namedTarget.name()
+                            + "' is not a known actor class");
+        }
+        return actorClass;
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
@@ -3729,6 +4212,12 @@ public final class TypeChecker {
         if (iterable instanceof Named named) {
             if (named.name().equals("AsyncIterator") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
+            }
+            if (named.name().equals("ActorOutputStream")
+                    && named.arguments().size() == 1) {
+                return new Named(
+                        "ActorOutput",
+                        List.of(named.arguments().getFirst()));
             }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -5283,6 +5772,8 @@ public final class TypeChecker {
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
 
+        rejectUnimportedActorTypeDependency(ref.name());
+
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
         if (alias != null) {
             if (alias.genericParameters().size() != ref.arguments().size()) {
@@ -5332,6 +5823,29 @@ public final class TypeChecker {
                 Type value = resolve(ref.arguments().getFirst(), generics, self);
                 if (value == Primitive.VOID) throw new IllegalArgumentException("DynamicStruct<void> is invalid");
                 yield new Named("DynamicStruct", List.of(value));
+            }
+            case "ActorId", "ActorKind" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " does not accept type arguments");
+                }
+                yield new Named(ref.name(), List.of());
+            }
+            case "ActorMail", "ActorOutput", "ActorOutputStream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name()
+                                    + " requires exactly one explicit payload type");
+                }
+                Type payload = resolve(
+                        ref.arguments().getFirst(),
+                        generics,
+                        self);
+                if (payload == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<void> is invalid");
+                }
+                yield new Named(ref.name(), List.of(payload));
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");

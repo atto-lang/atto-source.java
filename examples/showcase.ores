@@ -1,3 +1,4 @@
+
 define module contracts
   define contract MathApi as
     fnc add(int a, int b) => int;

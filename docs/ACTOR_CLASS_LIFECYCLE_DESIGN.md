@@ -1,6 +1,6 @@
 # Actor class lifecycle and parent-facing output streams (design + implementation status)
 
-**Status (2026-10-06): parser/lexical-boundary groundwork plus host-side actor ready/done Futures; NOT an executable source-level actor-class API.**
+**Status (2026-10-06): actor declarations plus `spawn Actor()`/`ActorRef<Actor>` static semantics, lexical-boundary enforcement, host-side actor ready/done Futures, and shared-code image registry; source-level spawn execution/output streaming are NOT lowered yet.**
 
 The existing `ActorRuntime` already has `ActorRef.send/stop/cancel/forceCancel`,
 bounded channel-backed mailboxes, actor identity, child supervision, and
@@ -14,11 +14,12 @@ repurpose it as a class actor's inbound message.
 // The compiler must eventually lower this class and its lifecycle hooks.
 // This is a contract example and must NOT be treated as an executable fixture.
 define actor Worker as
-  pub constructor() {
-    // Runs in the worker's own execution/isolation domain.
+  on_start(): void {
+    // Actor-local startup hook; actor constructors stay forbidden.
+    return;
   }
 
-  pub receive(ActorMail<String> mail): void {
+  receive(ActorMail<String> mail): void {
     if mail.value != "start"; do
       return;
     fi
@@ -64,31 +65,47 @@ of output strings.
 
 | Surface | Signature (conceptual) | Contract |
 | --- | --- | --- |
-| `spawn Worker(args)` | `ActorRef<Worker>` | Allocates actor identity; constructor runs in actor execution context, not the caller |
+| `spawn Worker()` | `ActorRef<Worker>` | Allocates actor identity; reserved on_start hook runs in actor execution context, not the caller |
 | `w.id`, `w.kind` | `ActorId`, `ActorKind` | Immutable identity/diagnostics |
-| `w.ready` | `Future<void>` | Completes once constructor and initialization succeed, fails if initialization fails/stops |
+| `w.ready` | `Future<void>` | Completes once actor-local field initialization and reserved `on_start()` succeed; fails if startup fails/stops |
 | `w.send(mail)` | `void` or explicit nonblocking variant | **Inbound**, serialized, bounded actor mailbox; reject capability/pointer/function payloads |
 | `w.outputs` | `AsyncIterator<ActorOutput<T>>` or read-only `Channel<ActorOutput<T>>` | **Outbound**, bounded, async/backpressure-capable, parent-observable stream |
 | `w.done` | `Future<void>` | Settles after actor finalization and isolate/carrier cleanup |
 | `w.stop()`, `w.cancel()` | `void`, `bool` | Graceful stop vs structured cancellation (supervisor authority checks apply) |
 | `w.kill()` | `bool` | Force-isolated cancellation only if revoker is configured; never thread interruption masquerading as isolation |
 | `self.send(value)` | `Future<void>` or nonblocking admission acknowledgement | **Outbound** from actor to its output stream; NOT recursive delivery to own inbox |
-| `self.end()` | `void` | Actor-side graceful completion: reject new outputs; close stream after admitted outputs drain |
+| `self.end()` | `void` | Non-blocking graceful stop request; seals/drains the inbox immediately so no later `receive()` starts; current turn may finish, then finalization closes outputs after admitted values drain |
+| `self.endWithCleanup(|| -> { ... })` | `void` | Same immediate inbox fence as `self.end()`, plus one synchronous zero-arg final cleanup action after the current turn unwinds and before outputs close / `done` settles |
 | `receive(ActorMail<T>)` | `void` | Lifecycle handler invoked once per incoming envelope, serialized and actor-local |
 | `rt cooperate` | `void` scheduling effect | Suspension/safepoint; no implicit publication or message delivery |
 
-Prefer a **non-overridable base transport implementation** for `self.send`.
-If source-level overriding is allowed, `super.send(value)` must resolve to
-that base implementation without letting a subclass bypass quotas, transport
-validation, or termination fences. An actor `send()` with **zero args** cannot
-forward the string payload emitted by the example; an explicit payload
-parameter is required.
+`self.send(value)`, `self.end()`, and `self.endWithCleanup(...)` are **non-overridable runtime actor operations**. Actor classes may not declare instance methods named `send`, `end`, or `endWithCleanup`, and source code does not use `super.send(...)` to reach transport.
+This keeps quota checks, serialization, termination fences, and output-stream
+ordering outside user-overridable dispatch.
+
+`self.end()` is intentionally **not overloaded**. Cleanup uses the separate
+`self.endWithCleanup(...)` name:
+
+```ores
+self.endWithCleanup(|| -> {
+  // final synchronous actor-local cleanup
+});
+```
+
+The end request itself does not block. As soon as either end API is called, the
+actor mailbox is sealed and queued-but-not-started mail is discarded; no later
+`receive()` invocation may begin. Code already executing in the current
+`receive()` may continue until that turn returns. For `endWithCleanup`, the
+cleanup then runs exactly once as the final guest action while actor-local state
+is still available. Cleanup cannot be async/suspending; if it throws, `done`
+rejects with the cleanup failure.
 
 ## Message identities and transport
 
-- Introduce a new source-level `ActorMail<T>` inbox envelope with
-  `actor_id`/optional sender identity, monotonic mailbox sequence,
-  immutable `value`, and optional reply capability. It is not the Java
+- Source `ActorMail<T>` is now statically modeled with immutable
+  `recipient: ActorId`, `sender: Option<ActorId>`, `sequence: int`, and
+  `value: T`. Runtime delivery uses `ActorRuntime.ActorInboxMail<T>`, which
+  is deliberately distinct from the existing
   `dev.oreslang.runtime.ActorMail` Group Mailman record.
 - Introduce `ActorOutput<T>(actor_id, sequence, value)` for output. The
   output sender is the *emitting* actor, not its parent.
@@ -108,27 +125,38 @@ parameter is required.
   output streams. `done` observes the existing carrier-exit finalization
   barrier rather than just a return from `receive`.
 
-## Lexical scope / no ambient file access
+## Lexical scope / actor isolation boundary
 
-Actor and ordinary class methods must not implicitly resolve sibling file-level
-`main`, `helper`, or other top-level callables. Their own methods/fields are
-accessed via `self`; dependencies must be explicitly imported. The initial
-branch enforces the **unqualified callable fallback** in both `TypeChecker`
-and the source evaluator. A future pass must also constrain same-file module
-and class namespace lookups, static/qualified references, module-to-module
-references, imported wildcard facades, and dynamic/linked-code-unit paths,
-with positive tests for genuine explicit imports.
+Ordinary modules and ordinary classes retain normal source-unit lexical
+visibility. They may refer to sibling functions, modules, classes, interfaces,
+and type aliases in the same file without artificial imports.
 
-Built-ins are separately capability-checked; an explicit import never
-weakens isolate policy.
+Actor classes are the exception. A define actor, shared actor, isoactor, or
+untrusted actor is a hard executable dependency boundary. Actor fields,
+signatures, methods, lifecycle hooks, and lambdas may resolve only:
+
+- actor-owned fields/methods and inherited actor members;
+- explicit imports from another source unit;
+- language/compiler/runtime intrinsics admitted by the actor's capability policy;
+- parameters and locals introduced inside the actor.
+
+An actor cannot reach a sibling file-level helper, module, class, actor, interface,
+or type alias merely because it appears in the same source file. Move reusable
+actor dependencies to an importable source unit and import them explicitly.
+Same-file import escape hatches such as @self, ., or normalized aliases that
+resolve back to the current physical file are rejected.
+
+The type checker and evaluator enforce the same boundary, and declaration origin
+survives async/nlex/lambda lowering so closures cannot launder ambient file
+access. Capability checks remain a separate layer: importing code never grants a
+private or untrusted actor authority that its execution policy forbids.
 
 ## Implementation sequencing / acceptance gates
 
-1. **This branch:** parse `define actor ... as ... end`, enforce first-pass
-   implicit class-to-file callable boundary, and add regression tests.
-2. Extend AST/parser/type checker with actor constructors, `spawn` expressions,
-   reserved lifecycle hooks, `ActorRef<Worker>` and envelope/stream types.
-   Keep constructor execution actor-local; reject `new Worker()`.
+1. **This branch:** parse `define actor ... as ... end`; enforce actor-only
+   lexical dependency boundaries while preserving ordinary same-file class/module
+   visibility; reject self-import escape hatches; and add regression tests.
+2. **Parser/type checker now recognize `spawn Worker()`** as a distinct intrinsic and type it as `ActorRef<Worker>`; `new Worker()` and constructor-style spawn arguments remain rejected. `ready`/`done`, mailbox `send`, actor-local `self.send`/`self.end`, and the reserved non-public `on_start(): void` shape are statically checked. **Execution lowering is still pending**; a startup hook must execute on the actor's own execution domain before `ready` settles.
 3. **Host substrate implemented in this branch:** `ActorRef.ready()` and
    `ActorRef.done()` expose runtime-only completion Futures. `ready()` schedules
    actor initialization even with no first message; stop-before-start and
@@ -141,12 +169,40 @@ weakens isolate policy.
    interoperate with `select`/`nb select`, `Future.all`, and stream merge.
 6. Test actual source-level `main.ores` end-to-end with 3+ workers,
    `rt cooperate` interleavings, output order, overflow/backpressure,
-   cancellation, async constructor failures, object/pointer/closure rejection,
+   cancellation, actor startup/on_start failures, object/pointer/closure rejection,
    private/shared/untrusted policies, and module/import isolation.
 7. Only after green tests for the *exact* head SHA consider merging. If the
    source org cannot allocate a GitHub Actions runner, mirror the **exact Git
    tree** into a funded test org's temporary branch, verify blob/tree identity,
    and run Actions locally to that repo without cross-org secrets.
 
-Do not mark this milestone as implementing `spawn Worker()`, `w.ready`,
-`self.send`, `self.end`, or streamed worker output: they remain future gates.
+The source-level `async || -> { ... }` lambda spelling is the required slim-arrow
+form. Parser and runtime support for async RHS lambdas and the full worker-stream
+example are separate gates; do not silently substitute fat arrows.
+
+```ores
+// Proposed syntax; not executable until async RHS lambda/spawn lowering.
+const create = async || -> {
+  const worker = spawn Worker();
+  await worker.ready;
+  return worker;
+};
+```
+
+Returning `await worker.ready` would return the readiness result (void), not the
+actor reference. For a runnable acceptance fixture target, see
+`docs/proposals/actor-worker-streaming/main.ores` (design-only today).
+
+`SharedCodeImageStore` and `OresContext` now hold one immutable `Ast.Program`
+reference per linked source unit for the same OresVM, and `Evaluator.link()`
+publishes it once. Existing linked-import lookup returns the shared evaluator.
+This is a real same-process JVM code-image reference invariant, not proof that
+Graal native/JIT machine-code pages are shared among independent Truffle engines
+or OS processes. Actor state and mailbox payloads stay outside the code store. Static-select
+fairness is also actor-local: the shared AST supplies only the immutable select
+site identity, while each ActorCell owns its mutable cursor. This is the model
+to follow for any future inline cache or scheduler metadata—shared code may
+reference actor-local runtime state, but must not become a writable state bag
+shared by isolated actors.
+
+Do not mark this milestone as executing source-level `spawn Worker()` or streamed worker output. The source parser/type checker now admit and validate `spawn Worker()`, `w.ready`/`w.done`, typed `ActorMail<T>`/`receive`, `ActorRef.send`, `self.send`, and `self.end`, but evaluator lowering into `ActorRuntime` remains a separate acceptance gate.

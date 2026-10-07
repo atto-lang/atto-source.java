@@ -2727,7 +2727,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
+                    NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
                     INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -2762,6 +2762,16 @@ public final class Parser {
         }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
+        }
+        if (match(SPAWN)) {
+            Ast.TypeRef type = parseTypeRef();
+            consume(LPAREN, "expected '(' after actor type");
+            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after actor spawn arguments");
+            // Keep actor creation semantically distinct from ordinary class construction.
+            // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
+            // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
+            return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
         }
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();

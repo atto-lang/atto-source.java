@@ -217,6 +217,7 @@ final class GeneratorLanguageTest {
     @Test
     void classCanExposeAsyncIteratorProtocolWithoutGeneratorMethods() throws Exception {
         String output = run("""
+
                 async generator fnc stream(): int {
                   yield 7;
                   yield 8;
@@ -224,15 +225,13 @@ final class GeneratorLanguageTest {
                 }
 
                 define class Bag as
-                  val AsyncIterator<int> source;
-
-                  pub [Symbol.asyncIterator](): AsyncIterator<int> {
-                    return self.source;
+                  pub [Symbol.asyncIterator](): AsyncGenerator<int> {
+                    return stream();
                   }
                 end
 
                 pub async routine main(): void {
-                  val bag = new Bag(stream());
+                  val bag = new Bag();
                   for await const item of bag {
                     stdio.stdout.write(item);
                   }
