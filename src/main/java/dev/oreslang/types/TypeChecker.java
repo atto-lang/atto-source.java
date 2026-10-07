@@ -59,6 +59,8 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Unlike private-member access, declaration origin must survive nlex.
+    private Ast.ClassDecl lexicalClassOrigin;
     // Source modules have their own lexical value namespace. File-level
     // declarations (the synthetic ROOT_MODULE) remain the composition root.
     private String currentLexicalModule;
@@ -846,12 +848,15 @@ public final class TypeChecker {
             Type fieldType = classFieldType(klass, field);
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
+                Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
                 currentClassOwner = klass;
+                lexicalClassOrigin = klass;
                 try {
                     Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
                     requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
                 } finally {
                     currentClassOwner = previousClassOwner;
+                    lexicalClassOrigin = previousLexicalClass;
                 }
             }
             if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
@@ -884,13 +889,16 @@ public final class TypeChecker {
 
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = Ast.ActorKind.NONE;
             currentClassOwner = klass;
+            lexicalClassOrigin = klass;
             try {
                 checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                lexicalClassOrigin = previousLexicalClass;
             }
         }
 
@@ -979,13 +987,16 @@ public final class TypeChecker {
             }
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
+            lexicalClassOrigin = klass;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                lexicalClassOrigin = previousLexicalClass;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1017,9 +1028,9 @@ public final class TypeChecker {
      * This intentionally applies to ordinary classes and actor classes alike.
      */
     private void rejectImplicitClassCallable(String name) {
-        if (currentClassOwner != null) {
+        if (lexicalClassOrigin != null) {
             throw new IllegalArgumentException(
-                    "class '" + currentClassOwner.name() + "' cannot implicitly access "
+                    "class '" + lexicalClassOrigin.name() + "' cannot implicitly access "
                             + "file/module callable '" + name + "'; declare an explicit import "
                             + "or invoke a method through self");
         }
@@ -1039,9 +1050,9 @@ public final class TypeChecker {
     }
 
     private void rejectUnimportedModuleNamespace(String name) {
-        if (currentClassOwner != null) {
+        if (lexicalClassOrigin != null) {
             throw new IllegalArgumentException(
-                    "class '" + currentClassOwner.name() + "' cannot read "
+                    "class '" + lexicalClassOrigin.name() + "' cannot read "
                             + "module '" + name + "' without an explicit import");
         }
         if (scopedModule() && !name.equals(currentLexicalModule)) {
@@ -1052,11 +1063,11 @@ public final class TypeChecker {
     }
 
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
-        if (currentClassOwner != null && currentClassOwner != target) {
+        if (lexicalClassOrigin != null && lexicalClassOrigin != target) {
             // Ancestor methods can still be reached through self/super;
             // arbitrary sibling class namespaces have no lexical authority.
             throw new IllegalArgumentException(
-                    "class '" + currentClassOwner.name() + "' cannot read class '"
+                    "class '" + lexicalClassOrigin.name() + "' cannot read class '"
                             + target.name() + "' without an explicit import");
         }
         String owner = classOwners.get(target);
