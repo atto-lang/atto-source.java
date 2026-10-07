@@ -903,6 +903,39 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            boolean actorStartupHook = method.name().equals("on_start");
+            if (actorStartupHook) {
+                if (klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "reserved lifecycle hook 'on_start' may only be declared by an actor class");
+                }
+                if (method.isStatic()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must be an instance method");
+                }
+                if (method.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' is actor-local and cannot be public");
+                }
+                if (method.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must have an implementation");
+                }
+                if (method.async()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must be synchronous; "
+                                    + "readiness settles only after startup completes on the actor execution domain");
+                }
+                if (!method.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' cannot declare generic parameters");
+                }
+                if (!method.parameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor lifecycle hook '" + klass.name() + ".on_start' must take zero arguments");
+                }
+            }
+
             if (method.async() && !method.isStatic()) {
                 throw new IllegalArgumentException(
                         "async instance method '" + klass.name() + "." + method.name()
@@ -979,6 +1012,10 @@ public final class TypeChecker {
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (actorStartupHook && returns != Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
+            }
             if (method.async()) {
                 validateAsyncBoundaryType(
                         returns,
