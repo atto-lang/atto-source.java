@@ -478,8 +478,10 @@ final class OwnershipAndClosureTest {
     @Test
     void ordinaryRecordFieldProjectionIsAReadNotAnImplicitPartialMove() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc seed(): string { return "a"; }
+
                 fnc ok(): void {
-                  val outer = obj{inner: obj{value: "a"}};
+                  val outer = obj{inner: obj{value: seed()}};
                   val alias = outer.inner;
                   alias.value = "alias";
                   outer.inner.value = "owner";
@@ -491,8 +493,10 @@ final class OwnershipAndClosureTest {
     @Test
     void ordinaryIndexedProjectionIsAReadNotAnImplicitPartialMove() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc seed(): string { return "a"; }
+
                 fnc ok(): void {
-                  val items = arr[obj{value: "a"}];
+                  val items = arr[obj{value: seed()}];
                   val alias = items[0];
                   alias.value = "alias";
                   items[0].value = "owner";
