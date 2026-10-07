@@ -2026,7 +2026,9 @@ public final class TypeChecker {
                                     + " is a reserved actor lifecycle hook and cannot be called directly");
                 }
                 if (actorSelf
-                        && (member.member().equals("send") || member.member().equals("end"))) {
+                        && (member.member().equals("send")
+                            || member.member().equals("end")
+                            || member.member().equals("endWithCleanup"))) {
                     if (call.typeArgumentsPresent()) {
                         throw new IllegalArgumentException(
                                 "self." + member.member()
@@ -2045,31 +2047,37 @@ public final class TypeChecker {
                                 "self.send outbound value");
                         return Primitive.VOID;
                     }
-                    if (call.arguments().size() > 1) {
-                        throw new IllegalArgumentException(
-                                "self.end expects zero arguments or one final cleanup function");
+                    if (member.member().equals("end")) {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "self.end expects no arguments; use self.endWithCleanup(...) for final cleanup");
+                        }
+                        return Primitive.VOID;
                     }
-                    if (call.arguments().size() == 1) {
-                        Ast.Expr cleanup = call.arguments().getFirst();
-                        Function expectedCleanup =
-                                new Function(List.of(), Primitive.VOID);
-                        if (cleanup instanceof Ast.LambdaExpr lambda) {
-                            validateLambdaAgainstExpected(
-                                    lambda,
-                                    expectedCleanup,
-                                    env,
-                                    generics,
-                                    self);
-                        } else {
-                            Type cleanupType =
-                                    typeOf(cleanup, env, generics, self);
-                            if (!(cleanupType instanceof Function function)
-                                    || function.async()
-                                    || !function.parameters().isEmpty()
-                                    || function.result() != Primitive.VOID) {
-                                throw new IllegalArgumentException(
-                                        "self.end cleanup must be a synchronous zero-argument function returning void");
-                            }
+
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.endWithCleanup expects exactly one final cleanup function");
+                    }
+                    Ast.Expr cleanup = call.arguments().getFirst();
+                    Function expectedCleanup =
+                            new Function(List.of(), Primitive.VOID);
+                    if (cleanup instanceof Ast.LambdaExpr lambda) {
+                        validateLambdaAgainstExpected(
+                                lambda,
+                                expectedCleanup,
+                                env,
+                                generics,
+                                self);
+                    } else {
+                        Type cleanupType =
+                                typeOf(cleanup, env, generics, self);
+                        if (!(cleanupType instanceof Function function)
+                                || function.async()
+                                || !function.parameters().isEmpty()
+                                || function.result() != Primitive.VOID) {
+                            throw new IllegalArgumentException(
+                                    "self.endWithCleanup cleanup must be a synchronous zero-argument function returning void");
                         }
                     }
                     return Primitive.VOID;
