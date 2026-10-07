@@ -3,9 +3,15 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Local channels carry owned callables; actor wire envelopes never do. */
 final class ChannelCallableTransportTest {
@@ -119,4 +125,28 @@ final class ChannelCallableTransportTest {
                 }
                 """)));
     }
+
+    @Test
+    void localChannelCarriesCallableAtRuntime() throws Exception {
+        String program = """
+                pub routine main(): void {
+                  val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
+                  val Fnc<int, int> twice = |value| -> { return value * 2; };
+                  writech handlers, twice;
+                  val Fnc<int, int> received = readch handlers;
+                  stdio.stdout.write(received(21));
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "callable-channel.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42", output.toString(StandardCharsets.UTF_8));
+    }
+
 }
