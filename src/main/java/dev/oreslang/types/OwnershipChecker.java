@@ -618,45 +618,14 @@ public final class OwnershipChecker {
                     }
                     yield source;
                 }
-                case "proxy" -> {
-                    ValueInfo owned = checkExpr(argument, scope, true);
-                    if (owned.type == null || owned.type.isBorrow()) {
-                        throw error("rt proxy requires an owned class/struct value, not a borrow");
-                    }
-                    if (owned.type.name().equals("Proxy")) {
-                        throw error("rt proxy cannot wrap an existing Proxy<T>");
-                    }
-                    Ast.ClassDecl klass = findClass(owned.type.name());
-                    boolean dynamicStruct = owned.type.name().equals("DynamicStruct")
-                            && owned.type.arguments().size() == 1;
-                    if (klass == null && !dynamicStruct) {
-                        throw error("rt proxy currently accepts class instances or DynamicStruct<T>; got "
-                                + owned.type);
-                    }
-                    Ast.TypeRef proxyType =
-                            new Ast.TypeRef("Proxy", List.of(owned.type), false);
-                    yield new ValueInfo(proxyType, ValueKind.COPY, null);
-                }
                 default -> throw error("unknown runtime operation 'rt " + runtime.operation() + "'");
             };
         }
         if (expr instanceof Ast.AssignExpr assignment) {
-            boolean proxyTarget = assignment.target() instanceof Ast.MemberExpr member
-                    && isProxyReceiver(member.receiver(), scope)
-                    || assignment.target() instanceof Ast.IndexExpr indexed
-                    && isProxyReceiver(indexed.receiver(), scope);
             checkAssignmentTarget(assignment.target(), scope);
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
-            }
-            if (proxyTarget) {
-                // Moving into Proxy<T> transfers ownership into the synchronized
-                // domain. Do not also return a raw second owner from assignment.
-                return new ValueInfo(
-                        Ast.TypeRef.simple("void"),
-                        ValueKind.COPY,
-                        null);
             }
             return assigned;
         }
@@ -1716,8 +1685,37 @@ public final class OwnershipChecker {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
         }
-        else if (expr instanceof Ast.LambdaExpr) {
-            // Nested lambda performs its own capture analysis when checked.
+        else if (expr instanceof Ast.LambdaExpr lambda) {
+            // A lexical nested closure can reference values that belong to an
+            // activation outside the current lambda. Those are transitive
+            // captures of the current closure: it must keep/move them alive so
+            // the nested closure can subsequently capture them from its parent.
+            //
+            // Parameters and locals of the current lambda are deliberately kept
+            // in nestedLocals so references such as |x| -> |y| -> x + y do not
+            // become captures of the outer activation. An explicit nlex nested
+            // lambda is a capture barrier and therefore contributes nothing.
+            if (lambda.nonLexical()) return;
+            Set<String> nestedLocals = new HashSet<>(locals);
+            for (Ast.Param parameter : lambda.parameters()) {
+                nestedLocals.add(parameter.name());
+            }
+            if (lambda.expressionBody() != null) {
+                scanExpr(
+                        lambda.expressionBody(),
+                        nestedLocals,
+                        outer,
+                        recursiveBinding,
+                        captures,
+                        false);
+            } else {
+                scanStatements(
+                        lambda.blockBody(),
+                        nestedLocals,
+                        outer,
+                        recursiveBinding,
+                        captures);
+            }
         }
     }
 
@@ -2531,9 +2529,6 @@ public final class OwnershipChecker {
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             return state != null && isProxyType(state.type);
-        }
-        if (receiver instanceof Ast.RuntimeCallExpr runtime) {
-            return runtime.operation().equals("proxy");
         }
         return receiver instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.NameExpr intrinsic
