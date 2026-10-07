@@ -171,6 +171,51 @@ final class SharedCodeRegistryTest {
     }
 
     @Test
+    void untrustedSharingRequiresExactCodeUnitAndDigestGrant() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        var none = UntrustedCodeShareAllowlist.none();
+
+        assertThrows(SecurityException.class,
+                () -> registry.acquireUntrusted("stdlib.ores", MINIMAL_PROGRAM, none));
+
+        var allowlist = UntrustedCodeShareAllowlist.builder()
+                .allowSource("stdlib.ores", MINIMAL_PROGRAM)
+                .build();
+
+        try (var first = registry.acquireUntrusted("stdlib.ores", MINIMAL_PROGRAM, allowlist);
+             var second = registry.acquireUntrusted("stdlib.ores", MINIMAL_PROGRAM, allowlist)) {
+            assertSame(first.source(), second.source());
+            assertSame(first.checkedProgram(), second.checkedProgram());
+        }
+
+        assertThrows(SecurityException.class,
+                () -> registry.acquireUntrusted("renamed.ores", MINIMAL_PROGRAM, allowlist));
+        assertThrows(SecurityException.class,
+                () -> registry.acquireUntrusted(
+                        "stdlib.ores",
+                        "pub routine main(): void { val changed = 1; return; }",
+                        allowlist));
+    }
+
+    @Test
+    void allowlistDigestGrantsAreExactAndImmutable() {
+        String digest = UntrustedCodeShareAllowlist.sha256(MINIMAL_PROGRAM);
+        var allowlist = UntrustedCodeShareAllowlist.builder()
+                .allowDigest("stdlib.ores", digest.toUpperCase(java.util.Locale.ROOT))
+                .build();
+
+        assertTrue(allowlist.permits("stdlib.ores", MINIMAL_PROGRAM));
+        assertFalse(allowlist.permits("other.ores", MINIMAL_PROGRAM));
+        assertFalse(allowlist.permits(
+                "stdlib.ores",
+                MINIMAL_PROGRAM + " // changed"));
+        assertEquals(1, allowlist.size());
+
+        assertThrows(IllegalArgumentException.class, () ->
+                UntrustedCodeShareAllowlist.builder().allowDigest("stdlib.ores", "not-a-sha"));
+    }
+
+    @Test
     void missingCodeIdentityIsRejectedBeforePublication() {
         SharedCodeRegistry registry = new SharedCodeRegistry();
         assertThrows(NullPointerException.class, () -> registry.acquire(null, MINIMAL_PROGRAM));
