@@ -27,6 +27,12 @@ import java.nio.file.Path;
         sandbox = SandboxPolicy.UNTRUSTED,
         website = "https://github.com/ores-truffle-oreslang/oreslang-source.java")
 public final class OresLanguage extends TruffleLanguage<OresContext> {
+    /*
+     * SHARED is safe only because language-global state is immutable and all
+     * mutable execution state lives in OresContext. Parsed roots obtain their
+     * context through ContextReference (OresContext.get(node)); they never
+     * retain an actor/context in the shared AST.
+     */
     public static final String ID = "ores";
     public static final String MIME_TYPE = "application/x-oreslang";
 
