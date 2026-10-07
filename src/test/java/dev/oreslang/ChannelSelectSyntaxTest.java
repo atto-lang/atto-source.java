@@ -7,7 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.parser.Token;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -566,4 +568,39 @@ final class ChannelSelectSyntaxTest {
                 }
                 """));
     }
+
+    @Test
+    void caseAndWhenAreContextualInsteadOfGloballyReserved() {
+        var tokens = new Lexer("case when").scan();
+        assertEquals(Token.Type.IDENT, tokens.get(0).type());
+        assertEquals(Token.Type.IDENT, tokens.get(1).type());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc names(int when, int case): int {
+                  val int total = when + case;
+                  return total;
+                }
+                """)));
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc controlWords(int value): void {
+                  do select {
+                    when readch input: {
+                    }
+                    case writech output, value: {
+                    }
+                  }
+
+                  switch value
+                    case 1 -> {
+                      return;
+                    }
+                    default -> {
+                      return;
+                    }
+                  end
+                }
+                """));
+    }
+
 }
