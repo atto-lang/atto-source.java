@@ -727,7 +727,7 @@ public final class Parser {
             boolean fieldMutableReferent = true;
             if (isBindingKind(peek().type())) {
                 fieldBindingKind = parseBindingKind();
-                fieldMutableReferent = fieldBindingKind == Ast.BindingKind.VAL || match(MUT);
+                fieldMutableReferent = parseReferentMutability(fieldBindingKind);
             }
 
             if (check(IDENT) && checkNext(COLON)) {
@@ -760,7 +760,7 @@ public final class Parser {
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
-        boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
+        boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
         if (check(IDENT) && checkNext(EQUAL)) {
@@ -793,7 +793,7 @@ public final class Parser {
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
-        boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
+        boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
         if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
@@ -1441,7 +1441,7 @@ public final class Parser {
         }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
-            boolean inheritedMutableReferent = inherited == Ast.BindingKind.VAL || match(MUT);
+            boolean inheritedMutableReferent = parseReferentMutability(inherited);
             return parseDestructure(
                     check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT,
                     inherited,
@@ -1561,7 +1561,7 @@ public final class Parser {
                     consume(COLON, "readch select case requires ':'");
                     if (isBindingKind(peek().type())) {
                         bindingKind = parseBindingKind();
-                        mutableReferent = bindingKind == Ast.BindingKind.VAL || match(MUT);
+                        mutableReferent = parseReferentMutability(bindingKind);
                         bindingName = consume(IDENT, "readch case binding requires a name").lexeme();
                         match(SEMICOLON);
                     }
@@ -1578,7 +1578,7 @@ public final class Parser {
                         mutableReferent = true;
                     } else if (isBindingKind(peek().type())) {
                         bindingKind = parseBindingKind();
-                        mutableReferent = bindingKind == Ast.BindingKind.VAL || match(MUT);
+                        mutableReferent = parseReferentMutability(bindingKind);
                     } else {
                         bindingKind = Ast.BindingKind.CONST;
                     }
@@ -1654,7 +1654,7 @@ public final class Parser {
                     throw forOfUndeclaredBindingError();
                 }
                 Ast.BindingKind kind = parseForOfBindingKind();
-                boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
+                boolean mutableReferent = parseReferentMutability(kind);
                 if (looksLikeTypedForOfBinding()) {
                     throw typedForOfBindingError();
                 }
@@ -1689,7 +1689,7 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
-            boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
+            boolean mutableReferent = parseReferentMutability(kind);
             if (looksLikeTypedForOfBinding()) {
                 requireForOfBindingKind(kind);
                 throw typedForOfBindingError();
@@ -1849,7 +1849,7 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
-            boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
+            boolean mutableReferent = parseReferentMutability(kind);
             Ast.TypeRef type = null;
             String name;
             if (check(IDENT) && checkNext(EQUAL)) {
@@ -1923,7 +1923,7 @@ public final class Parser {
         do {
             if (isBindingKind(peek().type())) {
                 currentKind = parseForOfBindingKind();
-                currentMutableReferent = currentKind == Ast.BindingKind.VAL || match(MUT);
+                currentMutableReferent = parseReferentMutability(currentKind);
             }
             boolean rest = match(ELLIPSIS);
             if (isDiscardToken(peek())) {
@@ -1971,7 +1971,7 @@ public final class Parser {
 
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
-        boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
+        boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
         if (check(IDENT) && checkNext(COLON)) {
@@ -2092,7 +2092,7 @@ public final class Parser {
         do {
             if (isBindingKind(peek().type())) {
                 currentKind = parseBindingKind();
-                currentMutableReferent = currentKind == Ast.BindingKind.VAL || match(MUT);
+                currentMutableReferent = parseReferentMutability(currentKind);
             }
             boolean rest = match(ELLIPSIS);
 
@@ -3117,6 +3117,16 @@ public final class Parser {
         if (match(VAL)) return Ast.BindingKind.VAL;
         if (match(LET)) return Ast.BindingKind.LET;
         throw error(peek(), "expected const, val, or let");
+    }
+
+    private boolean parseReferentMutability(Ast.BindingKind kind) {
+        if (kind == Ast.BindingKind.VAL) {
+            if (match(MUT)) {
+                throw error(previous(), "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier");
+            }
+            return true;
+        }
+        return match(MUT);
     }
 
     private Ast.BindingKind parseForOfBindingKind() {
