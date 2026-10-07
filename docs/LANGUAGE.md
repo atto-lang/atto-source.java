@@ -182,7 +182,7 @@ fnc fixed(): [int, bool, string] {
 }
 
 fnc named(): {foo: int, bar: string} {
-  return obj{foo: 5, bar: "x"};
+  return struct infer{foo: 5, bar: "x"};
 }
 ```
 
@@ -511,36 +511,48 @@ define class Names extends List as
 end
 ```
 
-Inline object and array literals are values, not classes, and cannot be inherited from.
+Anonymous structs and array literals are values, not classes, and cannot be inherited from.
 
 ## Inline values
 
-Structural inline object:
+Oreslang structs always have a compile-time-known, closed field shape. The
+canonical inferred spelling is `struct infer{...}`:
 
 ```ores
-val user = obj{name: "Ada", age: 37};
+const user = struct infer{name: "Ada", age: 37};
 stdio.println(user.name);
 ```
 
-Static object/map keys may be identifiers, reserved member keys such as
+`infer struct {...}` is accepted as an equivalent compatibility spelling.
+An inferred struct is permanently readonly: its field set and field values
+cannot be mutated through aliases or mutable bindings.
+
+Static struct keys may be identifiers, reserved member keys such as
 `stop`/`do`/`done`, or strings written with either single or double
-quotes. Backticks make the key dynamic: the expression between the backticks
-must evaluate to a string.
+quotes:
 
 ```ores
-val key = "score";
-val stats = obj{
+const stats = struct infer{
   stop: 1,
   'do': 2,
-  "done": 3,
-  `key`: 4
+  "done": 3
 };
 ```
 
-An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
-`T` is the joined value type. A `DynamicStruct<T>` can also be created
-directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
-only values assignable to `T`.
+Computed/backtick struct keys are rejected. Oreslang intentionally has no
+`DynamicStruct<T>` or open-ended anonymous object shape; this keeps anonymous
+struct layout statically knowable for AOT compilation.
+
+When mutation or staged initialization is required, declare the complete shape
+explicitly:
+
+```ores
+val stats = struct{score: int, ready: bool}{score: 1};
+stats.ready = true;
+```
+
+Explicit structs are still closed: only fields declared in the shape may ever
+exist.
 
 Inline array:
 
