@@ -6326,7 +6326,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object normalizeHostResult(Object value) {
+            value = context.unwrapHostRuntimeValue(value);
             if (value == null) return new OptionValue(false, null);
+            if (value instanceof ChannelRuntime.Channel<?>) return value;
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
