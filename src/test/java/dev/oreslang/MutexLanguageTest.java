@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
