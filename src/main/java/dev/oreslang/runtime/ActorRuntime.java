@@ -5797,7 +5797,11 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
-                    try (envelope) {
+                    // The local is assigned from both continuation and user-mail
+                    // queues above, so it is not effectively final. Bind the
+                    // selected envelope to a final resource for deterministic
+                    // close/permit release across every dispatch path.
+                    try (MessageEnvelope activeEnvelope = envelope) {
                         /*
                          * Linearize queued-work start against stop/cancel.
                          * If cancellation acquired lifecycleLock first, this
@@ -5810,14 +5814,14 @@ public final class ActorRuntime implements AutoCloseable {
                             if (stopped.get() || finalized) break;
                         }
 
-                        if (envelope.isContinuation()) {
-                            envelope.continuation().run();
+                        if (activeEnvelope.isContinuation()) {
+                            activeEnvelope.continuation().run();
                         } else {
                             ActorInboxMail<M> mail = new ActorInboxMail<>(
                                     ref.id(),
-                                    Optional.ofNullable(envelope.sender()),
-                                    envelope.sequence(),
-                                    (M) envelope.value());
+                                    Optional.ofNullable(activeEnvelope.sender()),
+                                    activeEnvelope.sequence(),
+                                    (M) activeEnvelope.value());
                             activeMail = mail;
                             try {
                                 if (codeExecutor != null) {
