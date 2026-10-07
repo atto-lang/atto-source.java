@@ -137,7 +137,7 @@ public record IsolatePolicy(
      * available and enforces guest/isolate resource limits.
      */
     public Context.Builder restrictedContextBuilder() {
-        return restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of());
+        return restrictedContextBuilder(ExecutionProfile.parse(NativeBuildMode.defaultExecutionMode(), "server"), Set.of());
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile) {
@@ -374,13 +374,15 @@ public record IsolatePolicy(
     }
 
     public static ExecutionProfile executionProfileFromApplicationArguments(String[] args) {
-        String mode = "JIT";
+        String mode = NativeBuildMode.defaultExecutionMode();
         String platform = "SERVER";
         for (String arg : args) {
             if (arg.startsWith("--ores-execution-mode=")) mode = arg.substring("--ores-execution-mode=".length());
             else if (arg.startsWith("--ores-platform=")) platform = arg.substring("--ores-platform=".length());
         }
-        return ExecutionProfile.parse(mode, platform);
+        ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
+        NativeBuildMode.requireCompatible(profile);
+        return profile;
     }
 
     private static String bytes(long value) {

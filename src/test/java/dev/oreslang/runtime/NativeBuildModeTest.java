@@ -24,5 +24,9 @@ final class NativeBuildModeTest {
     @Test void jvmDoesNotPretendToBeANativeImage() {
         assertEquals(NativeBuildMode.Kind.JVM, NativeBuildMode.kind());
         assertEquals("jit", NativeBuildMode.defaultExecutionMode());
+        assertEquals(ExecutionProfile.Mode.JIT,
+                IsolatePolicy.executionProfileFromApplicationArguments(new String[0]).mode());
+        assertEquals(ExecutionProfile.Mode.AOT,
+                IsolatePolicy.executionProfileFromApplicationArguments(new String[] {"--ores-execution-mode=aot"}).mode());
     }
 }
