@@ -18,6 +18,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.SelectPlan;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.OresFutures;
@@ -4719,6 +4720,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof SelectPlan plan) return plan.snapshot();
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
@@ -4746,6 +4748,15 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException(
                     "dynamic select collection contains non-SelectCase value: "
                             + value);
+        }
+
+        private static int selectPlanIndex(Object value) {
+            if (!(value instanceof Long index)
+                    || index < 0 || index > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(
+                        "SelectPlan case index must be a non-negative int");
+            }
+            return index.intValue();
         }
 
         private ChannelRuntime.SelectPolicy runtimeSelectPolicy(
@@ -5072,6 +5083,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -5548,6 +5560,48 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("unknown SelectSet factory member " + name);
                 }
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof SelectPlanFactory factory) {
+                return switch (name) {
+                    case "new", "dynamic" -> (Invokable) factory::dynamic;
+                    case "fixed" -> (Invokable) factory::fixed;
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectPlan factory member " + name);
+                };
+            }
+            if (receiver instanceof SelectPlan plan) {
+                return switch (name) {
+                    case "add" -> (Invokable) args -> {
+                        requireOne(args, "SelectPlan.add");
+                        plan.add(requireSelectCase(args.getFirst()));
+                        return null;
+                    };
+                    case "replace" -> (Invokable) args -> {
+                        requireTwo(args, "SelectPlan.replace");
+                        plan.replace(selectPlanIndex(args.get(0)), requireSelectCase(args.get(1)));
+                        return null;
+                    };
+                    case "remove" -> (Invokable) args -> {
+                        requireOne(args, "SelectPlan.remove");
+                        plan.remove(selectPlanIndex(args.getFirst()));
+                        return null;
+                    };
+                    case "reset" -> (Invokable) args -> {
+                        requireOne(args, "SelectPlan.reset");
+                        plan.reset(asSelectSet(args.getFirst()).cases());
+                        return null;
+                    };
+                    case "size" -> (Invokable) args -> {
+                        requireZero(args, "SelectPlan.size");
+                        return (long) plan.size();
+                    };
+                    case "version" -> (Invokable) args -> {
+                        requireZero(args, "SelectPlan.version");
+                        return plan.version();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectPlan member " + name);
+                };
             }
             if (receiver instanceof SelectResultValue selected) {
                 return switch (name) {
@@ -7561,6 +7615,18 @@ public final class OresEvalRootNode extends RootNode {
         private Object create(List<Object> args) {
             requireOne(args, "SelectSet.new");
             return owner.asSelectSet(args.getFirst());
+        }
+    }
+
+    private record SelectPlanFactory(Evaluator owner) {
+        private Object dynamic(List<Object> args) {
+            requireOne(args, "SelectPlan.new/dynamic");
+            return SelectPlan.dynamic(owner.asSelectSet(args.getFirst()).cases());
+        }
+
+        private Object fixed(List<Object> args) {
+            requireOne(args, "SelectPlan.fixed");
+            return SelectPlan.fixed(owner.asSelectSet(args.getFirst()).cases());
         }
     }
 
