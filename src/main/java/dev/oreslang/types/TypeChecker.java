@@ -1100,6 +1100,14 @@ public final class TypeChecker {
             }
 
             Type declared = declaredAhead == null ? actual : declaredAhead;
+            if (actual instanceof Record actualRecord
+                    && actualRecord.readOnly()
+                    && declared instanceof Record declaredRecord
+                    && !declaredRecord.readOnly()) {
+                // A type annotation may constrain shape, but it cannot erase a
+                // value capability carried by struct infer.
+                declared = new Record(declaredRecord.members(), true);
+            }
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
@@ -3952,7 +3960,18 @@ public final class TypeChecker {
         return type instanceof StringLiteral ? Primitive.STRING : type;
     }
 
+    private Type capabilitySafeEquivalentJoin(Type a, Type b) {
+        if (a instanceof Record left && b instanceof Record right
+                && structuralRecordAssignable(left, right)
+                && structuralRecordAssignable(right, left)) {
+            return new Record(left.members(), left.readOnly() || right.readOnly());
+        }
+        return null;
+    }
+
     private Type collectionElementJoin(Type a, Type b) {
+        Type safe = capabilitySafeEquivalentJoin(a, b);
+        if (safe != null) return safe;
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
@@ -3960,6 +3979,8 @@ public final class TypeChecker {
     }
 
     private Type commonType(Type a, Type b) {
+        Type safe = capabilitySafeEquivalentJoin(a, b);
+        if (safe != null) return safe;
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
