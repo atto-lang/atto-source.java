@@ -18,11 +18,11 @@ final class SourceActorEndCleanupExecutionTest {
                   receive(ActorMail<String> mail): void {
                     self.send("before|");
 
-                    self.end(|| -> {
+                    self.endWithCleanup(|| -> {
                       self.send("cleanup");
                     });
 
-                    // self.end is non-blocking for the current turn. This runs
+                    // self.endWithCleanup is non-blocking for the current turn. This runs
                     // before cleanup, but no later receive() can start.
                     self.send("after|");
                     return;
@@ -55,7 +55,7 @@ final class SourceActorEndCleanupExecutionTest {
                 define untrusted actor Worker as
                   receive(ActorMail<String> mail): void {
                     self.send("turn|");
-                    self.end(|| -> {
+                    self.endWithCleanup(|| -> {
                       self.send("cleanup");
                     });
                     self.send("after|");
