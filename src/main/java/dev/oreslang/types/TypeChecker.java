@@ -2663,7 +2663,16 @@ public final class TypeChecker {
                 return new Named("DynamicStruct", List.of(
                         dynamicValue == null ? Unknown.INSTANCE : dynamicValue));
             }
-            return new Record(members, object.inferredStruct());
+            Record inferred = new Record(members, object.inferredStruct());
+            if (object.inferenceWitness() != null) {
+                Type witness = resolve(object.inferenceWitness(), generics, self);
+                if (witness == Primitive.VOID || witness == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "infer<T> struct requires a concrete non-void type witness");
+                }
+                requireAssignable(inferred, witness, "infer<" + object.inferenceWitness() + "> struct");
+            }
+            return inferred;
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
