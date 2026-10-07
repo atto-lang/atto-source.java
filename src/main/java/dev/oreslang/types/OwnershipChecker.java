@@ -987,6 +987,26 @@ public final class OwnershipChecker {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
 
+            if (member.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("self")
+                    && member.member().equals("endWithCleanup")) {
+                VarState actorSelf = scope.lookup("self");
+                if (actorSelf != null) {
+                    actorSelf.debugName = "self";
+                }
+                if (actorSelf != null && isActorConfinedBorrow(actorSelf)) {
+                    if (call.arguments().size() == 1
+                            && call.arguments().getFirst() instanceof Ast.LambdaExpr cleanup) {
+                        checkLambda(cleanup, scope, null, true);
+                    } else {
+                        for (Ast.Expr argument : call.arguments()) {
+                            checkExpr(argument, scope, false);
+                        }
+                    }
+                    return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+            }
+
             Ast.ClassDecl staticClass = classNamespaceOf(member.receiver(), scope);
             if (staticClass != null) {
                 Ast.MethodDecl staticFunction = findStaticMethod(
@@ -1363,6 +1383,14 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
+        return checkLambda(lambda, outer, recursiveBinding, false);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -1373,6 +1401,18 @@ public final class OwnershipChecker {
             requireUsable(source, capture.name, capture.write);
 
             if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
+                if (allowActorSelfCapture
+                        && capture.name.equals("self")
+                        && isActorConfinedBorrow(source)) {
+                    // self.endWithCleanup is an actor-owned final continuation:
+                    // the mailbox is already sealed, the actor stays alive until
+                    // cleanup finishes, and no later receive turn can overlap it.
+                    // Preserve self as a non-escapable borrow inside this one closure.
+                    closure.define(
+                            capture.name,
+                            new VarState(source.type, false, source.kind, Origin.CAPTURE));
+                    continue;
+                }
                 throw error("closure cannot capture borrowed value '" + capture.name + "'; capture its owner by value or pass the borrow as a lambda parameter");
             }
             if (containsMutexGuardType(source.type)) {
