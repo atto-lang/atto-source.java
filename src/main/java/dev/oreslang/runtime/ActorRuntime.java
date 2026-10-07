@@ -517,6 +517,23 @@ public final class ActorRuntime implements AutoCloseable {
         return cell.nextStaticSelectTicket(selectSite);
     }
 
+    /**
+     * Package-private proof hook for the explicitly whitelisted immutable code
+     * image attached to one actor. The actor never receives ambient access to
+     * the process code store; only this exact handle is exposed through its
+     * ActorContext.
+     */
+    Optional<SharedCodeImageStore.CodeImage> codeImageFor(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor code image");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell == null ? Optional.empty() : Optional.ofNullable(cell.codeImage);
+    }
+
     /** Package-private proof hook: mailbox transport is the runtime Channel<T>. */
     boolean mailboxUsesChannelTransport(ActorRef<?> ref) {
         requireSupervisorContext("inspect mailbox transport");
@@ -1003,6 +1020,17 @@ public final class ActorRuntime implements AutoCloseable {
          * executing. Startup/factory code has no current mail.
          */
         default Optional<ActorInboxMail<M>> currentMail() {
+            return Optional.empty();
+        }
+
+        /**
+         * The one immutable code image explicitly whitelisted for this actor.
+         *
+         * <p>This is intentionally not a store/lookup API. Untrusted and
+         * private actors cannot enumerate or resolve adjacent code units; the
+         * supervisor/compiler must attach the exact image at spawn time.</p>
+         */
+        default Optional<SharedCodeImageStore.CodeImage> codeImage() {
             return Optional.empty();
         }
 
@@ -2564,11 +2592,46 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnInternal(kind, policy, behaviorFactory, false);
     }
 
+    /**
+     * Spawn an actor with exactly one immutable process-local code image
+     * whitelisted into its ActorContext. The factory remains subject to the
+     * ordinary capture-free admission rules; code is supplied out-of-band
+     * through the actor cell rather than captured in the factory.
+     */
+    public <M> ActorRef<M> spawnWithCodeImage(
+            ActorKind kind,
+            SharedCodeImageStore.CodeImage codeImage,
+            BehaviorFactory<M> behaviorFactory) {
+        return spawnWithCodeImage(
+                kind,
+                defaultSpawnPolicy(),
+                codeImage,
+                behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnWithCodeImage(
+            ActorKind kind,
+            IsolatePolicy policy,
+            SharedCodeImageStore.CodeImage codeImage,
+            BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(codeImage, "codeImage");
+        return spawnInternal(kind, policy, behaviorFactory, false, codeImage);
+    }
+
     private <M> ActorRef<M> spawnInternal(
             ActorKind kind,
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -2627,6 +2690,7 @@ public final class ActorRuntime implements AutoCloseable {
                         effectivePolicy,
                         behaviorFactory,
                         trustedFactory,
+                        codeImage,
                         parent);
 
                 if (parent != null) {
@@ -4742,6 +4806,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
+        /** Exact immutable source image whitelisted for this actor, if any. */
+        private final SharedCodeImageStore.CodeImage codeImage;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -4783,12 +4849,14 @@ public final class ActorRuntime implements AutoCloseable {
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
                 boolean trustedFactory,
+                SharedCodeImageStore.CodeImage codeImage,
                 ActorCell<?> parent) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
+            this.codeImage = codeImage;
             this.parent = parent;
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
@@ -5102,6 +5170,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
+                    }
+                    @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
+                        return Optional.ofNullable(codeImage);
                     }
                 };
 
