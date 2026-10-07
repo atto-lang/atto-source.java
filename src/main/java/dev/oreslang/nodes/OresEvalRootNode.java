@@ -3824,9 +3824,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("send")) {
-                    throw new IllegalStateException(
-                            "self.send parent-output lowering is not executable yet; "
-                                    + "do not reinterpret it as self-mail");
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.send expects exactly one outbound value");
+                    }
+                    return object.owner.invokableInvocation(
+                            ignored -> {
+                                object.owner.context.actors()
+                                        .emitCurrentActorOutput(args.getFirst());
+                                return null;
+                            },
+                            List.of());
                 }
 
                 Ast.MethodDecl method =
@@ -5151,9 +5159,17 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("send")) {
-                        throw new IllegalStateException(
-                                "self.send parent-output lowering is not executable yet; "
-                                        + "do not reinterpret it as self-mail");
+                        if (args.size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "self.send expects exactly one outbound value");
+                        }
+                        return object.owner.invokableInvocation(
+                                ignored -> {
+                                    object.owner.context.actors()
+                                            .emitCurrentActorOutput(args.getFirst());
+                                    return null;
+                                },
+                                List.of());
                     }
 
                     Ast.MethodDecl method = object.owner.findMethod(
@@ -5966,6 +5982,7 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "ready" -> actorRef.ready();
                     case "done" -> actorRef.done();
+                    case "outputs" -> actorRef.outputs();
                     case "id" -> actorRef.id();
                     case "kind" -> actorRef.kind();
                     case "send" -> (Invokable) args -> {
@@ -5988,6 +6005,26 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown ActorRef member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorOutputStream<?> outputs) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> {
+                        requireZero(args, "ActorOutputStream.next");
+                        return outputs.next();
+                    };
+                    case "is_done" -> outputs.isDone();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorOutputStream member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorOutput<?> output) {
+                return switch (name) {
+                    case "actor_id" -> output.actorId();
+                    case "sequence" -> output.sequence();
+                    case "value" -> output.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorOutput member " + name);
                 };
             }
             if (receiver instanceof ActorRuntime.ActorInboxMail<?> mail) {
@@ -7187,6 +7224,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
+            if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
