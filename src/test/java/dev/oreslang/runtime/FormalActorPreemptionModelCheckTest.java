@@ -105,10 +105,21 @@ final class FormalActorPreemptionModelCheckTest {
     private static Optional<State> step(State s, Action action) {
         return switch (action) {
             case START_TURN -> {
-                if (s.phase() != Phase.IDLE || s.activeLeases() != 0) yield Optional.empty();
+                // START_TURN models only the original logical actor turn.
+                // Once a user message is queued after preemption, it must enter
+                // through RUN_USER_MESSAGE so priority/order accounting cannot
+                // be bypassed by this initial-admission transition.
+                if (s.phase() != Phase.IDLE
+                        || s.activeLeases() != 0
+                        || s.userQueued()
+                        || s.completedEffects() != 0
+                        || s.continuationEntries() != 0
+                        || s.userEntries() != 0) {
+                    yield Optional.empty();
+                }
                 yield Optional.of(new State(
                         Phase.RUNNING, 1, true, false, false,
-                        s.completedEffects(), s.continuationEntries(), s.userEntries()));
+                        0, 0, 0));
             }
             case COMPLETE_EFFECT -> {
                 if (s.phase() != Phase.RUNNING || s.completedEffects() != 0) yield Optional.empty();
@@ -200,6 +211,8 @@ final class FormalActorPreemptionModelCheckTest {
         if (state.phase() == Phase.USER_RUNNING) {
             assertFalse(state.continuationQueued(),
                     "later user work cannot overtake a ready preemption continuation");
+            assertEquals(1, state.continuationEntries(),
+                    "later user work may start only after the preempted turn resumed");
         }
         if (state.phase() == Phase.STOPPED) {
             assertEquals(0, state.activeLeases());
