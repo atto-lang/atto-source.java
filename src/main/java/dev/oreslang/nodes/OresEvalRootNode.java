@@ -813,9 +813,11 @@ public final class OresEvalRootNode extends RootNode {
         private final class SourceTask implements OresScheduler.Task<Object> {
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
+            private final Ast.LambdaExpr lambda;
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private final Env capturedLambdaEnv;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -826,9 +828,11 @@ public final class OresEvalRootNode extends RootNode {
                     List<?> arguments) {
                 this.function = Objects.requireNonNull(function, "function");
                 this.method = null;
+                this.lambda = null;
                 this.receiver = null;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                this.capturedLambdaEnv = null;
             }
 
             private SourceTask(
@@ -837,18 +841,36 @@ public final class OresEvalRootNode extends RootNode {
                     List<?> arguments) {
                 this.function = null;
                 this.method = Objects.requireNonNull(method, "method");
+                this.lambda = null;
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                this.capturedLambdaEnv = null;
             }
 
             private SourceTask(List<Ast.Stmt> blockBody) {
                 this.function = null;
                 this.method = null;
+                this.lambda = null;
                 this.receiver = null;
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.arguments = List.of();
+                this.capturedLambdaEnv = null;
+            }
+
+            private SourceTask(
+                    Ast.LambdaExpr lambda,
+                    Env capturedLambdaEnv,
+                    List<?> arguments) {
+                this.function = null;
+                this.method = null;
+                this.lambda = Objects.requireNonNull(lambda, "lambda");
+                this.receiver = null;
+                this.blockBody = null;
+                this.arguments = List.copyOf(arguments);
+                this.capturedLambdaEnv =
+                        Objects.requireNonNull(capturedLambdaEnv, "capturedLambdaEnv");
             }
 
             @Override
@@ -859,40 +881,17 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (resume.initial()) {
                     Env params;
-                    if (blockBody != null) {
-                        params = initialBlockEnv != null
-                                ? initialBlockEnv
-                                : new Env(null);
-                    } else {
-                        params = new Env(
-                                null,
-                                function != null && function.nonLexical(),
-                                function != null
-                                        ? null
-                                        : declaringClass(method),
-                                null,
-                                function == null
-                                        ? null
-                                        : declarationModules.get(function));
-
-                        if (receiver != null) {
-                            params.define(
-                                    "self",
-                                    receiver,
-                                    Ast.BindingKind.VAL);
-                        }
-
-                        List<Ast.Param> parameters =
-                                function != null
-                                        ? function.parameters()
-                                        : method.parameters();
-                        if (parameters.size() != arguments.size()) {
+                    if (lambda != null) {
+                        boolean nonLexical =
+                                lambda.nonLexical()
+                                        || capturedLambdaEnv.descendantsNonLexical();
+                        params = new Env(capturedLambdaEnv, nonLexical);
+                        if (lambda.parameters().size() != arguments.size()) {
                             throw new IllegalArgumentException(
-                                    "source task argument arity mismatch");
+                                    "async lambda argument arity mismatch");
                         }
-
-                        for (int i = 0; i < parameters.size(); i++) {
-                            Ast.Param param = parameters.get(i);
+                        for (int i = 0; i < lambda.parameters().size(); i++) {
+                            Ast.Param param = lambda.parameters().get(i);
                             params.define(
                                     param.name(),
                                     arguments.get(i),
@@ -900,20 +899,82 @@ public final class OresEvalRootNode extends RootNode {
                                             ? Ast.BindingKind.LET
                                             : Ast.BindingKind.VAL);
                         }
+
+                        if (lambda.expressionBody() != null) {
+                            evalSuspendableExpr(
+                                    this,
+                                    lambda.expressionBody(),
+                                    params,
+                                    (task, value, failure) ->
+                                            finishSourceFlow(
+                                                    task,
+                                                    failure == null
+                                                            ? SourceFlow.returning(value)
+                                                            : SourceFlow.throwing(failure)));
+                        } else {
+                            runBlock(
+                                    this,
+                                    lambda.blockBody(),
+                                    params,
+                                    this::finishSourceFlow);
+                        }
+                    } else {
+                        if (blockBody != null) {
+                            params = initialBlockEnv != null
+                                    ? initialBlockEnv
+                                    : new Env(null);
+                        } else {
+                            params = new Env(
+                                    null,
+                                    function != null && function.nonLexical(),
+                                    function != null
+                                            ? null
+                                            : declaringClass(method),
+                                    null,
+                                    function == null
+                                            ? null
+                                            : declarationModules.get(function));
+
+                            if (receiver != null) {
+                                params.define(
+                                        "self",
+                                        receiver,
+                                        Ast.BindingKind.VAL);
+                            }
+
+                            List<Ast.Param> parameters =
+                                    function != null
+                                            ? function.parameters()
+                                            : method.parameters();
+                            if (parameters.size() != arguments.size()) {
+                                throw new IllegalArgumentException(
+                                        "source task argument arity mismatch");
+                            }
+
+                            for (int i = 0; i < parameters.size(); i++) {
+                                Ast.Param param = parameters.get(i);
+                                params.define(
+                                        param.name(),
+                                        arguments.get(i),
+                                        param.mutable()
+                                                ? Ast.BindingKind.LET
+                                                : Ast.BindingKind.VAL);
+                            }
+                        }
+
+                        List<Ast.Stmt> body =
+                                blockBody != null
+                                        ? blockBody
+                                        : function != null
+                                                ? function.body()
+                                                : method.body();
+
+                        runBlock(
+                                this,
+                                body,
+                                params,
+                                this::finishSourceFlow);
                     }
-
-                    List<Ast.Stmt> body =
-                            blockBody != null
-                                    ? blockBody
-                                    : function != null
-                                            ? function.body()
-                                            : method.body();
-
-                    runBlock(
-                            this,
-                            body,
-                            params,
-                            this::finishSourceFlow);
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
@@ -971,6 +1032,18 @@ public final class OresEvalRootNode extends RootNode {
             private void finishSourceFlow(
                     SourceTask task,
                     SourceFlow flow) {
+                if (lambda != null) {
+                    switch (flow.kind()) {
+                        case NORMAL -> done(null);
+                        case RETURN -> done(flow.value());
+                        case THROW -> throw sourceFailure(flow.failure());
+                        case BREAK, CONTINUE ->
+                                throw new IllegalStateException(
+                                        "loop control crossed an async lambda boundary");
+                    }
+                    return;
+                }
+
                 if (blockBody != null) {
                     switch (flow.kind()) {
                         case NORMAL -> done(null);
@@ -1028,6 +1101,24 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl function,
                 List<?> arguments) {
             SourceTask task = new SourceTask(function, arguments);
+            OresFuture<Object> future;
+            if (ActorRuntime.inActorExecution()) {
+                future = context.actors().startActorTask(task);
+                context.actors().ownCurrentActorFuture(future);
+            } else {
+                OresScheduler current = OresScheduler.current();
+                future = (current != null
+                        ? current
+                        : context.vm().rootScheduler()).start(task);
+            }
+            return future;
+        }
+
+        private OresFuture<Object> startSourceLambdaTask(
+                Ast.LambdaExpr lambda,
+                Env captured,
+                List<?> arguments) {
+            SourceTask task = new SourceTask(lambda, captured, arguments);
             OresFuture<Object> future;
             if (ActorRuntime.inActorExecution()) {
                 future = context.actors().startActorTask(task);
@@ -5871,21 +5962,40 @@ public final class OresEvalRootNode extends RootNode {
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
                 Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
+
+                if (lambda.async()) {
+                    return tailCallable(args -> {
+                        if (args.size() != lambda.parameters().size()) {
+                            throw new IllegalArgumentException("lambda arity mismatch");
+                        }
+                        return startSourceLambdaTask(
+                                lambda,
+                                captured,
+                                detachAsyncArguments(args));
+                    });
+                }
+
                 return tailCallable(args -> {
-                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
+                    if (args.size() != lambda.parameters().size()) {
+                        throw new IllegalArgumentException("lambda arity mismatch");
+                    }
                     Env local = new Env(captured, nonLexical);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
                         Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        local.define(
+                                param.name(),
+                                args.get(i),
+                                param.mutable()
+                                        ? Ast.BindingKind.LET
+                                        : Ast.BindingKind.VAL);
                     }
                     try {
                         if (lambda.expressionBody() != null) {
                             // An expression-bodied lambda's sole expression is
-                            // inherently in tail position. Route it through the
-                            // same tail-return lowering as an explicit
-                            // `return expr;` in a block-bodied lambda.
+                            // inherently in tail position.
                             returnFrom(lambda.expressionBody(), local, false);
-                            throw new AssertionError("lambda expression return did not transfer control");
+                            throw new AssertionError(
+                                    "lambda expression return did not transfer control");
                         }
                         executeBlock(lambda.blockBody(), local);
                         return null;
@@ -5894,7 +6004,9 @@ public final class OresEvalRootNode extends RootNode {
                     } catch (ReturnSignal signal) {
                         return signal.value;
                     } catch (BreakSignal | ContinueSignal signal) {
-                        throw new IllegalStateException("loop control cannot cross a lambda boundary", signal);
+                        throw new IllegalStateException(
+                                "loop control cannot cross a lambda boundary",
+                                signal);
                     }
                 });
             }
