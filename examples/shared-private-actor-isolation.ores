@@ -1,9 +1,6 @@
 import fnc {actor_label} from "./actor-isolation-support.ores";
-import class CounterState from "@self";
+import class CounterState from "./actor-isolation-support.ores";
 
-define class CounterState as
-  pub let int value = 10;
-end
 
 // SHARED actor:
 // - owns normal mailbox-confined fields like local_count
