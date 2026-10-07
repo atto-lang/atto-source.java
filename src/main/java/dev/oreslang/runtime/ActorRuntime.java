@@ -1247,13 +1247,24 @@ public final class ActorRuntime implements AutoCloseable {
      * authority to stop siblings or unrelated actors.
      */
     public void endCurrentActor() {
+        endCurrentActor(null);
+    }
+
+    /**
+     * Gracefully terminate the current actor and optionally register one final
+     * synchronous cleanup action. The mailbox is sealed immediately, so no
+     * later receive turn can begin. The cleanup runs exactly once after the
+     * current turn body returns, while actor-local state is still alive, and
+     * before outputs close or done settles.
+     */
+    public void endCurrentActor(Runnable finalCleanup) {
         requireCallerRuntimeAffinity("end current actor");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "self.end is only valid during an actor execution turn");
         }
-        cell.stop();
+        cell.requestEnd(finalCleanup);
     }
 
     /**
@@ -1301,7 +1312,8 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get() || cell.finalized) {
+                if ((cell.stopped.get() && !cell.finalCleanupActive)
+                        || cell.finalized) {
                     throw terminated(cell.ref);
                 }
                 if (cell.forceKillFenced) {
@@ -3805,7 +3817,7 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
-        if (cell != null && cell.stopped.get()) {
+        if (cell != null && cell.stopped.get() && !cell.finalCleanupActive) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
@@ -5184,6 +5196,11 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeTurns;
         private boolean carrierActive;
         private OresScheduler sourceScheduler;
+        /** self.end(...) lifecycle state; guarded by lifecycleLock. */
+        private boolean endRequested;
+        private Runnable finalCleanup;
+        private boolean finalCleanupStarted;
+        private volatile boolean finalCleanupActive;
         private boolean finalized;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -5310,6 +5327,45 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get() || forceKillFenced || finalized) return false;
                 activeTurns++;
                 return true;
+            }
+        }
+
+        private void requestEnd(Runnable cleanup) {
+            synchronized (lifecycleLock) {
+                if (finalized) return;
+                if (endRequested) {
+                    if (cleanup != null && cleanup != finalCleanup) {
+                        throw new IllegalStateException(
+                                "self.end cleanup is already fixed for actor "
+                                        + ref.id());
+                    }
+                    return;
+                }
+                endRequested = true;
+                finalCleanup = cleanup;
+            }
+            stop();
+        }
+
+        private void runFinalCleanupIfNeeded() {
+            Runnable cleanup;
+            synchronized (lifecycleLock) {
+                if (!endRequested
+                        || finalCleanupStarted
+                        || finalCleanup == null) return;
+                finalCleanupStarted = true;
+                finalCleanupActive = true;
+                cleanup = finalCleanup;
+            }
+
+            try {
+                cleanup.run();
+            } finally {
+                synchronized (lifecycleLock) {
+                    finalCleanupActive = false;
+                    finalCleanup = null;
+                    lifecycleLock.notifyAll();
+                }
             }
         }
 
@@ -5716,6 +5772,17 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                if (turnActive && stopped.get()) {
+                    try {
+                        runFinalCleanupIfNeeded();
+                    } catch (Throwable cleanupFailure) {
+                        // Cleanup is the final guest action. Preserve its
+                        // failure for ActorRef.failure/done before finalization.
+                        ref.terminationCause.compareAndSet(
+                                null,
+                                cleanupFailure);
+                    }
+                }
                 if (turnActive) endTurn();
                 CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
