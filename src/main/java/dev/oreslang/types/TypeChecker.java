@@ -2397,7 +2397,7 @@ public final class TypeChecker {
             return new Record(members);
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
-            boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
+            boolean nonLexical = lambda.nonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
@@ -2407,18 +2407,26 @@ public final class TypeChecker {
             }
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             if (nonLexical) currentClassOwner = null;
+            Type declaredReturn = lambda.returnType() == null
+                    ? null : resolve(lambda.returnType(), generics, self);
             Type result;
             try {
                 if (lambda.expressionBody() != null) {
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    if (declaredReturn != null) requireAssignable(result, declaredReturn, "lambda expression return");
                 } else {
-                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-                    result = Unknown.INSTANCE;
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics,
+                            declaredReturn == null ? Unknown.INSTANCE : declaredReturn, self);
+                    if (declaredReturn != null && declaredReturn != Primitive.VOID
+                            && !definitelyReturns(lambda.blockBody())) {
+                        throw new IllegalArgumentException("non-void typed lambda must return on every path");
+                    }
+                    result = declaredReturn == null ? Unknown.INSTANCE : declaredReturn;
                 }
             } finally {
                 currentClassOwner = previousClassOwner;
             }
-            return new Function(parameters, result);
+            return new Function(parameters, declaredReturn == null ? result : declaredReturn);
         }
         return Unknown.INSTANCE;
     }
@@ -2859,7 +2867,7 @@ public final class TypeChecker {
         Type declared = param.type().name().equals("$infer$") ? expectedParameter : resolveParam(param, generics, self);
         requireAssignable(expectedParameter, declared, "mutex callback parameter " + param.name());
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
-        boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
+        boolean nonLexical = lambda.nonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
@@ -2885,10 +2893,15 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        if (lambda.returnType() != null) {
+            Type declared = resolve(lambda.returnType(), generics, self);
+            requireAssignable(declared, expected.result(), "typed lambda return");
+            requireAssignable(expected.result(), declared, "typed lambda expected return");
+        }
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
-        boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
+        boolean nonLexical = lambda.nonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
