@@ -13,6 +13,10 @@ final class PolyglotFeatureTest {
     @Test
     void executesNamespacesCollectionsAssignmentAndInheritedMethods() throws Exception {
         String program = """
+                import module math from "@self";
+                import class A from "@self";
+                import class B from "@self";
+
                 define module math
                   pub fnc add(int a, int b): int { return a + b; }
                 end
