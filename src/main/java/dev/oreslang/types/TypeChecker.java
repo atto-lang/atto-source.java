@@ -2261,6 +2261,14 @@ public final class TypeChecker {
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
                 if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
+
+                Ast.FieldDecl staticField = findLocalStaticField(klass, member.member());
+                if (staticField != null) {
+                    requireClassMemberVisible(
+                            staticField.visibility(), klass, "static field", staticField.name());
+                    return classFieldType(klass, staticField);
+                }
+
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
@@ -3107,6 +3115,22 @@ public final class TypeChecker {
             }
             return dynamic.arguments().getFirst();
         }
+        if (receiver instanceof ClassNamespace classNamespace) {
+            Ast.ClassDecl klass = findClass(classNamespace.className());
+            if (klass != null) {
+                Ast.FieldDecl field = findLocalStaticField(klass, member.member());
+                if (field != null) {
+                    requireClassMemberVisible(
+                            field.visibility(), klass, "static field", field.name());
+                    if (field.bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException(
+                                "static field '" + klass.name() + "." + field.name()
+                                        + "' is immutable");
+                    }
+                    return classFieldType(klass, field);
+                }
+            }
+        }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -3114,6 +3138,11 @@ public final class TypeChecker {
                 if (field != null) {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
+                    if (field.field().bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException(
+                                "field '" + field.owner().name() + "." + field.field().name()
+                                        + "' is immutable");
+                    }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
@@ -4335,6 +4364,13 @@ public final class TypeChecker {
         }
         stack.remove(klass);
         return List.copyOf(fields.values());
+    }
+
+    private Ast.FieldDecl findLocalStaticField(Ast.ClassDecl klass, String name) {
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic() && field.name().equals(name)) return field;
+        }
+        return null;
     }
 
     private ResolvedField findFieldTarget(Ast.ClassDecl klass, Named concreteType, String name, Set<Ast.ClassDecl> seen) {
