@@ -129,10 +129,36 @@ public final class OwnershipChecker {
                             ValueKind.MUT_BORROW,
                             Origin.PARAM));
                 } else {
-                    ValueKind receiverKind = AnnotationExpander.isGeneratedFromJsonSetter(method)
-                            ? ValueKind.MUT_BORROW
-                            : ValueKind.IMM_BORROW;
-                    scope.define("self", new VarState(Ast.TypeRef.simple(klass.name()), false, receiverKind, Origin.PARAM));
+                    Ast.TypeRef explicitReceiver = method.explicitReceiverType();
+                    if (explicitReceiver != null && explicitReceiver.isBorrow()) {
+                        Ast.TypeRef target = explicitReceiver.borrowedTarget();
+                        if (target.name().equals("self")) {
+                            target = Ast.TypeRef.simple(klass.name());
+                        }
+                        ValueKind receiverKind = explicitReceiver.mutableBorrow()
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
+                        scope.define(
+                                "self",
+                                new VarState(
+                                        Ast.TypeRef.borrowed(
+                                                target,
+                                                explicitReceiver.mutableBorrow()),
+                                        false,
+                                        receiverKind,
+                                        Origin.PARAM));
+                    } else {
+                        ValueKind receiverKind = AnnotationExpander.isGeneratedFromJsonSetter(method)
+                                ? ValueKind.MUT_BORROW
+                                : ValueKind.IMM_BORROW;
+                        scope.define(
+                                "self",
+                                new VarState(
+                                        Ast.TypeRef.simple(klass.name()),
+                                        false,
+                                        receiverKind,
+                                        Origin.PARAM));
+                    }
                 }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
@@ -1048,7 +1074,18 @@ public final class OwnershipChecker {
             if (target != null) {
                 Ast.MethodDecl method = target.method();
                 if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
-                    ensureMutableReceiver(member.receiver(), scope, "generated JSON setter '" + method.name() + "'");
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "generated JSON setter '" + method.name() + "'");
+                }
+                if (method.explicitReceiverType() != null
+                        && method.explicitReceiverType().isBorrow()
+                        && method.explicitReceiverType().mutableBorrow()) {
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "mutable method receiver '" + method.name() + "'");
                 }
                 boolean protectedReceiver = false;
                 if (member.receiver() instanceof Ast.NameExpr receiverName) {
