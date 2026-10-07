@@ -2335,12 +2335,6 @@ public final class TypeChecker {
                 }
                 throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             }
-            if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-                if (dynamic.arguments().size() != 1) {
-                    throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
-                }
-                return dynamic.arguments().getFirst();
-            }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
@@ -2376,13 +2370,6 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
-            if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-                if (dynamic.arguments().size() != 1) {
-                    throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
-                }
-                requireAssignable(index, Primitive.STRING, "DynamicStruct key");
-                return dynamic.arguments().getFirst();
-            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
                 if (index instanceof StringLiteral key) {
