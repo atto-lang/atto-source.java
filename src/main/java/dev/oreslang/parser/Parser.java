@@ -488,6 +488,11 @@ public final class Parser {
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
+            if (looksLikeBracketedMemberField()) {
+                validateClassFieldModifiers(mods);
+                fields.add(parseSymbolColonField(annotations, mods.visibility));
+                continue;
+            }
             if (check(IDENT) && checkNext(COLON)) {
                 validateClassFieldModifiers(mods);
                 fields.add(parseColonField(annotations, mods.visibility));
@@ -706,7 +711,7 @@ public final class Parser {
                             "interface-member annotations are not represented by the current AST; "
                                     + "only @structural is accepted here and unsupported annotations must not be silently discarded");
                 }
-                String memberName = consumeCallableName("expected interface function name");
+                String memberName = parseMethodName();
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -730,6 +735,15 @@ public final class Parser {
                 fieldMutableReferent = parseReferentMutability(fieldBindingKind);
             }
 
+            if (looksLikeBracketedMemberField()) {
+                String fieldName = parseBracketedStaticSymbolMemberName("interface field");
+                consume(COLON, "expected ':' after interface Symbol field");
+                Ast.TypeRef type = parseTypeRef();
+                consumeMemberTerminator(terminator, "interface field signature should end with ';'");
+                members.add(new Ast.InterfaceFieldDecl(
+                        fieldName, type, fieldBindingKind, fieldMutableReferent));
+                continue;
+            }
             if (check(IDENT) && checkNext(COLON)) {
                 String fieldName = advance().lexeme();
                 consume(COLON, "expected ':' after interface field name");
@@ -763,7 +777,11 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) {
+        if (check(LBRACKET)) {
+            name = parseBracketedStaticSymbolMemberName("class field");
+            consume(COLON, "expected ':' after class Symbol field");
+            type = parseTypeRef();
+        } else if (check(IDENT) && checkNext(EQUAL)) {
             name = advance().lexeme();
         } else {
             type = parseTypeRef();
@@ -782,6 +800,18 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
         consume(COLON, "expected ':' after field name");
+        Ast.TypeRef type = parseTypeRef();
+        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        Ast.BindingKind kind = hasAnnotation(annotations, "FromJson") ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
+        type = applyTypeMetadataAnnotations(type, annotations, false);
+        consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
+    }
+
+    private Ast.FieldDecl parseSymbolColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        String name = parseBracketedStaticSymbolMemberName("class field");
+        consume(COLON, "expected ':' after class Symbol field");
         Ast.TypeRef type = parseTypeRef();
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
         Ast.BindingKind kind = hasAnnotation(annotations, "FromJson") ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
@@ -868,15 +898,73 @@ public final class Parser {
     }
 
     private String parseMethodName() {
-        if (match(LBRACKET)) {
-            String namespace = consume(IDENT, "expected symbol namespace").lexeme();
-            consume(DOT, "expected '.' in symbol method");
-            String symbol = consume(IDENT, "expected symbol name").lexeme();
-            consume(RBRACKET, "expected ']' after symbol method");
-            if (!namespace.equals("Symbol")) throw error(previous(), "symbol methods must use Symbol.<name>");
-            return namespace + "." + symbol;
+        if (check(LBRACKET)) {
+            return parseBracketedStaticSymbolMemberName("method");
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    private boolean looksLikeBracketedMemberField() {
+        if (!check(LBRACKET)) return false;
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LBRACKET) depth++;
+            else if (type == RBRACKET) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == COLON;
+            }
+        }
+        return false;
+    }
+
+    private String parseBracketedStaticSymbolMemberName(String owner) {
+        consume(LBRACKET, "expected '[' before Symbol " + owner + " key");
+        Ast.Expr key = parseExpression();
+        consume(RBRACKET, "expected ']' after Symbol " + owner + " key");
+        String resolved = staticSymbolMemberName(key);
+        if (resolved == null) {
+            throw error(previous(),
+                    owner + " Symbol keys must be compile-time identities; use "
+                            + "[Symbol.create(\"name\")], [Symbol.process(\"name\")], "
+                            + "[Symbol.stable(\"uuid\")], or a well-known key such as [Symbol.iterator]");
+        }
+        return resolved;
+    }
+
+    private String staticSymbolMemberName(Ast.Expr expression) {
+        if (expression instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Symbol")
+                && member.member().equals("iterator")) {
+            return Ast.symbolMemberKey("process", "Symbol.iterator");
+        }
+
+        if (!(expression instanceof Ast.CallExpr call)
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 1
+                || !(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Symbol")
+                || !(call.arguments().getFirst() instanceof Ast.LiteralExpr literal)
+                || !(literal.value() instanceof String key)) {
+            return null;
+        }
+
+        return switch (member.member()) {
+            case "create", "process" -> Ast.symbolMemberKey("process", key);
+            case "stable" -> {
+                try {
+                    java.util.UUID uuid = java.util.UUID.fromString(key);
+                    String canonical = uuid.toString();
+                    if (!canonical.equals(key.toLowerCase(java.util.Locale.ROOT))) yield null;
+                    yield Ast.symbolMemberKey("stable", canonical);
+                } catch (IllegalArgumentException invalid) {
+                    yield null;
+                }
+            }
+            default -> null;
+        };
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
@@ -1222,7 +1310,9 @@ public final class Parser {
             java.util.LinkedHashMap<String, Ast.TypeRef> members = new java.util.LinkedHashMap<>();
             if (!check(RBRACE)) {
                 do {
-                    String field = consumeStaticObjectKeyName("expected record type field name");
+                    String field = check(LBRACKET)
+                            ? parseBracketedStaticSymbolMemberName("record type field")
+                            : consumeStaticObjectKeyName("expected record type field name");
                     consume(COLON, "expected ':' after record type field name");
                     Ast.TypeRef fieldType = parseTypeRef();
                     if (members.putIfAbsent(field, fieldType) != null) {
@@ -2895,7 +2985,9 @@ public final class Parser {
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
         if (!check(RBRACE)) {
             do {
-                String name = consumeStaticObjectKeyName("expected explicit struct field name");
+                String name = check(LBRACKET)
+                        ? parseBracketedStaticSymbolMemberName("explicit struct field")
+                        : consumeStaticObjectKeyName("expected explicit struct field name");
                 if (!names.add(name)) {
                     throw error(previous(), "duplicate explicit struct field '" + name + "'");
                 }
@@ -2931,12 +3023,17 @@ public final class Parser {
         if (!check(RBRACE)) {
             do {
                 Ast.ObjectField field;
-                if (match(BACKTICK)) {
+                if (match(LBRACKET)) {
+                    Ast.Expr key = parseExpression();
+                    consume(RBRACKET, "expected ']' after computed Symbol key");
+                    consume(COLON, "expected ':' after computed Symbol key");
+                    field = Ast.ObjectField.symbol(key, parseExpression());
+                } else if (match(BACKTICK)) {
                     if (inferredStruct || explicitStruct) {
                         throw error(previous(),
                                 inferredStruct
-                                        ? "infer struct requires statically named fields"
-                                        : "explicit struct initializers require statically named declared fields");
+                                        ? "infer struct permits only named or compile-time Symbol fields"
+                                        : "explicit struct initializers permit only declared named or Symbol fields");
                     }
                     Ast.Expr key = parseExpression();
                     consume(BACKTICK, "expected closing backtick after dynamic object key");
