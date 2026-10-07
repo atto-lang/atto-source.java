@@ -127,12 +127,14 @@ public final class PureEffectChecker {
             scope.define("self", new Binding(
                     SlotOrigin.PARAM,
                     ValueOrigin.EXTERNAL_ALIAS,
+                    Ast.BindingKind.VAL,
                     false));
         }
         for (Ast.Param param : parameters) {
             scope.define(param.name(), new Binding(
                     SlotOrigin.PARAM,
                     ValueOrigin.EXTERNAL_ALIAS,
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
                     false));
         }
         return scope;
@@ -154,6 +156,7 @@ public final class PureEffectChecker {
             scope.define(param.name(), new Binding(
                     SlotOrigin.PARAM,
                     ValueOrigin.EXTERNAL_ALIAS,
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
                     false));
         }
         if (lambda.expressionBody() != null) {
@@ -188,6 +191,7 @@ public final class PureEffectChecker {
                         scope.define(binding.name(), new Binding(
                                 SlotOrigin.LOCAL,
                                 value,
+                                binding.kind(),
                                 false));
                     }
                 }
@@ -301,6 +305,7 @@ public final class PureEffectChecker {
                 nested.define(param.name(), new Binding(
                         SlotOrigin.PARAM,
                         ValueOrigin.EXTERNAL_ALIAS,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
                         false));
             }
             if (lambda.expressionBody() != null) {
@@ -383,6 +388,7 @@ public final class PureEffectChecker {
             scope.define(param.name(), new Binding(
                     SlotOrigin.PARAM,
                     ValueOrigin.EXTERNAL_ALIAS,
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
                     false));
         }
         checkStatements(fn.body(), scope, module, fn.name());
@@ -401,6 +407,7 @@ public final class PureEffectChecker {
                         aliasesExternal(binding.initializer(), scope)
                                 ? ValueOrigin.EXTERNAL_ALIAS
                                 : ValueOrigin.OWNED,
+                        binding.kind(),
                         provenPureCallable(binding.initializer(), scope)));
                 continue;
             }
@@ -412,7 +419,7 @@ public final class PureEffectChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) {
                         scope.define(binding.name(), new Binding(
-                                SlotOrigin.LOCAL, value, false));
+                                SlotOrigin.LOCAL, value, binding.kind(), false));
                     }
                 }
                 continue;
@@ -483,6 +490,7 @@ public final class PureEffectChecker {
                 caught.define(attempted.errorName(), new Binding(
                         SlotOrigin.LOCAL,
                         ValueOrigin.OWNED,
+                        Ast.BindingKind.VAL,
                         false));
                 checkStatements(attempted.catchBody(), caught, module, callable);
                 checkStatements(attempted.finallyBody(), new Scope(scope), module, callable);
@@ -545,10 +553,10 @@ public final class PureEffectChecker {
             ValueOrigin valueOrigin) {
         if (pattern instanceof Ast.BindingPattern binding) {
             scope.define(binding.name(), new Binding(
-                    SlotOrigin.LOCAL, valueOrigin, false));
+                    SlotOrigin.LOCAL, valueOrigin, Ast.BindingKind.VAL, false));
         } else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) {
             scope.define(typed.binding(), new Binding(
-                    SlotOrigin.LOCAL, valueOrigin, false));
+                    SlotOrigin.LOCAL, valueOrigin, Ast.BindingKind.VAL, false));
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
             for (Ast.Pattern nested : constructor.arguments()) {
                 definePatternBindings(nested, scope, valueOrigin);
@@ -670,6 +678,7 @@ public final class PureEffectChecker {
                 nested.define(param.name(), new Binding(
                         SlotOrigin.PARAM,
                         ValueOrigin.EXTERNAL_ALIAS,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
                         false));
             }
             if (lambda.expressionBody() != null) {
