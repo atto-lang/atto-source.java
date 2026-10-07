@@ -755,6 +755,7 @@ public final class Parser {
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
+        boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
         Ast.TypeRef type = null;
         String name;
         if (check(IDENT) && checkNext(EQUAL)) {
@@ -769,7 +770,7 @@ public final class Parser {
         }
         consumeExpressionStatementTerminator(initializer, "field declaration should end with ';'");
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
@@ -787,6 +788,7 @@ public final class Parser {
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
+        boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
         Ast.TypeRef type = null;
         String name;
         if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
@@ -798,7 +800,7 @@ public final class Parser {
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(initializer, "module binding should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
@@ -1527,6 +1529,7 @@ public final class Parser {
                 Ast.Expr value = null;
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
+                boolean mutableReferent = false;
 
                 if (match(READCH)) {
                     operation = Ast.ChannelOperation.READ;
@@ -1534,6 +1537,7 @@ public final class Parser {
                     consume(COLON, "readch select case requires ':'");
                     if (isBindingKind(peek().type())) {
                         bindingKind = parseBindingKind();
+                        mutableReferent = bindingKind == Ast.BindingKind.VAL || match(MUT);
                         bindingName = consume(IDENT, "readch case binding requires a name").lexeme();
                         match(SEMICOLON);
                     }
@@ -1544,7 +1548,24 @@ public final class Parser {
                     value = parseExpression();
                     consume(COLON, "writech select case requires ':'");
                 } else {
-                    throw error(peek(), "select case must start with readch or writech");
+                    // Binding-first select case: case [const|val|let] [mut] msg = readch(ch) -> { ... }
+                    if (match(MUT)) {
+                        bindingKind = Ast.BindingKind.LET;
+                        mutableReferent = true;
+                    } else if (isBindingKind(peek().type())) {
+                        bindingKind = parseBindingKind();
+                        mutableReferent = bindingKind == Ast.BindingKind.VAL || match(MUT);
+                    } else {
+                        bindingKind = Ast.BindingKind.CONST;
+                    }
+                    bindingName = consume(IDENT, "select read case requires binding name").lexeme();
+                    consume(EQUAL, "select case binding requires '='");
+                    consume(READCH, "select case binding requires readch");
+                    consume(LPAREN, "binding-first select readch requires '('");
+                    channel = parseExpression();
+                    consume(RPAREN, "binding-first select readch requires ')'");
+                    consume(ARROW, "binding-first select case requires '->'");
+                    operation = Ast.ChannelOperation.READ;
                 }
 
                 if (!check(LBRACE)) {
@@ -1557,7 +1578,8 @@ public final class Parser {
                         value,
                         bindingKind,
                         bindingName,
-                        body));
+                        body,
+                        mutableReferent));
                 continue;
             }
 
@@ -1908,6 +1930,7 @@ public final class Parser {
 
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
+        boolean mutableReferent = kind == Ast.BindingKind.VAL || match(MUT);
         Ast.TypeRef type = null;
         String name;
         if (check(IDENT) && checkNext(COLON)) {
@@ -1929,7 +1952,7 @@ public final class Parser {
         consume(EQUAL, "binding requires initializer");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
-        return new Ast.BindingStmt(kind, type, name, initializer);
+        return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent);
     }
 
     private Ast.TypeRef applyTypeMetadataAnnotations(
