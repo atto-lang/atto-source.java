@@ -364,7 +364,13 @@ public final class OwnershipChecker {
                 Ast.TypeRef element = channelElementType(channel.type);
                 elementTypes.add(element);
                 if (arm.operation() == Ast.ChannelOperation.WRITE) {
-                    ValueInfo payload = checkExpr(arm.value(), scope, false);
+                    // Blocking/immediate select can conditionally move only the winning
+                    // send. Nonblocking select returns before settlement, so its
+                    // registration must own every candidate write payload immediately.
+                    ValueInfo payload = checkExpr(
+                            arm.value(),
+                            scope,
+                            selected.mode() == Ast.WaitMode.NONBLOCKING);
                     if (containsMutexGuardType(payload.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
@@ -389,10 +395,11 @@ public final class OwnershipChecker {
                         : new Scope(scope);
                 if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
                     hasDefault = true;
-                } else if (arm.operation() == Ast.ChannelOperation.WRITE) {
-                    // Only the winning arm commits the send. Analyze each arm
-                    // against the pre-select state and join all possible exits.
-                    // This safely treats the payload as possibly moved afterwards.
+                } else if (arm.operation() == Ast.ChannelOperation.WRITE
+                        && selected.mode() != Ast.WaitMode.NONBLOCKING) {
+                    // Only the winning blocking/immediate arm commits the send.
+                    // Join possible exits so outer values become maybe-moved
+                    // (represented conservatively as moved) after selection.
                     ValueInfo outgoing = checkExpr(arm.value(), armScope, true);
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
