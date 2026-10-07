@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.ast.Ast;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -30,6 +31,38 @@ final class SharedCodeRegistryTest {
             second.close();
         }
         assertEquals(0, registry.liveImages(), "last lease must release the cache root");
+    }
+
+    @Test
+    void checkedCodeIsOneObjectAcrossActorsButPolicyChecksRemainPerActor() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        try (var shared = registry.acquire("worker.ores", MINIMAL_PROGRAM);
+             var isolated = registry.acquire("worker.ores", MINIMAL_PROGRAM);
+             var untrusted = registry.acquire("worker.ores", MINIMAL_PROGRAM)) {
+
+            Ast.Program code = shared.checkedProgram();
+            assertSame(code, isolated.checkedProgram(),
+                    "private actor should see identical immutable code definitions");
+            assertSame(code, untrusted.checkedProgram(),
+                    "untrusted actor should see identical immutable code definitions");
+            assertDoesNotThrow(() ->
+                    CapabilityChecker.check(code, IsolatePolicy.untrustedActor()));
+            assertEquals(1, registry.liveImages());
+        }
+    }
+
+    @Test
+    void immutableCodeSharingDoesNotShareCapabilities() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        String privilegedCode = "pub routine main(): void { print(1); return; }";
+        try (var shared = registry.acquire("caps.ores", privilegedCode);
+             var untrusted = registry.acquire("caps.ores", privilegedCode)) {
+            assertSame(shared.checkedProgram(), untrusted.checkedProgram());
+            assertDoesNotThrow(() ->
+                    CapabilityChecker.check(shared.checkedProgram(), IsolatePolicy.developer()));
+            assertThrows(SecurityException.class, () ->
+                    CapabilityChecker.check(untrusted.checkedProgram(), IsolatePolicy.untrustedActor()));
+        }
     }
 
     @Test
