@@ -21,7 +21,7 @@ final class PatternMatchingHardeningTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IS));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.MATCHES));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.MATCH));
-        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.WHEN));
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("when")));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.DEFAULT));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("case")));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IDENT && t.lexeme().equals("on")));
@@ -31,7 +31,8 @@ final class PatternMatchingHardeningTest {
                 fnc contextualNames(): int {
                   val int on = 1;
                   val int case = 2;
-                  return on + case;
+                  val int when = 3;
+                  return on + case + when;
                 }
                 """)));
 
