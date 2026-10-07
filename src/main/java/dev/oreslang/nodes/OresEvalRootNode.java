@@ -5136,6 +5136,26 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && methodCall.member().equals("end")) {
+                        if (!args.isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "self.end expects no arguments");
+                        }
+                        return object.owner.invokableInvocation(
+                                ignored -> {
+                                    object.owner.context.actors().endCurrentActor();
+                                    return null;
+                                },
+                                List.of());
+                    }
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && methodCall.member().equals("send")) {
+                        throw new IllegalStateException(
+                                "self.send parent-output lowering is not executable yet; "
+                                        + "do not reinterpret it as self-mail");
+                    }
+
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
                     if (method != null) {
