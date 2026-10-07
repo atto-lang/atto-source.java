@@ -876,7 +876,13 @@ public final class OwnershipChecker {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
             }
-            if (scope.hasLiveBorrow()) {
+            // Actor self is retained by the mailbox continuation under the same
+            // execution lease. Ordinary user borrows (including aliases of self)
+            // still cannot cross suspension.
+            if (scope.visibleStates().stream().anyMatch(state -> !state.moved
+                    && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
+                    && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                        || state.immutableBorrows > 0 || state.mutableBorrowed))) {
                 throw error("cannot await while an ordinary borrow is live; end the lexical borrow before suspension");
             }
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
