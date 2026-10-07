@@ -166,7 +166,6 @@ final class GenericsAndOperatorsHardeningTest {
     @Test
     void qualifiedGenericCallsInferButUnspecializedGenericValuesAreRejected() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                import module util from "@self";
 
                 define module util
                   pub fnc identity<T>(T value): T {
@@ -362,7 +361,6 @@ final class GenericsAndOperatorsHardeningTest {
     @Test
     void staticFunctionsOwnTheirGenericParametersAndCannotCaptureClassGenerics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                import module model from "@self";
 
                 define module model
                   define class Box<T> as
