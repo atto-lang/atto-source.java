@@ -9,8 +9,8 @@ shared actor SharedCounter {
   // Imported class layouts are intentionally opaque to a single-unit typecheck;
   // linked compilation may prove imported layouts separately, but must never
   // assume an unknown imported class is safe for shared mutable state.
-  let SharedMutex<int> shared_count =
-      SharedMutex.new(10);
+  let SharedMutex<List<int>> shared_count =
+      SharedMutex.new([10]);
 
   pub fnc increment(): bool {
     self.local_count = self.local_count + 1;
@@ -27,7 +27,7 @@ shared actor SharedCounter {
     fi
 
     val guard = maybe_guard.unwrap();
-    guard.value = guard.value + 1;
+    guard.set(0, guard.get(0) + 1);
     guard.release();
     return true;
   }
@@ -76,8 +76,8 @@ isoactor PrivateCounter {
  * process.share_readonly(...) is therefore private-actor forbidden too.
  *
  * isoactor BrokenPrivateCounter {
- *   let SharedMutex<int> shared_count =
- *       SharedMutex.new(10);
+ *   let SharedMutex<List<int>> shared_count =
+ *       SharedMutex.new([10]);
  *
  *   pub fnc increment_shared(): void {
  *     self.shared_count.with_lock(|counter| -> {
