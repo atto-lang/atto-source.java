@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import dev.oreslang.OresLanguage;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
 import org.graalvm.polyglot.Context;
@@ -123,17 +122,29 @@ public final class HotReloadManager implements AutoCloseable {
         long id = sequence.incrementAndGet();
         Context context =
                 guestPolicy.restrictedContextBuilder(executionProfile).build();
+        SharedCodeRegistry.Lease codeImage = null;
         try {
-            Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
-                    .mimeType(OresLanguage.MIME_TYPE)
-                    .buildLiteral();
-            Generation generation = new Generation(id, codeUnitId, sourceDigest, context, source, executionProfile);
+            // One immutable code image is reused across otherwise independent
+            // actor/isolate contexts. Never reuse guest execution state here.
+            codeImage = SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
+            if (!codeImage.sha256().equals(sourceDigest)) {
+                throw new IllegalArgumentException("compiled code-unit source digest mismatch");
+            }
+            Source source = codeImage.source();
+            Generation generation = new Generation(
+                    id, codeUnitId, sourceDigest, context, source, codeImage, executionProfile);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            try {
+                context.close(true);
+            } catch (RuntimeException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            } finally {
+                if (codeImage != null) codeImage.close();
+            }
             throw failure;
         }
     }
@@ -191,16 +202,20 @@ public final class HotReloadManager implements AutoCloseable {
         private final String sha256;
         private final Context context;
         private final Source source;
+        private final SharedCodeRegistry.Lease codeImage;
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private Generation(long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
+        private Generation(long id, String codeUnitId, String sha256,
+                           Context context, Source source,
+                           SharedCodeRegistry.Lease codeImage, ExecutionProfile executionProfile) {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
             this.context = context;
             this.source = source;
+            this.codeImage = codeImage;
             this.executionProfile = executionProfile;
         }
 
@@ -227,7 +242,13 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) context.close(true);
+            if (closed.compareAndSet(false, true)) {
+                try {
+                    context.close(true);
+                } finally {
+                    codeImage.close();
+                }
+            }
         }
     }
 }
