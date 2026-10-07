@@ -1384,10 +1384,10 @@ public final class OwnershipChecker {
             }
 
             if (capture.write) {
-                if (!source.mutable) throw error("closure cannot mutate immutable capture '" + capture.name + "'");
+                if (!source.mutable && !source.rebindable) throw error("closure cannot write read-only capture '" + capture.name + "'");
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) throw error("closure cannot capture '" + capture.name + "' mutably while borrowed");
                 move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, true, source.kind, Origin.CAPTURE));
+                closure.define(capture.name, new VarState(source.type, source.mutable, source.rebindable, source.kind, Origin.CAPTURE));
             } else if (source.kind == ValueKind.MOVE_ONLY) {
                 move(source, capture.name);
                 closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
@@ -2155,8 +2155,8 @@ public final class OwnershipChecker {
             }
 
             if (capture.write) {
-                if (!source.mutable) {
-                    throw error("nb select continuation cannot mutate immutable capture '"
+                if (!source.mutable && !source.rebindable) {
+                    throw error("nb select continuation cannot write read-only capture '"
                             + capture.name + "'");
                 }
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) {
@@ -2188,12 +2188,12 @@ public final class OwnershipChecker {
                 continue;
             }
 
-            boolean mutable = capture.write;
             continuation.define(
                     capture.name,
                     new VarState(
                             source.type,
-                            mutable,
+                            capture.write && source.mutable,
+                            capture.write && source.rebindable,
                             source.kind,
                             Origin.CAPTURE));
         }
