@@ -152,7 +152,7 @@ public final class Ast {
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
 
-        public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
+        private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
             java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
             entries.sort(java.util.Map.Entry.comparingByKey());
@@ -162,9 +162,16 @@ public final class Ast {
                 }
                 fields.add(new TypeRef("$field$" + entry.getKey(), List.of(entry.getValue()), false));
             }
-            return new TypeRef("$record$", List.copyOf(fields), false);
+            return new TypeRef(readOnly ? "$readonly_record$" : "$record$", List.copyOf(fields), false);
         }
-        public boolean isRecordType() { return name.equals("$record$"); }
+        public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
+            return recordType(members, false);
+        }
+        public static TypeRef readonlyRecordType(java.util.Map<String, TypeRef> members) {
+            return recordType(members, true);
+        }
+        public boolean isRecordType() { return name.equals("$record$") || name.equals("$readonly_record$"); }
+        public boolean isReadonlyRecordType() { return name.equals("$readonly_record$"); }
         public java.util.Map<String, TypeRef> recordMembers() {
             if (!isRecordType()) throw new IllegalStateException("not a record type");
             java.util.LinkedHashMap<String, TypeRef> members = new java.util.LinkedHashMap<>();
@@ -859,10 +866,44 @@ public final class Ast {
         public boolean isDynamic() { return dynamicName != null; }
     }
 
-    /** Statically shaped inferred struct, distinct from an open/dynamic obj literal. */
-    public record ObjectExpr(List<ObjectField> fields, boolean inferredStruct) implements Expr {
-        public ObjectExpr { fields = List.copyOf(fields); }
-        public ObjectExpr(List<ObjectField> fields) { this(fields, false); }
+    public enum ObjectKind { OBJECT, INFERRED_STRUCT, EXPLICIT_STRUCT }
+
+    /** A field declaration in the closed shape of an explicit anonymous struct. */
+    public record StructFieldSpec(String name, TypeRef type) {
+        public StructFieldSpec {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("struct field name cannot be blank");
+            java.util.Objects.requireNonNull(type, "struct field type");
+        }
+    }
+
+    /**
+     * Structural object expression.
+     *
+     * <p>OBJECT is the existing obj{...} form. INFERRED_STRUCT is a closed,
+     * readonly shape inferred entirely from its initializer. EXPLICIT_STRUCT
+     * carries a separately declared closed shape so declared fields may be
+     * initialized after construction under an owned mutable binding.
+     */
+    public record ObjectExpr(
+            List<ObjectField> fields,
+            ObjectKind kind,
+            List<StructFieldSpec> declaredFields) implements Expr {
+        public ObjectExpr {
+            fields = List.copyOf(fields);
+            declaredFields = List.copyOf(declaredFields);
+            java.util.Objects.requireNonNull(kind, "object kind");
+            if (kind != ObjectKind.EXPLICIT_STRUCT && !declaredFields.isEmpty()) {
+                throw new IllegalArgumentException("only explicit structs may carry a declared field shape");
+            }
+        }
+        public ObjectExpr(List<ObjectField> fields) {
+            this(fields, ObjectKind.OBJECT, List.of());
+        }
+        public ObjectExpr(List<ObjectField> fields, boolean inferredStruct) {
+            this(fields, inferredStruct ? ObjectKind.INFERRED_STRUCT : ObjectKind.OBJECT, List.of());
+        }
+        public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
+        public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
