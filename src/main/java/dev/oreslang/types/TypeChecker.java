@@ -3668,10 +3668,19 @@ public final class TypeChecker {
                     where + " cannot transport an actor instance by value; pass an actor capability/reference");
         }
 
-        if (!isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
-            throw new IllegalArgumentException(
-                    where + " contains state that is not safe to transport across an actor boundary");
-        }
+        /*
+         * Ordinary class instances are mutable identity-bearing objects. The
+         * runtime transport deliberately rejects OresObject/unknown host
+         * objects instead of sharing their identity or inventing an implicit
+         * deep copy. Keep the compiler aligned with that fail-closed runtime
+         * rule. A future explicit serializer/copy trait may opt a class in;
+         * until then actor mail/output must use data-only records/tuples/lists,
+         * scalars or explicit capabilities.
+         */
+        throw new IllegalArgumentException(
+                where + " cannot transport class instance '" + klass.name()
+                        + "' by value; actor boundaries require data-only values "
+                        + "or an explicit serialization/copy contract");
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
