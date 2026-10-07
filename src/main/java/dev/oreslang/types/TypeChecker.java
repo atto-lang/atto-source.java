@@ -4008,7 +4008,7 @@ public final class TypeChecker {
 
     private static boolean isReservedActorRuntimeMember(String name) {
         return switch (name) {
-            case "receive", "send", "call", "ready", "done", "outputs",
+            case "receive", "dispatch", "send", "call", "ready", "done", "outputs",
                     "id", "kind", "stop", "cancel", "kill",
                     "end", "endWithCleanup" -> true;
             default -> false;
