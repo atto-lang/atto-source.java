@@ -130,9 +130,8 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    @Test
     void noReturnMatchDiscardsArmLocalResultAndContinues() throws Exception {
-        assertEquals("continued\\n", run("""
+        assertEquals("continued\n", run("""
                 pub fnc main(): void {
                   match Some(5) no-return over
                     Some(value) -> { return value + 10; }
@@ -146,7 +145,7 @@ final class MatchOverSemanticsTest {
 
     @Test
     void noReturnAllowsCallbackArmsWithoutReturn() throws Exception {
-        assertEquals("side-effect\\ncontinued\\n", run("""
+        assertEquals("side-effect\ncontinued\n", run("""
                 pub fnc main(): void {
                   match true no-return over
                     true -> { stdio.println("side-effect"); }
