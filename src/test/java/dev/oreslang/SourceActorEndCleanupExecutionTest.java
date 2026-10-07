@@ -18,7 +18,7 @@ final class SourceActorEndCleanupExecutionTest {
     void selfEndCleanupIsFinalSourceActionAndMayEmitFinalOutput() throws Exception {
         String program = """
                 define actor Worker as
-                  receive(ActorMail<String> mail): void {
+                  pub run(): void {
                     self.send("before|");
 
                     self.endWithCleanup(|| -> {
@@ -26,7 +26,7 @@ final class SourceActorEndCleanupExecutionTest {
                     });
 
                     // self.endWithCleanup is non-blocking for the current turn. This runs
-                    // before cleanup, but no later receive() can start.
+                    // before cleanup, but no later endpoint dispatch can start.
                     self.send("after|");
                     return;
                   }
@@ -35,7 +35,7 @@ final class SourceActorEndCleanupExecutionTest {
                 pub async routine main(): void {
                   val worker = spawn Worker();
                   await worker.ready;
-                  worker.send("go");
+                  worker.send.run();
 
                   for await const output of worker.outputs {
                     stdio.stdout.write(output.value);
@@ -56,7 +56,7 @@ final class SourceActorEndCleanupExecutionTest {
     void untrustedActorAlsoFinishesCurrentTurnBeforeFinalCleanup() throws Exception {
         String program = """
                 define untrusted actor Worker as
-                  receive(ActorMail<String> mail): void {
+                  pub run(): void {
                     self.send("turn|");
                     self.endWithCleanup(|| -> {
                       self.send("cleanup");
@@ -69,7 +69,7 @@ final class SourceActorEndCleanupExecutionTest {
                 pub async routine main(): void {
                   val worker = spawn Worker();
                   await worker.ready;
-                  worker.send("go");
+                  worker.send.run();
 
                   for await const output of worker.outputs {
                     stdio.stdout.write(output.value);
@@ -91,7 +91,7 @@ final class SourceActorEndCleanupExecutionTest {
                 IllegalArgumentException.class,
                 () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<String> mail): void {
+                          pub run(): void {
                             let int value = 7;
                             val view = rt borrow value;
                             self.endWithCleanup(|| -> {
