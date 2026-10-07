@@ -48,6 +48,40 @@ final class SourceActorEndCleanupExecutionTest {
                 run(program, "source-actor-end-cleanup.ores"));
     }
 
+
+    @Test
+    void untrustedActorAlsoFinishesCurrentTurnBeforeFinalCleanup() throws Exception {
+        String program = """
+                define untrusted actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send("turn|");
+                    self.end(|| -> {
+                      self.send("cleanup");
+                    });
+                    self.send("after|");
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send("go");
+
+                  for await const output of worker.outputs {
+                    stdio.stdout.write(output.value);
+                  }
+
+                  await worker.done;
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "turn|after|cleanup",
+                run(program, "source-untrusted-actor-end-cleanup.ores"));
+    }
+
     private static String run(String program, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
