@@ -1257,6 +1257,93 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Publish one data-only value from the currently executing actor to its
+     * read-only parent-observable output stream.
+     *
+     * <p>This is bounded and non-blocking: a full stream fails the actor turn
+     * rather than parking a carrier or growing an unbounded waiter queue.</p>
+     */
+    public void emitCurrentActorOutput(Object value) {
+        requireCallerRuntimeAffinity("emit actor output");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "self.send is only valid during an actor execution turn");
+        }
+        Objects.requireNonNull(
+                value,
+                "actor output values cannot be null; use Option<T>");
+
+        validateMessageGraph(value);
+        // Output streams are data-only. Do not let ActorRef/shared-memory/mutex
+        // capabilities escape through a surface that looks like serialized data.
+        rejectDataFreezeCapabilities(
+                value,
+                new IdentityHashMap<>(),
+                0);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(
+                    value,
+                    new IdentityHashMap<>(),
+                    0);
+        }
+
+        Object prepared = isPrivateKind(cell.kind)
+                ? isolateCopy(value)
+                : freezeForTransport(value);
+        long bytes = estimateFrozenBytes(
+                prepared,
+                new IdentityHashMap<>(),
+                0);
+        cell.reserveOutput(bytes);
+
+        ActorOutputEnvelope envelope = null;
+        boolean admitted = false;
+        try {
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized) {
+                    throw terminated(cell.ref);
+                }
+                if (cell.forceKillFenced) {
+                    throw new IllegalStateException(
+                            "actor " + cell.ref.id()
+                                    + " is fenced while force cancellation is pending");
+                }
+
+                long sequence = cell.nextOutputSequence;
+                long nextSequence;
+                try {
+                    nextSequence = Math.addExact(sequence, 1L);
+                } catch (ArithmeticException exhausted) {
+                    throw new IllegalStateException(
+                            "actor output sequence exhausted for "
+                                    + cell.ref.id(),
+                            exhausted);
+                }
+
+                envelope = new ActorOutputEnvelope(
+                        new ActorOutput<>(
+                                cell.ref.id(),
+                                sequence,
+                                prepared),
+                        () -> cell.releaseOutput(bytes));
+                if (!cell.outputChannel.tryWrite(envelope)) {
+                    throw new IllegalStateException(
+                            "actor output stream limit exceeded for "
+                                    + cell.ref.id());
+                }
+                cell.nextOutputSequence = nextSequence;
+                admitted = true;
+            }
+        } finally {
+            if (!admitted) {
+                if (envelope != null) envelope.close();
+                else cell.releaseOutput(bytes);
+            }
+        }
+    }
+
+    /**
      * Start one stackless source continuation in the current actor's logical
      * scheduler. The scheduler's executor is mailbox-backed, so every resume
      * is serialized with ordinary actor messages and uses no second concurrency
@@ -5256,6 +5343,8 @@ public final class ActorRuntime implements AutoCloseable {
             drainMailboxReservations();
             staticSelectCursors.clear();
             codeActorState = null;
+            Throwable terminalOutput = ref.terminationCause.get();
+            outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
@@ -5316,6 +5405,64 @@ public final class ActorRuntime implements AutoCloseable {
                     if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                     lifecycleLock.notifyAll();
                 }
+            }
+        }
+
+        private void reserveOutput(long bytes) {
+            if (bytes < 0) {
+                throw new IllegalArgumentException(
+                        "actor output reservation cannot be negative");
+            }
+            synchronized (lifecycleLock) {
+                if (closed.get()) {
+                    throw new IllegalStateException("actor runtime is closed");
+                }
+                if (stopped.get() || finalized) throw terminated(ref);
+
+                long current = outputBytes.get();
+                long next;
+                try {
+                    next = Math.addExact(current, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(
+                            "actor output memory accounting overflow",
+                            overflow);
+                }
+
+                long actorAvailable = isPrivateKind(kind)
+                        ? Math.max(0L, memorySlice.remainingBytes() - current)
+                        : Math.max(
+                                0L,
+                                policy.maxHeapBytes()
+                                        - sharedMailboxBytes.get()
+                                        - current);
+                if (bytes > actorAvailable) {
+                    throw new IllegalStateException(
+                            "actor output memory limit exceeded for "
+                                    + ref.id()
+                                    + ": requested=" + bytes
+                                    + " outputUsed=" + current
+                                    + " available=" + actorAvailable);
+                }
+
+                reserveSharedRuntimeBytes(
+                        bytes,
+                        "actor output stream");
+                outputBytes.set(next);
+            }
+        }
+
+        private void releaseOutput(long bytes) {
+            if (bytes == 0) return;
+            synchronized (lifecycleLock) {
+                long current = outputBytes.get();
+                if (bytes > current) {
+                    throw new IllegalStateException(
+                            "actor output memory accounting underflow for "
+                                    + ref.id());
+                }
+                outputBytes.set(current - bytes);
+                releaseSharedRuntimeBytes(bytes);
             }
         }
 
