@@ -2855,6 +2855,17 @@ public final class TypeChecker {
                             "unknown Channel member '" + member.member() + "'");
                 };
             }
+            if (sumReceiver instanceof Named token
+                    && token.name().equals("CancellationToken")
+                    && token.arguments().isEmpty()) {
+                return switch (member.member()) {
+                    case "cancel", "is_cancelled" ->
+                            new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException(
+                            "unknown CancellationToken member '"
+                                    + member.member() + "'");
+                };
+            }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
             if (sumReceiver instanceof Named actorRef
