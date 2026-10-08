@@ -1058,6 +1058,12 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
+    private static void requireRefArity(Ast.CallExpr call, int expected, String method) {
+        if (call.arguments().size() != expected) {
+            throw new IllegalArgumentException(method + " expects " + expected + " argument(s)");
+        }
+    }
+
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
@@ -1074,6 +1080,90 @@ public final class OwnershipChecker {
                 }
             }
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr factoryCall
+                && factoryCall.receiver() instanceof Ast.NameExpr factory
+                && factory.name().equals("Ref") && factoryCall.member().equals("new")) {
+            if (call.arguments().size() != 1 || call.typeArguments().size() != 1) {
+                throw error("Ref.new<T> requires one owned value and one explicit type argument");
+            }
+            ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
+            if (owned.kind == ValueKind.IMM_BORROW || owned.kind == ValueKind.MUT_BORROW
+                    || (owned.type != null && owned.type.isBorrow())
+                    || containsMutexGuardType(owned.type)) {
+                throw error("Ref.new<T> requires an owned payload; cannot store borrows or MutexGuards");
+            }
+            return new ValueInfo(new Ast.TypeRef("Ref", List.of(call.typeArguments().getFirst()), false),
+                    ValueKind.MOVE_ONLY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr referenceCall) {
+            Ast.TypeRef refType = receiverType(referenceCall.receiver(), scope);
+            if (refType != null && !refType.isBorrow()
+                    && refType.arguments().size() == 1
+                    && (refType.name().equals("Ref") || refType.name().equals("WeakRef"))) {
+                String method = referenceCall.member();
+                Ast.TypeRef inner = refType.arguments().getFirst();
+                VarState source = referenceCall.receiver() instanceof Ast.NameExpr name
+                        ? scope.lookup(name.name()) : null;
+                if (source != null) requireUsable(source, source.debugName, false);
+                if (refType.name().equals("Ref")) {
+                    return switch (method) {
+                        case "clone" -> {
+                            requireRefArity(call, 0, "Ref.clone");
+                            yield new ValueInfo(refType, ValueKind.MOVE_ONLY, null);
+                        }
+                        case "downgrade" -> {
+                            requireRefArity(call, 0, "Ref.downgrade");
+                            yield new ValueInfo(
+                                    new Ast.TypeRef("WeakRef", List.of(inner), false),
+                                    ValueKind.MOVE_ONLY, null);
+                        }
+                        case "set", "swap" -> {
+                            requireRefArity(call, 1, "Ref." + method);
+                            ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
+                            if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
+                                    || (payload.type != null && payload.type.isBorrow())
+                                    || containsMutexGuardType(payload.type)) {
+                                throw error("Ref." + method + " requires owned payload without borrows or guards");
+                            }
+                            yield method.equals("set")
+                                    ? new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null)
+                                    : new ValueInfo(inner, kindOfType(inner), null);
+                        }
+                        case "get_copy" -> {
+                            requireRefArity(call, 0, "Ref.get_copy");
+                            if (!isCopyType(inner)) {
+                                throw error("Ref.get_copy requires a Copy type");
+                            }
+                            yield new ValueInfo(inner, ValueKind.COPY, null);
+                        }
+                        case "drop" -> {
+                            requireRefArity(call, 0, "Ref.drop");
+                            if (source == null) throw error("Ref.drop receiver must be a named owned handle");
+                            move(source, source.debugName);
+                            yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                        }
+                        case "is_dropped" -> {
+                            requireRefArity(call, 0, "Ref.is_dropped");
+                            yield new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                        }
+                        default -> throw error("unknown Ref method '" + method + "'");
+                    };
+                }
+                return switch (method) {
+                    case "upgrade" -> {
+                        requireRefArity(call, 0, "WeakRef.upgrade");
+                        yield new ValueInfo(new Ast.TypeRef("Option", List.of(
+                                new Ast.TypeRef("Ref", List.of(inner), false)), false),
+                                ValueKind.MOVE_ONLY, null);
+                    }
+                    case "is_alive" -> {
+                        requireRefArity(call, 0, "WeakRef.is_alive");
+                        yield new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    }
+                    default -> throw error("unknown WeakRef method '" + method + "'");
+                };
+            }
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
