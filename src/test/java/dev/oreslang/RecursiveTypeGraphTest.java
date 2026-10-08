@@ -249,6 +249,34 @@ final class RecursiveTypeGraphTest {
     }
 
     @Test
+    void typecheckerKeepsThreeModuleShortNamesAmbiguous() {
+        String declarations = """
+                define module first
+                    type Shared = int;
+                end
+                define module second
+                    type Shared = bool;
+                end
+                define module third
+                    type Shared = string;
+                end
+                """;
+
+        // Exercise the pure typechecking pass, independently from the
+        // ownership pass's separate ambiguity checks.
+        IllegalArgumentException ambiguous = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(declarations + """
+                        fnc bad(Shared item): void { return; }
+                        """)));
+        assertTrue(ambiguous.getMessage().contains("ambiguous type alias"),
+                ambiguous.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(declarations + """
+                fnc qualified(first.Shared item): int { return item; }
+                """)));
+    }
+
+    @Test
     void ambiguousAliasesAcrossThreeModulesRemainRejectedByOwnershipPass() {
         String declarations = """
                 define module first
