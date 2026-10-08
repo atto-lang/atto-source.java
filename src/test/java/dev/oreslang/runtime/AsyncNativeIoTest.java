@@ -196,4 +196,116 @@ class AsyncNativeIoTest {
             assertEquals("hello\nposted\nredirect-not-followed\n", output.replace("\r", ""));
         } finally { server.stop(0); }
     }
+
+    @Test void oversizedHttpResponsesFailBeforeUnboundedMaterialization() throws Exception {
+        var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        byte[] body = new byte[NativeIo.MAX_HTTP_TEXT_BYTES + 1];
+        java.util.Arrays.fill(body, (byte) 'x');
+        server.createContext("/large", exchange -> {
+            exchange.sendResponseHeaders(200, body.length);
+            try { exchange.getResponseBody().write(body); }
+            catch (IOException closedEarly) { /* Client may reject declared size without reading. */ }
+            finally { exchange.close(); }
+        });
+        server.createContext("/chunked", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            try { exchange.getResponseBody().write(body); }
+            catch (IOException closedEarly) { /* Client stops after bounded read. */ }
+            finally { exchange.close(); }
+        });
+        server.start();
+        try {
+            String url = "http://127.0.0.1:" + server.getAddress().getPort();
+            String output = run("""
+                pub async routine main(): void {
+                  try {
+                    await http.get_text_async("%s/large");
+                    stdio.println("unexpected-large");
+                  } catch (failure) { stdio.println("large-rejected"); }
+                  try {
+                    await http.get_text_async("%s/chunked");
+                    stdio.println("unexpected-chunked");
+                  } catch (failure) { stdio.println("chunked-rejected"); }
+                  return;
+                }
+                """.formatted(url, url), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getAddress().getPort()),
+                    new ByteArrayOutputStream());
+            assertEquals("large-rejected\nchunked-rejected\n", output.replace("\r", ""));
+        } finally { server.stop(0); }
+    }
+
+    @Test void oversizedSocketLineRejectsAndClosesConnection() throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var peers = Executors.newSingleThreadExecutor()) {
+            server.setSoTimeout(5000);
+            var exchange = peers.submit(() -> {
+                try (var peer = server.accept()) {
+                    byte[] line = new byte[NativeIo.MAX_SOCKET_LINE_CHARS + 2];
+                    java.util.Arrays.fill(line, (byte) 'a');
+                    line[line.length - 1] = (byte) '\n';
+                    try { peer.getOutputStream().write(line); }
+                    catch (SocketException closedEarly) { /* Oversized line closes socket. */ }
+                }
+                return null;
+            });
+            String output = run("""
+                pub async routine main(): void {
+                  val socket = await network.connect_async("127.0.0.1", %d);
+                  try {
+                    await socket.read_line_async();
+                    stdio.println("unexpected");
+                  } catch (failure) { stdio.println("line-too-long"); }
+                  await socket.close_async();
+                  return;
+                }
+                """.formatted(server.getLocalPort()), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getLocalPort()),
+                    new ByteArrayOutputStream());
+            exchange.get(5, TimeUnit.SECONDS);
+            assertEquals("line-too-long\n", output.replace("\r", ""));
+        }
+    }
+
+    @Test void boundedNetworkWriteRejectsAsciiAndMultiByteOverflow() {
+        assertEquals(3, NativeIo.checkedNetworkText("abc", NativeIo.MAX_SOCKET_WRITE_BYTES,
+                "network.socket.write_text").length);
+        assertThrows(IllegalArgumentException.class, () ->
+                NativeIo.checkedNetworkText("x".repeat(NativeIo.MAX_SOCKET_WRITE_BYTES + 1),
+                        NativeIo.MAX_SOCKET_WRITE_BYTES, "network.socket.write_text"));
+        assertThrows(IllegalArgumentException.class, () ->
+                NativeIo.checkedNetworkText("€".repeat(NativeIo.MAX_SOCKET_WRITE_BYTES / 2),
+                        NativeIo.MAX_SOCKET_WRITE_BYTES, "network.socket.write_text"));
+    }
+
+    @Test void boundedLineReaderPreservesCrLfAndFinalEofLine() throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var peers = Executors.newSingleThreadExecutor()) {
+            server.setSoTimeout(5000);
+            var exchange = peers.submit(() -> {
+                try (var peer = server.accept()) {
+                    peer.getOutputStream().write("one\r\ntwo\nthree\rfour".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    peer.shutdownOutput();
+                }
+                return null;
+            });
+            String output = run("""
+                pub async routine main(): void {
+                  val socket = await network.connect_async("127.0.0.1", %d);
+                  stdio.println(await socket.read_line_async());
+                  stdio.println(await socket.read_line_async());
+                  stdio.println(await socket.read_line_async());
+                  stdio.println(await socket.read_line_async());
+                  stdio.println(await socket.read_line_async());
+                  await socket.close_async();
+                  return;
+                }
+                """.formatted(server.getLocalPort()), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getLocalPort()),
+                    new ByteArrayOutputStream());
+            exchange.get(5, TimeUnit.SECONDS);
+            assertEquals("Some(one)\nSome(two)\nSome(three)\nSome(four)\nNone\n",
+                    output.replace("\r", ""));
+        }
+    }
 }
