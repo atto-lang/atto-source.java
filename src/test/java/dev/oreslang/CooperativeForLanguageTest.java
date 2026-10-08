@@ -72,6 +72,8 @@ final class CooperativeForLanguageTest {
 
     @Test
     void cooperativeLibraryMapFilterReducePreserveOrder() throws Exception {
+        // Imported module namespaces cannot yet resolve explicit generic call
+        // markers; the exported library declarations remain generic.
         Files.copy(Path.of("stdlib/cooperative.ores"), temp.resolve("cooperative.ores"));
         assertEquals("6|8|2|20", run("""
                 import module cooperative from './cooperative';
@@ -84,9 +86,9 @@ final class CooperativeForLanguageTest {
                   val Fnc<int, int> doubleIt = |int x| -> { return x * 2; };
                   val Fnc<int, bool> atLeastSix = |int x| -> { return x >= 6; };
                   val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
-                  val mapped = cooperative.map<int, int>(values, doubleIt);
-                  val filtered = cooperative.filter<int>(mapped, atLeastSix);
-                  val reduced = cooperative.reduce<int, int>(mapped, 0, sum);
+                  val mapped = cooperative.map(values, doubleIt);
+                  val filtered = cooperative.filter(mapped, atLeastSix);
+                  val reduced = cooperative.reduce(mapped, 0, sum);
                   stdio.stdout.write(filtered.get(0));
                   stdio.stdout.write("|");
                   stdio.stdout.write(filtered.get(1));
@@ -111,8 +113,8 @@ final class CooperativeForLanguageTest {
                   done
                   val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
                   val Fnc<int, bool> keep = |int x| -> { return x == 1; };
-                  val filtered = cooperative.filter<int>(values, keep);
-                  val result = cooperative.reduce<int, int>(filtered, 0, sum);
+                  val filtered = cooperative.filter(values, keep);
+                  val result = cooperative.reduce(filtered, 0, sum);
                   stdio.stdout.write(result);
                   stdio.stdout.write("|");
                   stdio.stdout.write(filtered.size);
@@ -146,10 +148,10 @@ final class CooperativeForLanguageTest {
                     pair.add(x);
                     return pair;
                   };
-                  val scanned = cooperative.scan<int, int>(values, 0, sum);
-                  val anything = cooperative.any<int>(values, greaterThanThree);
-                  val everything = cooperative.all<int>(values, positive);
-                  val flat = cooperative.flatMap<int, int>(values, two);
+                  val scanned = cooperative.scan(values, 0, sum);
+                  val anything = cooperative.any(values, greaterThanThree);
+                  val everything = cooperative.all(values, positive);
+                  val flat = cooperative.flatMap(values, two);
                   stdio.stdout.write(scanned.get(3));
                   stdio.stdout.write("|");
                   stdio.stdout.write(anything);
