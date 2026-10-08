@@ -374,9 +374,8 @@ final class LanguageHardeningTest {
                 end
 
                 fnc good(): int {
-                  val alias = service;
-                  val Fnc<int, int> callback = alias.transform;
-                  return callback(40) + alias.direct_only(0);
+                  val Fnc<int, int> callback = service.transform;
+                  return callback(40) + service.direct_only(0);
                 }
                 """)));
 
@@ -390,8 +389,7 @@ final class LanguageHardeningTest {
                         end
 
                         fnc bad(): void {
-                          val alias = service;
-                          val Fnc<int, int> callback = alias.direct_only;
+                          val Fnc<int, int> callback = service.direct_only;
                           return;
                         }
                         """)));
