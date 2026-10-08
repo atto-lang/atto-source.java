@@ -1873,7 +1873,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
         // A future mailbox/source continuation adapter may register here.
         // Group closure and actor leave already revoke all issued wake tickets.
-        private final ActorGroupWakeRegistry continuationWakes = new ActorGroupWakeRegistry();
+        private final ActorGroupWakeRegistry continuationWakes;
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
@@ -1897,6 +1897,8 @@ public final class ActorRuntime implements AutoCloseable {
                     Math.min(
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
+            this.continuationWakes = new ActorGroupWakeRegistry(
+                    Math.min(65_536, creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             if (creator != null) members.add(creator);
         }
