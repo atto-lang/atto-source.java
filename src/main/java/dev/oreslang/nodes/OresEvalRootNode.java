@@ -8583,6 +8583,7 @@ public final class OresEvalRootNode extends RootNode {
                         write("{");
                         boolean first = true;
                         for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                            if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
                             if (!first) write(", ");
                             first = false;
                             write(entry.getKey());
@@ -8611,6 +8612,7 @@ public final class OresEvalRootNode extends RootNode {
                         write("{");
                         boolean first = true;
                         for (Map.Entry<?, ?> entry : map.entrySet()) {
+                            if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
                             if (!first) write(", ");
                             first = false;
                             append(entry.getKey(), depth + 1);
@@ -8623,6 +8625,7 @@ public final class OresEvalRootNode extends RootNode {
                         write("[");
                         boolean first = true;
                         for (Object element : list) {
+                            if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
                             if (!first) write(", ");
                             first = false;
                             append(element, depth + 1);
@@ -8633,6 +8636,7 @@ public final class OresEvalRootNode extends RootNode {
                         write("[");
                         boolean first = true;
                         for (Object element : set) {
+                            if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
                             if (!first) write(", ");
                             first = false;
                             append(element, depth + 1);
@@ -8642,6 +8646,7 @@ public final class OresEvalRootNode extends RootNode {
                     } else if (value instanceof Object[] array) {
                         write("[");
                         for (int i = 0; i < array.length; i++) {
+                            if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
                             if (i != 0) write(", ");
                             append(array[i], depth + 1);
                             if (output.length() >= MAX_CHARS) break;
