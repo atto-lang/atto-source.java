@@ -146,6 +146,127 @@ final class ActorLocalReferencesTest {
     }
 
     @Test
+    void cyclicCellSurvivesAwaitOnItsOwningActorAndReentryKeepsIdentity() throws Exception {
+        CompletableFuture<OresFuture<Integer>> started = new CompletableFuture<>();
+        CompletableFuture<Void> observedSecondTurn = new CompletableFuture<>();
+        OresFuture<Integer> gate = new OresFuture<>();
+        AtomicReference<Object> originalDomain = new AtomicReference<>();
+        AtomicReference<ActorLocalReferences.Ref<Object>> escaped = new AtomicReference<>();
+        AtomicReference<ActorLocalReferences.WeakRef<Object>> observer = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger turnCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    if (message.equals("resume-mail")) {
+                        assertSame(originalDomain.get(),
+                                ActorRuntime.currentActorExecutionDomain());
+                        assertTrue(escaped.get().isSet());
+                        observedSecondTurn.complete(null);
+                        return;
+                    }
+                    var cell = ActorLocalReferences.<Object>empty();
+                    cell.set(List.of(cell));
+                    escaped.set(cell);
+                    observer.set(cell.downgrade());
+                    Object domain = ActorRuntime.currentActorExecutionDomain();
+                    originalDomain.set(domain);
+
+                    OresFuture<Integer> task = runtime.startActorTask(resume -> {
+                        assertSame(domain, ActorRuntime.currentActorExecutionDomain(),
+                                "actor scheduler resumes under the same logical ownership domain");
+                        if (turnCount.incrementAndGet() == 1) {
+                            assertTrue(resume.initial());
+                            assertTrue(cell.sameIdentity(
+                                    (ActorLocalReferences.Ref<?>) ((List<?>) cell.take()
+                                            .orElseThrow()).getFirst()));
+                            cell.set(List.of(cell)); // rebuild cycle across await
+                            return OresScheduler.await(gate);
+                        }
+                        assertEquals(2, turnCount.get(),
+                                "a completed Future must not resume the actor twice");
+                        assertNull(resume.failure());
+                        assertEquals(41, resume.value());
+                        assertSame(cell, ((List<?>) cell.take().orElseThrow()).getFirst());
+                        assertFalse(cell.isSet());
+                        assertTrue(cell.sameIdentity(observer.get().upgrade().orElseThrow()));
+                        return OresScheduler.done(42);
+                    });
+                    runtime.ownCurrentActorFuture(task);
+                    started.complete(task);
+                } catch (Throwable failure) {
+                    started.completeExceptionally(failure);
+                }
+            });
+
+            actor.send("start");
+            OresFuture<Integer> task = started.get(10, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (gate.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertEquals(1, gate.pendingRuntimeWaiterCount());
+
+            // The source task can be pending without pinning a platform
+            // carrier or changing the cell's actor identity.
+            actor.send("resume-mail");
+            observedSecondTurn.get(10, TimeUnit.SECONDS);
+
+            assertTrue(gate.completeFromRuntime(41));
+            assertEquals(42, task.get(10, TimeUnit.SECONDS));
+            assertEquals(2, turnCount.get());
+            assertEquals(0, gate.pendingRuntimeWaiterCount());
+            assertThrows(IllegalStateException.class, () -> escaped.get().getCopy());
+        }
+    }
+
+    @Test
+    void cancellingSuspendedActorTaskDetachesWakerAndNeverTouchesCyclicCell() throws Exception {
+        CompletableFuture<OresFuture<Integer>> started = new CompletableFuture<>();
+        OresFuture<Integer> gate = new OresFuture<>();
+        java.util.concurrent.atomic.AtomicInteger turns =
+                new java.util.concurrent.atomic.AtomicInteger();
+        AtomicReference<ActorLocalReferences.Ref<Object>> escaped = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    ActorLocalReferences.Ref<Object> cell = ActorLocalReferences.empty();
+                    cell.set(List.of(cell));
+                    escaped.set(cell);
+                    OresFuture<Integer> task = runtime.startActorTask(resume -> {
+                        if (turns.incrementAndGet() != 1) {
+                            throw new AssertionError(
+                                    "a cancelled suspended continuation must never execute");
+                        }
+                        assertTrue(cell.isSet());
+                        return OresScheduler.await(gate);
+                    });
+                    runtime.ownCurrentActorFuture(task);
+                    started.complete(task);
+                } catch (Throwable failure) {
+                    started.completeExceptionally(failure);
+                }
+            });
+
+            actor.send("start");
+            OresFuture<Integer> task = started.get(10, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (gate.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertEquals(1, gate.pendingRuntimeWaiterCount());
+            assertTrue(task.cancel(false));
+            assertTrue(task.isCancelled());
+            assertEquals(0, gate.pendingRuntimeWaiterCount(),
+                    "cancellation must detach the suspended task's registered waiter");
+            assertFalse(gate.isCancelled(), "shared producer remains independently owned");
+            assertTrue(gate.completeFromRuntime(99));
+            assertEquals(1, turns.get());
+            assertThrows(IllegalStateException.class, () -> escaped.get().clear());
+        }
+    }
+
+    @Test
     void bufferedChannelsAndSelectWritesRejectActorLocalHandlesAtRuntime() throws Exception {
         CompletableFuture<Boolean> verified = new CompletableFuture<>();
         try (ActorRuntime runtime = new ActorRuntime()) {
