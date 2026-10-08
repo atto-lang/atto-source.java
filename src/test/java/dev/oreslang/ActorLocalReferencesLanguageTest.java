@@ -114,6 +114,52 @@ final class ActorLocalReferencesLanguageTest {
     }
 
     @Test
+    void actorManagedReferenceSurvivesCooperativeSourceSuspension() throws Exception {
+        assertEquals("9", run("""
+                define actor Worker as
+                  receive(ActorMail<string> mail): void {
+                    val cell = Ref.new(7);
+                    val weak = cell.downgrade();
+                    rt cooperate;
+                    val recovered = weak.upgrade().unwrap();
+                    recovered.set(recovered.get_copy() + 2);
+                    self.send(cell.get_copy());
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send("go");
+                  val out = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(out.value);
+                  await worker.done;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void ordinaryLexicalBorrowIsRejectedAcrossActorSuspension() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<string> mail): void {
+                            val value = 7;
+                            val &int view = rt borrow value;
+                            rt cooperate;
+                            self.send(view);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"),
+                failure::getMessage);
+    }
+
+    @Test
     void compilerRejectsAllocationOutsideActorAndCrossActorMail() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
