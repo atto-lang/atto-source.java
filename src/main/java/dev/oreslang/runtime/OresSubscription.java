@@ -77,12 +77,7 @@ public abstract class OresSubscription<T> {
 
         /** Cancel the subscription and its outstanding pull, not merely this lease. */
         public boolean cancel() {
-            synchronized (subscription.gate) {
-                if (subscription.reader != this) {
-                    throw new IllegalStateException("reader lease has been released");
-                }
-            }
-            return subscription.cancel();
+            return subscription.cancelWithReader(this);
         }
 
         /** Refuses release while a read is pending; cancellation is a separate action. */
@@ -128,7 +123,9 @@ public abstract class OresSubscription<T> {
                     nextFromRuntime(),
                     "nextFromRuntime returned null Future");
         } catch (Throwable failure) {
+            boolean wasCancelled;
             synchronized (gate) {
+                wasCancelled = cancelled;
                 pulling = false;
                 terminal = true;
             }
@@ -138,25 +135,40 @@ public abstract class OresSubscription<T> {
             } catch (RuntimeException | Error ignored) {
                 // Preserve the original source failure.
             }
-            return OresFuture.failed(failure);
+            return wasCancelled
+                    ? OresFuture.completed(OresNotification.complete())
+                    : OresFuture.failed(failure);
         }
 
         OresFuture<OresNotification<T>> exposed =
                 new OresFuture<>(() -> source.cancel(true));
 
+        boolean aborted;
         synchronized (gate) {
-            if (cancelled || terminal) {
+            aborted = cancelled || terminal;
+            if (aborted) {
                 pulling = false;
-                source.cancel(true);
-                return OresFuture.completed(OresNotification.complete());
+            } else {
+                active = exposed;
             }
-            active = exposed;
+        }
+        // Never invoke a source cancellation hook while holding the gate.
+        if (aborted) {
+            source.cancel(true);
+            return OresFuture.completed(OresNotification.complete());
         }
 
         source.whenCompleteRuntime((notification, failure) -> {
             boolean cleanup = false;
-            Throwable effectiveFailure = failure;
             synchronized (gate) {
+                if (cancelled || exposed.isDone()) {
+                    // Cancellation has won; a late producer completion must
+                    // never resurrect the released subscription.
+                    if (active == exposed) active = null;
+                    pulling = false;
+                    return;
+                }
+                Throwable effectiveFailure = failure;
                 if (failure != null || notification == null || notification.isComplete()) {
                     terminal = true;
                     cleanup = true;
@@ -166,20 +178,19 @@ public abstract class OresSubscription<T> {
                     }
                 }
 
-                // Complete the exposed Future BEFORE freeing the demand slot.
-                // A producer may settle on another thread, but the critical
-                // section contains only runtime state transitions, no guest code.
-                if (!exposed.isDone()) {
-                    if (effectiveFailure == null) {
-                        exposed.completeFromRuntime(notification);
-                    } else {
-                        exposed.failFromRuntime(OresFuture.unwrap(effectiveFailure));
-                    }
-                }
-                if (active == exposed) {
-                    active = null;
-                }
+                // Retire the old pull before publishing its outcome, but keep
+                // the gate held through Future settlement. A resumed reader
+                // can never observe a finished Future and an outstanding
+                // demand slot, nor admit a second pull before settlement.
+                active = null;
                 pulling = false;
+                if (source.isCancelled()) {
+                    exposed.cancel(false);
+                } else if (effectiveFailure == null) {
+                    exposed.completeFromRuntime(notification);
+                } else {
+                    exposed.failFromRuntime(OresFuture.unwrap(effectiveFailure));
+                }
             }
             if (cleanup) {
                 try {
@@ -197,11 +208,17 @@ public abstract class OresSubscription<T> {
      * Cancel this subscription and any currently outstanding pull.
      */
     public final boolean cancel() {
+        return cancelWithReader(null);
+    }
+
+    /** Null is the controlling subscription itself, which can always cancel. */
+    private boolean cancelWithReader(Reader<T> lease) {
         OresFuture<OresNotification<T>> toCancel;
         synchronized (gate) {
-            if (cancelled) {
-                return false;
+            if (lease != null && reader != lease) {
+                throw new IllegalStateException("reader lease has been released");
             }
+            if (cancelled) return false;
             cancelled = true;
             terminal = true;
             pulling = false;
@@ -209,9 +226,7 @@ public abstract class OresSubscription<T> {
             active = null;
         }
 
-        if (toCancel != null) {
-            toCancel.cancel(true);
-        }
+        if (toCancel != null) toCancel.cancel(true);
         cancelRuntimeOnce();
         return true;
     }
