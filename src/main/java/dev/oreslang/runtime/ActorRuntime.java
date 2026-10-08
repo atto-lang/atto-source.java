@@ -4124,6 +4124,23 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        admitUserMessage(ref, message, null);
+    }
+
+    /**
+     * A request is transported exactly like a one-way mailbox message, but its
+     * reply authority is kept exclusively in runtime-private envelope state.
+     * Cancelling an exposed Future prevents queued guest dispatch; it never
+     * rewinds a turn that already started.
+     */
+    public <M> OresFuture<Object> request(ActorRef<M> ref, M message) {
+        Objects.requireNonNull(ref, "actor reference");
+        OresFuture<Object> reply = new OresFuture<>();
+        admitUserMessage(ref, message, reply);
+        return reply;
+    }
+
+    private <M> void admitUserMessage(ActorRef<M> ref, M message, OresFuture<Object> reply) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -4135,6 +4152,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (reply != null && cell.codeExecutor == null) {
+            throw new IllegalArgumentException("ActorRef.request requires a source actor with private run handler");
+        }
         if (!cell.reserveMailboxSlot()) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -4225,14 +4245,19 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor mailbox sequence exhausted for " + ref.id(),
                                 exhausted);
                     }
-                    envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                    envelope = reply == null
+                            ? MessageEnvelope.message(prepared, release, sender, sequence)
+                            : MessageEnvelope.request(prepared, release, sender, sequence, reply);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
+                    if (reply != null) {
+                        cell.pendingReplies.add(reply);
+                        reply.whenCompleteRuntime((ignored, failure) -> cell.pendingReplies.remove(reply));
+                    }
                     commitSharedMutexBindings(sharedMutexReservations);
                 }
             }
