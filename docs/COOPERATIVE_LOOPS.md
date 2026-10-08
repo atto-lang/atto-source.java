@@ -44,7 +44,7 @@ cooperation decisions, not per-element or per-loop checks.
 `stdlib/cooperative.ores` exposes ordered sequential algorithms:
 
 - `map<T,R>`, `filter<T>`, `reduce<T,R>`, `forEach<T>`
-- `scan<T,R>`, `flatMap<T,R>`, `any<T>`, `all<T>`
+- `flatMap<T,R>`, `any<T>`, `all<T>`
 
 **Ownership contract:** the current `Array<T>` input parameter is **owned and
 consumed** by every cooperative collection operator. The caller must not
@@ -60,6 +60,12 @@ spawning extra Futures or worker actors for each nested element. They do not
 automatically run in parallel on GPU/CPU cores. Input length is snapshotted
 on operation entry. Each callback executes once, in input order, and
 short-circuit operations stop after their decisive result.
+
+**Deferred `scan`:** an arbitrary move-only accumulator `R` cannot be both
+retained for the next iteration and emitted as a stored prefix result. Safe
+scan requires a `Copy`/clone bound, explicit ownership splitting in its
+callback, or an ownership-aware storage primitive. Do not implicitly copy a
+mutable accumulator just to make prefix collection cooperate.
 
 These library functions use Oreslang's suspendable synchronous source-call
 lowering: from an already continuation-backed source task, an invoked helper
