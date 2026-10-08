@@ -673,8 +673,13 @@ public final class Ast {
         if (kind == null) throw new IllegalArgumentException("for-of binding kind is required");
     }
 
-    public record ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) implements Stmt {
+    /** Cooperates only at selected resumable back-edges; ordinary for remains synchronous. */
+    public record ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body,
+                          boolean cooperative) implements Stmt {
         public ForStmt { body = List.copyOf(body); }
+        public ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) {
+            this(initializer, condition, update, body, false);
+        }
     }
 
     public record LoopStmt(List<Stmt> body) implements Stmt {

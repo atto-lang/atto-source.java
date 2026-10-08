@@ -844,6 +844,17 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
+            private int cooperativeIterations;
+            private long cooperativeTurnStartNanos;
+
+            // Check the clock only at powers-of-16 boundaries. Never run more
+            // than 128 completed iterations without scheduling an actor handoff.
+            private boolean shouldCooperateAtBackedge() {
+                int iterations = ++cooperativeIterations;
+                return iterations >= 128
+                        || (iterations >= 16 && (iterations & 15) == 0
+                            && System.nanoTime() - cooperativeTurnStartNanos >= 1_000_000L);
+            }
 
             private SourceTask(
                     Ast.FunctionDecl function,
@@ -893,6 +904,8 @@ public final class OresEvalRootNode extends RootNode {
 
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
                 nextStep = null;
+                cooperativeIterations = 0;
+                cooperativeTurnStartNanos = System.nanoTime();
 
                 if (resume.initial()) {
                     Env params;
@@ -1330,7 +1343,7 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForStmt loop) {
-                return (loop.initializer() != null
+                return loop.cooperative() || (loop.initializer() != null
                                 && statementContainsPotentialSuspension(
                                         loop.initializer(), seen))
                         || (loop.condition() != null
@@ -2415,11 +2428,7 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, flow);
                         } else {
                             if (loop.update() == null) {
-                                runForIteration(
-                                        t,
-                                        loop,
-                                        loopEnv,
-                                        continuation);
+                                runForBackedge(t, loop, loopEnv, continuation);
                             } else {
                                 evalSuspendableExpr(
                                         t,
@@ -2429,19 +2438,39 @@ public final class OresEvalRootNode extends RootNode {
                                             if (failure != null) {
                                                 continuation.accept(
                                                         t2,
-                                                        SourceFlow.throwing(
-                                                                failure));
+                                                        SourceFlow.throwing(failure));
                                             } else {
-                                                runForIteration(
-                                                        t2,
-                                                        loop,
-                                                        loopEnv,
-                                                        continuation);
+                                                runForBackedge(t2, loop, loopEnv, continuation);
                                             }
                                         });
                             }
                         }
                     });
+        }
+
+        private void runForBackedge(
+                SourceTask task,
+                Ast.ForStmt loop,
+                Env loopEnv,
+                SourceFlowCont continuation) {
+            if (!loop.cooperative() || !task.shouldCooperateAtBackedge()) {
+                runForIteration(task, loop, loopEnv, continuation);
+                return;
+            }
+            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                continuation.accept(task, SourceFlow.throwing(new SecurityException(
+                        "rt cooperative for requires continuation-safe untrusted task quotas")));
+                return;
+            }
+            // The saved continuation starts after body and update. The previous
+            // carrier fully exits before a fresh scheduler dispatch can resume.
+            task.cooperate((resumed, ignored, failure) -> {
+                if (failure != null) {
+                    continuation.accept(resumed, SourceFlow.throwing(failure));
+                } else {
+                    runForIteration(resumed, loop, loopEnv, continuation);
+                }
+            });
         }
 
         private void runLoopSuspendable(
@@ -4777,6 +4806,10 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ForStmt loop) {
+                if (loop.cooperative()) {
+                    throw new IllegalStateException(
+                            "cooperative loop reached synchronous evaluation without continuation lowering");
+                }
                 Env loopEnv = new Env(env);
                 if (loop.initializer() != null) {
                     executeStatement(

@@ -344,6 +344,10 @@ public final class CapabilityChecker {
                 checkExpr(s.iterable(), policy);
                 checkStatements(s.body(), policy);
             } else if (stmt instanceof Ast.ForStmt s) {
+                if (s.cooperative() && isZeroAuthorityAdversarial(policy)) {
+                    throw new SecurityException(
+                            "untrusted actor cannot use rt cooperative for until continuation quota state survives scheduler handoffs");
+                }
                 if (s.initializer() != null) checkStatements(List.of(s.initializer()), policy);
                 if (s.condition() != null) checkExpr(s.condition(), policy);
                 if (s.update() != null) checkExpr(s.update(), policy);

@@ -579,6 +579,7 @@ public final class OwnershipChecker {
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), loopScope, returnType);
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
+            if (loop.cooperative()) checkSuspensionBorrows(loopScope, "cooperate at a for-loop back-edge");
             rejectLoopMoves(before, scope);
             loopScope.close();
             return;
