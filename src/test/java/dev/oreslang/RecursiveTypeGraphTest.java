@@ -14,6 +14,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -141,6 +144,32 @@ final class RecursiveTypeGraphTest {
         rejects("type A = B; type B = A;", "unguarded type alias cycle");
         rejects("type A = struct{next: A};", "unguarded type alias cycle");
         rejects("type A<T> = Option<A<List<T>>>;", "polymorphic recursive type alias");
+    }
+
+    @Test
+    void actorsMayKeepReciprocalActorReferenceCapabilities() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(2);
+            AtomicReference<ActorRuntime.ActorRef<?>> aPeer = new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorRef<?>> bPeer = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<ActorRuntime.ActorRef<?>> a = runtime
+                    .<ActorRuntime.ActorRef<?>>spawn(() -> (message, context) -> {
+                        aPeer.set(message);
+                        received.countDown();
+                    });
+            ActorRuntime.ActorRef<ActorRuntime.ActorRef<?>> b = runtime
+                    .<ActorRuntime.ActorRef<?>>spawn(() -> (message, context) -> {
+                        bPeer.set(message);
+                        received.countDown();
+                    });
+
+            a.send(b);
+            b.send(a);
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertSame(b, aPeer.get());
+            assertSame(a, bPeer.get());
+        }
     }
 
     @Test
