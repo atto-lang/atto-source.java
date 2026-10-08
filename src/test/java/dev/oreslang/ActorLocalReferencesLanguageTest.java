@@ -1,6 +1,14 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Set;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -12,6 +20,8 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorLocalReferencesLanguageTest {
+    @TempDir Path temp;
+
     @Test
     void actorCanBuildLocalStrongWeakHandlesAndCopyScalarValues() throws Exception {
         assertEquals("9", run("""
@@ -40,16 +50,18 @@ final class ActorLocalReferencesLanguageTest {
 
     @Test
     void actorCanAllocateEmptyReferenceAndFormLocalCircularValue() throws Exception {
-        assertEquals("true", run("""
-                type Link = struct{
-                  value: int,
-                  next: Ref<Link>
-                };
+        Files.writeString(temp.resolve("models.ores"), """
+                pub define class Link as
+                  pub val Ref<Link> next;
+                end
+                """);
+        Files.writeString(temp.resolve("main.ores"), """
+                import class Link from "./models";
 
                 define actor Worker as
                   receive(ActorMail<string> mail): void {
                     val head: Ref<Link> = Ref.empty<Link>();
-                    head.set(struct{value: int, next: Ref<Link>}{value: 9, next: head});
+                    head.set(new Link(head));
                     val recovered: Link = head.take().unwrap();
                     self.send(!head.is_set());
                     self.end();
@@ -66,7 +78,14 @@ final class ActorLocalReferencesLanguageTest {
                   await worker.done;
                   return;
                 }
-                """));
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                temp.resolve("main.ores"),
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream());
+        assertEquals("true", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
