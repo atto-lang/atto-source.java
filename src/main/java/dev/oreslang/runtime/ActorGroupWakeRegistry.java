@@ -43,9 +43,22 @@ public final class ActorGroupWakeRegistry {
     private enum State { PENDING, CLAIMED, RELEASED }
 
     private final Map<Object, Set<Ticket>> tickets = new HashMap<>();
+    private final int maxTickets;
+    private int outstandingCount;
     private long groupEpoch = 1;
     private long nextSequence;
     private boolean sealed;
+
+    public ActorGroupWakeRegistry() {
+        this(65_536);
+    }
+
+    public ActorGroupWakeRegistry(int maxTickets) {
+        if (maxTickets <= 0 || maxTickets > 65_536) {
+            throw new IllegalArgumentException("ActorGroup wake budget must be 1..65536");
+        }
+        this.maxTickets = maxTickets;
+    }
 
     /**
      * Called only after actor-group membership/host authority is verified.
@@ -54,10 +67,14 @@ public final class ActorGroupWakeRegistry {
     public synchronized Ticket register(Object owner) {
         Objects.requireNonNull(owner, "owner");
         if (sealed) throw new IllegalStateException("ActorGroup wake registry is sealed");
+        if (outstandingCount >= maxTickets) {
+            throw new IllegalStateException("ActorGroup continuation wake budget exhausted");
+        }
         long sequence = Math.incrementExact(nextSequence);
         nextSequence = sequence;
         Ticket ticket = new Ticket(this, owner, groupEpoch, sequence);
         tickets.computeIfAbsent(owner, ignored -> new HashSet<>()).add(ticket);
+        outstandingCount++;
         return ticket;
     }
 
@@ -83,7 +100,7 @@ public final class ActorGroupWakeRegistry {
         ticket.state = State.RELEASED;
         Set<Ticket> pending = tickets.get(ticket.owner);
         if (pending != null) {
-            pending.remove(ticket);
+            if (pending.remove(ticket)) outstandingCount--;
             if (pending.isEmpty()) tickets.remove(ticket.owner);
         }
         return true;
@@ -94,6 +111,7 @@ public final class ActorGroupWakeRegistry {
         Objects.requireNonNull(owner, "owner");
         Set<Ticket> owned = tickets.remove(owner);
         if (owned != null) {
+            outstandingCount -= owned.size();
             for (Ticket ticket : owned) ticket.state = State.RELEASED;
         }
     }
@@ -108,6 +126,7 @@ public final class ActorGroupWakeRegistry {
             for (Ticket ticket : byOwner) ticket.state = State.RELEASED;
         }
         tickets.clear();
+        outstandingCount = 0;
     }
 
     public synchronized boolean sealed() {
@@ -116,11 +135,7 @@ public final class ActorGroupWakeRegistry {
 
     /** Number of pending plus claimed continuation roots, not merely callbacks. */
     public synchronized int outstanding() {
-        int count = 0;
-        for (Set<Ticket> byOwner : tickets.values()) {
-            count = Math.addExact(count, byOwner.size());
-        }
-        return count;
+        return outstandingCount;
     }
 
     private boolean isCurrentInternal(Ticket ticket) {
