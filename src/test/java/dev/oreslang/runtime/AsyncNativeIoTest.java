@@ -241,7 +241,7 @@ class AsyncNativeIoTest {
             server.setSoTimeout(5000);
             var exchange = peers.submit(() -> {
                 try (var peer = server.accept()) {
-                    byte[] line = new byte[NativeIo.MAX_SOCKET_LINE_CHARS + 2];
+                    byte[] line = new byte[NativeIo.MAX_SOCKET_LINE_BYTES + 2];
                     java.util.Arrays.fill(line, (byte) 'a');
                     line[line.length - 1] = (byte) '\n';
                     try { peer.getOutputStream().write(line); }
@@ -306,6 +306,100 @@ class AsyncNativeIoTest {
             exchange.get(5, TimeUnit.SECONDS);
             assertEquals("Some(one)\nSome(two)\nSome(three)\nSome(four)\nNone\n",
                     output.replace("\r", ""));
+        }
+    }
+
+    @Test void multibyteUtf8LineCannotBypassWireByteLimit() throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var peers = Executors.newSingleThreadExecutor()) {
+            server.setSoTimeout(5000);
+            var exchange = peers.submit(() -> {
+                try (var peer = server.accept()) {
+                    // 22,000 UTF-16 characters, but 66,000 UTF-8 bytes.
+                    byte[] line = ("€".repeat(22_000) + "\n")
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    try { peer.getOutputStream().write(line); }
+                    catch (SocketException closedEarly) { /* Expected on overflow. */ }
+                }
+                return null;
+            });
+            String output = run("""
+                pub async routine main(): void {
+                  val socket = await network.connect_async("127.0.0.1", %d);
+                  try {
+                    await socket.read_line_async();
+                    stdio.println("unexpected");
+                  } catch (failure) { stdio.println("utf8-overflow-rejected"); }
+                  await socket.close_async();
+                  return;
+                }
+                """.formatted(server.getLocalPort()), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getLocalPort()),
+                    new ByteArrayOutputStream());
+            exchange.get(5, TimeUnit.SECONDS);
+            assertEquals("utf8-overflow-rejected\n", output.replace("\r", ""));
+        }
+    }
+
+    @Test void exactBoundedAsciiLineIsAcceptedWithoutTruncation() throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var peers = Executors.newSingleThreadExecutor()) {
+            server.setSoTimeout(5000);
+            var exchange = peers.submit(() -> {
+                try (var peer = server.accept()) {
+                    byte[] line = new byte[NativeIo.MAX_SOCKET_LINE_BYTES + 1];
+                    java.util.Arrays.fill(line, (byte) 'a');
+                    line[line.length - 1] = (byte) '\n';
+                    peer.getOutputStream().write(line);
+                }
+                return null;
+            });
+            String output = run("""
+                pub async routine main(): void {
+                  val socket = await network.connect_async("127.0.0.1", %d);
+                  try {
+                    await socket.read_line_async();
+                    stdio.println("accepted-exact-boundary");
+                  } catch (failure) { stdio.println("incorrect-rejection"); }
+                  await socket.close_async();
+                  return;
+                }
+                """.formatted(server.getLocalPort()), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getLocalPort()),
+                    new ByteArrayOutputStream());
+            exchange.get(5, TimeUnit.SECONDS);
+            assertEquals("accepted-exact-boundary\n", output.replace("\r", ""));
+        }
+    }
+
+    @Test void socketReadAndWriteProgressInParallelWithoutLockInversion() throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var peers = Executors.newSingleThreadExecutor()) {
+            server.setSoTimeout(5000);
+            var exchange = peers.submit(() -> {
+                try (var peer = server.accept()) {
+                    peer.setSoTimeout(5000);
+                    String ping = new BufferedReader(new InputStreamReader(peer.getInputStream()))
+                            .readLine();
+                    assertEquals("ping", ping);
+                    peer.getOutputStream().write("pong\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                return null;
+            });
+            String output = run("""
+                pub async routine main(): void {
+                  val socket = await network.connect_async("127.0.0.1", %d);
+                  val incoming = socket.read_line_async();
+                  await socket.write_text_async("ping\\n");
+                  stdio.println(await incoming);
+                  await socket.close_async();
+                  return;
+                }
+                """.formatted(server.getLocalPort()), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getLocalPort()),
+                    new ByteArrayOutputStream());
+            exchange.get(5, TimeUnit.SECONDS);
+            assertEquals("Some(pong)\n", output.replace("\r", ""));
         }
     }
 }
