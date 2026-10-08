@@ -1097,6 +1097,37 @@ public final class OwnershipChecker {
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
+                && factory.name().equals("Ref")
+                && scope.lookup("Ref") == null
+                && (factoryCall.member().equals("new") || factoryCall.member().equals("empty"))) {
+            Ast.TypeRef element;
+            if (factoryCall.member().equals("empty")) {
+                if (!call.arguments().isEmpty()
+                        || !call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                    throw error("Ref.empty<T>() requires an explicit owned type argument");
+                }
+                element = call.typeArguments().getFirst();
+            } else {
+                if (call.arguments().size() != 1) throw error("Ref.new requires an owned initial value");
+                ValueInfo initial = checkExpr(call.arguments().getFirst(), scope, true);
+                element = call.typeArgumentsPresent() && call.typeArguments().size() == 1
+                        ? call.typeArguments().getFirst() : initial.type;
+                if (isBorrowValue(initial) || containsMutexGuardType(initial.type)
+                        || containsBorrowUnderAliases(initial.type,
+                            java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
+                    throw error("Ref.new cannot capture borrowed or guard-bearing state");
+                }
+            }
+            if (element == null || element.isBorrow() || containsMutexGuardType(element)
+                    || containsBorrowUnderAliases(element,
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
+                throw error("Ref<T> cannot contain borrowed or guard-bearing state");
+            }
+            Ast.TypeRef created = new Ast.TypeRef("Ref", List.of(element), false);
+            return new ValueInfo(created, ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr factoryCall
+                && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
@@ -1228,6 +1259,58 @@ public final class OwnershipChecker {
             }
 
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
+                VarState managedState = scope.lookup(receiverName.name());
+                if (managedState != null && (managedState.type.name().equals("Ref")
+                        || managedState.type.name().equals("WeakRef"))
+                        && managedState.type.arguments().size() == 1) {
+                    requireUsable(managedState, receiverName.name(), false);
+                    Ast.TypeRef payload = managedState.type.arguments().getFirst();
+                    String op = member.member();
+                    if (managedState.type.name().equals("WeakRef")) {
+                        if (!op.equals("upgrade") || !call.arguments().isEmpty()) {
+                            throw error("WeakRef<T> only supports upgrade() without arguments");
+                        }
+                        Ast.TypeRef refType = new Ast.TypeRef("Ref", List.of(payload), false);
+                        Ast.TypeRef optionType = new Ast.TypeRef("Option", List.of(refType), false);
+                        return new ValueInfo(optionType, kindOfType(optionType), null);
+                    }
+                    if (op.equals("set")) {
+                        if (call.arguments().size() != 1) throw error("Ref.set expects one owned value");
+                        ValueInfo value = checkExpr(call.arguments().getFirst(), scope, true);
+                        if (isBorrowValue(value) || containsMutexGuardType(value.type)
+                                || containsBorrowUnderAliases(value.type,
+                                    java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
+                            throw error("Ref.set cannot store borrowed or guard-bearing state");
+                        }
+                        return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                    }
+                    if (!call.arguments().isEmpty()
+                            && !(op.equals("same_identity") && call.arguments().size() == 1)) {
+                        throw error("Ref." + op + " does not accept arguments");
+                    }
+                    if (op.equals("same_identity")) {
+                        checkExpr(call.arguments().getFirst(), scope, false);
+                        return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    }
+                    if (op.equals("take")) {
+                        Ast.TypeRef optionType = new Ast.TypeRef("Option", List.of(payload), false);
+                        return new ValueInfo(optionType, kindOfType(optionType), null);
+                    }
+                    if (op.equals("downgrade")) {
+                        Ast.TypeRef weak = new Ast.TypeRef("WeakRef", List.of(payload), false);
+                        return new ValueInfo(weak, ValueKind.COPY, null);
+                    }
+                    if (op.equals("get_copy")) {
+                        if (!isCopyType(payload) || payload.isRecordType()) {
+                            throw error("Ref.get_copy requires a Copy scalar payload");
+                        }
+                        return new ValueInfo(payload, ValueKind.COPY, null);
+                    }
+                    if (op.equals("is_set")) {
+                        return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    }
+                    throw error("unknown Ref<T> member '" + op + "'");
+                }
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null) {
                     requireUsable(receiverState, receiverName.name(), false);
@@ -3004,7 +3087,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","SelectCase","SelectSet","Ref","WeakRef","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst(), visiting);
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0), visiting)
