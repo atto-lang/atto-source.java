@@ -1,35 +1,78 @@
-# Cooperative counted loops
+# Cooperative loops and collection operators
 
-`rt cooperative for let i = 0; i < end; i++ { ... }` is a distinct
-source statement. It uses the existing counted-for grammar (with or without
-parenthesized header). It does not change normal `for`, `for await` or `for-of`.
+Oreslang uses **one VM-owned source-loop continuation engine** for both:
 
-A loop checks a task-local quantum at each **completed back-edge** (after
-body and update, even on `continue`). At 16-iteration boundaries it checks
-for a 1 ms elapsed-turn target; it always offers a scheduler handoff after
-128 iterations. A handoff uses `OresScheduler.cooperate()`, not `Thread.yield()`,
-and resumes from the saved environment without replaying the body, update, or
-condition. A terminating condition or `break` does not yield gratuitously.
+1. automatic preemption of CPU-only loops inside heap-owned `SourceTask` executions, including synchronous actor `receive(ActorMail<T>)` loops; and
+2. explicit `rt cooperative for ...` loops used for throughput-oriented work.
 
-The bytecode/Graal scheduler fully unwinds the previous carrier before
-admitting the saved task continuation. Actor single-writer, mailbox control
-lane, structured cancellation and borrow/MutexGuard suspension restrictions
-remain intact. `UNTRUSTED` actor code remains fail-closed until logical-task
-CPU/fuel/deadline accounting survives continuation hops.
+An explicit `rt cooperative` hint does not create a second scheduler, a
+per-iteration `Future`, or a second actor state lease. Only the existing
+`OresScheduler.cooperate()` operation ends the current physical carrier
+dispatch and requeues a heap-owned continuation after the carrier unwinds.
 
-`stdlib/cooperative.ores` provides sequential `map`, `filter`,
-`reduce`, and `forEach` for `Array<T>`. Callback order is stable, and
-array length is snapshotted once. These are **not** parallel operations, and
-there is no per-item async iterator / Future overhead. An exception aborts
-the current operation; no rollback of completed side effects is implied.
+## Syntax and budgets
 
-## Follow-up work
+```ores
+rt cooperative for let i = 0; i < count; i++ {
+  process(items.get(i));
+}
+```
 
-- Measure scheduler handoff counts and tail latency under actor contention.
-- Expose actor CPU-share and GPU-work quotas as scheduler metadata. Do not
-  infer CPU rights from heap limits, and do not pretend cooperative yielding
-  provides hard real-time guarantees.
-- Generalize to for-of, stream/observable operators and typed iterators once
-  iterator suspension and lifetime rules are fully specified.
-- Investigate compiler-generated non-recursive loop continuations to improve
-  high-count throughput without Java callback stack growth.
+Normal `for`, `loop`, `for-of` and destructuring `for-of` loops inside
+continuation-backed source tasks receive **automatic** soft cooperation without
+any new source syntax. For normal loops, cancellation is polled every 32
+completed backedges; the target quantum is 2 ms or 512 backedges.
+
+Explicit cooperative `for` uses a tighter target: 1 ms or 128 backedges,
+sampled every 16 completed cooperative backedges. Both targets are soft:
+a lengthy single callback, nested synchronous helper, GC pause, host/FFI
+work or a live mutex guard can extend execution. Loops never replay completed
+side effects when resuming; `break`, `continue`, condition checking and
+updates follow ordinary Oreslang semantics.
+
+UNTRUSTED actor loops still charge fuel on *every* backedge. They cannot
+explicitly request cooperation, and automatic quantum handoff is disabled,
+until logical-task fuel/wall/CPU quotas are verified across every continuation
+and carrier migration (#402 / #461). Guarded critical sections are no-yield
+regions. Actor mailbox execution remains single-writer.
+
+The metric `process.descriptor.source_loop_cooperates` reports completed
+cooperation decisions, not per-element or per-loop checks.
+
+## Collection operators
+
+`stdlib/cooperative.ores` exposes ordered sequential algorithms:
+
+- `map<T,R>`, `filter<T>`, `reduce<T,R>`, `forEach<T>`
+- `scan<T,R>`, `flatMap<T,R>`, `any<T>`, `all<T>`
+
+All iterate with the *same* source `rt cooperative for` backedges. Nested
+`flatMap` loops share the enclosing source task's bounded turn, rather than
+spawning extra Futures or worker actors for each nested element. They do not
+automatically run in parallel on GPU/CPU cores. Input length is snapshotted
+on operation entry. Each callback executes once, in input order, and
+short-circuit operations stop after their decisive result.
+
+These library functions use Oreslang's suspendable synchronous source-call
+lowering: from an already continuation-backed source task, an invoked helper
+that cooperates is resumed by the caller's source continuation, preserving
+its declared result type. The suspension does not authorize a blocking JVM
+wait on an actor carrier. This contract must be tested across imported
+modules and callbacks, not assumed from a plain synchronous invocation.
+
+No automatic effect rollback is promised after a callback throws. Do not
+move mutable actor-owned values into an independent task or across actors
+without checking ownership/Sendability and borrow lifetimes.
+
+## Realtime limits and follow-ups
+
+This is **soft realtime fairness**, not hard realtime deadline enforcement.
+A hard bound requires schedulable, worst-case execution-time-verified
+code, bounded no-yield critical sections, isolation of native/FFI blocking
+work, suitable OS/kernel scheduling and GC/JIT/allocation bounds.
+
+Next generalization targets: synchronous unary actor `run`, stream/observable
+operators with backpressure, native numeric/vector intrinsics, and
+CPU/GPU resource entitlements independent of heap limits. Per-actor
+priority, measured reductions, and CPU-share admission should be runtime
+policy rather than static constants baked into `rt cooperative` syntax.
