@@ -1707,12 +1707,14 @@ public final class TypeChecker {
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
                 rejectUnimportedModuleNamespace(name.name());
-                return moduleShape(moduleNamespace);
+                throw new IllegalArgumentException("module '" + name.name()
+                        + "' is a static namespace, not a value; reference one of its members");
             }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) {
                 rejectUnimportedClassNamespace(classNamespace);
-                return new ClassNamespace(qualifiedClassName(classNamespace));
+                throw new IllegalArgumentException("class '" + name.name()
+                        + "' is a static namespace, not a value; use new or reference a static member");
             }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
@@ -2750,7 +2752,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
-            Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type receiver = staticNamespaceReceiverType(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
@@ -3548,7 +3550,7 @@ public final class TypeChecker {
             Env env,
             Set<String> generics,
             Type self) {
-        Type receiver = typeOf(member.receiver(), env, generics, self);
+        Type receiver = staticNamespaceReceiverType(member.receiver(), env, generics, self);
         Type receiverValueType = deref(unwrapMutexGuard(receiver));
         Type normalized = receiverDispatchType(receiverValueType);
         int arity = expected.parameters().size();
@@ -4204,6 +4206,24 @@ public final class TypeChecker {
         };
     }
 
+    /** Static namespace lookup is only legal in the receiver position of member access. */
+    private Type staticNamespaceReceiverType(
+            Ast.Expr receiver, Env env, Set<String> generics, Type self) {
+        if (receiver instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+            Ast.ModuleDecl module = modules.get(name.name());
+            if (module != null) {
+                rejectUnimportedModuleNamespace(name.name());
+                return moduleShape(module);
+            }
+            Ast.ClassDecl klass = findClass(name.name());
+            if (klass != null) {
+                rejectUnimportedClassNamespace(klass);
+                return new ClassNamespace(qualifiedClassName(klass));
+            }
+        }
+        return typeOf(receiver, env, generics, self);
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -4224,7 +4244,7 @@ public final class TypeChecker {
             }
             rawReceiver = binding.type();
         } else {
-            rawReceiver = typeOf(member.receiver(), env, generics, self);
+            rawReceiver = staticNamespaceReceiverType(member.receiver(), env, generics, self);
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
