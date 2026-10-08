@@ -285,10 +285,15 @@ public final class TypeChecker {
             return ref.recordMembers().values().stream().allMatch(
                     field -> recursiveAliasHasFiniteBase(field, visiting));
         }
-        if (ref.isTupleType()) {
+        if (ref.isTupleType() || ref.isSequenceShape()) {
             return ref.arguments().stream().allMatch(
                     item -> recursiveAliasHasFiniteBase(item, visiting));
         }
+        if (ref.isRepeatExact()) {
+            return ref.repeatExactCount() == 0
+                    || recursiveAliasHasFiniteBase(ref.arguments().getFirst(), visiting);
+        }
+        if (ref.isRepeatMany()) return true; // zero repetitions are finite
 
         Ast.TypeAliasDecl linked = findTypeAlias(ref.name());
         if (linked != null) {
