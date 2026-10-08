@@ -1319,9 +1319,21 @@ public final class Parser {
 
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
         if (match(LPAREN)) {
-            Ast.TypeRef grouped = parseTypeRef();
+            // (T) groups one type; (T1, T2, ...) is a positional product
+            // type, never a function type unless followed by '=>'.
+            Ast.TypeRef first = parseTypeRef();
+            if (match(COMMA)) {
+                if (check(RPAREN)) {
+                    throw error(peek(), "singleton tuple type shorthand is ambiguous; use Tuple[T]");
+                }
+                List<Ast.TypeRef> elements = new ArrayList<>();
+                elements.add(first);
+                do elements.add(parseTypeRef()); while (match(COMMA));
+                consume(RPAREN, "expected ')' after tuple type");
+                return Ast.TypeRef.tupleType(elements);
+            }
             consume(RPAREN, "expected ')' after grouped type");
-            return grouped;
+            return first;
         }
 
         String name;
