@@ -21,6 +21,7 @@ import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 /**
  * Trusted native host-I/O implementations for Oreslang.
@@ -235,19 +236,64 @@ public final class NativeIo {
             this.writer = socket.getOutputStream();
         }
 
-        public String readLine() {
-            rejectBlockingUntrustedNetwork("network.socket.read_line");
-            context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
+        private void reserveRead() {
             if (!readBusy.compareAndSet(false, true)) {
                 throw new IllegalStateException("concurrent reads on one TCP connection are not supported");
             }
+        }
+
+        private void reserveWrite() {
+            if (!writeBusy.compareAndSet(false, true)) {
+                throw new IllegalStateException("concurrent writes on one TCP connection are not supported");
+            }
+        }
+
+        public String readLine() {
+            rejectBlockingUntrustedNetwork("network.socket.read_line");
+            context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
+            reserveRead();
             try {
-                // Bound actual inbound bytes, not decoded UTF-16 characters:
-                // multi-byte UTF-8 sequences must not bypass the line budget.
+                return readLineReserved();
+            } finally {
+                readBusy.set(false);
+            }
+        }
+
+        /**
+         * Reserve a read before I/O worker admission. One socket cannot use
+         * multiple worker slots by piling up pending reads. The completion
+         * subscription releases the reservation on success, rejection,
+         * cancellation, or shutdown.
+         */
+        public <T> OresFuture<T> readLineAsync(Function<String, T> convert) {
+            Objects.requireNonNull(convert, "convert");
+            context.requirePermission(RuntimePermissions.Permission.NET,
+                    endpoint, "network.socket.read_line_async");
+            reserveRead();
+            try {
+                OresFuture<T> result = context.nativeIo().submit(
+                        context, RuntimePermissions.Permission.NET, "socket.read_line_async",
+                        () -> convert.apply(readLineReserved()));
+                result.whenCompleteRuntime((value, failure) -> readBusy.set(false));
+                return result;
+            } catch (RuntimeException | Error failure) {
+                readBusy.set(false);
+                throw failure;
+            }
+        }
+
+        // Call only with an active read reservation.
+        private String readLineReserved() {
+            // Network I/O must be on a native worker for UNTRUSTED guest code.
+            rejectBlockingUntrustedNetwork("network.socket.read_line");
+            context.requirePermission(RuntimePermissions.Permission.NET,
+                    endpoint, "network.socket.read_line");
+            try {
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream(256);
                 while (true) {
                     int value = reader.read();
-                    if (value < 0) return bytes.size() == 0 ? null : bytes.toString(StandardCharsets.UTF_8);
+                    if (value < 0) return bytes.size() == 0
+                            ? null : bytes.toString(StandardCharsets.UTF_8);
                     if (skipLineFeed) {
                         skipLineFeed = false;
                         if (value == '\n') continue;
@@ -258,20 +304,20 @@ public final class NativeIo {
                         return bytes.toString(StandardCharsets.UTF_8);
                     }
                     if (bytes.size() == MAX_SOCKET_LINE_BYTES) {
+                        IllegalStateException overflow = new IllegalStateException(
+                                "network line exceeds " + MAX_SOCKET_LINE_BYTES + " UTF-8 bytes");
                         try {
                             close();
                         } catch (RuntimeException closeFailure) {
-                            // Keep the size-limit failure as the primary cause.
+                            overflow.addSuppressed(closeFailure);
                         }
-                        throw new IllegalStateException("network line exceeds "
-                                + MAX_SOCKET_LINE_BYTES + " UTF-8 bytes");
+                        throw overflow;
                     }
                     bytes.write(value);
                 }
             } catch (IOException failure) {
-                throw new IllegalStateException("network read failed for " + endpoint + ": " + failure.getMessage(), failure);
-            } finally {
-                readBusy.set(false);
+                throw new IllegalStateException("network read failed for "
+                        + endpoint + ": " + failure.getMessage(), failure);
             }
         }
 
@@ -279,16 +325,46 @@ public final class NativeIo {
             rejectBlockingUntrustedNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             byte[] bytes = checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES, "network.socket.write_text");
-            if (!writeBusy.compareAndSet(false, true)) {
-                throw new IllegalStateException("concurrent writes on one TCP connection are not supported");
+            reserveWrite();
+            try {
+                writeBytesReserved(bytes);
+            } finally {
+                writeBusy.set(false);
             }
+        }
+
+        public OresFuture<Void> writeTextAsync(String value) {
+            context.requirePermission(RuntimePermissions.Permission.NET,
+                    endpoint, "network.socket.write_text_async");
+            byte[] bytes = checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES,
+                    "network.socket.write_text_async");
+            reserveWrite();
+            try {
+                OresFuture<Void> result = context.nativeIo().submit(
+                        context, RuntimePermissions.Permission.NET, "socket.write_text_async",
+                        () -> {
+                            writeBytesReserved(bytes);
+                            return null;
+                        });
+                result.whenCompleteRuntime((ignored, failure) -> writeBusy.set(false));
+                return result;
+            } catch (RuntimeException | Error failure) {
+                writeBusy.set(false);
+                throw failure;
+            }
+        }
+
+        // Call only with an active write reservation.
+        private void writeBytesReserved(byte[] bytes) {
+            rejectBlockingUntrustedNetwork("network.socket.write_text");
+            context.requirePermission(RuntimePermissions.Permission.NET,
+                    endpoint, "network.socket.write_text");
             try {
                 writer.write(bytes);
                 writer.flush();
             } catch (IOException failure) {
-                throw new IllegalStateException("network write failed for " + endpoint + ": " + failure.getMessage(), failure);
-            } finally {
-                writeBusy.set(false);
+                throw new IllegalStateException("network write failed for "
+                        + endpoint + ": " + failure.getMessage(), failure);
             }
         }
 
