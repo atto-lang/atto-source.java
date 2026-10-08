@@ -8,12 +8,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Timeout(20)
 final class SourceLoopSoftPreemptionTest {
     @Test
     void asyncForLoopRunsThousandsOfIterationsWithoutStackGrowthOrReplay() throws Exception {
-        assertEquals("10000", run("""
+        String output = run("""
                 async fnc count(): int {
                   let total = 0;
                   for (let i = 0; i < 10000; i = i + 1) {
@@ -24,9 +25,14 @@ final class SourceLoopSoftPreemptionTest {
 
                 pub async fnc main(): void {
                   stdio.stdout.write(await count());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
                   return;
                 }
-                """));
+                """);
+        assertTrue(output.startsWith("10000|"), output);
+        long cooperates = Long.parseLong(output.substring("10000|".length()));
+        assertTrue(cooperates > 0, "CPU-only source loops must release their carrier at least once");
     }
 
     @Test
