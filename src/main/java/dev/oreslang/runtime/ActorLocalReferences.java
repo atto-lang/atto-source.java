@@ -157,6 +157,20 @@ public final class ActorLocalReferences {
             return Optional.of(previous);
         }
 
+        /**
+         * Sever the cell's outgoing strong edge without transferring the old
+         * value to the caller. Clearing an already empty cell is harmless.
+         *
+         * <p>This can break application-maintained reference cycles, but Java's
+         * tracing collector (not this method) owns object reclamation. It must
+         * still obey the actor-domain check after suspension/resumption.</p>
+         */
+        public void clear() {
+            cell.checkOwner();
+            cell.value = null;
+            cell.present = false;
+        }
+
         /** Discards the prior value, moving a replacement into the cell. */
         public void set(T replacement) {
             cell.checkOwner();
