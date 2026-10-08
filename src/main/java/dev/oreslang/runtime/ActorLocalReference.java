@@ -83,7 +83,10 @@ public final class ActorLocalReference {
 
         /** Copies only immutable scalar values; never silently aliases aggregate state. */
         public T getCopy() {
-            T result = checkedCell(currentDomain()).value;
+            return scalarCopy(checkedCell(currentDomain()).value);
+        }
+
+        private static <V> V scalarCopy(V result) {
             if (!(result instanceof String || result instanceof Boolean
                     || result instanceof Character || result instanceof Byte
                     || result instanceof Short || result instanceof Integer
@@ -162,6 +165,10 @@ public final class ActorLocalReference {
 
     static <T> void setForDomain(Strong<T> handle, Object domain, T replacement) {
         handle.checkedCell(domain).value = Objects.requireNonNull(replacement);
+    }
+
+    static <T> T getCopyForDomain(Strong<T> handle, Object domain) {
+        return Strong.scalarCopy(handle.checkedCell(domain).value);
     }
 
     static <T> T swapForDomain(Strong<T> handle, Object domain, T replacement) {
