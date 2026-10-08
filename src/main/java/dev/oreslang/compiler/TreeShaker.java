@@ -798,7 +798,8 @@ public final class TreeShaker {
                         initializer,
                         rewriteExpression(loop.condition(), module, loopLocals),
                         rewriteExpression(loop.update(), module, loopLocals),
-                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(loopLocals))));
+                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(loopLocals)),
+                        loop.cooperative()));
             }
             throw new IllegalStateException("unhandled statement " + statement.getClass().getSimpleName());
         }
