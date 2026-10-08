@@ -83,6 +83,55 @@ final class SourceLoopSoftPreemptionTest {
                 """));
     }
 
+    @Test
+    void synchronousReceiveLoopAutoPreemptsWithoutOvertakingLaterMailboxMessages()
+            throws Exception {
+        String output = run("""
+                define actor Worker as
+                  let int count;
+
+                  on_start(): void {
+                    self.count = 0;
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    if mail.value == "first"; do
+                      for (let i = 0; i < 4000; i = i + 1) do
+                        self.count = self.count + 1;
+                      done
+                      self.send(self.count);
+                      return;
+                    fi
+                    if mail.value == "second"; do
+                      self.send(self.count + 1);
+                      self.end();
+                    fi
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send("first");
+                  worker.send("second");
+                  val first = (await worker.outputs.next()).value.unwrap();
+                  val second = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(first.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.value);
+                  await worker.done;
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("4000|4001|"), output);
+        long cooperates = Long.parseLong(output.substring("4000|4001|".length()));
+        assertTrue(cooperates > 0, "synchronous actor receive must be source-task preemptible");
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
