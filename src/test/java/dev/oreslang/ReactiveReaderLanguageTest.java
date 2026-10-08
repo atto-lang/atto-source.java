@@ -94,7 +94,7 @@ final class ReactiveReaderLanguageTest {
         for (String type : new String[]{"Reader", "Reader<int, int>", "Reader<void>"}) {
             assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                     pub routine main() => void {
-                      val r: TYPE = 1;
+                      val TYPE r = 1;
                       return;
                     }
                     """.replace("TYPE", type))));
