@@ -89,6 +89,31 @@ final class ActorLocalReferencesLanguageTest {
     }
 
     @Test
+    void actorCanExplicitlyClearCyclicCellWithoutTakingItsPayload() throws Exception {
+        assertEquals("true", run("""
+                define actor Worker as
+                  receive(ActorMail<string> mail): void {
+                    val cell = Ref.new(7);
+                    cell.clear();
+                    cell.clear();
+                    self.send(!cell.is_set());
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send("go");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.done;
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void compilerRejectsAllocationOutsideActorAndCrossActorMail() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
