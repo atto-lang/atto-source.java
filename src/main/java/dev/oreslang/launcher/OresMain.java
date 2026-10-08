@@ -7,6 +7,7 @@ import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.NativeBuildMode;
+import dev.oreslang.runtime.CorePerf;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
@@ -38,6 +39,8 @@ public final class OresMain {
                         ? "interpreter-no-jit" : "runtime-selected") + "\"}");
             return;
         }
+        String perfEnv = System.getenv("ORES_CORE_PERF");
+        boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
@@ -56,6 +59,8 @@ public final class OresMain {
         for (String arg : args) {
             if (arg.equals("--strict-isolate")) strict = true;
             else if (arg.equals("--check")) checkOnly = true;
+            else if (arg.equals("--core-perf")) corePerf = true;
+            else if (arg.equals("--no-core-perf")) corePerf = false;
             else if (arg.equals("--build-analysis")) buildAnalysis = true;
             else if (arg.equals("--no-prompt")) {
                 // Oreslang permissions never prompt. This Deno-compatible
@@ -100,6 +105,7 @@ public final class OresMain {
             else throw new IllegalArgumentException("only one .ores or .java source file may be supplied");
         }
 
+        CorePerf.configure(corePerf);
         NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
         Path path;
         if (filename == null) {
@@ -261,7 +267,7 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--mode=aot|jit|hybrid] "
+                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
