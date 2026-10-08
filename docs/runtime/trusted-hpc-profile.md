@@ -319,6 +319,126 @@ and safe drain; implement an isolate-scoped adapter if supported; instrument
 both host and isolate pause histograms, and test memory pressure and eventual
 automatic GC. All FaaS/mobile/untrusted actor behavior remains unchanged.
 
+## Rust Pin/Unpin lessons for Oreslang async state and HPC (WIP)
+
+Related Rust primary references:
+- [Rust std::pin](https://doc.rust-lang.org/std/pin/)
+- [Rust Pin](https://doc.rust-lang.org/std/pin/struct.Pin.html)
+
+The essential Rust problem is not "all futures must live on the heap".
+A compiler-generated async state machine *can* hold a borrow into its own
+storage across an await. Such a native frame becomes **address sensitive**
+once its internal pointers have been formed. Rust's Future::poll takes
+Pin<&mut Self> so an address-sensitive future is not moved after pinning.
+The guarantee starts when the value is pinned, **not only after the first
+poll**; the first poll may establish self-references that rely on it. Pin
+pins the *pointee*, not the pointer/Box handle. Rust's Unpin auto-trait
+says moving the pointee is harmless; generated async futures are typically
+!Unpin even when a particular future has no self-reference. Stack pinning
+can avoid Box::pin allocation. The compiler/safe API must also uphold
+structural pin projection and destructor/drop validity.
+
+**Oreslang should adopt the lifetime invariants rather than require all
+users to write Rust's Pin<T> API.** In particular, thread/core pinning
+for Hungry Actors and *address* pinning for native frames are unrelated.
+
+### Actual current Oreslang scheduling
+
+OresScheduler.Task is a resumable logical state machine. It returns Await,
+Cooperate or Done; after await, a different carrier can resume the logical
+task under the same scheduler/domain. The scheduler's TaskRunner has a
+single-execution lease and registers a detachable OresFuture completion
+waiter; the I/O/producer callback makes the task ready, but must never run
+guest continuation code inline. A fresh dispatch only occurs after the
+previous actor/carrier turn fully unwinds.
+
+This existing model **does not require** an address-stable JVM heap object:
+Java/Truffle managed object references remain JVM-managed even if GC moves
+them. It also does **not** justify exporting JVM object addresses or
+native self-referential pointers to FFI. Current compiler semantics reject
+ordinary borrowed receivers live across await; this is intentional until
+the compiler can prove a suspension-safe owner/lifetime. Oreslang actor
+mailbox serialization and the actor-wide execution lease are unchanged.
+
+### Three future frame-storage representations
+
+| Kind | Allowed relocation | Required safety rule |
+| --- | --- | --- |
+| GRAAL_MANAGED | JVM/runtime may move underlying Java objects | No raw JVM object pointers; use stable logical task identity and managed references; keep current borrow-across-await checks |
+| NATIVE_RELATIVE_OFFSETS | Region/frame may move or be remapped after coordination | Internal references are checked offsets/handles, not raw native self-pointers; region generation, bounds and ownership validated after move |
+| NATIVE_ADDRESS_SENSITIVE | Cannot move while address-sensitive state is live | Pinned owning region lease, no move/swap/compaction/reuse before completed drop/cancellation and all native/FFI borrows detach |
+
+"Address-stable" is a memory property, not a Java Pin<T> marker.
+Moving an arena *handle* is fine if its native pointee remains stable.
+Pinning only some fields must respect projected pinned fields and never
+replace them by swapping the containing frame. If native code holds an
+interior pointer, it must be revoked/cleared before releasing the buffer,
+including exception, cancellation and force-stop paths. DMA-pinned buffers
+add device fencing and are not equivalent to task-frame pinning.
+
+**Across await:** a borrow of an actor/local frame may survive only when
+a future compiler proves that the owner remains live, the reference is
+valid during suspension, and the frame is either address stable or the
+borrow uses a relocatable checked offset. No borrow may escape to another
+actor or heap simply because the group runs trusted code. In a JVM/Graal
+backend, preserve today's stricter no-live-borrow-across-await semantics
+until the checker and lowering can support a safe narrower exception.
+
+### Cancellation, wakers and group rotation
+
+A task can be quiescent on its carrier **yet still retain its entire heap**
+via an awaited future, suspended frame, detached-or-not waiter, or foreign
+I/O/DMA lease. Therefore a group is reclaimable only when all of the
+following have reached zero or a terminal reclaimed state:
+
+1. Executing actor turns and queued continuations; only actor-owned
+   scheduler entry may resume guests.
+2. Suspended native/managed frames and the entire recursively reachable
+   suspension state graph, including pointers/borrows into group arenas.
+3. Await/select/channels/I/O waiter registrations, pending completion
+   publication, and any callback retention of the old group.
+4. Native/FFI borrows, region leases, shared region memberships, NIC DMA,
+   and outstanding cancellation/cleanup handlers.
+
+The "zero counters" snapshot must be **linearized against new admissions
+and wake publications**: seal old-group admission, change the active group
+generation, detach/cancel registrations, then wait until every active task
+and event source confirms quiescence. Never infer safety from counters read
+independently during concurrent completion. A late wake must carry
+(group ID, generation, task ID, registration sequence), be compared
+against the current owner and discarded on mismatch. A stale waker must
+never reanimate a canceled frame or a slot recycled under a new generation.
+Closing only the actor mailbox does not automatically make the Future's
+external producer or all its callbacks disappear.
+
+Hot/warm A/B pool handoff must continue to support *existing logical task
+semantics*: transfer a task only if its state is sendable and no pinned/host
+reference crosses the heap; otherwise drain/cancel it in the old group
+while new independent work goes to B. If a native frame was pinned,
+do not unpin/compact/move it merely because its task was suspended.
+Prefer bounded graceful drain with timeouts and supervised force cleanup
+as a distinct unsafe/emergency phase. Force-stop may reclaim only after
+kernel/device and outstanding read/write leases are fenced.
+
+### Implemented only as validation scaffolding
+
+- HpcAsyncFramePlan: deny-activation planning for managed vs checked-offset
+  vs pinned native frames, borrow-across-await, illegal relocation,
+  cross-actor reference escape, and generation-fenced group retirement.
+- HpcActorGroupGcPlan: now counts **suspendedFrames** and
+  **registeredWakers** in addition to activeActorTurns, pendingCompletions
+  and externalLeases; these are independent reasons to delay retirement.
+- JUnit tests cover invalid native pin attempts, managed-pointer misuse,
+  safe-shape relocatable offsets, actor-boundary escapes, cancellation /
+  stale-waker fencing requirements, and GC rotation while suspended.
+
+No native Pin type, compiler lowering, task-generation registry, waker
+revocation, per-group isolate allocation, actual GC controls or live task
+migration is enabled by this PR. Proving the real executor still requires
+race/model checks for lost wakeups, ABA slot reuse, multiple completion,
+cancellation vs wake, JIT/GC induced safepoints, and destruction order,
+plus physical native/GraalVM backend tests.
+
 ## Region and arena memory semantics
 
 Proposed language-facing constructs (illustrative **non-compiling** syntax):
