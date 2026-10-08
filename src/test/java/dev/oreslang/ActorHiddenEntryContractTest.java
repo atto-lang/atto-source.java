@@ -83,6 +83,28 @@ final class ActorHiddenEntryContractTest {
     }
 
     @Test
+    void inheritedEventAndRequestModesCannotMix() {
+        rejects("""
+                define actor Parent as
+                  receive(ActorMail<int> mail): void { return; }
+                end
+
+                define actor Child extends Parent as
+                  fnc run(int job): int { return job; }
+                end
+                """, "cannot mix inherited");
+        rejects("""
+                define actor Parent as
+                  fnc run(int job): int { return job; }
+                end
+
+                define actor Child extends Parent as
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                """, "cannot mix inherited");
+    }
+
+    @Test
     void handlersCannotBeCalledOrCapturedViaSelfEvenInNestedCode() {
         rejects("""
                 define actor Worker as
