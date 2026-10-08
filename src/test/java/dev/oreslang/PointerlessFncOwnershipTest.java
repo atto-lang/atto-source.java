@@ -212,6 +212,74 @@ final class PointerlessFncOwnershipTest {
                 """)));
     }
 
+    @Test
+    void closingAnAliasScopeDoesNotReleaseTheOriginalBorrow() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        fnc bad(): void {
+                          val Box box = new Box();
+                          val view = rt borrow box;
+                          block {
+                            val alias = view;
+                            stdio.println(alias.value);
+                          }
+                          box.value = 9;
+                          stdio.println(view.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+    }
+
+    @Test
+    void allStoredAliasesReleaseTheirLeasesAtScopeExit() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc ok(): void {
+                  val Box box = new Box();
+                  block {
+                    val view = rt borrow box;
+                    block {
+                      val alias = view;
+                      stdio.println(alias.value);
+                    }
+                    stdio.println(view.value);
+                  }
+                  box.value = 9;
+                  val moved = rt take box;
+                  stdio.println(moved.value);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void aliasScopeCannotEnableTakingAStillBorrowedOwner() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        fnc bad(): void {
+                          val Box box = new Box();
+                          val view = rt borrow box;
+                          block {
+                            val alias = view;
+                            stdio.println(alias.value);
+                          }
+                          val moved = rt take box;
+                          stdio.println(view.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
