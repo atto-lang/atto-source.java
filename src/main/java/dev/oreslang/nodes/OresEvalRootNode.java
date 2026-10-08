@@ -16,6 +16,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorLocalReference;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -5510,6 +5511,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("Ref")) return RefFactory.INSTANCE;
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
@@ -6267,6 +6269,67 @@ public final class OresEvalRootNode extends RootNode {
                     case "value" -> selected.value();
                     default -> throw new IllegalArgumentException(
                             "unknown SelectResult member " + name);
+                };
+            }
+            if (receiver instanceof RefFactory) {
+                if (!name.equals("new")) throw new IllegalArgumentException("unknown Ref factory member " + name);
+                return (Invokable) args -> {
+                    requireOne(args, "Ref.new<T>");
+                    return ActorLocalReference.create(args.getFirst());
+                };
+            }
+            if (receiver instanceof ActorLocalReference.Strong<?> strong) {
+                @SuppressWarnings("unchecked")
+                ActorLocalReference.Strong<Object> ref =
+                        (ActorLocalReference.Strong<Object>) strong;
+                return switch (name) {
+                    case "clone" -> (Invokable) args -> {
+                        requireZero(args, "Ref.clone");
+                        return ref.cloneHandle();
+                    };
+                    case "downgrade" -> (Invokable) args -> {
+                        requireZero(args, "Ref.downgrade");
+                        return ref.downgrade();
+                    };
+                    case "set" -> (Invokable) args -> {
+                        requireOne(args, "Ref.set");
+                        ref.set(args.getFirst());
+                        return null;
+                    };
+                    case "swap" -> (Invokable) args -> {
+                        requireOne(args, "Ref.swap");
+                        return ref.swap(args.getFirst());
+                    };
+                    case "get_copy" -> (Invokable) args -> {
+                        requireZero(args, "Ref.get_copy");
+                        return ref.getCopy();
+                    };
+                    case "drop" -> (Invokable) args -> {
+                        requireZero(args, "Ref.drop");
+                        ref.drop();
+                        return null;
+                    };
+                    case "is_dropped" -> (Invokable) args -> {
+                        requireZero(args, "Ref.is_dropped");
+                        return ref.isDropped();
+                    };
+                    default -> throw new IllegalArgumentException("unknown Ref member " + name);
+                };
+            }
+            if (receiver instanceof ActorLocalReference.Weak<?> weak) {
+                return switch (name) {
+                    case "upgrade" -> (Invokable) args -> {
+                        requireZero(args, "WeakRef.upgrade");
+                        java.util.Optional<?> strong = weak.upgrade();
+                        return strong.isPresent()
+                                ? new OptionValue(true, strong.orElseThrow())
+                                : new OptionValue(false, null);
+                    };
+                    case "is_alive" -> (Invokable) args -> {
+                        requireZero(args, "WeakRef.is_alive");
+                        return weak.isAlive();
+                    };
+                    default -> throw new IllegalArgumentException("unknown WeakRef member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -8711,6 +8774,7 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    private enum RefFactory { INSTANCE }
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
