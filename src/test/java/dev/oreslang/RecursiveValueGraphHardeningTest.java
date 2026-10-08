@@ -141,6 +141,15 @@ final class RecursiveValueGraphHardeningTest {
         shared.add("x");
         List<Object> acyclicAlias = List.of(shared, shared);
         assertEquals("[[x], [x]]", format.invoke(null, acyclicAlias));
+
+        Object deep = "leaf";
+        for (int i = 0; i < 100; i++) {
+            List<Object> next = new ArrayList<>();
+            next.add(deep);
+            deep = next;
+        }
+        assertTrue(((String) format.invoke(null, deep)).contains("<truncated>"));
+
     }
 
     @Test
