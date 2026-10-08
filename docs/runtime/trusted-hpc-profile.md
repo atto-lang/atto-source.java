@@ -201,6 +201,114 @@ thread in this PR. `HpcHungryActorPlanTest` exercises acceptance eligibility
 without admitting actors, invalid priorities, bad deadline budgets, no
 housekeeping CPU, missing watchdog, and untrusted/FaaS denial.
 
+## GraalVM HPC ActorGroup GC policy (practical near-term profile)
+
+**Strict zero-GC belongs to the future LLVM/native critical-path profile.
+It is not promised for GraalVM HOT/WARM actors.** GraalVM can still reduce
+latency variance with reusable actor pools, preallocation, warmed code, native
+memory, controlled admission, and planned cleanup windows. Calling GC a
+"user-managed" feature does not disable a JVM or isolate's automatic collector.
+
+The existing HpcHungryActorPlan makes requiresNoGcPauses optional, correctly
+rejecting an unproven strict-GC contract on managed JVM/Graal profiles.
+HOT/WARM means activation/thread/placement policy, not proof that collection
+cannot occur.
+
+### Distinguish physical heaps from logical actor ownership
+
+Current ActorRuntime.ActorGroup is membership, a bounded event bus and logical
+Mailman; it **does not allocate a separate VM or physical GC heap**. The
+ActorMemorySlice tracks/private-reserves memory and can allocate confined direct
+buffers. However host JVM objects and Truffle metadata still share one managed
+collector when running inside the same JVM heap.
+
+Current RuntimeGarbageCollector.collectCurrentActor() sweeps actor-domain
+cleanup entries and does not call System.gc(). collectProcess() may issue one
+rate-limited **process-wide** System.gc() hint; the VM is free to collect
+automatically. Periodic cleanup sweeps do not force host process GC.
+
+GraalVM Polyglot Engine isolates can have genuinely separate native-image
+heaps and collectors. References:
+https://docs.oracle.com/en/graalvm/jdk/25i/docs/reference-manual/embed-languages/
+https://www.graalvm.org/dev/security-guide/sandboxing/
+This depends on an Oreslang isolate-capable language artifact, correct Engine
+placement, and native embedding validation. Ordinary Graal contexts/actor-local
+allocation domains are NOT equivalent. Separate worker processes are a strong
+reference isolation option.
+
+| Backend for one ActorGroup | Independent managed GC? | User control |
+| --- | --- | --- |
+| Shared JVM/Truffle heap | No | Actor cleanup and off-heap arena resets only; cannot postpone automatic JVM GC |
+| Dedicated Polyglot Engine isolate | Potentially, once wired and verified | Quiesce and request isolate maintenance only if a supported isolate-specific adapter exists; collector still runs automatically |
+| Separate worker process | Yes | Quiesce and retire/replenish worker deterministically; any explicit GC request is confined to that process |
+| Future LLVM/native region heap | Not applicable | Deterministic region/arena drop after references, DMA and I/O leases end |
+
+An independently collected group may never leak raw mutable managed references
+to another heap. Messages must be bounded and copied, frozen, or transferred
+through explicit native region capabilities and generation-fenced ownership.
+Ensure cancellation and host callbacks cannot retain crossed references.
+
+### Proposed user API (illustrative only; not compiling today)
+
+```oreslang
+val pool = ActorGroup.pool(
+    actors: 4,
+    heap_backend: HeapBackend.GraalIsolate,
+    gc_policy: GcPolicy.maintenance_windows(
+        soft_limit_bytes: 128 * 1024 * 1024,
+        hard_limit_bytes: 160 * 1024 * 1024
+    )
+);
+
+await pool.warm();
+await pool.begin_hot_window();  // preference only; NOT "GC off"
+await pool.end_hot_window();
+await pool.quiesce();           // active turns, I/O and leases all settled
+await pool.gc.request();        // best-effort if isolated backend supports it
+```
+
+User control would mean choosing workload maintenance windows, pooling/reuse,
+memory ceilings, bounded cleanup and pool rotation, not an unlimited GC
+suppression promise or untrusted access to JVM System.gc().
+
+### Rotating independent hot/warm pools
+
+1. Provision at least two real independent collector domains, with groups A/B.
+   Prewarm code and actor state, pre-fault memory and prepare bounded rings.
+2. A runs HOT while B stays ready. Its control/GC threads should not run on
+   A's dedicated HPC physical core. No raw JVM references cross the boundary.
+3. At a batch end or soft memory threshold, stop admission to A and route new
+   input to B under an atomic supervisor-owned generation/lease transition.
+4. Drain A's actor turns and pending Futures, I/O and DMA leases. In a
+   separate process, teardown and recreate the old heap is deterministic.
+   For Polyglot isolates, only use verified backend-specific safe teardown/
+   scoped GC facilities, not speculative System.gc() interop.
+5. Return A to warm standby. On hard memory budget, unavailable standby,
+   failed drain or expired watchdog: backpressure/reject work, not a silent
+   downgrade to unbounded heap growth or a forced JVM-wide collection.
+
+This may reduce *observed* pauses during a typical serving window but does
+not promise they cannot occur on Graal, nor eliminate OS scheduling jitter.
+
+### WIP source preflight
+
+HpcActorGroupGcPlan is a *pure planner*: heap kinds SHARED_JVM_HEAP,
+GRAAL_POLYGLOT_ISOLATE, DEDICATED_WORKER_PROCESS and NATIVE_REGIONS; policies
+VM_DEFAULT, MAINTENANCE_WINDOW, ROTATE_GROUPS and DETERMINISTIC_NO_GC.
+
+The planner requires a trusted supervisor for non-default policy, independent
+physical heaps for scoped GC, two pools for rotation, complete quiescence,
+and soft/hard memory admission. It reports only decisions: VM_OWNS_GC,
+REJECT, DRAIN_FIRST, REJECT_NEW_WORK, BACKEND_NOT_IMPLEMENTED. It has **no**
+System.gc call, no GC disable flag, no isolate builder, and no resource grant.
+No current ActorGroup runtime path calls it.
+
+Integration gate: provision one verified isolate/process per group; reconcile
+membership with lifecycle and actor code ownership; guarantee bounded handoff
+and safe drain; implement an isolate-scoped adapter if supported; instrument
+both host and isolate pause histograms, and test memory pressure and eventual
+automatic GC. All FaaS/mobile/untrusted actor behavior remains unchanged.
+
 ## Region and arena memory semantics
 
 Proposed language-facing constructs (illustrative **non-compiling** syntax):
