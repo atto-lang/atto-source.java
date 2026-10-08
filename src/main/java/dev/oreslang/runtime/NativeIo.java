@@ -220,6 +220,8 @@ public final class NativeIo {
         private final Socket socket;
         private final BufferedInputStream reader;
         private final OutputStream writer;
+        // TCP is full duplex: a blocked read cannot hold the write lock.
+        private final Object writeLock = new Object();
         private boolean skipLineFeed;
 
         private TcpConnection(OresContext context, String endpoint, Socket socket) throws IOException {
@@ -265,17 +267,17 @@ public final class NativeIo {
             }
         }
 
-        public synchronized void writeText(String value) {
+        public void writeText(String value) {
             rejectBlockingUntrustedNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
-            // Reuse the bounded UTF-8 encoding instead of encoding the String
-            // again inside a BufferedWriter with a separate output buffer.
             byte[] bytes = checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES, "network.socket.write_text");
-            try {
-                writer.write(bytes);
-                writer.flush();
-            } catch (IOException failure) {
-                throw new IllegalStateException("network write failed for " + endpoint + ": " + failure.getMessage(), failure);
+            synchronized (writeLock) {
+                try {
+                    writer.write(bytes);
+                    writer.flush();
+                } catch (IOException failure) {
+                    throw new IllegalStateException("network write failed for " + endpoint + ": " + failure.getMessage(), failure);
+                }
             }
         }
 
