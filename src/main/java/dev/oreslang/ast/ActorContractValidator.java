@@ -1,7 +1,9 @@
 package dev.oreslang.ast;
 
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -19,13 +21,57 @@ public final class ActorContractValidator {
     private ActorContractValidator() { }
 
     public static void validate(Ast.Program program) {
+        // Only unique, local source declarations can be resolved here. Import
+        // resolution and generic substitutions remain mandatory type/link gates.
+        Map<String, Ast.ClassDecl> uniqueClasses = new HashMap<>();
+        Set<String> ambiguous = new HashSet<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) {
+                    if (uniqueClasses.putIfAbsent(klass.name(), klass) != null) {
+                        ambiguous.add(klass.name());
+                    }
+                }
+            }
+        }
+        for (String name : ambiguous) uniqueClasses.remove(name);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ClassDecl klass
                         && klass.actorKind() != Ast.ActorKind.NONE) {
                     validateActor(klass);
+                    validateKnownInheritedModes(klass, uniqueClasses, new HashSet<>());
                 }
             }
+        }
+    }
+
+    private static int validateKnownInheritedModes(
+            Ast.ClassDecl actor, Map<String, Ast.ClassDecl> known, Set<Ast.ClassDecl> visiting) {
+        if (!visiting.add(actor)) {
+            // Cycle details are diagnosed by the type checker.
+            return 0;
+        }
+        try {
+            int modes = 0;
+            for (Ast.MethodDecl method : actor.methods()) {
+                if (method.name().equals("run")) modes |= 1;
+                if (method.name().equals("receive")) modes |= 2;
+            }
+            for (Ast.TypeRef parentRef : actor.parents()) {
+                Ast.ClassDecl parent = known.get(parentRef.name());
+                if (parent != null && parent.actorKind() != Ast.ActorKind.NONE) {
+                    modes |= validateKnownInheritedModes(parent, known, visiting);
+                }
+            }
+            if (modes == 3) {
+                throw new IllegalArgumentException(
+                        "actor '" + actor.name()
+                                + "' cannot mix inherited run and receive handlers");
+            }
+            return modes;
+        } finally {
+            visiting.remove(actor);
         }
     }
 
