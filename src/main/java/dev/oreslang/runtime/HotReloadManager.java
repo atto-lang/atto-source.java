@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -87,6 +89,74 @@ public final class HotReloadManager implements AutoCloseable {
                      SharedCodeRegistry.process().acquire(name, sourceText)) {
             CapabilityChecker.check(image.checkedProgram(), guestPolicy);
             return stage(name, image.sha256(), sourceText, true);
+        }
+    }
+
+    /**
+     * Loads a named module and requires that its source explicitly declares
+     * conformance to the requested module contract. Static type checking still
+     * performs the full structural contract check; this gate makes the dynamic
+     * loader's expected contract explicit as well.
+     *
+     * <p>Canonical source syntax is:
+     * {@code define module Name conforms Contract as ... end}.</p>
+     */
+    public synchronized Generation loadModule(
+            String codeUnitId,
+            String moduleName,
+            String sourceText,
+            String contractName) {
+        java.util.Objects.requireNonNull(moduleName, "moduleName");
+        java.util.Objects.requireNonNull(contractName, "contractName");
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(sourceText);
+        requireModuleContract(checked, moduleName, contractName);
+        return load(codeUnitId, sourceText);
+    }
+
+    /**
+     * Basic transactional hot replacement for one code unit. The candidate is
+     * fully loaded and started before the previous generation is retired. If
+     * startup fails, the previous generation remains active.
+     */
+    public synchronized Generation reloadModule(
+            String codeUnitId,
+            String moduleName,
+            String sourceText,
+            String contractName) {
+        Generation previous = activeByCodeUnit.get(codeUnitId);
+        Generation candidate = loadModule(codeUnitId, moduleName, sourceText, contractName);
+        try {
+            candidate.start();
+        } catch (RuntimeException | Error failure) {
+            retire(candidate.id());
+            if (previous != null && !previous.closed()) {
+                activeByCodeUnit.put(codeUnitId, previous);
+                active.set(previous);
+            }
+            throw failure;
+        }
+        if (previous != null && previous != candidate) {
+            retire(previous.id());
+        }
+        return candidate;
+    }
+
+    private static void requireModuleContract(
+            Ast.Program program,
+            String moduleName,
+            String contractName) {
+        Ast.ModuleDecl module = program.modules().stream()
+                .filter(candidate -> candidate.name().equals(moduleName))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "hot-loaded module '" + moduleName + "' was not found"));
+
+        boolean conforms = module.contracts().stream()
+                .anyMatch(ref -> ref.name().equals(contractName));
+        if (!conforms) {
+            throw new IllegalArgumentException(
+                    "hot-loaded module '" + moduleName
+                            + "' must declare 'conforms " + contractName + "'");
         }
     }
 
