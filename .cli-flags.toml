@@ -1,0 +1,8 @@
+# flags-2-env canonical configuration; see github.com/flags-2-env/flags-2-env.
+# flags-2-env reads .cli-flags.toml (not .cli-args.toml).
+[flags.core-perf]
+env = "ORES_CORE_PERF"
+aliases = ["core-perf"]
+type = "bool"
+default = "false"
+help = "Record bounded, allocation-free core timing phases; dump JSONL to stderr on exit."
