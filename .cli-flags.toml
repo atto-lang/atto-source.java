@@ -6,3 +6,10 @@ aliases = ["core-perf"]
 type = "bool"
 default = "false"
 help = "Record bounded, allocation-free core timing phases; dump JSONL to stderr on exit."
+
+[flags.core-debug]
+env = "ORES_CORE_DEBUG"
+aliases = ["core-debug"]
+type = "bool"
+default = "false"
+help = "Record bounded core-only numeric diagnostic events; dump JSONL to stderr on exit."

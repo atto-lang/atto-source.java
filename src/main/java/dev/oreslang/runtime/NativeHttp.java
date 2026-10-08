@@ -44,6 +44,9 @@ public final class NativeHttp implements AutoCloseable {
             servers.add(server);
             server.transport.start();
             CorePerf.end(CorePerf.HTTP_LISTEN, perf);
+            if (CoreDebug.enabled()) {
+                CoreDebug.event(CoreDebug.HTTP_LISTENER_READY, server.transport.getAddress().getPort());
+            }
             return server;
         } catch (IOException e) { throw new IllegalStateException("HTTP listen failed", e); }
     }
@@ -139,7 +142,22 @@ public final class NativeHttp implements AutoCloseable {
         private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
             this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
-            transport.setExecutor(io);
+            // Preserve the original executor when diagnostics are off. In
+            // diagnostic mode, measure the JDK-to-virtual-thread handoff.
+            if (CorePerf.enabled() || CoreDebug.enabled()) {
+                transport.setExecutor(task -> {
+                    long queued = CorePerf.start();
+                    io.execute(() -> {
+                        CorePerf.end(CorePerf.HTTP_EXECUTOR_QUEUE, queued);
+                        if (CoreDebug.enabled()) {
+                            CoreDebug.event(CoreDebug.HTTP_EXECUTOR_TASK_STARTED, 0L);
+                        }
+                        task.run();
+                    });
+                });
+            } else {
+                transport.setExecutor(io);
+            }
             transport.createContext("/", this::receive);
         }
         private void supervisor() {

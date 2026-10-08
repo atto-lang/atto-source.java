@@ -8,6 +8,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.NativeBuildMode;
 import dev.oreslang.runtime.CorePerf;
+import dev.oreslang.runtime.CoreDebug;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
@@ -41,6 +42,8 @@ public final class OresMain {
         }
         String perfEnv = System.getenv("ORES_CORE_PERF");
         boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
+        String debugEnv = System.getenv("ORES_CORE_DEBUG");
+        boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
@@ -61,6 +64,8 @@ public final class OresMain {
             else if (arg.equals("--check")) checkOnly = true;
             else if (arg.equals("--core-perf")) corePerf = true;
             else if (arg.equals("--no-core-perf")) corePerf = false;
+            else if (arg.equals("--core-debug")) coreDebug = true;
+            else if (arg.equals("--no-core-debug")) coreDebug = false;
             else if (arg.equals("--build-analysis")) buildAnalysis = true;
             else if (arg.equals("--no-prompt")) {
                 // Oreslang permissions never prompt. This Deno-compatible
@@ -106,6 +111,7 @@ public final class OresMain {
         }
 
         CorePerf.configure(corePerf);
+        CoreDebug.configure(coreDebug);
         NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
         Path path;
         if (filename == null) {
@@ -267,7 +273,7 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--mode=aot|jit|hybrid] "
+                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");

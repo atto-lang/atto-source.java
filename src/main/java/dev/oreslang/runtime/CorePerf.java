@@ -26,6 +26,7 @@ public final class CorePerf {
     public static final int ASYNC_IO_WORK = 12;
     public static final int HTTP_TIMER_SCHEDULE = 13;
     public static final int ACTOR_SPAWN = 14;
+    public static final int HTTP_EXECUTOR_QUEUE = 15;
 
     private static final String[] NAMES = {
         "unused", "vm.control.startup", "actor.pools.startup",
@@ -33,25 +34,80 @@ public final class CorePerf {
         "http.dispatch", "actor.ready", "http.claim",
         "http.io.queue", "http.io.work",
         "async.io.queue", "async.io.work",
-        "http.timer.schedule", "actor.spawn"
+        "http.timer.schedule", "actor.spawn", "http.executor.queue"
+    };
+    private static final String[] DEBUG_NAMES = {
+        "unused", "actor.pools.created", "http.listener.ready",
+        "http.executor.task.started"
     };
     private static final int DEFAULT_CAPACITY = 8192;
     private static volatile Recorder active;
+    private static volatile Recorder debugActive;
+    private static Recorder perfRecorder;
+    private static Recorder debugRecorder;
+    private static boolean shutdownHookInstalled;
 
     private CorePerf() { }
 
-    /**
-     * Called once by the host CLI, before an Ores context is constructed.
-     * Nothing, including a JVM shutdown hook, is installed when disabled.
-     */
+    /** Repeated configuration switches sampling without discarding buffered data. */
     public static synchronized void configure(boolean enabled) {
-        if (!enabled || active != null) return;
-        Recorder recorder = new Recorder(DEFAULT_CAPACITY);
-        Runtime.getRuntime().addShutdownHook(new Thread(
-                () -> recorder.dump(System.err), "ores-core-perf-dump"));
-        active = recorder;
-        System.err.println("ores-core-perf: enabled; first " + DEFAULT_CAPACITY
-                + " completed phases buffered; JSONL exported at JVM shutdown");
+        if (!enabled) {
+            active = null;
+            return;
+        }
+        if (perfRecorder == null) {
+            perfRecorder = new Recorder(DEFAULT_CAPACITY);
+            installShutdownHook();
+            System.err.println("ores-core-perf: enabled; first " + DEFAULT_CAPACITY
+                    + " completed phases buffered; JSONL exported at JVM shutdown");
+        }
+        active = perfRecorder;
+    }
+
+    static synchronized void configureDebug(boolean enabled) {
+        if (!enabled) {
+            debugActive = null;
+            return;
+        }
+        if (debugRecorder == null) {
+            debugRecorder = new Recorder(DEFAULT_CAPACITY);
+            installShutdownHook();
+            System.err.println("ores-core-debug: enabled; first " + DEFAULT_CAPACITY
+                    + " numeric events buffered; JSONL exported at JVM shutdown");
+        }
+        debugActive = debugRecorder;
+    }
+
+    private static void installShutdownHook() {
+        if (shutdownHookInstalled) {
+            return;
+        }
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (perfRecorder != null) {
+                perfRecorder.dump(System.err);
+            }
+            if (debugRecorder != null) {
+                debugRecorder.dumpDebug(System.err);
+            }
+        }, "ores-core-diagnostics-dump"));
+        shutdownHookInstalled = true;
+    }
+
+    /** Query only at setup boundaries; hot paths should use start/end directly. */
+    public static boolean enabled() {
+        return active != null;
+    }
+
+    static boolean debugEnabled() {
+        Recorder recorder = debugActive;
+        return recorder != null && !recorder.saturated;
+    }
+
+    static void debugEvent(int event, long value) {
+        Recorder recorder = debugActive;
+        if (recorder != null && !recorder.saturated) {
+            recorder.recordEvent(event, value);
+        }
     }
 
     /** Startup-only metadata. Guest and hot-path code never consult it. */
@@ -111,38 +167,94 @@ public final class CorePerf {
         }
 
         void record(int phase, long started, long finished) {
-            if (phase < 1 || phase >= NAMES.length || finished - started < 0L) {
+            long duration = finished - started;
+            if (phase < 1 || phase >= NAMES.length || finished < started || duration < 0L) {
                 throw new IllegalArgumentException("invalid core perf sample");
             }
-            if (saturated) return;
-            int index = cursor.getAndIncrement();
-            if (index >= capacity) {
-                saturated = true;
+            int index = reserve();
+            if (index < 0) {
                 return;
             }
             offsets[index] = Math.max(0L, started - origin);
-            durations[index] = finished - started;
+            durations[index] = duration;
             threadIds[index] = Thread.currentThread().threadId();
             // Release-publish last. Dumps use acquire-reads, never partial rows.
             published.set(index, phase);
         }
 
+        void recordEvent(int event, long value) {
+            if (event < 1 || event >= DEBUG_NAMES.length) {
+                throw new IllegalArgumentException("invalid core debug event");
+            }
+            int index = reserve();
+            if (index < 0) {
+                return;
+            }
+            offsets[index] = Math.max(0L, System.nanoTime() - origin);
+            durations[index] = value;
+            threadIds[index] = Thread.currentThread().threadId();
+            published.set(index, -event);
+        }
+
+        /** Saturating CAS reservation cannot wrap an integer counter on a busy server. */
+        private int reserve() {
+            while (true) {
+                int index = cursor.get();
+                if (index >= capacity) {
+                    saturated = true;
+                    return -1;
+                }
+                if (cursor.compareAndSet(index, index + 1)) {
+                    if (index + 1 == capacity) {
+                        saturated = true;
+                    }
+                    return index;
+                }
+            }
+        }
+
         void dump(PrintStream out) {
-            int reserved = Math.min(capacity, cursor.get());
+            int reserved = cursor.get();
+            int recorded = 0;
             out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"begin\",\"capacity\":" + capacity + "}");
             out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"backend\",\"actor_carriers\":\""
                     + backend + "\",\"private_parallelism\":" + privateParallelism
                     + ",\"shared_parallelism\":" + sharedParallelism + "}");
             for (int i = 0; i < reserved; i++) {
                 int phase = published.get(i);
-                if (phase == 0) continue; // unfinished concurrent event
+                if (phase <= 0) {
+                    continue; // Not yet published; do not count incomplete reservations.
+                }
                 out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"phase\",\"phase\":\""
                         + NAMES[phase] + "\",\"start_ns\":" + offsets[i]
                         + ",\"duration_ns\":" + durations[i]
                         + ",\"thread_id\":" + threadIds[i] + "}");
+                recorded++;
             }
             out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"end\",\"recorded\":"
-                    + reserved + ",\"saturated\":" + saturated + "}");
+                    + recorded + ",\"reserved\":" + reserved
+                    + ",\"saturated\":" + saturated + "}");
+            out.flush();
+        }
+
+        void dumpDebug(PrintStream out) {
+            int reserved = cursor.get();
+            int recorded = 0;
+            out.println("{\"schema\":\"ores-core-debug.v1\",\"kind\":\"begin\",\"capacity\":" + capacity + "}");
+            for (int i = 0; i < reserved; i++) {
+                int event = published.get(i);
+                if (event >= 0) {
+                    continue;
+                }
+                out.println("{\"schema\":\"ores-core-debug.v1\",\"kind\":\"event\",\"event\":\""
+                        + DEBUG_NAMES[-event] + "\",\"start_ns\":" + offsets[i]
+                        + ",\"value\":" + durations[i]
+                        + ",\"thread_id\":" + threadIds[i] + "}");
+                recorded++;
+            }
+            out.println("{\"schema\":\"ores-core-debug.v1\",\"kind\":\"end\",\"recorded\":"
+                    + recorded + ",\"reserved\":" + reserved
+                    + ",\"saturated\":" + saturated + "}");
             out.flush();
         }
     }

@@ -52,6 +52,51 @@ class CorePerfTest {
         assertTrue(text.contains("\"recorded\":128"));
     }
 
+    @Test void concurrentSaturationNeverOverflowsCounter() throws Exception {
+        var recorder = new CorePerf.Recorder(3);
+        try (var executor = Executors.newFixedThreadPool(8)) {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int i = 0; i < 8; i++) {
+                futures.add(executor.submit(() -> {
+                    for (int j = 0; j < 1000; j++) {
+                        recorder.record(CorePerf.HTTP_RECEIVE, 100L, 101L);
+                    }
+                }));
+            }
+            for (var future : futures) {
+                future.get(10, TimeUnit.SECONDS);
+            }
+        }
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertEquals(3, output.lines().filter(line -> line.contains("\"kind\":\"phase\"")).count());
+        assertTrue(output.contains("\"recorded\":3,\"reserved\":3,\"saturated\":true"));
+    }
+
+    @Test void incompleteReservationsAreNotReportedAsRecorded() {
+        var recorder = new CorePerf.Recorder(2);
+        recorder.record(CorePerf.ACTOR_READY, 10L, 12L);
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("\"recorded\":1,\"reserved\":1"));
+    }
+
+    @Test void debugEventsContainOnlyFixedNamesAndNumericValues() {
+        var recorder = new CorePerf.Recorder(1);
+        recorder.recordEvent(CoreDebug.ACTOR_POOLS_CREATED, 8L);
+        recorder.recordEvent(CoreDebug.HTTP_LISTENER_READY, 8080L);
+        var bytes = new ByteArrayOutputStream();
+        recorder.dumpDebug(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("\"event\":\"actor.pools.created\""));
+        assertTrue(output.contains("\"value\":8"));
+        assertFalse(output.contains("http.listener.ready"));
+        assertTrue(output.contains("\"recorded\":1,\"reserved\":1"));
+        assertThrows(IllegalArgumentException.class, () -> recorder.recordEvent(0, 0L));
+    }
+
     @Test void invalidSamplesFailClosed() {
         var recorder = new CorePerf.Recorder(1);
         assertThrows(IllegalArgumentException.class, () -> recorder.record(0, 1L, 2L));

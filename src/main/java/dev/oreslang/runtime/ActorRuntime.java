@@ -439,6 +439,9 @@ public final class ActorRuntime implements AutoCloseable {
         this.sharedDispatcher = sharedPool;
         this.untrustedDispatcher = untrustedPool;
         CorePerf.end(CorePerf.ACTOR_POOLS_STARTUP, poolsPerf);
+        if (CoreDebug.enabled()) {
+            CoreDebug.event(CoreDebug.ACTOR_POOLS_CREATED, dispatcherConfig.privateParallelism());
+        }
         if (poolsPerf != 0L) {
             CorePerf.actorBackend(carrierBackend() == CarrierBackend.NATIVE_PTHREAD,
                     dispatcherConfig.privateParallelism(), dispatcherConfig.sharedParallelism());
