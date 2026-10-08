@@ -197,7 +197,8 @@ public final class CorePerf {
         }
 
         /** Saturating CAS reservation cannot wrap an integer counter on a busy server. */
-        private int reserve() {
+        // Package-visible so tests can inspect an unpublished reservation.
+        int reserve() {
             while (true) {
                 int index = cursor.get();
                 if (index >= capacity) {
