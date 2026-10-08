@@ -504,6 +504,142 @@ race/model checks for lost wakeups, ABA slot reuse, multiple completion,
 cancellation vs wake, JIT/GC induced safepoints, and destruction order,
 plus physical native/GraalVM backend tests.
 
+## Async-frame compiler enforcement and ActorGroup generation fencing (WIP)
+
+The current source compiler `OwnershipChecker` already rejects an ordinary
+borrow live across `await` and `rt cooperate`, and forbids storing borrowed
+values in actor/class fields or sending them through actor mailboxes. This
+PR extends that *actual compiler check* to every **blocking** channel read,
+channel write, static select and dynamic select (blocking operations yield
+the continuation just as await does). Immediate probes do not suspend.
+Nonblocking channel/select registration does not suspend the calling frame;
+its own retained payloads and captures need separate ownership validation.
+
+No new guest-facing `Pin<T>` or `Unpin` syntax is enabled. Compiler-proven
+native pinned frame projection, borrow relocation and in-place native drop
+are still a separate future LLVM/native lowering requirement. The Graal
+compiler should keep its conservative prohibition on ordinary cross-await
+borrows instead of pretending it has native location-stability enforcement.
+
+### Runtime scheduler: fenced suspension epochs
+
+`OresScheduler.TaskRunner` now increments a wake epoch when it suspends and
+when it resumes or is cancelled. An awaiting `OresFuture` registration
+captures an immutable epoch in a dedicated callback. The callback may only
+publish a resume when the epoch still matches and the runner remains WAITING.
+A stale callback from a prior await must NOT satisfy a later await; callbacks
+running after cancellation must NOT resurrect task state.
+
+The already-completed Future hot path remains a direct immutable-state
+observation without allocating a subscription. Pending Futures already had
+detachable runtime registrations; this change additionally allocates one
+small per-pending-await epoch callback to avoid sharing a reusable, untagged
+callback across suspensions. Do not call this path no-allocation or zero-GC.
+The future native backend can combine callback metadata into a preallocated
+generation-aware waiter slot instead.
+
+`ActorGroupWakeRegistry` is a real runtime-internal bounded ticket registry,
+not a guest-visible authority. A ticket contains an unforgeable registry
+identity, owner identity, group epoch and monotonic sequence, and transitions
+PENDING -> CLAIMED -> RELEASED. Claim is atomic with group seal/owner revoke;
+claimed queued continuations remain *retirement roots* until released. Old
+tickets must be rejected on close/revoke/leave; repeat claims and cross-group
+replays are rejected. Registration has a hard budget linked to the owning
+ActorGroup creator policy, avoiding unbounded retained Future/waker memory.
+
+`ActorRuntime.ActorGroup` now owns one registry. Member leave and actor
+termination revoke its tickets; group close seals all registrations while
+revoking join capabilities. The runtime exposes guarded
+`pendingContinuationWakeCount()` diagnostics and internal registration/
+claim/recheck/release hooks.
+
+**IMPORTANT integration boundary:** The general `OresScheduler` now fences
+its own await callback epochs, but existing ActorGroup source tasks are **not
+yet automatically registered** into the group's wake registry. Consequently,
+neither registry ticket count nor the GC planner can be claimed to prove
+whole-group quiescence today. The remaining source/runtime integration must:
+associate each compiler-generated actor coroutine with exactly its owning
+group generation; register/detach its await/select/channel waiters; count all
+queued and suspended frames; and perform a second ticket/actor lease check
+during mailbox scheduler admission. Group rotation must seal admission,
+drain existing tasks and DMA/FFI leases, and only then recycle a heap.
+
+Scheduler regression tests now manually replay an obsolete producer callback
+during a *second* pending await and after task cancellation. Registry tests
+cover replay, group close, actor revoke/rejoin, pending/claimed accounting,
+hard admission budget and concurrent seal/claim races. Compiler regression
+tests exercise owned versus borrowed frames at blocking channel/select
+suspension boundaries.
+
+## Cyclic object graphs, ownership and arena reclamation (WIP)
+
+Rust primary references:
+- [Rust Book: reference cycles and Weak](https://doc.rust-lang.org/book/ch15-06-reference-cycles.html)
+- [generational-arena (slots + generations)](https://docs.rs/generational-arena/latest/generational_arena/)
+- [Rust Pin's drop guarantee](https://doc.rust-lang.org/std/pin/)
+
+Rust's reference-counted strong cycles leak because the strong counts
+never reach zero. `Rc<RefCell<T>>` is non-thread-safe and its checked dynamic
+borrows may panic on invalid nested borrows; `Arc` coordinates shared
+ownership across threads but does not detect cycles. A backpointer that
+does NOT express ownership should be weak. `Weak::upgrade()` may fail once
+the owner is gone. Immovable raw-pointer structures can model cycles but
+place aliasing/teardown proof into `unsafe`; pinning does NOT solve strong
+ownership cycles.
+
+Oreslang already has *separate, unmerged* reference work:
+- PR #457: guarded recursive type aliases; recursive values are still
+  subject to ownership / actor transport.
+- PR #468: actor-local `Ref<T>` / `WeakRef<T>` cyclic owned cells, stacked
+  on #457. Never silently copy that implementation into this `main`-based
+  HPC branch. Reconcile the two independently tested stacks later.
+
+### Bounded, generational graph owned by one arena
+
+The new `HpcCyclicGraph<T>` is a **Java reference prototype** of the
+future native region-owned HPC graph. One arena exclusively owns all node
+values. Edges store non-owning (slot, generation) targets. Nodes can
+reference themselves, two nodes can point at one another and arbitrary
+long cycles may be created without allocating any Rc/Arc counters.
+On slot removal the generation increments, so stale weak-like links do
+not resolve to a new occupant of the same slot (ABA). A graph identity
+token prevents handle mixing between arenas. Repeated clear also changes
+slot generations; close clears all values without recursive graph walking.
+
+Example conceptual Oreslang syntax, **not compiling yet**:
+
+```oreslang
+val graph = GraphArena.new<Node>(capacity: 1024, edges_per_node: 8);
+val parent = graph.add(Node("parent"));
+val child = graph.add(Node("child"));
+graph.connect(parent, child); // non-owning, generation-checked
+graph.connect(child, parent); // cycle is okay
+val maybeParent = graph.resolve(parent); // Option<Node>, None when stale
+graph.close(); // only once all async, FFI, actor and DMA leases are drained
+```
+
+This prototype uses Java managed objects, synchronized methods and
+allocating snapshots for some read paths, so it **does not** deliver no-GC,
+lock-free operation, direct native address stability or portable high
+frequency trading latency. Source-level actor confinement, lifetime-safe
+borrows, atomic region retirement and a native/LLVM packed representation
+must be verified before exposing it to userland or allowing group GC
+control. Values held by external guest references or FFI may still have
+their own lifetimes after arena close; source/runtime must refuse
+dangling arena-backed native references.
+
+A native compiler may choose between:
+- `Ref<T>` + `WeakRef<T>` for ownership-aware local identity graphs;
+- arena+generational indices for cyclic high-degree, DOP/SOA,
+  cache-sensitive graphs whose **arena** owns the entire lifetime;
+- an explicitly reviewed unsafe intrusive-pointer implementation only
+  where stable addresses, pinned drop and full aliasing proofs are needed.
+
+**Critical integration**: never move/pin/retire an arena with active
+native interior pointers, suspended frames, pending wakers, actor mailboxes
+or outstanding NIC DMA. Neither a cyclic graph nor a retained Future is
+automatically safe to cross ActorGroup or isolate boundaries.
+
 ## Region and arena memory semantics
 
 Proposed language-facing constructs (illustrative **non-compiling** syntax):
