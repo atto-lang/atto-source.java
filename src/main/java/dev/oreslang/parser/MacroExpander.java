@@ -187,7 +187,8 @@ public final class MacroExpander {
                 }
                 continue;
             }
-            if (token.type() == IDENT && !(i > 0 && template.get(i - 1).type() == DOT)) {
+            if (token.type() == IDENT && !(i > 0 && template.get(i - 1).type() == DOT)
+                    && !(i + 1 < template.size() && template.get(i + 1).type() == BANG)) {
                 throw fail(token, "introduced identifiers require a future hygienic binding implementation");
             }
             // Deliberately expression-only. In particular, do not introduce lexical bindings,
