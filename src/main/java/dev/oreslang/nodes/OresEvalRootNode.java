@@ -1017,6 +1017,7 @@ public final class OresEvalRootNode extends RootNode {
                                 && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
                                     || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
                                 && !guardEnv.hasLiveMutexGuards()) {
+                            context.recordSourceLoopCooperate();
                             cooperate(next);
                             return;
                         }
