@@ -4268,6 +4268,17 @@ public final class OresEvalRootNode extends RootNode {
         private Object detachAsyncValue(
                 Object value,
                 IdentityHashMap<Object, Boolean> visiting) {
+            return detachAsyncValue(value, visiting, 0);
+        }
+
+        private Object detachAsyncValue(
+                Object value,
+                IdentityHashMap<Object, Boolean> visiting,
+                int depth) {
+            if (depth > 64) {
+                throw new IllegalArgumentException(
+                        "async task value graph exceeds maximum nesting depth 64");
+            }
             if (value == null
                     || value instanceof String
                     || value instanceof Boolean
@@ -4320,7 +4331,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
-                    for (Object item : list) copy.add(detachAsyncValue(item, visiting));
+                    for (Object item : list) copy.add(detachAsyncValue(item, visiting, depth + 1));
                     return copy;
                 }
                 if (value instanceof Map<?, ?> map) {
@@ -4334,7 +4345,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (value instanceof Set<?> set) {
                     LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                    for (Object item : set) copy.add(detachAsyncValue(item, visiting));
+                    for (Object item : set) copy.add(detachAsyncValue(item, visiting, depth + 1));
                     return copy;
                 }
                 if (value.getClass().isArray()) {
@@ -4343,7 +4354,7 @@ public final class OresEvalRootNode extends RootNode {
                     for (int i = 0; i < length; i++) {
                         copy.add(detachAsyncValue(
                                 java.lang.reflect.Array.get(value, i),
-                                visiting));
+                                visiting, depth + 1));
                     }
                     return copy;
                 }
