@@ -153,6 +153,75 @@ final class RecursiveValueGraphHardeningTest {
     }
 
     @Test
+    void movingOwnerIntoOwnFieldIsRejectedAfterRhsConsumption() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        define class Link as
+                          pub let Option<Link> next = None;
+                        end
+                        fnc invalid(): void {
+                          let mut Link node = new Link();
+                          node.next = Some(node);
+                          return;
+                        }
+                        """)));
+        assertTrue(moved.getMessage().contains("moved"), moved.getMessage());
+    }
+
+    @Test
+    void recursiveRecordsNeverAcquireImplicitCopyThroughAliases() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        type Node = struct{value: int, next: Option<Node>};
+                        fnc consume(Node node): void { return; }
+                        fnc bad(Node node): void {
+                          consume(node);
+                          consume(node);
+                          return;
+                        }
+                        """)));
+        assertTrue(moved.getMessage().contains("moved"), moved.getMessage());
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                type Flag = bool;
+                fnc consume(Flag flag): void { return; }
+                fnc okay(): void {
+                  val Flag flag = true;
+                  consume(flag);
+                  consume(flag);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void classFieldsCannotHideBorrowedReferencesBehindAliasOrContainer() {
+        for (String source : new String[]{
+                """
+                define class Link as
+                  let Option<&Link> direct;
+                end
+                """,
+                """
+                type Borrowed = &int;
+                define class Link as
+                  let Borrowed hidden;
+                end
+                """,
+                """
+                type Borrowed = &int;
+                type Nested = Option<Borrowed>;
+                define class Link as
+                  let Nested hidden;
+                end
+                """
+        }) {
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(source)), source);
+            assertTrue(rejected.getMessage().contains("borrow"), rejected.getMessage());
+        }
+    }
+
+    @Test
     void mutableCyclesStayLocalAndCannotCrossActorOrSharedMutexBoundary() throws Exception {
         List<Object> cycle = new ArrayList<>();
         cycle.add(cycle);
