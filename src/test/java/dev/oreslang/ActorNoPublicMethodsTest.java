@@ -71,9 +71,9 @@ final class ActorNoPublicMethodsTest {
     @Test
     void publicActorTypeIsNotAPublicMethod() {
         assertDoesNotThrow(() -> Parser.parse("""
-                pub define actor Worker as
+                actor pub Worker {
                   receive(ActorMail<String> mail): void { return; }
-                end
+                }
                 """));
     }
 }
