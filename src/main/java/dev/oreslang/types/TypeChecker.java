@@ -109,7 +109,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Ref", "WeakRef", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -321,6 +321,8 @@ public final class TypeChecker {
                     "Fnc", "Function", "Future", "Generator",
                     "AsyncGenerator", "Iterator", "AsyncIterator" -> true;
             case "Result" -> ref.arguments().stream().anyMatch(
+                    argument -> recursiveAliasHasFiniteBase(argument, visiting));
+            case "Ref", "WeakRef" -> ref.arguments().stream().allMatch(
                     argument -> recursiveAliasHasFiniteBase(argument, visiting));
             case "Tuple", "FixedArray", "FixedList" -> ref.arguments().stream().allMatch(
                     argument -> recursiveAliasHasFiniteBase(argument, visiting));
@@ -1791,6 +1793,7 @@ public final class TypeChecker {
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
+            if (name.name().equals("Ref")) return new Named("$RefFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
@@ -2133,6 +2136,25 @@ public final class TypeChecker {
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr refConstructor
+                    && refConstructor.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("Ref") && refConstructor.member().equals("new")) {
+                if (currentActorKind == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("Ref.new<T> requires an actor turn");
+                }
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1
+                        || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Ref.new<T>(initial) requires one explicit T and one owned initial value");
+                }
+                Type element = resolve(call.typeArguments().getFirst(), generics, self);
+                if (element == Primitive.VOID || element == Unknown.INSTANCE || element instanceof Borrow
+                        || element instanceof Function || element instanceof ClassNamespace) {
+                    throw new IllegalArgumentException("Ref<T> requires a concrete owned element type");
+                }
+                Type initial = typeOf(call.arguments().getFirst(), env, generics, self);
+                requireAssignable(initial, element, "Ref.new<T> initial");
+                return new Named("Ref", List.of(element));
+            }
             if (call.callee() instanceof Ast.MemberExpr channelCall
                     && channelCall.receiver() instanceof Ast.NameExpr factory
                     && factory.name().equals("Channel")
@@ -2277,6 +2299,64 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
+                Type localRefType = receiverDispatchType(deref(
+                        staticNamespaceReceiverType(member.receiver(), env, generics, self)));
+                if (localRefType instanceof Named refHandle
+                        && (refHandle.name().equals("Ref") || refHandle.name().equals("WeakRef"))) {
+                    if (call.typeArgumentsPresent() || refHandle.arguments().size() != 1) {
+                        throw new IllegalArgumentException("actor-local references have one fixed type argument");
+                    }
+                    Type element = refHandle.arguments().getFirst();
+                    int arity = call.arguments().size();
+                    if (refHandle.name().equals("Ref")) {
+                        return switch (member.member()) {
+                            case "clone" -> {
+                                requireLocalRefCallArity(arity, 0, "Ref.clone");
+                                yield refHandle;
+                            }
+                            case "downgrade" -> {
+                                requireLocalRefCallArity(arity, 0, "Ref.downgrade");
+                                yield new Named("WeakRef", List.of(element));
+                            }
+                            case "set", "swap" -> {
+                                requireLocalRefCallArity(arity, 1, "Ref." + member.member());
+                                requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                        element, "Ref." + member.member() + " value");
+                                yield member.member().equals("swap") ? element : Primitive.VOID;
+                            }
+                            case "get_copy" -> {
+                                requireLocalRefCallArity(arity, 0, "Ref.get_copy");
+                                if (!isLocalRefCopyScalar(element)) {
+                                    throw new IllegalArgumentException("Ref.get_copy only permits Copy scalars; "
+                                            + "non-Copy values require a scoped borrow or owned swap");
+                                }
+                                yield element;
+                            }
+                            case "drop" -> {
+                                requireLocalRefCallArity(arity, 0, "Ref.drop");
+                                yield Primitive.VOID;
+                            }
+                            case "is_dropped" -> {
+                                requireLocalRefCallArity(arity, 0, "Ref.is_dropped");
+                                yield Primitive.BOOL;
+                            }
+                            default -> throw new IllegalArgumentException(
+                                    "unknown Ref<T> method '" + member.member() + "'");
+                        };
+                    }
+                    return switch (member.member()) {
+                        case "upgrade" -> {
+                            requireLocalRefCallArity(arity, 0, "WeakRef.upgrade");
+                            yield new Named("Option", List.of(new Named("Ref", List.of(element))));
+                        }
+                        case "is_alive" -> {
+                            requireLocalRefCallArity(arity, 0, "WeakRef.is_alive");
+                            yield Primitive.BOOL;
+                        }
+                        default -> throw new IllegalArgumentException(
+                                "unknown WeakRef<T> method '" + member.member() + "'");
+                    };
+                }
                 // A module/class/imported static namespace may be the receiver
                 // of a qualified call without ever becoming a runtime value.
                 Type receiver = deref(staticNamespaceReceiverType(member.receiver(), env, generics, self));
@@ -4308,6 +4388,18 @@ public final class TypeChecker {
         };
     }
 
+    private static void requireLocalRefCallArity(int actual, int expected, String label) {
+        if (actual != expected) {
+            throw new IllegalArgumentException(label + " expects " + expected + " argument(s), got " + actual);
+        }
+    }
+
+    private static boolean isLocalRefCopyScalar(Type element) {
+        if (element instanceof StringLiteral) return true;
+        if (!(element instanceof Primitive primitive)) return false;
+        return primitive != Primitive.VOID && primitive != Primitive.NULL;
+    }
+
     /** Static namespace lookup is only legal in the receiver position of member access. */
     private Type staticNamespaceReceiverType(
             Ast.Expr receiver, Env env, Set<String> generics, Type self) {
@@ -4447,6 +4539,9 @@ public final class TypeChecker {
                     where + " cannot transport recursive alias graph '" + named.name()
                             + "' across an actor boundary without an explicit cycle-aware copy/serialization contract");
         }
+        if (named.name().equals("Ref") || named.name().equals("WeakRef")) {
+            throw new IllegalArgumentException(where + " cannot transport actor-local reference " + named.name());
+        }
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
@@ -4530,7 +4625,8 @@ public final class TypeChecker {
             return true;
         }
         if (!(type instanceof Named named)) return false;
-        if (named.name().startsWith("$recursive_alias$")) return false;
+        if (named.name().startsWith("$recursive_alias$")
+                || named.name().equals("Ref") || named.name().equals("WeakRef")) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
@@ -6985,7 +7081,7 @@ public final class TypeChecker {
 
     private boolean isRecursiveAliasGuard(Ast.TypeRef ref) {
         if (Set.of("Option", "Result", "Array", "List", "Vector", "Slice",
-                "Tuple", "FixedArray", "FixedList", "Fnc", "Function",
+                "Tuple", "FixedArray", "FixedList", "Ref", "WeakRef", "Fnc", "Function",
                 "Mutex", "SharedMutex", "Channel", "Future", "Generator",
                 "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult",
                 "ActorMail", "ActorOutput", "ActorOutputStream").contains(ref.name())) {
@@ -7151,6 +7247,17 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 validateChannelPayloadType(element, "Channel<T>");
                 yield new Named("Channel", List.of(element));
+            }
+            case "Ref", "WeakRef" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(ref.name() + "<T> requires exactly one type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID || element instanceof Borrow
+                        || element instanceof Function || element instanceof ClassNamespace) {
+                    throw new IllegalArgumentException(ref.name() + "<T> requires owned non-void data");
+                }
+                yield new Named(ref.name(), List.of(element));
             }
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
