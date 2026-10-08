@@ -204,6 +204,8 @@ final class ReactiveReaderLeaseTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new OresNotification<>(OresNotification.Kind.NEXT, null));
         assertTrue(OresNotification.complete().isComplete());
+        assertThrows(NullPointerException.class, () ->
+                OresObservable.fromValues(java.util.Arrays.asList(1, null)));
     }
 
     @Test
