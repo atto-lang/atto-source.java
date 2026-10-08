@@ -1355,7 +1355,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (call.callee() instanceof Ast.MemberExpr member) {
                     // Resolve local method families conservatively across
                     // overrides, without turning every builtin call into a task.
-                    for (Ast.ClassDecl klass : new LinkedHashSet<>(classes.values())) {
+                    // Declaration aliases refer to the same AST object. Structural
+                    // record hashing recursively walks entire class bodies here.
+                    Set<Ast.ClassDecl> visitedClasses = java.util.Collections.newSetFromMap(
+                            new IdentityHashMap<>());
+                    for (Ast.ClassDecl klass : classes.values()) {
+                        if (!visitedClasses.add(klass)) continue;
                         for (Ast.MethodDecl method : klass.methods()) {
                             if (method.name().equals(member.member())
                                     && method.arity() == call.arguments().size()
