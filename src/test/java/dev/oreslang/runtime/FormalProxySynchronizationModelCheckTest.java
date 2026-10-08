@@ -149,7 +149,7 @@ final class FormalProxySynchronizationModelCheckTest {
             case SUSPEND -> {
                 if (s.mode() != LockMode.NONE) yield Optional.empty();
                 yield Optional.of(new State(
-                        null, LockMode.NONE, s.disposedA(), s.disposedB(), s.suspensionObserved() + 1));
+                        null, LockMode.NONE, s.disposedA(), s.disposedB(), true));
             }
             case DISPOSE -> {
                 if (s.mode() != LockMode.NONE || s.disposed(action.proxy())) {
