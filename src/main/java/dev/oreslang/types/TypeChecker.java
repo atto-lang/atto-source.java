@@ -441,6 +441,13 @@ public final class TypeChecker {
         }
     }
 
+    private void defineImplicitArguments(Env env, List<Type> parameterTypes) {
+        env.define(
+                "arguments",
+                new Tuple(List.copyOf(parameterTypes), TupleKind.TUPLE),
+                Ast.BindingKind.CONST);
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         if (fn.trapped()) {
             if (fn.async()) {
@@ -494,8 +501,10 @@ public final class TypeChecker {
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
+        List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
@@ -524,6 +533,7 @@ public final class TypeChecker {
                     parameterType,
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
+        defineImplicitArguments(env, argumentTypes);
 
         // Generator declarations may spell either the yielded element type
         // (: int) or the public iterator protocol (: Iterator<int> /
@@ -917,13 +927,16 @@ public final class TypeChecker {
 
             Env constructorEnv = new Env(null);
             constructorEnv.define("self", self, Ast.BindingKind.VAL);
+            List<Type> constructorArgumentTypes = new ArrayList<>(constructor.parameters().size());
             for (Ast.Param param : constructor.parameters()) {
                 Type parameterType = resolveParam(param, classGenerics, self);
+                constructorArgumentTypes.add(parameterType);
                 constructorEnv.define(
                         param.name(),
                         parameterType,
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            defineImplicitArguments(constructorEnv, constructorArgumentTypes);
 
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
@@ -1070,8 +1083,10 @@ public final class TypeChecker {
             Type callableSelf = method.isStatic() ? null : new SelfType(self);
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
+            List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
@@ -1104,6 +1119,7 @@ public final class TypeChecker {
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            defineImplicitArguments(env, methodArgumentTypes);
             Type returns = resolve(method.returnType(), generics, callableSelf);
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
@@ -1934,10 +1950,6 @@ public final class TypeChecker {
                 requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
                 return Primitive.VOID;
             }
-            if (call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
-                throw new IllegalArgumentException(
-                        "spread arguments require a variadic callable; fixed-arity Oreslang callables do not accept dynamic spread");
-            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -1952,7 +1964,10 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
-                Ast.FunctionDecl target = findFunction(functionName.name(), call.arguments().size());
+                int arity = fixedCallArity(
+                        call.arguments(), env, generics, self,
+                        "function " + functionName.name());
+                Ast.FunctionDecl target = findFunction(functionName.name(), arity);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
                     if (target.actorKind() != Ast.ActorKind.NONE
@@ -1985,9 +2000,12 @@ public final class TypeChecker {
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
                 rejectUnimportedModuleNamespace(namespace.name());
+                int arity = fixedCallArity(
+                        call.arguments(), env, generics, self,
+                        "function " + namespace.name() + "." + qualifiedCall.member());
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
-                        call.arguments().size());
+                        arity);
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -2376,14 +2394,19 @@ public final class TypeChecker {
                 }
 
                 if (receiver instanceof Record record) {
-                    String prefix = CallableSelector.instance(member.member(), call.arguments().size()).mangledName() + "$generics";
+                    List<ExpandedCallArgument> structuralArguments =
+                            expandFixedCallArguments(
+                                    call.arguments(), env, generics, self,
+                                    "structural method " + member.member());
+                    int structuralArity = structuralArguments.size();
+                    String prefix = CallableSelector.instance(member.member(), structuralArity).mangledName() + "$generics";
                     List<Map.Entry<String, Type>> candidates = record.members().entrySet().stream()
                             .filter(entry -> entry.getKey().startsWith(prefix))
                             .toList();
                     if (candidates.size() > 1) {
                         throw new IllegalArgumentException(
                                 "ambiguous structural method '" + member.member()
-                                        + "' with arity " + call.arguments().size());
+                                        + "' with arity " + structuralArity);
                     }
                     if (candidates.size() == 1) {
                         Map.Entry<String, Type> candidate = candidates.getFirst();
@@ -2421,9 +2444,12 @@ public final class TypeChecker {
                                     label + " is not generic and cannot be called with <>");
                         }
 
-                        List<Type> actuals = new ArrayList<>(call.arguments().size());
-                        for (int i = 0; i < call.arguments().size(); i++) {
-                            Type actual = typeOf(call.arguments().get(i), env, generics, self);
+                        List<Type> actuals = new ArrayList<>(structuralArguments.size());
+                        for (int i = 0; i < structuralArguments.size(); i++) {
+                            Type actual = expandedCallArgumentType(
+                                    structuralArguments.get(i),
+                                    fn.parameters().get(i),
+                                    env, generics, self);
                             actuals.add(actual);
                             inferGenericBindings(
                                     fn.parameters().get(i),
@@ -2435,15 +2461,18 @@ public final class TypeChecker {
 
                         Set<String> unbound = new HashSet<>(canonicalGenerics);
                         unbound.removeAll(bindings.keySet());
-                        for (int i = 0; i < call.arguments().size(); i++) {
+                        for (int i = 0; i < structuralArguments.size(); i++) {
                             Type expected = substituteGenerics(fn.parameters().get(i), bindings);
                             if (containsGenericNamed(expected, unbound)) {
                                 throw new IllegalArgumentException(
                                         "cannot infer all generic parameters for "
                                                 + label + " from argument " + (i + 1));
                             }
-                            validateLambdaArgument(
-                                    call.arguments().get(i), expected, env, generics, self);
+                            ExpandedCallArgument argument = structuralArguments.get(i);
+                            if (argument.expression() != null) {
+                                validateLambdaArgument(
+                                        argument.expression(), expected, env, generics, self);
+                            }
                             requireReadonlyCapabilityPreserved(
                                     actuals.get(i),
                                     expected,
@@ -2471,8 +2500,11 @@ public final class TypeChecker {
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
-                    Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
-                    if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
+                    int staticArity = fixedCallArity(
+                            call.arguments(), env, generics, self,
+                            "static function " + klass.name() + "." + member.member());
+                    Ast.MethodDecl fn = findStaticFunction(klass, member.member(), staticArity, new LinkedHashSet<>());
+                    if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + staticArity + " on " + klass.name());
                     Ast.ClassDecl fnOwner = findDeclaringClass(klass, fn, new LinkedHashSet<>());
                     requireClassMemberVisible(fn.visibility(), fnOwner, "static function", fn.name());
                     validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + fnOwner.name() + "." + fn.name());
@@ -2515,8 +2547,11 @@ public final class TypeChecker {
                     }
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
+                        int methodArity = fixedCallArity(
+                                call.arguments(), env, generics, self,
+                                "method " + named.name() + "." + member.member());
                         ResolvedMethod target = findMethodTarget(
-                                klass, named, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                                klass, named, member.member(), methodArity, new LinkedHashSet<>());
                         if (target == null) {
                             ResolvedField field = findFieldTarget(
                                     klass, named, member.member(), new LinkedHashSet<>());
@@ -2536,15 +2571,23 @@ public final class TypeChecker {
                                             "field '" + member.member() + "' on " + named.name()
                                                     + " is not callable");
                                 }
-                                if (fn.parameters().size() != call.arguments().size()) {
+                                List<ExpandedCallArgument> fieldArguments =
+                                        expandFixedCallArguments(
+                                                call.arguments(), env, generics, self,
+                                                "function-valued field " + member.member());
+                                if (fn.parameters().size() != fieldArguments.size()) {
                                     throw new IllegalArgumentException(
                                             "function-valued field '" + member.member() + "' call arity mismatch");
                                 }
                                 for (int i = 0; i < fn.parameters().size(); i++) {
-                                    validateLambdaArgument(
-                                            call.arguments().get(i), fn.parameters().get(i), env, generics, self);
+                                    ExpandedCallArgument argument = fieldArguments.get(i);
+                                    if (argument.expression() != null) {
+                                        validateLambdaArgument(
+                                                argument.expression(), fn.parameters().get(i), env, generics, self);
+                                    }
                                     Type actualArgument =
-                                            typeOf(call.arguments().get(i), env, generics, self);
+                                            expandedCallArgumentType(
+                                                    argument, fn.parameters().get(i), env, generics, self);
                                     requireReadonlyCapabilityPreserved(
                                             actualArgument,
                                             fn.parameters().get(i),
@@ -2562,7 +2605,7 @@ public final class TypeChecker {
                             }
                             throw new IllegalArgumentException(
                                     "no method or callable field '" + member.member()
-                                            + "' with arity " + call.arguments().size()
+                                            + "' with arity " + methodArity
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
@@ -2591,12 +2634,15 @@ public final class TypeChecker {
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
                     if (iface != null) {
+                        int interfaceArity = fixedCallArity(
+                                call.arguments(), env, generics, self,
+                                "interface method " + named.name() + "." + member.member());
                         ResolvedInterfaceFunction target = findInterfaceFunctionTarget(
-                                iface, named, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                                iface, named, member.member(), interfaceArity, new LinkedHashSet<>());
                         if (target == null) {
                             throw new IllegalArgumentException(
                                     "no interface method '" + member.member() + "' with arity "
-                                            + call.arguments().size() + " on " + named.name());
+                                            + interfaceArity + " on " + named.name());
                         }
                         Ast.InterfaceFunctionDecl method = target.function();
                         Ast.InterfaceDecl owner = target.owner();
@@ -2631,10 +2677,18 @@ public final class TypeChecker {
             }
             Type callee = typeOf(call.callee(), env, generics, self);
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
-            if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
+            List<ExpandedCallArgument> expanded =
+                    expandFixedCallArguments(
+                            call.arguments(), env, generics, self,
+                            "function value call");
+            if (fn.parameters().size() != expanded.size()) throw new IllegalArgumentException("call arity mismatch");
             for (int i = 0; i < fn.parameters().size(); i++) {
-                validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                Type actualArgument = typeOf(call.arguments().get(i), env, generics, self);
+                ExpandedCallArgument argument = expanded.get(i);
+                if (argument.expression() != null) {
+                    validateLambdaArgument(argument.expression(), fn.parameters().get(i), env, generics, self);
+                }
+                Type actualArgument = expandedCallArgumentType(
+                        argument, fn.parameters().get(i), env, generics, self);
                 requireReadonlyCapabilityPreserved(
                         actualArgument,
                         fn.parameters().get(i),
@@ -3169,6 +3223,7 @@ public final class TypeChecker {
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
@@ -3881,6 +3936,7 @@ public final class TypeChecker {
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
         try {
@@ -3909,6 +3965,7 @@ public final class TypeChecker {
         }
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        List<Type> lambdaArgumentTypes = new ArrayList<>(lambda.parameters().size());
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
             Type expectedParam = expected.parameters().get(i);
@@ -3918,10 +3975,12 @@ public final class TypeChecker {
                         "lambda parameter '" + param.name() + "' mutability does not match expected callable contract");
             }
             Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
+            lambdaArgumentTypes.add(declared);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
+        defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
         try {
@@ -6209,6 +6268,54 @@ public final class TypeChecker {
         return bindings;
     }
 
+    private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
+
+    private List<ExpandedCallArgument> expandFixedCallArguments(
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String label) {
+        List<ExpandedCallArgument> expanded = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (!(argument instanceof Ast.SpreadExpr spread)) {
+                expanded.add(new ExpandedCallArgument(argument, null));
+                continue;
+            }
+
+            Type spreadType = deref(typeOf(spread.expression(), env, generics, self));
+            if (!(spreadType instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException(
+                        label + " spread requires a statically known tuple; got " + spreadType
+                                + ". Runtime-length collections require an explicitly variadic callable.");
+            }
+            for (Type element : tuple.elements()) {
+                expanded.add(new ExpandedCallArgument(null, element));
+            }
+        }
+        return List.copyOf(expanded);
+    }
+
+    private int fixedCallArity(
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String label) {
+        return expandFixedCallArguments(arguments, env, generics, self, label).size();
+    }
+
+    private Type expandedCallArgumentType(
+            ExpandedCallArgument argument,
+            Type expected,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        return argument.expression() == null
+                ? argument.staticType()
+                : typeOfAgainstExpected(argument.expression(), expected, env, generics, self);
+    }
+
     private Type checkGenericCallable(
             List<String> genericNames,
             List<Ast.Param> params,
@@ -6220,28 +6327,37 @@ public final class TypeChecker {
             Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
-        if (params.size() != arguments.size()) throw new IllegalArgumentException(label + " arity mismatch");
+        List<ExpandedCallArgument> expanded =
+                expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
+        if (params.size() != expanded.size()) {
+            throw new IllegalArgumentException(
+                    label + " arity mismatch: expected " + params.size()
+                            + " argument(s), got " + expanded.size());
+        }
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
         Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
         List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
-        for (int i = 0; i < arguments.size(); i++) {
-            Type actual = typeOfAgainstExpected(
-                    arguments.get(i), patterns.get(i), env, callerGenerics, callerSelf);
+        for (int i = 0; i < expanded.size(); i++) {
+            Type actual = expandedCallArgumentType(
+                    expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
 
-        for (int i = 0; i < arguments.size(); i++) {
+        for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
             if (containsGenericNamed(expected, unbound)) {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
             }
-            validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
-            Type actual = typeOfAgainstExpected(
-                    arguments.get(i), expected, env, callerGenerics, callerSelf);
+            ExpandedCallArgument argument = expanded.get(i);
+            if (argument.expression() != null) {
+                validateLambdaArgument(argument.expression(), expected, env, callerGenerics, callerSelf);
+            }
+            Type actual = expandedCallArgumentType(
+                    argument, expected, env, callerGenerics, callerSelf);
             if (!params.get(i).structural()) {
                 requireReadonlyCapabilityPreserved(
                         actual,

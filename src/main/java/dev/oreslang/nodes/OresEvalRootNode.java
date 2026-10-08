@@ -571,6 +571,7 @@ public final class OresEvalRootNode extends RootNode {
                             declaringClass(startup),
                             object);
             env.define("self", object, Ast.BindingKind.VAL);
+            bindCallableArguments(env, startup.parameters(), List.of(), "actor on_start");
             try {
                 executeBlock(startup.body(), env);
             } catch (ReturnSignal signal) {
@@ -748,6 +749,33 @@ public final class OresEvalRootNode extends RootNode {
             return (List<Object>) args;
         }
 
+        private void bindCallableArguments(
+                Env env,
+                List<Ast.Param> parameters,
+                List<?> args,
+                String label) {
+            if (parameters.size() != args.size()) {
+                throw new IllegalArgumentException(
+                        label + " argument arity mismatch: expected "
+                                + parameters.size() + ", got " + args.size());
+            }
+
+            ArrayList<Object> tuple = new ArrayList<>(args.size());
+            for (int i = 0; i < parameters.size(); i++) {
+                Ast.Param param = parameters.get(i);
+                Object value = args.get(i);
+                tuple.add(value);
+                env.define(
+                        param.name(),
+                        value,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            env.define(
+                    "arguments",
+                    java.util.Collections.unmodifiableList(tuple),
+                    Ast.BindingKind.CONST);
+        }
+
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             return invoke(functionInvocation(fn, args));
         }
@@ -895,20 +923,13 @@ public final class OresEvalRootNode extends RootNode {
                                 function != null
                                         ? function.parameters()
                                         : method.parameters();
-                        if (parameters.size() != arguments.size()) {
-                            throw new IllegalArgumentException(
-                                    "source task argument arity mismatch");
-                        }
-
-                        for (int i = 0; i < parameters.size(); i++) {
-                            Ast.Param param = parameters.get(i);
-                            params.define(
-                                    param.name(),
-                                    arguments.get(i),
-                                    param.mutable()
-                                            ? Ast.BindingKind.LET
-                                            : Ast.BindingKind.VAL);
-                        }
+                        bindCallableArguments(
+                                params,
+                                parameters,
+                                arguments,
+                                function != null
+                                        ? "function " + function.name()
+                                        : "method " + method.name());
                     }
 
                     List<Ast.Stmt> body =
@@ -4365,10 +4386,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+            bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
             try {
                 // A trap boundary must survive tail-call lowering. Treat it as a
                 // tail barrier so a callee failure cannot escape by replacing
@@ -4407,10 +4425,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<?> args,
                 GeneratorRuntime.Emitter<Object> emitter) {
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+            bindCallableArguments(env, fn.parameters(), args, "generator " + fn.name());
 
             GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
             Boolean previousAsync = activeGeneratorAsync.get();
@@ -4454,10 +4469,7 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.arity(); i++) {
-                Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+            bindCallableArguments(env, method.parameters(), args, "method " + method.name());
             try {
                 executeBlock(method.body(), env);
                 return null;
@@ -5872,10 +5884,7 @@ public final class OresEvalRootNode extends RootNode {
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
-                    for (int i = 0; i < lambda.parameters().size(); i++) {
-                        Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-                    }
+                    bindCallableArguments(local, lambda.parameters(), args, "lambda");
                     try {
                         if (lambda.expressionBody() != null) {
                             // An expression-bodied lambda's sole expression is
@@ -6675,10 +6684,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
             Env env = new Env(null, false, declaringClass(fn));
-            for (int i = 0; i < fn.arity(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+            bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
             try {
                 executeBlock(fn.body(), env);
                 return null;
@@ -6969,13 +6975,11 @@ public final class OresEvalRootNode extends RootNode {
 
             Env constructorEnv = new Env(null, false, klass, object);
             constructorEnv.define("self", object, Ast.BindingKind.VAL);
-            for (int i = 0; i < constructor.parameters().size(); i++) {
-                Ast.Param param = constructor.parameters().get(i);
-                constructorEnv.define(
-                        param.name(),
-                        args.get(i),
-                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+            bindCallableArguments(
+                    constructorEnv,
+                    constructor.parameters(),
+                    args,
+                    "constructor " + klass.name());
             try {
                 executeBlock(constructor.body(), constructorEnv);
             } catch (ReturnSignal signal) {
