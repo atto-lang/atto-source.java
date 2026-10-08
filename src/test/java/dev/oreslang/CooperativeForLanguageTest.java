@@ -75,7 +75,7 @@ final class CooperativeForLanguageTest {
         // Imported module namespaces cannot yet resolve explicit generic call
         // markers; the exported library declarations remain generic.
         Files.copy(Path.of("stdlib/cooperative.ores"), temp.resolve("cooperative.ores"));
-        assertEquals("6|8|2|20", run("""
+        assertEquals("6|8|2|14", run("""
                 import module cooperative from './cooperative';
                 pub async fnc main(): void {
                   let mut Array<int> values = new Array<int>();
@@ -88,12 +88,13 @@ final class CooperativeForLanguageTest {
                   val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
                   val mapped = cooperative.map(values, doubleIt);
                   val filtered = cooperative.filter(mapped, atLeastSix);
-                  val reduced = cooperative.reduce(mapped, 0, sum);
+                  // filter has consumed mapped; reduce will consume filtered.
                   stdio.stdout.write(filtered.get(0));
                   stdio.stdout.write("|");
                   stdio.stdout.write(filtered.get(1));
                   stdio.stdout.write("|");
                   stdio.stdout.write(filtered.size);
+                  val reduced = cooperative.reduce(filtered, 0, sum);
                   stdio.stdout.write("|");
                   stdio.stdout.write(reduced);
                   return;
@@ -114,10 +115,11 @@ final class CooperativeForLanguageTest {
                   val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
                   val Fnc<int, bool> keep = |int x| -> { return x == 1; };
                   val filtered = cooperative.filter(values, keep);
+                  val filteredCount = filtered.size;
                   val result = cooperative.reduce(filtered, 0, sum);
                   stdio.stdout.write(result);
                   stdio.stdout.write("|");
-                  stdio.stdout.write(filtered.size);
+                  stdio.stdout.write(filteredCount);
                   stdio.stdout.write("|");
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
                   return;
@@ -134,11 +136,18 @@ final class CooperativeForLanguageTest {
         assertEquals("10|true|true|8", run("""
                 import module cooperative from './cooperative';
                 pub async fnc main(): void {
+                  // Collection operators transfer owned inputs into
+                  // continuation-backed library tasks.
                   let mut Array<int> values = new Array<int>();
-                  values.add(1);
-                  values.add(2);
-                  values.add(3);
-                  values.add(4);
+                  let mut Array<int> anyValues = new Array<int>();
+                  let mut Array<int> allValues = new Array<int>();
+                  let mut Array<int> flatValues = new Array<int>();
+                  for (let i = 1; i < 5; i = i + 1) do
+                    values.add(i);
+                    anyValues.add(i);
+                    allValues.add(i);
+                    flatValues.add(i);
+                  done
                   val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
                   val Fnc<int, bool> positive = |int x| -> { return x > 0; };
                   val Fnc<int, bool> greaterThanThree = |int x| -> { return x > 3; };
@@ -149,9 +158,9 @@ final class CooperativeForLanguageTest {
                     return pair;
                   };
                   val scanned = cooperative.scan(values, 0, sum);
-                  val anything = cooperative.any(values, greaterThanThree);
-                  val everything = cooperative.all(values, positive);
-                  val flat = cooperative.flatMap(values, two);
+                  val anything = cooperative.any(anyValues, greaterThanThree);
+                  val everything = cooperative.all(allValues, positive);
+                  val flat = cooperative.flatMap(flatValues, two);
                   stdio.stdout.write(scanned.get(3));
                   stdio.stdout.write("|");
                   stdio.stdout.write(anything);
