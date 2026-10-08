@@ -227,6 +227,15 @@ public final class TypeChecker {
                     else if (decl instanceof Ast.TypeAliasDecl alias) {
                         Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
                         resolve(alias.target(), aliasGenerics, null);
+                        if (recursiveAliasReaches(alias.target(), alias,
+                                java.util.Collections.newSetFromMap(new IdentityHashMap<>()))
+                                && !recursiveAliasHasFiniteBase(alias.target(),
+                                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
+                            throw new IllegalArgumentException(
+                                    "recursive type alias '" + alias.name()
+                                            + "' has no finite base value; use Option, an empty collection, "
+                                            + "a nonrecursive Result alternative, or a managed reference");
+                        }
                     }
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
@@ -234,6 +243,79 @@ public final class TypeChecker {
                 currentLexicalModule = previousModule;
             }
         }
+    }
+
+    /**
+     * Recursion is meaningful only if some finite witness can be created.
+     * A required by-value recursive field has no terminating constructor;
+     * Option/empty containers and a nonrecursive Result alternative do.
+     * This check is deliberately about aliases, not recursive nominal class
+     * layouts (whose constructors and field initialization are checked elsewhere).
+     */
+    private boolean recursiveAliasReaches(
+            Ast.TypeRef ref, Ast.TypeAliasDecl target, Set<Ast.TypeAliasDecl> visited) {
+        if (ref == null) return false;
+        Ast.TypeAliasDecl linked = findTypeAlias(ref.name());
+        if (linked == target) return true;
+        if (linked != null && visited.add(linked)) {
+            if (recursiveAliasReaches(linked.target(), target, visited)) return true;
+        }
+        if (ref.isRecordType()) {
+            for (Ast.TypeRef field : ref.recordMembers().values()) {
+                if (recursiveAliasReaches(field, target, visited)) return true;
+            }
+        }
+        for (Ast.TypeRef argument : ref.arguments()) {
+            if (recursiveAliasReaches(argument, target, visited)) return true;
+        }
+        return false;
+    }
+
+    private boolean recursiveAliasHasFiniteBase(
+            Ast.TypeRef ref, Set<Ast.TypeAliasDecl> visiting) {
+        if (ref == null) return true;
+        if (ref.isBorrow()) {
+            return recursiveAliasHasFiniteBase(ref.borrowedTarget(), visiting);
+        }
+        if (ref.isUnion()) {
+            return ref.arguments().stream().anyMatch(
+                    option -> recursiveAliasHasFiniteBase(option, visiting));
+        }
+        if (ref.isRecordType()) {
+            return ref.recordMembers().values().stream().allMatch(
+                    field -> recursiveAliasHasFiniteBase(field, visiting));
+        }
+        if (ref.isTupleType()) {
+            return ref.arguments().stream().allMatch(
+                    item -> recursiveAliasHasFiniteBase(item, visiting));
+        }
+
+        Ast.TypeAliasDecl linked = findTypeAlias(ref.name());
+        if (linked != null) {
+            if (!visiting.add(linked)) return false;
+            try {
+                Map<String, Ast.TypeRef> replacements = new HashMap<>();
+                for (int i = 0; i < linked.genericParameters().size(); i++) {
+                    replacements.put(linked.genericParameters().get(i), ref.arguments().get(i));
+                }
+                return recursiveAliasHasFiniteBase(
+                        substituteAliasType(linked.target(), replacements), visiting);
+            } finally {
+                visiting.remove(linked);
+            }
+        }
+        return switch (ref.name()) {
+            case "Option", "Array", "List", "Vector", "Slice",
+                    "Fnc", "Function", "Future", "Generator",
+                    "AsyncGenerator", "Iterator", "AsyncIterator" -> true;
+            case "Result" -> ref.arguments().stream().anyMatch(
+                    argument -> recursiveAliasHasFiniteBase(argument, visiting));
+            case "Tuple", "FixedArray", "FixedList" -> ref.arguments().stream().allMatch(
+                    argument -> recursiveAliasHasFiniteBase(argument, visiting));
+            case "Mutex", "SharedMutex" -> ref.arguments().stream().allMatch(
+                    argument -> recursiveAliasHasFiniteBase(argument, visiting));
+            default -> true;
+        };
     }
 
     private void validateModuleValueNamespace(Ast.ModuleDecl module) {
