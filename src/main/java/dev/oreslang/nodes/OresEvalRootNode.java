@@ -4489,14 +4489,28 @@ public final class OresEvalRootNode extends RootNode {
             executeBlock(statements, parent, false);
         }
 
-        private static boolean preserveStrongEffect(Throwable inFlight) {
-            return inFlight instanceof OresFailure.Raise
-                    || inFlight instanceof OresFailure.Panic
-                    || inFlight instanceof ActorRuntime.ActorCancellationSignal
-                    || inFlight instanceof java.util.concurrent.CancellationException
-                    || inFlight instanceof VirtualMachineError
-                    || inFlight instanceof ThreadDeath
-                    || inFlight instanceof LinkageError;
+        private static int failurePriority(Throwable failure) {
+            if (failure == null) return 0;
+            if (failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath
+                    || failure instanceof LinkageError) return 100;
+            if (failure instanceof ActorRuntime.ActorCancellationSignal
+                    || failure instanceof ActorRuntime.ActorTerminatedException
+                    || failure instanceof java.util.concurrent.CancellationException) return 90;
+            // Unexpected host faults must not be hidden by a guest raise.
+            if (!(failure instanceof OresFailure)
+                    && !(failure instanceof ReturnSignal)
+                    && !(failure instanceof BreakSignal)
+                    && !(failure instanceof ContinueSignal)
+                    && !(failure instanceof TailCallSignal)) return 85;
+            if (failure instanceof OresFailure.Panic) return 80;
+            if (failure instanceof OresFailure.Raise) return 70;
+            if (failure instanceof OresFailure.Throw) return 60;
+            return 10; // return/break/continue/tail transfer
+        }
+
+        private static boolean preservePendingEffect(Throwable inFlight, Throwable cleanup) {
+            return inFlight != null && failurePriority(inFlight) >= failurePriority(cleanup);
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
@@ -4524,7 +4538,7 @@ public final class OresEvalRootNode extends RootNode {
                             eval(deferred.pop(), env);
                         } catch (RuntimeException | Error cleanup) {
                             deferredFailure = true;
-                            if (preserveStrongEffect(inFlight)) {
+                            if (preservePendingEffect(inFlight, cleanup)) {
                                 // Cleanup cannot downgrade a panic, raise, or cancellation.
                                 // Continue running other defers in LIFO order.
                                 if (cleanup != inFlight) inFlight.addSuppressed(cleanup);
@@ -4774,7 +4788,7 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         executeBlock(tried.finallyBody(), env, true);
                     } catch (RuntimeException | Error cleanup) {
-                        if (preserveStrongEffect(inFlight)) {
+                        if (preservePendingEffect(inFlight, cleanup)) {
                             if (cleanup != inFlight) inFlight.addSuppressed(cleanup);
                         } else {
                             throw cleanup;

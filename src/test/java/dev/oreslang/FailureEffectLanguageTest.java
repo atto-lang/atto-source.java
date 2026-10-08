@@ -131,6 +131,29 @@ final class FailureEffectLanguageTest {
     }
 
     @Test
+    void panicInFinallyOutranksAnEarlierRaise() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  rt recover {
+                    try {
+                      raise "earlier raise";
+                    } catch (err) {
+                      stdio.stdout.write("wrong");
+                    } finally {
+                      panic "new panic";
+                    }
+                  } on raise (Error err) {
+                    stdio.stdout.write("wrong");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException failed = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(failed.getMessage().contains("new panic"));
+    }
+
+    @Test
     void bareFailuresAreRejectedByParser() {
         assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.parseAndTypeCheck("pub fnc main(): void { throw; }"));
