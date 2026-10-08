@@ -7,26 +7,38 @@ required; WeakRef<T> is a weak observer of that cell.
 
 ## Source example
 
+For an actor, declare a referenced class in a separate source unit and import
+it explicitly. The actor lexical-boundary checker intentionally does not
+permit a same-file user-defined type alias to be captured implicitly.
+
+`models.ores`:
+
 ```oreslang
-type Node = struct{
-  value: int,
-  next: Ref<Node>
-};
+pub define class Link as
+  pub val Ref<Link> next;
+end
+```
+
+`main.ores`:
+
+```oreslang
+import class Link from "./models";
 
 define actor Worker as
   receive(ActorMail<string> mail): void {
-    val root: Ref<Node> = Ref.empty<Node>();
-    // The node contains a strong handle to its own cell, not an illegal
-    // by-value copy of an incompletely constructed Node.
-    root.set(struct{value: int, next: Ref<Node>}{value: 5, next: root});
+    val root: Ref<Link> = Ref.empty<Link>();
+    root.set(new Link(root)); // local cycle through the Ref cell
     val weak = root.downgrade();
     val recovered = weak.upgrade().unwrap();
-    val owned: Node = recovered.take().unwrap();
+    val owned: Link = recovered.take().unwrap();
     self.end();
     return;
   }
 end
 ```
+
+This is distinct from the recursive type-alias syntax in PR #457;
+a recursive type definition does not by itself create a cyclic runtime value.
 
 ## Current operations
 
@@ -48,7 +60,7 @@ end
 
 Ref<T> and WeakRef<T> cannot be allocated outside an actor, cannot be
 accessed from another actor (even on the same carrier thread), and cannot
-cross message/freeze/async/shared-memory boundaries. This is enforced
+cross message/freeze/async/shared-memory or buffered-channel/select boundaries. This is enforced
 statically on known types and dynamically by the transport graph admission
 validator. Java host access does not turn them into transportable data.
 

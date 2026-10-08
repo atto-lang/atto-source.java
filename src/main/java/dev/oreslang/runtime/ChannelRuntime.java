@@ -233,6 +233,7 @@ public final class ChannelRuntime {
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
+            ActorLocalReferences.rejectBufferedChannelPayload(value);
         }
     }
 

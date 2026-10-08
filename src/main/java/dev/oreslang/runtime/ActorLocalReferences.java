@@ -16,6 +16,55 @@ import java.util.Optional;
 public final class ActorLocalReferences {
     private ActorLocalReferences() { }
 
+    /**
+     * Buffered channels and select write registrations may outlive a mailbox turn.
+     * Reject actor-local capabilities before retaining a payload, including
+     * payloads hidden inside language records/options or host collections.
+     * Unlike mailbox transport this permits ordinary local-only objects.
+     */
+    static void rejectBufferedChannelPayload(Object value) {
+        if (value instanceof Ref<?> || value instanceof WeakRef<?>) {
+            throw new SecurityException(
+                    "actor-local Ref<T>/WeakRef<T> cannot enter a buffered channel or select case");
+        }
+        if (!(value instanceof OresMutex.SharedState)
+                && !(value instanceof java.util.Map<?, ?>)
+                && !(value instanceof Iterable<?>)
+                && !value.getClass().isArray()) {
+            return;
+        }
+        java.util.ArrayDeque<Object> pending = new java.util.ArrayDeque<>();
+        java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
+        pending.add(value);
+        while (!pending.isEmpty()) {
+            Object node = pending.removeLast();
+            if (node instanceof Ref<?> || node instanceof WeakRef<?>) {
+                throw new SecurityException(
+                        "actor-local Ref<T>/WeakRef<T> cannot enter a buffered channel or select case");
+            }
+            if (seen.put(node, Boolean.TRUE) != null) continue;
+            if (node instanceof OresMutex.SharedState state) {
+                for (Object child : state.sharedStateChildren()) {
+                    if (child != null) pending.add(child);
+                }
+            } else if (node instanceof java.util.Map<?, ?> map) {
+                for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (entry.getKey() != null) pending.add(entry.getKey());
+                    if (entry.getValue() != null) pending.add(entry.getValue());
+                }
+            } else if (node instanceof Iterable<?> iterable) {
+                for (Object child : iterable) {
+                    if (child != null) pending.add(child);
+                }
+            } else if (node.getClass().isArray()) {
+                for (int i = 0; i < java.lang.reflect.Array.getLength(node); i++) {
+                    Object child = java.lang.reflect.Array.get(node, i);
+                    if (child != null) pending.add(child);
+                }
+            }
+        }
+    }
+
     private static Object requireActorDomain() {
         Object domain = ActorRuntime.currentActorExecutionDomain();
         if (domain == null) {

@@ -89,6 +89,44 @@ final class ActorLocalReferencesTest {
     }
 
     @Test
+    void bufferedChannelsAndSelectWritesRejectActorLocalHandlesAtRuntime() throws Exception {
+        CompletableFuture<Boolean> verified = new CompletableFuture<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var owner = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    var strong = ActorLocalReferences.create(7);
+                    var weak = strong.downgrade();
+                    var channel = new ChannelRuntime.Channel<Object>(2);
+                    assertThrows(SecurityException.class, () -> channel.tryWrite(strong));
+                    assertThrows(SecurityException.class, () -> channel.writeAsync(weak));
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel, List.of(strong)));
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel, java.util.Map.of("weak", weak)));
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel, new Object[]{List.of(strong)}));
+                    OresMutex.SharedState wrapped = () -> List.of(weak);
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel, wrapped));
+                    java.util.ArrayList<Object> cyclic = new java.util.ArrayList<>();
+                    cyclic.add(cyclic);
+                    cyclic.add(strong);
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel, cyclic));
+                    assertEquals(0, channel.size(), "rejected writes must not enqueue anything");
+                    assertTrue(channel.tryWrite("safe"));
+                    assertEquals(Optional.of("safe"), channel.tryRead());
+                    verified.complete(true);
+                } catch (Throwable problem) {
+                    verified.completeExceptionally(problem);
+                }
+            });
+            owner.send("verify");
+            assertTrue(verified.get(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actorCannotPublishReferencesThroughMailbox() throws Exception {
         CompletableFuture<Boolean> rejected = new CompletableFuture<>();
         try (ActorRuntime runtime = new ActorRuntime()) {
