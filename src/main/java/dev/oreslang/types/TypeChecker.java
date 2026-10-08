@@ -2037,15 +2037,31 @@ public final class TypeChecker {
         if (type.name().equals("Observable") || type.name().equals("Stream")) {
             return switch (member) {
                 case "subscribe" -> new Function(List.of(), new Named("Subscription", List.of(item)));
+                case "get_reader" -> {
+                    if (!type.name().equals("Stream")) {
+                        throw new IllegalArgumentException(
+                                "Observable readers are per-subscription: use subscribe().get_reader()");
+                    }
+                    yield new Function(List.of(), new Named("Reader", List.of(item)));
+                }
                 case "close" -> new Function(List.of(), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown " + type.name() + " member '" + member + "'");
             };
         }
         if (type.name().equals("Subscription")) {
             return switch (member) {
+                case "get_reader" -> new Function(List.of(), new Named("Reader", List.of(item)));
                 case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("Notification", List.of(item)))));
                 case "cancel" -> new Function(List.of(), Primitive.BOOL);
                 default -> throw new IllegalArgumentException("unknown Subscription member '" + member + "'");
+            };
+        }
+        if (type.name().equals("Reader")) {
+            return switch (member) {
+                case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("Notification", List.of(item)))));
+                case "release_lock" -> new Function(List.of(), Primitive.VOID);
+                case "cancel" -> new Function(List.of(), Primitive.BOOL);
+                default -> throw new IllegalArgumentException("unknown Reader member '" + member + "'");
             };
         }
         if (type.name().equals("Notification")) {
