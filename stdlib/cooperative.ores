@@ -38,19 +38,6 @@ define module cooperative as
     }
     return;
   }
-  // Scan emits one prefix result per input element; the initial seed is
-  // not emitted. Reduction callbacks execute in source order, exactly once.
-  pub fnc scan<T, R>(Array<T> values, R initial, Fnc<R, T, R> combine): Array<R> {
-    let mut Array<R> output = new Array<R>();
-    let accumulator = initial;
-    val count = values.size;
-    rt cooperative for let i = 0; i < count; i++ {
-      accumulator = combine(accumulator, values.get(i));
-      output.add(accumulator);
-    }
-    return output;
-  }
-
   // Short-circuit operators preserve the predicate's side effects, and stop
   // without a gratuitous handoff after a decisive result.
   pub fnc any<T>(Array<T> values, Fnc<T, bool> predicate): bool {
