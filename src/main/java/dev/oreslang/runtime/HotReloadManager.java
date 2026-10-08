@@ -227,7 +227,8 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public static final class Generation implements AutoCloseable {
-        private final HotReloadManager owner;
+        // A retained retired Generation must not pin the manager (and all its other contexts).
+        private final java.lang.ref.WeakReference<HotReloadManager> owner;
         private final long id;
         private final String codeUnitId;
         private final String sha256;
@@ -238,7 +239,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final AtomicBoolean closed = new AtomicBoolean();
 
         private Generation(HotReloadManager owner, long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
-            this.owner = owner;
+            this.owner = new java.lang.ref.WeakReference<>(owner);
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
@@ -274,7 +275,10 @@ public final class HotReloadManager implements AutoCloseable {
                 try {
                     context.close(true);
                 } finally {
-                    owner.onGenerationClosed(this);
+                    HotReloadManager manager = owner.get();
+                    if (manager != null) {
+                        manager.onGenerationClosed(this);
+                    }
                 }
             }
         }
