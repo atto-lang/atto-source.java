@@ -75,6 +75,28 @@ final class ActorLocalReferenceTest {
     }
 
     @Test
+    void foreignReferenceCannotBeHiddenInsideNestedCollections() {
+        Object owner = new Object();
+        Object otherActor = new Object();
+        var foreign = ActorLocalReference.createForDomain(otherActor, 7L);
+        var cell = ActorLocalReference.<Object>createForDomain(owner, "initial");
+        List<Object> nested = new ArrayList<>();
+        nested.add(java.util.Map.of("foreign", foreign));
+        assertThrows(SecurityException.class, () ->
+                ActorLocalReference.setForDomain(cell, owner, nested));
+        assertEquals("initial", ActorLocalReference.swapForDomain(cell, owner, "next"),
+                "failed publication must leave the old value intact");
+        assertThrows(SecurityException.class, () ->
+                ActorLocalReference.createForDomain(owner, nested));
+
+        var foreignWeak = ActorLocalReference.downgradeForDomain(foreign, otherActor);
+        assertThrows(SecurityException.class, () ->
+                ActorLocalReference.setForDomain(cell, owner,
+                        java.util.Map.of("weak", foreignWeak)));
+        assertEquals("next", ActorLocalReference.getCopyForDomain(cell, owner));
+    }
+
+    @Test
     void managedReferenceGraphMayContainIdentityCyclesWithoutCopyingOwnedValues() {
         Object actor = new Object();
         List<Object> node = new ArrayList<>();
