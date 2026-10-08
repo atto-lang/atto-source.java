@@ -69,11 +69,143 @@ strict requirements.
   purpose Linux OS: firmware, SMIs, PCIe, power transitions, IRQs, and contention
   still cause jitter even with kernel-bypass packet I/O.
 
+## Hungry Actors: hot/warm dedicated real-time execution (WIP)
+
+A **Hungry Actor** is a deliberately resource-hungry, supervisor-admitted,
+single-writer actor that holds one **dedicated native OS thread** for its
+lifetime rather than merely a stable lane in a shared carrier pool. It may be a
+SHARED actor or an ISOLATED actor. **The trust grant is orthogonal to actor
+kind:** only host-verified trusted deployments may request HPC resources;
+UNTRUSTED actors always fail admission, even if labelled shared/isolated or if
+their source contains an annotation. Isolated does not mean privileged and
+trusted does not mean OS-sandboxed.
+
+| Mode | Thread/actor lifetime | Activation & latency contract |
+| --- | --- | --- |
+| HOT | Precreated thread, pinned core, initialized actor/arena, active bounded spin/poll loop | No startup allocation, cold compilation, heap GC or class loading in a verified native hot path |
+| WARM | Precreated dedicated thread, initialized/pre-faulted arena and code, parked on an eventfd/futex | Wake/transition to HOT without allocating or compiling; measure wake and scheduling jitter |
+| Normal | Existing shared-carrier actor scheduler | Ordinary portability/fairness/GC contract, **not** HPC latency |
+
+Both kinds must preserve the **one actor-wide execution lease**. The thread
+runs only the owning actor's work; it must not call a different actor's guest
+handlers, and no asynchronous completion thread may mutate actor state.
+For ISOLATED trusted Hungry Actors, the native data plane must have an actual
+approved address-space/isolate strategy and bounded serialized crossings. A
+Truffle context alone is **not** physical isolation.
+
+### Linux scheduling and physical placement
+
+Supervisors, not guest source code, request and verify actual kernel scheduling:
+
+- **SCHED_FIFO**: fixed-precedence real-time thread, priority 1..99, no
+  time-slice among equal priority; a continuously runnable thread can starve
+  lower-priority work. Appropriate only with owned cores, a separate watchdog
+  and explicit poll/spin budgets.
+- **SCHED_RR**: priority 1..99 with a time quantum among peers at the same
+  priority. Still requires isolation/watchdog and can starve normal threads.
+- **SCHED_DEADLINE**: `sched_setattr` with nanosecond
+  `runtime <= deadline <= period`, priority 0. The kernel conducts a
+  schedulability admission test and throttles a task when it exhausts its
+  bandwidth. Suitable for **budgeted episodic** work, not unbounded HOT
+  polling. WARM activation may use it only with validated finite jobs.
+- **SCHED_OTHER/nice**: not an adequate strict real-time admission request.
+  High `nice` priority is not the same as real-time scheduling.
+
+Linux specifics: [sched(7)](https://man7.org/linux/man-pages/man7/sched.7.html)
+and [kernel SCHED_DEADLINE documentation](https://www.kernel.org/doc/html/latest/scheduler/sched-deadline.html).
+This profile does not hardcode a priority of 99: the supervisor determines
+safe priority/CPU allocation from system-wide real-time services and watchdog
+requirements. Untrusted source may request a policy as a *proposal* but cannot
+set `CAP_SYS_NICE`, `RLIMIT_RTPRIO`, `sched_setscheduler` or
+`sched_setattr`, and cannot set process-wide kernel knobs.
+
+Required admission sequence (not implemented yet):
+
+1. Verify signed/immutable compiled artifact and trusted host deployment
+   identity, host policy, actor kind, ABI, source-level no-alloc proof, code
+   freeze, native binary/arena budget and supervisor-signed resource lease.
+2. Choose an exclusive **physical** core; account for its SMT sibling, cgroup
+   cpuset restrictions, scheduler domains, NIC IRQ/NAPI/queue affinity,
+   housekeeping/RCU work, IRQ-off sections, NUMA node and page residence.
+   Logical actor lanes or CPU pinning alone do not reserve an isolated core.
+3. Reserve **another** CPU/core for management, termination and watchdog.
+   Warm and hot actors must never starve cancellation/control traffic.
+4. Allocate and fault-in **all** arena, stack and packet-buffer pages, and
+   lock required pages *before* hot activation. Verify actual NUMA page
+   placement; enabling `mlockall` alone does not guarantee zero page faults.
+5. Spawn the actor's dedicated carrier thread and install `sched_setaffinity`
+   + scheduling policy on its native TID, via an authenticated privileged
+   supervisor/launcher; check permission and read back
+   `sched_getscheduler`/`sched_getparam`/`sched_getattr`, TID affinity and
+   effective cgroup constraints. Failure means **no HPC actor admission**.
+6. Read back runtime scheduling limits and deadline admission; preserve
+   reasonable system RT throttling/watchdog budgets. Never globally disable
+   safety throttles for a guest. Do not assume any kernel policy guarantees
+   an absolute maximum tick-to-trade latency.
+7. Start HOT or activate WARM only after every admission check succeeds.
+   Revoke, demote and teardown on loss of CPU/NUMA/NIC lease, actor failure,
+   watchdog deadline, or requested cancellation. A hung hot loop cannot block
+   the control path or physical resource reclamation.
+
+Potential Linux tuning experiments on dedicated hosts include PREEMPT_RT,
+CPU isolation, `nohz_full`, housekeeping/RCU isolation, disabling frequency
+scaling/SMT only when approved, and tuned NIC RX steering/interrupt affinity.
+These require explicit, measurable deployment settings and may hurt throughput
+or availability; they are **not** assumptions or settings this PR applies.
+
+### Strict zero-GC-pauses data plane
+
+The goal is **zero GC pauses attributable to the Hungry Actor's critical
+path**, not a false claim that the JVM host or other management threads never
+collect garbage.
+
+- Memory for every hot-path object is arena/region allocated during startup,
+  with statically verified fixed layout and deterministic lifetime. No JVM
+  reference/managed graph, dynamic reflection, dynamic class load, new
+  exception object, coroutine closure, heap-based Future, runtime log event
+  allocation or hidden FFI allocation can enter the critical path.
+- A strict hot loop needs a native artifact that does **not** run guest
+  interpreter, JIT, OSR/deopt or managed GC. Today a Graal Native Image
+  **host** binary does not prove this for Oreslang guest code. Future LLVM
+  native guest AOT plus statically checked call graphs/regions is the
+  preferred strict target.
+- Keep JVM/GraalVM supervisor and observability processes on other cores;
+  instrument crossings and disable callbacks into them on the critical path.
+  The control plane may still GC; that must not stall or rendezvous with
+  dedicated native Hungry Actor threads.
+- Initialization can allocate and use GC or compilation in a non-real-time
+  management phase, but the transition into HOT is one-way under a frozen
+  code version. A source hot-reload requires draining/replacing the actor, not
+  mutating its code while active.
+- Compiler annotations like `@Hungry(mode: "HOT")`,
+  `@NoHeapAlloc` and `@NoRuntimeCodegen` are **requests/contracts**, not
+  kernel privileges or compiler proofs. Without transitive verification the
+  strict build fails.
+
+A concrete, separate native-backend proof gate must check: no runtime guest
+codegen; no managed-heap allocations in hot call graphs; no GC safepoints that
+park the native path; no page faults after activation; zero heap-GC pauses
+measured with continuous stress; no actor or NIC queue migrations; bounded
+cold-to-HOT transitions; and p50/p99/p99.9/p99.99/max latency together with
+jitter, missed deadlines and watchdog intervention. Time spent in OS/firmware,
+PCIe, interrupt servicing or higher priority work can still introduce latency:
+zero GC pauses are **not** the same as hard zero-latency guarantees.
+
+### Inert planning checks in this PR
+
+`HpcHungryActorPlan` models HOT/WARM, SHARED/ISOLATED/UNTRUSTED,
+SCHED_FIFO/RR/DEADLINE, core/control CPU, NUMA, watchdog and zero-GC/codegen
+requests. It validates inputs but deliberately always returns a blocking
+reason: there is no kernel scheduler call, no resource grant and no dedicated
+thread in this PR. `HpcHungryActorPlanTest` exercises acceptance eligibility
+without admitting actors, invalid priorities, bad deadline budgets, no
+housekeeping CPU, missing watchdog, and untrusted/FaaS denial.
+
 ## Region and arena memory semantics
 
 Proposed language-facing constructs (illustrative **non-compiling** syntax):
 
-\`\`\`oreslang
+```oreslang
 @TrustedHpc
 @NoHeapAlloc
 @Layout(kind: "SoA", align: 64, endian: "little")
@@ -87,7 +219,7 @@ end
 val arena = HpcArena.from_lease(lease);
 val quotes = arena.alloc<MarketBatch>();
 defer quotes.close();
-\`\`\`
+```
 
 Required compiler/runtime invariants:
 
@@ -116,7 +248,7 @@ Required compiler/runtime invariants:
 
 Native backing should favor a Rust library with safe owning leases over
 unrestricted raw pointer exposure. Placement mechanisms may include
-\`mbind\`/\`set_mempolicy\`/libnuma, huge pages, \`mlock\` and pre-touch, but
+`mbind`/`set_mempolicy`/libnuma, huge pages, `mlock` and pre-touch, but
 only after platform-specific validation; allocations must not silently migrate
 or fall back to a different node. The present Java planning class computes
 offsets and rejects overflow; it does **not** allocate aligned memory.
@@ -166,7 +298,7 @@ The fast path may coexist with a slow control path, after tests.
   kernel bypass.
 
 The supervisor allocates all buffer memory and grants a generation-scoped
-\`NicQueueLease\` to the trusted data plane; no actor may open VFIO or raw NIC
+`NicQueueLease` to the trusted data plane; no actor may open VFIO or raw NIC
 resources from user source. The control plane must revoke leases, quiesce RX/TX,
 fence DMA, reclaim huge pages and enforce crash recovery before reassigning
 queues. Separate secrets, management network and telemetry from polling.
@@ -177,20 +309,20 @@ CPU-only Java atomics are not enough to prove DMA coherency.
 
 Proposed annotations (syntax and exact names subject to language review):
 
-- \`@TrustedHpc\`: compile-time request only; no authorization grant.
-- \`@NoHeapAlloc\`: compiler-verified transitive hot-path property, including
+- `@TrustedHpc`: compile-time request only; no authorization grant.
+- `@NoHeapAlloc`: compiler-verified transitive hot-path property, including
   callees, allocation through generics, exceptions, logging and async closures.
-- \`@NoRuntimeCodegen\`: reject builds with guest JIT, OSR, deoptimization
+- `@NoRuntimeCodegen`: reject builds with guest JIT, OSR, deoptimization
   recompilation or dynamic code loading in that path; cannot be guaranteed by
   an unverified Truffle/JVM annotation.
-- \`@Layout(...)\` / \`@Align(...)\`: explicit ABI layout, checked and manifested.
-- \`@PinnedCore(...)\` / \`@NumaNode(...)\`: deployment requests verified by
+- `@Layout(...)` / `@Align(...)`: explicit ABI layout, checked and manifested.
+- `@PinnedCore(...)` / `@NumaNode(...)`: deployment requests verified by
   the host; no implicit scheduler identity or portability assumption.
 
 Stages:
 
 1. Today: keep Graal/JVM profiles for semantics and integration tests, measure
-   hot allocation, JIT/OSR and GC. The existing native-image \`-Pnative-aot\`
+   hot allocation, JIT/OSR and GC. The existing native-image `-Pnative-aot`
    target AOT-compiles the host but does not by itself satisfy strict guest AOT.
 2. Native host experiment: isolate a Rust-owned off-heap data plane while
    Truffle remains on a separate management/control path. Strict latency
