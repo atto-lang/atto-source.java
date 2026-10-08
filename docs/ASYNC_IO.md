@@ -44,7 +44,10 @@ Failures retain their cause and a bounded `native:io` boundary annotation.
 
 Each context owns a virtual-thread executor with a hard maximum of 128 in-flight
 standard-library operations. Submission above that bound returns a failed future;
-there is no unbounded backlog or caller-runs fallback. One future is created per
+there is no unbounded backlog or caller-runs fallback. Socket close has 16
+separately reserved in-flight control slots, so saturated reads cannot consume
+all admission needed to close their sockets. These are executor admission
+counters, not additional actor channels. One future is created per
 operation, not one channel. Await uses the actor's existing continuation transport.
 
 This is **non-blocking for guest execution**. The portable implementation offloads

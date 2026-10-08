@@ -15,6 +15,7 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final ExecutorService workers = Executors.newThreadPerTaskExecutor(
             Thread.ofVirtual().name("ores-native-io-", 0).factory());
     private final Set<OresFuture<?>> pending = new HashSet<>();
+    private final Set<OresFuture<?>> controls = new HashSet<>();
     private final Set<AutoCloseable> resources = new HashSet<>();
     private final int capacity;
     private boolean closed;
@@ -32,23 +33,37 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submit(operation, work);
     }
 
+    public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
+        context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close_async");
+        return submitControl("socket.close_async", work);
+    }
+
+    synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
+        return submit(operation, work, controls, 16);
+    }
+
     synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
+        return submit(operation, work, pending, capacity);
+    }
+
+    private <T> OresFuture<T> submit(String operation, Callable<T> work,
+            Set<OresFuture<?>> admitted, int limit) {
         // Cancellation cannot promise rollback of a filesystem mutation. The
         // operation remains owned by the context until completion or context close.
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || pending.size() >= capacity) {
+        if (closed || admitted.size() >= limit) {
             result.failFromRuntime(new RejectedExecutionException(
                     closed ? "I/O context closed" : "I/O admission capacity exhausted"));
             return result;
         }
-        pending.add(result);
+        admitted.add(result);
         try {
             workers.execute(() -> {
                 T value;
                 try {
                     value = work.call();
                 } catch (Throwable failure) {
-                    synchronized (this) { pending.remove(result); }
+                    synchronized (this) { admitted.remove(result); }
                     SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
                     result.failFromRuntime(failure);
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
@@ -56,11 +71,11 @@ public final class AsyncNativeIo implements AutoCloseable {
                     if (failure instanceof LinkageError fatal) throw fatal;
                     return;
                 }
-                synchronized (this) { pending.remove(result); }
+                synchronized (this) { admitted.remove(result); }
                 result.completeFromRuntime(value);
             });
         } catch (RuntimeException failure) {
-            pending.remove(result);
+            admitted.remove(result);
             result.failFromRuntime(failure);
         }
         return result;
@@ -85,6 +100,8 @@ public final class AsyncNativeIo implements AutoCloseable {
             closing = new HashSet<>(resources);
             resources.clear();
             failing = new HashSet<>(pending);
+            failing.addAll(controls);
+            controls.clear();
             pending.clear();
         }
         workers.shutdownNow();

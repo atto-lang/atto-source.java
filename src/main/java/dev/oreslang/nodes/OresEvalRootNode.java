@@ -6032,8 +6032,7 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "close_async" -> (Invokable) args -> {
                         requireZero(args, "socket.close_async");
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.close_async", () -> { socket.close(); return null; });
+                        return context.nativeIo().submitClose(context, () -> { socket.close(); return null; });
                     };
                     case "read_line" -> (Invokable) args -> {
                         requireZero(args, "network.socket.read_line");

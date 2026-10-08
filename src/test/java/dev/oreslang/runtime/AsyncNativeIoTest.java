@@ -101,6 +101,8 @@ class AsyncNativeIoTest {
             var rejected = io.submit("overflow", () -> fail("must not execute"));
             assertInstanceOf(RejectedExecutionException.class,
                     assertThrows(ExecutionException.class, () -> rejected.get(1, TimeUnit.SECONDS)).getCause());
+            assertEquals(7, io.submitControl("close", () -> 7).get(1, TimeUnit.SECONDS),
+                    "socket close must remain available when data admission is full");
             assertFalse(first.cancel(true), "mutations do not promise cancellable rollback");
             io.close();
             assertThrows(ExecutionException.class, () -> first.get(2, TimeUnit.SECONDS));
