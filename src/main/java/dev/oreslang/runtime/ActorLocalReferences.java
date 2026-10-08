@@ -31,8 +31,8 @@ public final class ActorLocalReferences {
 
         private Cell(Object ownerDomain, T initial) {
             this.ownerDomain = ownerDomain;
-            this.value = Objects.requireNonNull(initial, "Ref.new requires an owned value");
-            this.present = true;
+            this.value = initial;
+            this.present = initial != null;
         }
 
         private void checkOwner() {
@@ -44,7 +44,13 @@ public final class ActorLocalReferences {
     }
 
     public static <T> Ref<T> create(T initial) {
-        return new Ref<>(new Cell<>(requireActorDomain(), initial));
+        return new Ref<>(new Cell<>(requireActorDomain(),
+                Objects.requireNonNull(initial, "Ref.new requires an owned value")));
+    }
+
+    /** Allocate a cell without a value; initialize it using set() inside the actor. */
+    public static <T> Ref<T> empty() {
+        return new Ref<>(new Cell<>(requireActorDomain(), null));
     }
 
     public static final class Ref<T> {
