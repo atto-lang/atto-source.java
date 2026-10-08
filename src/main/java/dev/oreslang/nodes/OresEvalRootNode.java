@@ -835,6 +835,13 @@ public final class OresEvalRootNode extends RootNode {
          * Await to unwind the carrier completely.
          */
         private final class SourceTask implements OresScheduler.Task<Object> {
+            // The trampoline prevents recursive loop iterations from retaining
+            // interpreter Java frames until a quantum is exhausted.
+            private static final int LOOP_SAFEPOINT_INTERVAL = 32;
+            private static final int MAX_LOOP_BACKEDGES_PER_TURN = 512;
+            private static final long SOFT_LOOP_QUANTUM_NANOS = 2_000_000L;
+
+            private SourceValueCont pendingLoopContinuation;
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
@@ -883,6 +890,7 @@ public final class OresEvalRootNode extends RootNode {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
                     awaitingContinuation = null;
+                    pendingLoopContinuation = null;
                     nextStep = null;
                     initialBlockEnv = null;
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -957,6 +965,10 @@ public final class OresEvalRootNode extends RootNode {
                             resume.failure());
                 }
 
+                // Finish each source loop back-edge iteratively. The unexecuted
+                // callback becomes a heap-owned Cooperate continuation once the
+                // soft quantum expires, with no side effects replayed.
+                drainLoopContinuations();
                 if (nextStep == null) {
                     throw new IllegalStateException(
                             "source continuation produced neither Await nor Done");
@@ -965,6 +977,36 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler.Step<Object> result = nextStep;
                 nextStep = null;
                 return result;
+            }
+
+            private void scheduleLoopContinuation(SourceValueCont continuation) {
+                Objects.requireNonNull(continuation, "continuation");
+                if (pendingLoopContinuation != null || nextStep != null) {
+                    throw new IllegalStateException(
+                            "source task attempted overlapping loop continuations");
+                }
+                pendingLoopContinuation = continuation;
+            }
+
+            private void drainLoopContinuations() {
+                long started = System.nanoTime();
+                int backedges = 0;
+                while (nextStep == null && pendingLoopContinuation != null) {
+                    SourceValueCont next = pendingLoopContinuation;
+                    pendingLoopContinuation = null;
+                    ++backedges;
+                    if ((backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
+                        // Cancellation and task-scoped UNTRUSTED quotas are
+                        // checked before any bounded cooperation handoff.
+                        context.schedulerSafepoint();
+                        if (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
+                                || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS) {
+                            cooperate(next);
+                            return;
+                        }
+                    }
+                    next.accept(this, null, null);
+                }
             }
 
             private void suspend(
@@ -1501,6 +1543,39 @@ public final class OresEvalRootNode extends RootNode {
                             finishBlock(task, env, defers, flow, continuation));
         }
 
+        /**
+         * Lower loops only inside already-async source tasks. Promoting every
+         * synchronous function containing a loop into an async task would
+         * silently change its return value and actor protocol.
+         */
+        private boolean containsSourceLoop(Ast.Stmt stmt) {
+            if (stmt instanceof Ast.ForStmt
+                    || stmt instanceof Ast.LoopStmt
+                    || stmt instanceof Ast.ForOfStmt
+                    || stmt instanceof Ast.ForOfDestructureStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block)
+                return block.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.IfStmt conditional)
+                return conditional.branches().stream().anyMatch(
+                        branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
+                        || conditional.elseBody().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.MatchStmt matched)
+                return matched.arms().stream().anyMatch(
+                        arm -> arm.body().stream().anyMatch(this::containsSourceLoop));
+            if (stmt instanceof Ast.SwitchStmt switched)
+                return switched.cases().stream().anyMatch(
+                        arm -> arm.body().stream().anyMatch(this::containsSourceLoop))
+                        || switched.defaultBody().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.SelectStmt select)
+                return select.arms().stream().anyMatch(
+                        arm -> arm.body().stream().anyMatch(this::containsSourceLoop));
+            if (stmt instanceof Ast.TryStmt tried)
+                return tried.body().stream().anyMatch(this::containsSourceLoop)
+                        || tried.catchBody().stream().anyMatch(this::containsSourceLoop)
+                        || tried.finallyBody().stream().anyMatch(this::containsSourceLoop);
+            return false;
+        }
+
         private void runStatements(
                 SourceTask task,
                 List<Ast.Stmt> statements,
@@ -1522,6 +1597,7 @@ public final class OresEvalRootNode extends RootNode {
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
+                    && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(
                     stmt,
                     java.util.Collections.newSetFromMap(
@@ -2415,11 +2491,9 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, flow);
                         } else {
                             if (loop.update() == null) {
-                                runForIteration(
-                                        t,
-                                        loop,
-                                        loopEnv,
-                                        continuation);
+                                t.scheduleLoopContinuation(
+                                        (resumed, ignored, failure) -> runForIteration(
+                                                resumed, loop, loopEnv, continuation));
                             } else {
                                 evalSuspendableExpr(
                                         t,
@@ -2432,11 +2506,9 @@ public final class OresEvalRootNode extends RootNode {
                                                         SourceFlow.throwing(
                                                                 failure));
                                             } else {
-                                                runForIteration(
-                                                        t2,
-                                                        loop,
-                                                        loopEnv,
-                                                        continuation);
+                                                t2.scheduleLoopContinuation(
+                                                        (resumed, ignored, failure2) -> runForIteration(
+                                                                resumed, loop, loopEnv, continuation));
                                             }
                                         });
                             }
@@ -2462,11 +2534,9 @@ public final class OresEvalRootNode extends RootNode {
                                 || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
-                            runLoopSuspendable(
-                                    t,
-                                    loop,
-                                    env,
-                                    continuation);
+                            t.scheduleLoopContinuation(
+                                    (resumed, ignored, failure) -> runLoopSuspendable(
+                                            resumed, loop, env, continuation));
                         }
                     });
         }
@@ -2604,13 +2674,9 @@ public final class OresEvalRootNode extends RootNode {
                                 || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
-                            runForOfIteration(
-                                    t,
-                                    loop,
-                                    env,
-                                    items,
-                                    index + 1,
-                                    continuation);
+                            t.scheduleLoopContinuation(
+                                    (resumed, ignored, failure) -> runForOfIteration(
+                                            resumed, loop, env, items, index + 1, continuation));
                         }
                     });
         }
@@ -2659,13 +2725,9 @@ public final class OresEvalRootNode extends RootNode {
                                 || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
-                            runForOfDestructureIteration(
-                                    t,
-                                    loop,
-                                    env,
-                                    items,
-                                    index + 1,
-                                    continuation);
+                            t.scheduleLoopContinuation(
+                                    (resumed, ignored, failure) -> runForOfDestructureIteration(
+                                            resumed, loop, env, items, index + 1, continuation));
                         }
                     });
         }
