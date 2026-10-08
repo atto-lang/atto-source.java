@@ -148,12 +148,18 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Tuple")) {
+                        throw new IllegalArgumentException("cannot redefine final built-in class 'Tuple'");
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Tuple")) {
+                        throw new IllegalArgumentException("cannot redefine built-in tuple type 'Tuple'");
+                    }
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -832,6 +838,9 @@ public final class TypeChecker {
 
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
+            if (parent.name().equals("Tuple")) {
+                throw new IllegalArgumentException("cannot extend final built-in class 'Tuple'");
+            }
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
             if (parent.name().equals("Object") || parent.name().equals("List")) {
                 if (parent.inferArguments() || !parent.arguments().isEmpty()) {
