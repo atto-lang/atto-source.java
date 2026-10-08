@@ -61,6 +61,7 @@ public final class TypeChecker {
     private record AliasFrame(int guardDepth, List<Ast.TypeRef> arguments) { }
     private final IdentityHashMap<Ast.TypeAliasDecl, AliasFrame> resolvingAliases = new IdentityHashMap<>();
     private int recursiveAliasGuardDepth;
+    private int assignabilityDepth;
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Unlike private-member access, declaration origin must survive nlex.
@@ -7161,6 +7162,12 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (++assignabilityDepth > 128) {
+            assignabilityDepth--;
+            throw new IllegalArgumentException(
+                    "recursive type comparison exceeds maximum nesting depth 128");
+        }
+        try {
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
@@ -7295,6 +7302,9 @@ public final class TypeChecker {
             }
         }
         return false;
+        } finally {
+            assignabilityDepth--;
+        }
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
