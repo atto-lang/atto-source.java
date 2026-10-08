@@ -849,6 +849,9 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            if (cast.mode() == Ast.CastMode.OPTIONAL && isBorrowValue(source)) {
+                throw error("borrowed references cannot be stored in an optional cast result until explicit container lifetimes are supported");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
@@ -880,6 +883,9 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
+            if (isBorrowValue(left) || isBorrowValue(right)) {
+                throw error("conditional borrowed references require an explicit lifetime contract; keep the borrow inside each branch");
+            }
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
             return new ValueInfo(
                     joinedType,
@@ -1407,14 +1413,20 @@ public final class OwnershipChecker {
                 && !callableType.arguments().isEmpty()) {
             int parameterCount = callableType.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
-                for (int i = 0; i < call.arguments().size(); i++) {
-                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
-                    if (containsMutexGuardType(argument.type)) {
-                        throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
+                List<VarState> loans = new ArrayList<>();
+                try {
+                    for (Ast.Expr expression : call.arguments()) {
+                        ValueInfo argument = checkExpr(expression, scope, false);
+                        if (containsMutexGuardType(argument.type)) {
+                            throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
+                        }
+                        if (argument.kind == ValueKind.MUT_BORROW) {
+                            throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                        }
+                        retainCallView(argument, loans);
                     }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
-                        throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
-                    }
+                } finally {
+                    for (VarState owner : loans) owner.immutableBorrows--;
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -1584,6 +1596,7 @@ public final class OwnershipChecker {
                 throw error(callable + " argument " + position
                         + " cannot consume protected mutex state through a structural by-value parameter");
             }
+            retainCallView(argument, immutableLoans);
             return;
         }
         if (param.type().isBorrow()) {
@@ -1741,6 +1754,12 @@ public final class OwnershipChecker {
         VarState root = ownershipRoot(owner);
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
+    }
+
+    private void retainCallView(ValueInfo value, List<VarState> loans) {
+        if (!isBorrowValue(value) || value.borrowSource == null) return;
+        beginPersistentBorrow(value.borrowSource, false);
+        loans.add(ownershipRoot(value.borrowSource));
     }
 
     private boolean isPointerView(ValueInfo value) {

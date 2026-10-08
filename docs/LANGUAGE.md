@@ -1804,7 +1804,11 @@ on dereferenced local bindings preserve the inferred read-only borrow capability
 The view does not grant mutation, ownership, or an independent lifetime. It
 blocks moving/rebinding its pointer owner while live, and cannot escape through
 returns, closures, owned aggregates, or suspension. Inner aliases each retain a
-lexical loan. Temporary call loans remain active while later arguments evaluate.
+lexical loan. Temporary call loans remain active while later arguments evaluate,
+including first-class and structural calls. Optional casts cannot wrap borrowed
+references in an owned `Option`. Conditional expressions cannot return borrowed
+references until branch lifetime contracts are supported; read copyable fields
+inside each branch instead.
 Nested reference-backed fields remain borrowed; casts and annotations cannot
 upgrade them to owned values. Move-only method results through a borrow require
 an explicit lifetime contract and are currently rejected conservatively.

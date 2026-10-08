@@ -165,6 +165,45 @@ final class RuntimePointerTest {
         assertTrue(error.getMessage().contains("Pointer<T>"), error.getMessage());
     }
 
+    @Test void expressionsCannotHidePointerViewLifetimes() {
+        reject("const p = rt ref new Box(); const view = rt unref p; const hidden = true ? (view as Box) : (view as Box); const moved = rt take p;", "borrow");
+        reject("const p = rt ref new Box(); const hidden = true ? (rt unref p) : (rt deref p); const moved = rt take p;", "borrow");
+        reject("const p = rt ref new Box(); const hidden = (rt unref p) as? Box; const moved = rt take p;", "borrow");
+        reject("const p = rt ref new Box(); const hidden = true ? ((rt unref p) as Box) : ((rt deref p) as Box);", "borrow");
+        check("const p = rt ref new Box(); const n = true ? (rt unref p).value : (rt deref p).value; const moved = rt take p;");
+    }
+
+    @Test void structuralCallsRetainTemporaryPointerViews() {
+        String prefix = BOX + """
+                define interface Shape
+                  value: int;
+                end
+                fnc read(structural Shape view, Pointer<Box> moved): void { return; }
+                fnc inspect(structural Shape view): int { return view.value; }
+                """;
+        var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(prefix + """
+                fnc bad(): void {
+                  const p = rt ref new Box();
+                  read((rt unref p) as Box, rt take p);
+                  return;
+                }
+                """)));
+        assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(prefix + """
+                fnc ok(): void {
+                  const p = rt ref new Box();
+                  const n = inspect((rt unref p) as Box);
+                  const moved = rt take p;
+                  return;
+                }
+                """)));
+    }
+
+    @Test void firstClassCallRetainsTemporaryPointerViews() {
+        reject("const Fnc<Box, Pointer<Box>, void> f = |Box view, Pointer<Box> moved| -> { return; }; const p = rt ref new Box(); f((rt unref p) as Box, rt take p);", "borrow");
+        check("const Fnc<Box, void> f = |Box view| -> { return; }; const p = rt ref new Box(); f((rt unref p) as Box); const moved = rt take p;");
+    }
+
     @Test void symbolicPointerAndBorrowSyntaxIsRejected() {
         for (String expression : new String[] {"&box", "&mut box", "*box"}) {
             var e = assertThrows(IllegalArgumentException.class, () -> Parser.parse(BOX + "fnc bad(): void { const p = " + expression + "; return; }"));
