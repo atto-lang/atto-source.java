@@ -4397,7 +4397,10 @@ public final class TypeChecker {
     private static boolean isLocalRefCopyScalar(Type element) {
         if (element instanceof StringLiteral) return true;
         if (!(element instanceof Primitive primitive)) return false;
-        return primitive != Primitive.VOID && primitive != Primitive.NULL;
+        // Complex currently uses a guest-specific immutable carrier that the
+        // actor-local runtime's scalar-copy whitelist cannot safely identify.
+        return primitive != Primitive.VOID && primitive != Primitive.NULL
+                && primitive != Primitive.COMPLEX;
     }
 
     /** Static namespace lookup is only legal in the receiver position of member access. */
