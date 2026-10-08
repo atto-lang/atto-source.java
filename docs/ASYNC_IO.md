@@ -21,8 +21,9 @@ Existing synchronous APIs remain available for compatibility.
 | `http.post_text_async(url, text)` | `String` (response body) |
 
 `File` aliases `fs`; `net` aliases `network`. Async TCP connections are local
-capabilities, not mailbox-sendable values. Await each operation before starting
-the next operation in the same direction; TCP reads and writes may run in parallel.
+capabilities, not mailbox-sendable values. Only one socket read and one socket write may be active in each direction.
+Overlapping same-direction operations fail fast instead of parking extra I/O
+workers. TCP reads and writes may run in parallel.
 
 ```ores
 pub async routine main(): void {
