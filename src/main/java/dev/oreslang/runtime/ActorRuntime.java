@@ -1871,6 +1871,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        // A future mailbox/source continuation adapter may register here.
+        // Group closure and actor leave already revoke all issued wake tickets.
+        private final ActorGroupWakeRegistry continuationWakes = new ActorGroupWakeRegistry();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
@@ -1910,6 +1913,42 @@ public final class ActorRuntime implements AutoCloseable {
         public int memberCount() {
             requireObserver("inspect ActorGroup membership");
             return members.size();
+        }
+
+        /** Internal accounting for future group-owned async heap retirement. */
+        public int pendingContinuationWakeCount() {
+            requireObserver("inspect ActorGroup continuation wake roots");
+            return continuationWakes.outstanding();
+        }
+
+        /**
+         * Runtime-only registration. Never exposes wake tickets as guest
+         * capabilities; only a currently admitted group member may register.
+         * The scheduler must still check its own execution lease on dispatch.
+         */
+        ActorGroupWakeRegistry.Ticket registerCurrentContinuationWake() {
+            ActorId actorId = requireCurrentMember("register group continuation wake");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (!members.contains(actorId)) {
+                    throw new SecurityException("actor left ActorGroup before wake registration");
+                }
+                return continuationWakes.register(actorId);
+            }
+        }
+
+        /** Producer threads may *claim* a ticket but never run guest code. */
+        boolean claimContinuationWake(ActorGroupWakeRegistry.Ticket ticket) {
+            return continuationWakes.claim(ticket);
+        }
+
+        /** Must be rechecked at scheduler/actor admission after a producer claim. */
+        boolean currentContinuationWake(ActorGroupWakeRegistry.Ticket ticket) {
+            return continuationWakes.current(ticket);
+        }
+
+        void releaseContinuationWake(ActorGroupWakeRegistry.Ticket ticket) {
+            continuationWakes.release(ticket);
         }
 
         public Set<ActorId> memberIds() {
@@ -2132,7 +2171,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void leaveId(ActorId actorId) {
-            if (members.remove(actorId)) eventBus.removeActor(actorId);
+            final boolean removed;
+            synchronized (authorityLock) {
+                removed = members.remove(actorId);
+                if (removed) continuationWakes.revokeOwner(actorId);
+            }
+            if (removed) eventBus.removeActor(actorId);
         }
 
         private void actorTerminated(ActorId actorId) {
@@ -2158,6 +2202,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
+                continuationWakes.seal();
             }
             GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
             if (mailman != null) mailman.close();
