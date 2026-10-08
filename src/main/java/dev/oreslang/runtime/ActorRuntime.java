@@ -6372,11 +6372,33 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
-                                    codeExecutor.receiveActor(
-                                            codeActorType,
-                                            codeActorState,
-                                            sourceMail,
-                                            sourceContext);
+                                    OresFuture<Object> reply = activeEnvelope.reply();
+                                    if (reply != null) {
+                                        // Caller cancellation before dispatch never runs guest code.
+                                        if (!reply.isDone()) {
+                                            try {
+                                                Object outcome = codeExecutor.requestActor(
+                                                        codeActorType, codeActorState,
+                                                        mail.value(), sourceContext);
+                                                if (outcome instanceof OresFuture<?> suspended) {
+                                                    suspendCurrentUserMailboxUntil(suspended, reply);
+                                                } else {
+                                                    completeRequestReply(this, reply, outcome);
+                                                }
+                                            } catch (Throwable requestFailure) {
+                                                if (isFatalRequestFailure(requestFailure)) {
+                                                    if (requestFailure instanceof RuntimeException runtime) throw runtime;
+                                                    if (requestFailure instanceof Error error) throw error;
+                                                    throw new RuntimeException(requestFailure);
+                                                }
+                                                reply.failFromRuntime(requestFailure);
+                                            }
+                                        }
+                                    } else {
+                                        codeExecutor.receiveActor(
+                                                codeActorType, codeActorState,
+                                                sourceMail, sourceContext);
+                                    }
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }
