@@ -74,6 +74,7 @@ final class TupleCoreReconciliationTest {
                   const (key, number) = pair();
                   stdio.stdout.write(key);
                   stdio.stdout.write(consume(fromNew));
+                  stdio.stdout.write(consume(("qux", 4)));
                   stdio.stdout.write(inferred[1]);
                   stdio.stdout.write(add(...(19, 23)));
                   return;
@@ -81,7 +82,7 @@ final class TupleCoreReconciliationTest {
                 """;
         var typed = TypeChecker.check(Parser.parse(program));
         assertDoesNotThrow(() -> OwnershipChecker.check(typed));
-        assertEquals("foo8942", run(program));
+        assertEquals("foo84942", run(program));
     }
 
     @Test
