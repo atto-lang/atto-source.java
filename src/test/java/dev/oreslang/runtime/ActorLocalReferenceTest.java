@@ -45,6 +45,36 @@ final class ActorLocalReferenceTest {
     }
 
     @Test
+    void onlyDeeplyImmutableScalarValuesMayBeReadByCopy() {
+        Object actor = new Object();
+        var scalar = ActorLocalReference.createForDomain(actor, 11L);
+        assertEquals(11L, ActorLocalReference.getCopyForDomain(scalar, actor));
+
+        var mutableNumber = ActorLocalReference.createForDomain(
+                actor, new java.util.concurrent.atomic.AtomicInteger(5));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorLocalReference.getCopyForDomain(mutableNumber, actor));
+
+        var mutableCollection = ActorLocalReference.createForDomain(
+                actor, new ArrayList<>(List.of(1)));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorLocalReference.getCopyForDomain(mutableCollection, actor));
+        assertThrows(SecurityException.class, () ->
+                ActorLocalReference.getCopyForDomain(scalar, new Object()));
+    }
+
+    @Test
+    void nestedActorLocalHandlesCannotBeFrozenIntoMessages() {
+        Object actor = new Object();
+        var ref = ActorLocalReference.createForDomain(actor, 10L);
+        var weak = ActorLocalReference.downgradeForDomain(ref, actor);
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(ref));
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(List.of(ref)));
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(java.util.Map.of("local", weak)));
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(List.of(java.util.Map.of("local", ref))));
+    }
+
+    @Test
     void managedReferenceGraphMayContainIdentityCyclesWithoutCopyingOwnedValues() {
         Object actor = new Object();
         List<Object> node = new ArrayList<>();
