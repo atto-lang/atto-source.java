@@ -110,14 +110,22 @@ no-yield regions must remain bounded or the carrier can still starve. Successful
 source loop cooperation decisions are counted in
 `process.descriptor.source_loop_cooperates`.
 
-**Not automatically suspendable yet:** a normal synchronous function or actor
-receive/run body that has not been transformed into a source task. Its
-`schedulerSafepoint()` remains a cancellation/quota checkpoint and cannot
-capture the host Java stack. Do not make arbitrary synchronous functions
-implicitly async merely because they contain a loop; that changes callable
-types and actor protocol semantics. A future compiler transformation must
-produce explicit continuations while preserving the externally synchronous
-contract where appropriate.
+**Synchronous actor receive special case:** even if a source-defined
+`receive(ActorMail<T>)` method contains no `await` or explicit `rt cooperate`,
+the actor mailbox dispatcher starts it in a heap-owned `SourceTask` when a
+loop is present. This preserves the external `void` receive protocol, gates
+later user mailbox turns until the source Future completes, and permits CPU
+loop cooperation inside the continuation. The actor's `on_start` still runs
+synchronously as part of the ready/initialization boundary.
+
+**Not automatically suspendable yet:** normal synchronous function calls,
+startup callbacks, host Java/FFI executions, and other actor `run`/method
+bodies not transformed into a source task. Their `schedulerSafepoint()`
+remains a cancellation/quota checkpoint and cannot capture the host Java stack.
+Do not make arbitrary synchronous functions implicitly async merely because
+they contain a loop; that changes callable types and actor protocol semantics.
+A future compiler transformation must produce explicit continuations while
+preserving the externally synchronous contract where appropriate.
 
 **UNTRUSTED gate:** automatic loop cooperation is deliberately disabled
 inside UNTRUSTED actor turns while their logical task quota continuity is
