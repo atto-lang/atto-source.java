@@ -999,8 +999,14 @@ public final class OresEvalRootNode extends RootNode {
                         // Cancellation and task-scoped UNTRUSTED quotas are
                         // checked before any bounded cooperation handoff.
                         context.schedulerSafepoint();
-                        if (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
-                                || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS) {
+                        // Issue #402: the default UNTRUSTED batch meter resets
+                        // across physical handoffs. Until every continuation is
+                        // charged to a durable logical-task quota, fail closed:
+                        // poll/cancel the hostile loop, but never requeue it with
+                        // a freshly minted budget.
+                        if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.UNTRUSTED
+                                && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
+                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)) {
                             cooperate(next);
                             return;
                         }
