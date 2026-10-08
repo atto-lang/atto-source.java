@@ -97,6 +97,41 @@ final class ActorProtocolAnnotationTest {
     }
 
     @Test
+    void inheritedActorMailboxHandlerMustPreservePayloadAndReplyTypes() {
+        rejects("""
+                define actor Parent as
+                  @Implementation
+                  fnc run(int delta): int { return delta; }
+                end
+                define actor Child extends Parent as
+                  @Implementation
+                  @Override
+                  fnc run(String delta): int { return 7; }
+                end
+                """, "changes inherited mailbox payload");
+        rejects("""
+                define actor Parent as
+                  @Implementation
+                  fnc run(int delta): int { return delta; }
+                end
+                define actor Child extends Parent as
+                  fnc run(int delta): String { return "wrong"; }
+                end
+                """, "changes inherited mailbox reply");
+        rejects("""
+                define actor Parent as
+                  @Implementation
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                define actor Child extends Parent as
+                  @Implementation
+                  @Override
+                  receive(ActorMail<String> mail): void { return; }
+                end
+                """, "changes inherited mailbox payload");
+    }
+
+    @Test
     void implementationCannotPretendAnOrdinaryMethodIsAnActorHook() {
         rejects("""
                 define actor Worker as
