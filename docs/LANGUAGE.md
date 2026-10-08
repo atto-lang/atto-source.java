@@ -70,6 +70,41 @@ import class ArrayList as JArrayList from "java:java.util.ArrayList";
 The selected name (`ArrayList`) must match the Java simple class name; `JArrayList` is only the Oreslang-local alias. Java imports never grant authority by themselves: runtime use additionally requires the `JAVA_INTEROP` capability and an exact host-class allowlist supplied by the launcher/embedder.
 
 
+### Circular imports and file initialization
+
+Import cycles are legal. Oreslang does not reject a program merely because its
+file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
+
+The loader uses a staged lifecycle:
+
+1. parse and statically validate the complete reachable source graph;
+2. resolve/link imports for every code unit;
+3. compute strongly connected components (SCCs) of the import graph;
+4. for each dependency-first SCC, verify that **all** members are linked;
+5. run each member's optional file init hook;
+6. after initialization, invoke the entry unit's `main`.
+
+A file init hook has the exact shape:
+
+```ores
+fnc init(): void {
+  // side effects are allowed here
+  return;
+}
+```
+
+It is private, synchronous, non-actor, non-generic, takes no parameters, and
+returns `void`. The hook runs at most once for that loaded code-unit
+generation. Inside a cycle, init hooks execute in deterministic normalized
+code-unit-id order, but code must rely only on the stronger barrier guarantee:
+**every peer in the cycle is already linked before any peer's init begins**.
+
+This means an init hook may call exported declarations from a cyclic peer
+without observing an "unloaded module" state. If application state requires a
+specific sequencing relationship *between* two init hooks in the same cycle,
+that relationship should be made explicit in application code rather than
+inferred from the import edges.
+
 ## Recursive structural types and circular references
 
 A type alias may form a finite recursive type when recursion passes through a
@@ -106,41 +141,6 @@ ownership boundaries*: cyclic mutable graphs are rejected there instead of
 silently shared. Actor-reference capabilities are not ordinary mutable object
 graphs. Cross-boundary cyclic serialization, sharing and identity-preserving
 copy are **not yet implemented**; they require a distinct explicit protocol.
-
-### Circular imports and file initialization
-
-Import cycles are legal. Oreslang does not reject a program merely because its
-file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
-
-The loader uses a staged lifecycle:
-
-1. parse and statically validate the complete reachable source graph;
-2. resolve/link imports for every code unit;
-3. compute strongly connected components (SCCs) of the import graph;
-4. for each dependency-first SCC, verify that **all** members are linked;
-5. run each member's optional file init hook;
-6. after initialization, invoke the entry unit's `main`.
-
-A file init hook has the exact shape:
-
-```ores
-fnc init(): void {
-  // side effects are allowed here
-  return;
-}
-```
-
-It is private, synchronous, non-actor, non-generic, takes no parameters, and
-returns `void`. The hook runs at most once for that loaded code-unit
-generation. Inside a cycle, init hooks execute in deterministic normalized
-code-unit-id order, but code must rely only on the stronger barrier guarantee:
-**every peer in the cycle is already linked before any peer's init begins**.
-
-This means an init hook may call exported declarations from a cyclic peer
-without observing an "unloaded module" state. If application state requires a
-specific sequencing relationship *between* two init hooks in the same cycle,
-that relationship should be made explicit in application code rather than
-inferred from the import edges.
 
 ## Module contracts
 
