@@ -69,6 +69,11 @@ public final class OwnershipChecker {
 
     private static <T> void index(Map<String,T> map, Set<String> ambiguous, String module, String name, T value) {
         map.put(module + "." + name, value);
+        // Once a short name is ambiguous, a third declaration must not
+        // accidentally restore an unqualified binding.
+        if (ambiguous.contains(name)) {
+            return;
+        }
         T previous = map.putIfAbsent(name, value);
         if (previous != null && previous != value) {
             map.remove(name);
