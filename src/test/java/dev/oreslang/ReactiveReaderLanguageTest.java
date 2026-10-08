@@ -77,6 +77,30 @@ final class ReactiveReaderLanguageTest {
                 """));
     }
 
+
+    @Test
+    void readerTypesAreNonSendableAcrossActorBoundaries() {
+        for (String resultType : new String[]{"Reader<int>", "Option<Reader<int>>"}) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                    actor fnc invalid(): TYPE {
+                      return 1;
+                    }
+                    """.replace("TYPE", resultType))));
+        }
+    }
+
+    @Test
+    void readerTypeHasExactlyOneNonVoidPayload() {
+        for (String type : new String[]{"Reader", "Reader<int, int>", "Reader<void>"}) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                    pub routine main() => void {
+                      val r: TYPE = 1;
+                      return;
+                    }
+                    """.replace("TYPE", type))));
+        }
+    }
+
     private static String run(String source) throws Exception {
         var program = Parser.parse(source);
         TypeChecker.check(program);
