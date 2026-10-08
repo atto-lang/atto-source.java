@@ -159,6 +159,17 @@ final class TupleCoreReconciliationTest {
     }
 
     @Test
+    void fixedArrayRetainsItsSeparateMutableSemantics() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  let slots: FixedArray[int, int] = [1, 2];
+                  slots[0] = 3;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void namedTupleLiteralsAreStillRejected() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub fnc main(): void {
