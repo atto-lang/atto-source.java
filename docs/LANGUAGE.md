@@ -563,14 +563,22 @@ val first = values[0];
 
 `arr[...]` is the canonical inline-array spelling. The original bare `[...]` literal remains accepted for source compatibility and destructuring migration.
 
-Tuples preserve per-position static types. Parenthesized tuple literals and
-list-backed values returned against a finite tuple type both retain the declared
-positional types. Bare finite tuple syntax remains the compact form; the named
-`Tuple<...>[...]` form is used when storage metadata is needed.
+Tuples preserve per-position static types. The canonical product type is
+`Tuple[T1, T2, ...]`; in type position `(T1, T2, ...)` is equivalent shorthand,
+while `(T)` is ordinary grouping (use `Tuple[T]` for a singleton).
+Bare `(a, b)` constructs a tuple value, and `(a)` groups one expression.
+`tuple (a, b)` remains an explicit equivalent spelling, and
+`new Tuple(a, b)` or `new Tuple[T1, T2](a, b)` are positional constructors.
+Tuple fields are immutable, and a literal index preserves the exact slot type.
+A fixed tuple may be spread into a fixed-arity callable only when its full
+arity and types are statically known. Named tuple fields remain unsupported.
+The `Tuple<...>[...]` form adds compile-time storage metadata.
 
 ```ores
 val pair = (1, "one");
-[const number, let label] = pair;
+type Pair = (int, string); // same type as Tuple[int, string]
+const (number, label) = pair;
+val explicit: Tuple[int, string] = new Tuple[int, string](1, "one");
 
 fnc result(): [int, bool, string] {
   return [3, true, "yes"];
