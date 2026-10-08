@@ -60,6 +60,8 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     /** Depth at which a type alias is first expanded; recursion needs an indirection. */
     private final IdentityHashMap<Ast.TypeAliasDecl, Integer> aliasEntryDepths = new IdentityHashMap<>();
+    /** Reject polymorphic recursion that changes generic arguments at each expansion. */
+    private final IdentityHashMap<Ast.TypeAliasDecl, List<Ast.TypeRef>> aliasEntryArguments = new IdentityHashMap<>();
     private int typeIndirectionDepth;
     private record AssignmentPair(Type actual, Type expected) { }
     private final Set<AssignmentPair> assignmentsInProgress = new HashSet<>();
@@ -6909,6 +6911,10 @@ public final class TypeChecker {
             }
             Integer entryDepth = aliasEntryDepths.get(alias);
             if (entryDepth != null) {
+                if (!aliasEntryArguments.get(alias).equals(ref.arguments())) {
+                    throw new IllegalArgumentException(
+                            "polymorphic recursive type alias changes type arguments: '" + alias.name() + "'");
+                }
                 if (typeIndirectionDepth <= entryDepth) {
                     throw new IllegalArgumentException("unguarded type alias cycle involving '" + alias.name() + "'");
                 }
@@ -6920,6 +6926,7 @@ public final class TypeChecker {
                         ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
             aliasEntryDepths.put(alias, typeIndirectionDepth);
+            aliasEntryArguments.put(alias, List.copyOf(ref.arguments()));
             resolvingAliases.add(alias);
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
@@ -6929,6 +6936,7 @@ public final class TypeChecker {
                 return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
             } finally {
                 resolvingAliases.remove(alias);
+                aliasEntryArguments.remove(alias);
                 aliasEntryDepths.remove(alias);
             }
         }

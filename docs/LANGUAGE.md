@@ -69,6 +69,39 @@ import class ArrayList as JArrayList from "java:java.util.ArrayList";
 
 The selected name (`ArrayList`) must match the Java simple class name; `JArrayList` is only the Oreslang-local alias. Java imports never grant authority by themselves: runtime use additionally requires the `JAVA_INTEROP` capability and an exact host-class allowlist supplied by the launcher/embedder.
 
+
+## Recursive structural types and circular references
+
+A type alias may form a finite recursive type when recursion passes through a
+runtime indirection/container such as `Option<T>`, `List<T>`, or a borrowed
+reference. The canonical record spelling is `struct{...}`:
+
+```oreslang
+type Node = struct{
+    value: int,
+    next: Option<Node>
+};
+
+type Tree<T> = struct{
+    value: T,
+    children: List<Tree<T>>
+};
+```
+
+A recursive alias is represented by a finite recursive type reference in the
+compiler rather than by repeated structural expansion. An alias cycle without
+indirection, for example `type Loop = Loop;` or
+`type Loop = struct{next: Loop};`, is rejected. Type arguments must not
+grow or change across recursive expansion.
+
+Locally owned object graphs may contain cycles; the JVM garbage collector can
+reclaim unreachable cycles. Oreslang's explicit ownership/borrow rules still
+apply to mutating references. Actor mailbox transport and async argument
+detachment remain *separate ownership boundaries*: cyclic mutable graphs are
+rejected there rather than silently shared, and actor-reference capabilities
+must not be confused with ordinary mutable object graphs. This implementation
+does not claim cyclic serialization or cross-actor identity preservation.
+
 ### Circular imports and file initialization
 
 Import cycles are legal. Oreslang does not reject a program merely because its
