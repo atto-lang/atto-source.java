@@ -29,9 +29,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
       - name: Compile TypeSpec contracts
-        run: npm --prefix contracts/v1 install --no-audit --no-fund && npm --prefix contracts/v1 run build && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics
+        run: npm --prefix contracts/v1 install --no-audit --no-fund && npm --prefix contracts/v1 run build && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics/traces
       - name: Schema validator
         run: python3 -m pip install --break-system-packages 'jsonschema>=4.20,<5'
+      - name: Verify metamorphic generator and adversarial actor trace contracts
+        run: |
+          python3 contracts/v1/semantics/metamorphic.py --self-test --count 64
+          python3 contracts/v1/semantics/test_metamorphic.py -v
+          python3 contracts/v1/semantics/traces/validate.py --schema-only
+          python3 contracts/v1/semantics/traces/test_trace.py -v
       - name: Validate fixture registry
         run: |
           python3 contracts/v1/run.py --validate
