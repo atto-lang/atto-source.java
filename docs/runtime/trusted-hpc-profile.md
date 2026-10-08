@@ -571,6 +571,12 @@ hard admission budget and concurrent seal/claim races. Compiler regression
 tests exercise owned versus borrowed frames at blocking channel/select
 suspension boundaries.
 
+## Java/LLVM extraction status
+
+- Managed cyclic graphs: [Java PR #474](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/474), separately mergeable against Java `main`.
+- Native pinned frames, true per-group heaps, trusted HPC execution and zero-GC target: [LLVM roadmap issue #1](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/issues/1), initially scaffolded in [LLVM PR #2](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/2).
+- This Java PR #470 remains a **draft, unmerged architectural research branch**. It must not become the native runtime or shadow the two focused repositories.
+
 ## Cyclic object graphs, ownership and arena reclamation (WIP)
 
 Rust primary references:
@@ -596,8 +602,11 @@ Oreslang already has *separate, unmerged* reference work:
 
 ### Bounded, generational graph owned by one arena
 
-The new `HpcCyclicGraph<T>` is a **Java reference prototype** of the
-future native region-owned HPC graph. One arena exclusively owns all node
+The **separate, non-draft Java PR #474** implements
+`GenerationalGraphArena<T>` as a managed Java graph helper, while
+[LLVM issue #1](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/issues/1)
+tracks the future native region-owned HPC graph. **This draft PR no longer
+contains the cyclic graph implementation or its tests.** One arena exclusively owns all node
 values. Edges store non-owning (slot, generation) targets. Nodes can
 reference themselves, two nodes can point at one another and arbitrary
 long cycles may be created without allocating any Rc/Arc counters.
@@ -618,7 +627,7 @@ val maybeParent = graph.resolve(parent); // Option<Node>, None when stale
 graph.close(); // only once all async, FFI, actor and DMA leases are drained
 ```
 
-This prototype uses Java managed objects, synchronized methods and
+The separately proposed managed-Java helper uses managed objects, synchronized methods and
 allocating snapshots for some read paths, so it **does not** deliver no-GC,
 lock-free operation, direct native address stability or portable high
 frequency trading latency. Source-level actor confinement, lifetime-safe
