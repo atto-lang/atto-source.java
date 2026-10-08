@@ -738,6 +738,13 @@ public final class OwnershipChecker {
                             || (taken.type != null && taken.type.isBorrow())) {
                         throw error("rt take requires owned data; a borrow cannot regain ownership");
                     }
+                    // Explicit take is a transfer, including for otherwise
+                    // copyable handles such as Channel<T>. Ordinary calls and
+                    // channel operations may still copy/borrow that handle.
+                    if (argument instanceof Ast.NameExpr name && taken.kind == ValueKind.COPY) {
+                        VarState binding = scope.lookup(name.name());
+                        if (binding != null) move(binding, name.name());
+                    }
                     yield taken;
                 }
                 case "copy" -> {
