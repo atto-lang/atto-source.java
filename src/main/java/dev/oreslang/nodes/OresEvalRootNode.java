@@ -4598,6 +4598,7 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     executeBlock(recovered.body(), env, true);
                 } catch (OresFailure.Raise raised) {
+                    if (!raised.localToCurrentActorDomain()) throw raised;
                     Env recovery = new Env(env);
                     recovery.define(recovered.errorName(), raised.value(), Ast.BindingKind.VAL);
                     executeBlock(recovered.handler(), recovery, true);

@@ -8,7 +8,7 @@ Oreslang treats guest exceptional control as three separate effects:
 | `raise value;` | `rt recover { ... } on raise (Error err) { ... }` | Unrecovered raise terminates the actor |
 | `panic value;` | No guest catch | Always terminates the actor |
 
-The recovery construct is an explicit *same-execution-domain* statement. It runs its
+The recovery construct is an explicit *same-execution-domain* statement. The VM records the creating actor identity and rejects recovery in a different actor domain. It runs its
 handler after unwinding, never at the interrupted program counter. A panic is not
 a raise and cannot be recovered inside the failed actor. A supervisor must create a
 replacement actor if the application wishes to restart after failure.

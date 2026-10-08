@@ -10,15 +10,31 @@ public abstract sealed class OresFailure extends RuntimeException
     public enum Kind { THROW, RAISE, PANIC }
     private final Kind kind;
     private final Object value;
+    private final ActorRuntime ownerRuntime;
+    private final ActorRuntime.ActorId ownerActorId;
 
     private OresFailure(Kind kind, Object value) {
         super(String.valueOf(value), null, true, false);
         this.kind = kind;
         this.value = value;
+        this.ownerRuntime = ActorRuntime.currentActorRuntime();
+        this.ownerActorId = ActorRuntime.currentActorId().orElse(null);
     }
 
     public final Kind kind() { return kind; }
     public final Object value() { return value; }
+
+    /**
+     * A raise may only be recovered in the actor domain that produced it.
+     * In particular, an awaiter in a different actor must not convert a remote
+     * actor's exceptional completion into a locally recoverable raise.
+     */
+    public final boolean localToCurrentActorDomain() {
+        return ownerRuntime == ActorRuntime.currentActorRuntime()
+                && java.util.Objects.equals(
+                        ownerActorId,
+                        ActorRuntime.currentActorId().orElse(null));
+    }
 
     /** Operation-local failure: a mailbox turn may fail without killing its actor. */
     public static non-sealed class Throw extends OresFailure {

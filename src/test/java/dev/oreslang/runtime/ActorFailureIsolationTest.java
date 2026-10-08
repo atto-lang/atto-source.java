@@ -55,6 +55,25 @@ final class ActorFailureIsolationTest {
     }
 
     @Test
+    void raisedEffectIsBoundToItsCreatingActorDomain() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.atomic.AtomicReference<OresFailure.Raise> observed =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            CountDownLatch captured = new CountDownLatch(1);
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFailure.Raise raised = new OresFailure.Raise("origin");
+                assertTrue(raised.localToCurrentActorDomain());
+                observed.set(raised);
+                captured.countDown();
+            });
+            ref.send("capture");
+            assertTrue(captured.await(3, TimeUnit.SECONDS));
+            assertFalse(observed.get().localToCurrentActorDomain());
+            ref.stop();
+        }
+    }
+
+    @Test
     void unrecoveredRaiseIsTerminalButAnotherActorKeepsRunning() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch otherRan = new CountDownLatch(1);
