@@ -69,7 +69,7 @@ public final class CorePerf {
     public static void elapsed(int phase, long started, long ended) {
         Recorder recorder = active;
         if (recorder != null && !recorder.saturated
-                && started > 0L && ended >= started) {
+                && started != 0L && ended - started >= 0L) {
             recorder.record(phase, started, ended);
         }
     }
@@ -95,7 +95,7 @@ public final class CorePerf {
         }
 
         void record(int phase, long started, long finished) {
-            if (phase < 1 || phase >= NAMES.length || started < 0 || finished < started) {
+            if (phase < 1 || phase >= NAMES.length || finished - started < 0L) {
                 throw new IllegalArgumentException("invalid core perf sample");
             }
             if (saturated) return;
