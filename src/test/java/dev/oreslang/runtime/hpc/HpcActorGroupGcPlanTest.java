@@ -13,7 +13,7 @@ final class HpcActorGroupGcPlanTest {
             HpcActorGroupGcPlan.Policy policy,
             int groups, int active, int pending, int leases, long bytes) {
         return new HpcActorGroupGcPlan.Request(trusted, backend, policy,
-                groups, active, pending, leases, bytes, 80, 100);
+                groups, active, pending, 0, 0, leases, bytes, 80, 100);
     }
 
     @Test
@@ -133,6 +133,43 @@ final class HpcActorGroupGcPlanTest {
     }
 
     @Test
+    void suspendedFuturesAndWakersKeepTheHeapAliveAfterActorTurnEnds() {
+        for (int phase = 0; phase < 2; phase++) {
+            int suspendedFrames = phase == 0 ? 1 : 0;
+            int registeredWakers = phase == 1 ? 1 : 0;
+            var request = new HpcActorGroupGcPlan.Request(true,
+                    HpcActorGroupGcPlan.HeapBackend.DEDICATED_WORKER_PROCESS,
+                    HpcActorGroupGcPlan.Policy.ROTATE_GROUPS,
+                    2, 0, 0, suspendedFrames, registeredWakers, 0, 20, 80, 100);
+            var decision = HpcActorGroupGcPlan.evaluate(request);
+            assertEquals(HpcActorGroupGcPlan.Decision.DRAIN_FIRST, decision.decision());
+            assertTrue(decision.reasons().stream().anyMatch(reason ->
+                    reason.contains("suspended frames") || reason.contains("wakers")));
+        }
+
+        var quiescent = new HpcActorGroupGcPlan.Request(true,
+                HpcActorGroupGcPlan.HeapBackend.DEDICATED_WORKER_PROCESS,
+                HpcActorGroupGcPlan.Policy.ROTATE_GROUPS,
+                2, 0, 0, 0, 0, 0, 20, 80, 100);
+        assertEquals(HpcActorGroupGcPlan.Decision.BACKEND_NOT_IMPLEMENTED,
+                HpcActorGroupGcPlan.evaluate(quiescent).decision());
+    }
+
+    @Test
+    void rejectsNegativeSuspendedFramesAndWakerCounts() {
+        for (int phase = 0; phase < 2; phase++) {
+            int suspendedFrames = phase == 0 ? -1 : 0;
+            int registeredWakers = phase == 1 ? -1 : 0;
+            assertThrows(IllegalArgumentException.class, () ->
+                    new HpcActorGroupGcPlan.Request(true,
+                            HpcActorGroupGcPlan.HeapBackend.GRAAL_POLYGLOT_ISOLATE,
+                            HpcActorGroupGcPlan.Policy.MAINTENANCE_WINDOW,
+                            1, 0, 0, suspendedFrames, registeredWakers,
+                            0, 20, 80, 100));
+        }
+    }
+
+    @Test
     void rejectInvalidBudgetsCountsAndMissingInputs() {
         assertThrows(IllegalArgumentException.class, () ->
                 request(true, HpcActorGroupGcPlan.HeapBackend.GRAAL_POLYGLOT_ISOLATE,
@@ -144,12 +181,12 @@ final class HpcActorGroupGcPlanTest {
                 new HpcActorGroupGcPlan.Request(true,
                         HpcActorGroupGcPlan.HeapBackend.GRAAL_POLYGLOT_ISOLATE,
                         HpcActorGroupGcPlan.Policy.MAINTENANCE_WINDOW,
-                        2, 0, 0, 0, Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE));
+                        2, 0, 0, 0, 0, 0, Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE));
         assertThrows(NullPointerException.class, () ->
                 HpcActorGroupGcPlan.evaluate(null));
         assertThrows(NullPointerException.class, () ->
                 new HpcActorGroupGcPlan.Request(true, null,
                         HpcActorGroupGcPlan.Policy.VM_DEFAULT,
-                        1, 0, 0, 0, 0, 1, 2));
+                        1, 0, 0, 0, 0, 0, 0, 1, 2));
     }
 }
