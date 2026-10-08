@@ -58,6 +58,12 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    /** Depth at which a type alias is first expanded; recursion needs an indirection. */
+    private final IdentityHashMap<Ast.TypeAliasDecl, Integer> aliasEntryDepths = new IdentityHashMap<>();
+    private int typeIndirectionDepth;
+    private record AssignmentPair(Type actual, Type expected) { }
+    private final Set<AssignmentPair> assignmentsInProgress = new HashSet<>();
+    private static final String RECURSIVE_ALIAS_PREFIX = "$recursive_alias$";
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Unlike private-member access, declaration origin must survive nlex.
@@ -222,7 +228,9 @@ public final class TypeChecker {
                     else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                     else if (decl instanceof Ast.TypeAliasDecl alias) {
                         Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
-                        resolve(alias.target(), aliasGenerics, null);
+                        resolve(new Ast.TypeRef(alias.name(),
+                                alias.genericParameters().stream().map(Ast.TypeRef::simple).toList(), false),
+                                aliasGenerics, null);
                     }
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
@@ -2748,7 +2756,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
-            Type sumReceiver = receiverDispatchType(deref(receiver));
+            Type sumReceiver = unfoldRecursiveAlias(receiverDispatchType(deref(receiver)));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -4013,6 +4021,19 @@ public final class TypeChecker {
         return type instanceof Borrow borrow ? borrow.target() : type;
     }
 
+    private Type unfoldRecursiveAlias(Type type) {
+        if (!(type instanceof Named named)
+                || !named.name().startsWith(RECURSIVE_ALIAS_PREFIX)) return type;
+        String name = named.name().substring(RECURSIVE_ALIAS_PREFIX.length());
+        Ast.TypeAliasDecl alias = typeAliases.get(name);
+        if (alias == null || alias.genericParameters().size() != named.arguments().size()) {
+            throw new IllegalArgumentException("unknown recursive type alias '" + name + "'");
+        }
+        Type shape = resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
+        return substituteGenerics(shape,
+                genericBindings(alias.genericParameters(), named.arguments(), "recursive type " + name));
+    }
+
     /** Nominal/structural view used only to resolve members on a polymorphic receiver. */
     private Type receiverDispatchType(Type type) {
         return type instanceof SelfType receiverSelf ? receiverSelf.bound() : type;
@@ -4223,8 +4244,8 @@ public final class TypeChecker {
         } else {
             rawReceiver = typeOf(member.receiver(), env, generics, self);
         }
-        Type receiver = receiverDispatchType(
-                unwrapMutexGuard(deref(rawReceiver)));
+        Type receiver = unfoldRecursiveAlias(receiverDispatchType(
+                unwrapMutexGuard(deref(rawReceiver))));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a infer struct value; inferred structs are closed and readonly");
@@ -6832,9 +6853,18 @@ public final class TypeChecker {
         }
     }
 
+    private Type resolveIndirect(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
+        typeIndirectionDepth++;
+        try {
+            return resolve(ref, generics, self, allowNullMarker);
+        } finally {
+            typeIndirectionDepth--;
+        }
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
-        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        if (ref.isBorrow()) return new Borrow(resolveIndirect(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) {
@@ -6877,7 +6907,20 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
             }
-            if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            Integer entryDepth = aliasEntryDepths.get(alias);
+            if (entryDepth != null) {
+                if (typeIndirectionDepth <= entryDepth) {
+                    throw new IllegalArgumentException("unguarded type alias cycle involving '" + alias.name() + "'");
+                }
+                // Use an explicit finite knot rather than infinitely expanding structural records.
+                String owner = typeAliasOwners.get(alias);
+                String qualified = owner == null || owner.equals(Parser.ROOT_MODULE)
+                        ? alias.name() : owner + "." + alias.name();
+                return new Named(RECURSIVE_ALIAS_PREFIX + qualified,
+                        ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+            }
+            aliasEntryDepths.put(alias, typeIndirectionDepth);
+            resolvingAliases.add(alias);
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
@@ -6886,6 +6929,7 @@ public final class TypeChecker {
                 return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
             } finally {
                 resolvingAliases.remove(alias);
+                aliasEntryDepths.remove(alias);
             }
         }
 
@@ -6910,6 +6954,14 @@ public final class TypeChecker {
                     validateGenericArity(ref, declared.genericParameters(), "class " + declared.name());
                     yield new Named(qualifiedClassName(declared),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                }
+                if (Set.of("Array", "List", "Vector", "Slice").contains(ref.name())) {
+                    typeIndirectionDepth++;
+                    try {
+                        yield resolveCollectionType(ref, generics, self, allowNullMarker);
+                    } finally {
+                        typeIndirectionDepth--;
+                    }
                 }
                 yield resolveCollectionType(ref, generics, self, allowNullMarker);
             }
@@ -6941,7 +6993,7 @@ public final class TypeChecker {
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
-                Type element = resolve(ref.arguments().getFirst(), generics, self, true);
+                Type element = resolveIndirect(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
             }
             case "Result" -> {
@@ -6949,8 +7001,8 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Result requires exactly two explicit type arguments");
                 }
                 yield new Named("Result", List.of(
-                        resolve(ref.arguments().get(0), generics, self),
-                        resolve(ref.arguments().get(1), generics, self)));
+                        resolveIndirect(ref.arguments().get(0), generics, self, false),
+                        resolveIndirect(ref.arguments().get(1), generics, self, false)));
             }
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
@@ -7055,6 +7107,33 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // Coinductive comparison terminates on an already-proven recursive pair,
+        // while still checking every distinct field on first encounter.
+        if (actual.equals(expected)) return true;
+        AssignmentPair pair = new AssignmentPair(actual, expected);
+        if (!assignmentsInProgress.add(pair)) return true;
+        try {
+            if (actual instanceof Named a && a.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
+                return assignable(unfoldRecursiveAlias(a), expected);
+            }
+            if (expected instanceof Named e && e.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
+                return assignable(actual, unfoldRecursiveAlias(e));
+            }
+            if (actual instanceof Named a && expected instanceof Named e
+                    && a.name().equals(e.name()) && a.arguments().size() == e.arguments().size()) {
+                for (int i = 0; i < a.arguments().size(); i++) {
+                    Type left = a.arguments().get(i), right = e.arguments().get(i);
+                    if (!assignable(left, right) || !assignable(right, left)) return false;
+                }
+                return true;
+            }
+            return assignableNonRecursive(actual, expected);
+        } finally {
+            assignmentsInProgress.remove(pair);
+        }
+    }
+
+    private boolean assignableNonRecursive(Type actual, Type expected) {
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
