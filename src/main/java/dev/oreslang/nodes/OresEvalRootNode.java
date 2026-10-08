@@ -8582,8 +8582,10 @@ public final class OresEvalRootNode extends RootNode {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
-                        for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                        var entries = object.fields.entrySet().iterator();
+                        while (entries.hasNext()) {
                             if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
+                            Map.Entry<String, Object> entry = entries.next();
                             if (!first) write(", ");
                             first = false;
                             write(entry.getKey());
@@ -8611,8 +8613,10 @@ public final class OresEvalRootNode extends RootNode {
                     } else if (value instanceof Map<?, ?> map) {
                         write("{");
                         boolean first = true;
-                        for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        var entries = map.entrySet().iterator();
+                        while (entries.hasNext()) {
                             if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
+                            Map.Entry<?, ?> entry = entries.next();
                             if (!first) write(", ");
                             first = false;
                             append(entry.getKey(), depth + 1);
@@ -8624,8 +8628,10 @@ public final class OresEvalRootNode extends RootNode {
                     } else if (value instanceof List<?> list) {
                         write("[");
                         boolean first = true;
-                        for (Object element : list) {
+                        var elements = list.iterator();
+                        while (elements.hasNext()) {
                             if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
+                            Object element = elements.next();
                             if (!first) write(", ");
                             first = false;
                             append(element, depth + 1);
@@ -8635,8 +8641,10 @@ public final class OresEvalRootNode extends RootNode {
                     } else if (value instanceof Set<?> set) {
                         write("[");
                         boolean first = true;
-                        for (Object element : set) {
+                        var elements = set.iterator();
+                        while (elements.hasNext()) {
                             if (nodes >= MAX_NODES) { write(TRUNCATED); break; }
+                            Object element = elements.next();
                             if (!first) write(", ");
                             first = false;
                             append(element, depth + 1);
