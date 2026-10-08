@@ -409,9 +409,8 @@ class AsyncNativeIoTest {
             server.setSoTimeout(5000);
             var exchange = peers.submit(() -> {
                 try (var peer = server.accept()) {
-                    // Give both independently submitted native I/O jobs an
-                    // opportunity to start before completing the blocked read.
-                    Thread.sleep(400);
+                    // Admission is synchronous: the second read gets a
+                    // failed Future even before the first worker starts.
                     peer.getOutputStream().write("one\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     peer.shutdownOutput();
                 }
