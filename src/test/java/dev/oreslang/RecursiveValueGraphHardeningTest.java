@@ -87,6 +87,28 @@ final class RecursiveValueGraphHardeningTest {
     }
 
     @Test
+    void importedModulesClassesAndWildcardPackagesRemainStatic() {
+        for (String declaration : new String[]{
+                "import module Library from './dependency';",
+                "import class Library from './dependency';",
+                "import * as Library from './dependency';"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                            declaration + "\nfnc bad(): void { val value = Library; return; }")),
+                    declaration);
+            assertTrue(failure.getMessage().contains("static"), failure.getMessage());
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                import module Library from './dependency';
+                fnc ok(): void {
+                  Library.member();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void displayHandlesLocalCyclesAndSharedSubtreesWithoutStackOverflow() throws Exception {
         Class<?> objectType =
                 Class.forName("dev.oreslang.nodes.OresEvalRootNode$OresObject");
