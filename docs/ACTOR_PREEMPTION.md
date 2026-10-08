@@ -87,6 +87,48 @@ Untrusted actor fuel/wall/CPU accounting must also survive any future
 cooperative handoff before automatic preemption is enabled for untrusted code;
 a handoff must never reset a logical task's quota.
 
+## Automatic loop cooperation in heap-owned source tasks
+
+The source interpreter now lowers `for`, `for-of`, destructuring `for-of`,
+and `loop` back-edges **inside an existing `SourceTask`** into an iterative
+callback trampoline. No `await` or explicit `rt cooperate` is needed in such
+a loop. Every 32 back-edges, the task polls cancellation and runtime quotas.
+It cooperates after a nominal 2 ms soft quantum or at most 512 back-edges,
+whichever is reached first at a poll. The continuation preserves loop indices,
+iterator cursors, locals, and pending callbacks. A new physical dispatch can
+start only after the previous guest turn fully unwinds.
+
+This is a **soft** scheduling quantum, not a 2 ms deadline guarantee. Long
+single iteration bodies, synchronous helper calls, host/FFI calls, JIT pauses,
+GC pauses, and OS scheduling delays may exceed it. The bounded back-edge count
+also prevents deep recursive Java interpreter stacks. Nested loops in
+`if`/`match`/`switch`/`try`/block contexts are lowered when the enclosing
+source task is already continuation-backed.
+
+**Not automatically suspendable yet:** a normal synchronous function or actor
+receive/run body that has not been transformed into a source task. Its
+`schedulerSafepoint()` remains a cancellation/quota checkpoint and cannot
+capture the host Java stack. Do not make arbitrary synchronous functions
+implicitly async merely because they contain a loop; that changes callable
+types and actor protocol semantics. A future compiler transformation must
+produce explicit continuations while preserving the externally synchronous
+contract where appropriate.
+
+**UNTRUSTED gate:** automatic loop cooperation is deliberately disabled
+inside UNTRUSTED actor turns while their logical task quota continuity is
+unproven (issue #402 / draft PR #461). They still run the periodic quota
+and cancellation checks, without resetting fuel, CPU, or wall budgets through
+a scheduler handoff. Before enabling cooperation for UNTRUSTED, validate
+all source and callback continuation paths and cross-carrier CPU charges.
+
+**Hard real-time:** no worst-case execution-time or hard deadline guarantee is
+provided on the managed JVM/GraalVM runtime. A hard deadline would require
+bounded allocation/GC, JIT/AOT choices, bounded critical sections, scheduler
+priority/reservation admission, interrupt/native execution boundaries, a
+suitable OS, and WCET plus end-to-end latency proof. Non-cooperating trusted
+code cannot be safely suspended by `Thread.yield()`, Java interruption, or
+a timer; forceful revocation requires a dedicated isolated execution boundary.
+
 ## Required invariants
 
 1. **No source-line semantics.** Preemption occurs only at VM-defined resumable
