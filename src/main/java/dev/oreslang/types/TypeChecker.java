@@ -1750,9 +1750,11 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
-                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
+                else if (receiver instanceof Tuple) {
+                    throw new IllegalArgumentException(
+                            "tuple elements are immutable; construct a new tuple instead");
+                } else throw new IllegalArgumentException(
+                        "indexed assignment requires a mutable array/list; structs and tuples cannot be assigned by index");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -2985,7 +2987,16 @@ public final class TypeChecker {
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
-            if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            if (receiver instanceof Tuple tuple) {
+                if (indexed.index() instanceof Ast.LiteralExpr literal && literal.value() instanceof Long n) {
+                    if (n < 0 || n >= tuple.elements().size()) {
+                        throw new IllegalArgumentException(
+                                "tuple index " + n + " out of bounds for arity " + tuple.elements().size());
+                    }
+                    return tuple.elements().get(n.intValue());
+                }
+                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            }
             throw new IllegalArgumentException(
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
