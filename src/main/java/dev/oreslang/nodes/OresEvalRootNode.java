@@ -842,6 +842,7 @@ public final class OresEvalRootNode extends RootNode {
             private static final long SOFT_LOOP_QUANTUM_NANOS = 2_000_000L;
 
             private SourceValueCont pendingLoopContinuation;
+            private Env pendingLoopGuardEnv;
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
@@ -891,6 +892,7 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (RuntimeException failure) {
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
+                    pendingLoopGuardEnv = null;
                     nextStep = null;
                     initialBlockEnv = null;
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -979,12 +981,16 @@ public final class OresEvalRootNode extends RootNode {
                 return result;
             }
 
-            private void scheduleLoopContinuation(SourceValueCont continuation) {
+            private void scheduleLoopContinuation(
+                    Env guardEnv,
+                    SourceValueCont continuation) {
+                Objects.requireNonNull(guardEnv, "guardEnv");
                 Objects.requireNonNull(continuation, "continuation");
                 if (pendingLoopContinuation != null || nextStep != null) {
                     throw new IllegalStateException(
                             "source task attempted overlapping loop continuations");
                 }
+                pendingLoopGuardEnv = guardEnv;
                 pendingLoopContinuation = continuation;
             }
 
@@ -993,20 +999,24 @@ public final class OresEvalRootNode extends RootNode {
                 int backedges = 0;
                 while (nextStep == null && pendingLoopContinuation != null) {
                     SourceValueCont next = pendingLoopContinuation;
+                    Env guardEnv = pendingLoopGuardEnv;
                     pendingLoopContinuation = null;
+                    pendingLoopGuardEnv = null;
                     ++backedges;
-                    if ((backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
-                        // Cancellation and task-scoped UNTRUSTED quotas are
-                        // checked before any bounded cooperation handoff.
+                    boolean untrusted = ActorRuntime.currentActorKind()
+                            == ActorRuntime.ActorKind.UNTRUSTED;
+                    if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
+                        // Untrusted fuel is charged at EVERY loop backedge, not
+                        // once per 32 iterations. Trusted tasks poll at 32.
                         context.schedulerSafepoint();
-                        // Issue #402: the default UNTRUSTED batch meter resets
-                        // across physical handoffs. Until every continuation is
-                        // charged to a durable logical-task quota, fail closed:
-                        // poll/cancel the hostile loop, but never requeue it with
-                        // a freshly minted budget.
-                        if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.UNTRUSTED
+                        // Issue #402: an UNTRUSTED carrier handoff can currently
+                        // mint a fresh physical-turn quota, so fail closed.
+                        // Never auto-cooperate while a live lexical mutex guard
+                        // is held: the guard is a no-yield critical region.
+                        if (!untrusted
                                 && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
-                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)) {
+                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
+                                && !guardEnv.hasLiveMutexGuards()) {
                             cooperate(next);
                             return;
                         }
@@ -2498,6 +2508,7 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             if (loop.update() == null) {
                                 t.scheduleLoopContinuation(
+                                        loopEnv,
                                         (resumed, ignored, failure) -> runForIteration(
                                                 resumed, loop, loopEnv, continuation));
                             } else {
@@ -2513,6 +2524,7 @@ public final class OresEvalRootNode extends RootNode {
                                                                 failure));
                                             } else {
                                                 t2.scheduleLoopContinuation(
+                                                        loopEnv,
                                                         (resumed, ignored, failure2) -> runForIteration(
                                                                 resumed, loop, loopEnv, continuation));
                                             }
@@ -2541,6 +2553,7 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
+                                    env,
                                     (resumed, ignored, failure) -> runLoopSuspendable(
                                             resumed, loop, env, continuation));
                         }
@@ -2681,6 +2694,7 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
+                                    env,
                                     (resumed, ignored, failure) -> runForOfIteration(
                                             resumed, loop, env, items, index + 1, continuation));
                         }
@@ -2732,6 +2746,7 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
+                                    env,
                                     (resumed, ignored, failure) -> runForOfDestructureIteration(
                                             resumed, loop, env, items, index + 1, continuation));
                         }
