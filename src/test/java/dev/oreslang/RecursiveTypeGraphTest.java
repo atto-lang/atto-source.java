@@ -173,6 +173,33 @@ final class RecursiveTypeGraphTest {
     }
 
     @Test
+    void rejectsImplicitCyclesCreatedByMovingAnOwnerIntoItsOwnField() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        define class Link as
+                            pub let Option<Link> next = None;
+                        end
+                        fnc invalid(): void {
+                            let mut Link node = new Link();
+                            node.next = Some(node);
+                            return;
+                        }
+                        """)));
+        assertTrue(moved.getMessage().contains("moved"), moved.getMessage());
+
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                define class Link as
+                    pub let int value = 0;
+                end
+                fnc valid(): void {
+                    let mut Link node = new Link();
+                    node.value = 5;
+                    return;
+                }
+                """)));
+    }
+
+    @Test
     void actorTransportRejectsCyclicDataButAcceptsAcyclicSharedSubgraphs() {
         List<Object> self = new ArrayList<>();
         self.add(self);

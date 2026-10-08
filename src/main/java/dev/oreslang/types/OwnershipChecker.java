@@ -797,6 +797,14 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
+            // The RHS can move the owner of the LHS. Re-check projection
+            // liveness *after* consuming the value so 'node.next = Some(node)'
+            // cannot write through a moved owner or create an implicit cycle.
+            if (assignment.target() instanceof Ast.MemberExpr member) {
+                ensureMutableReceiver(member.receiver(), scope, "field '" + member.member() + "'");
+            } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            }
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
             }
