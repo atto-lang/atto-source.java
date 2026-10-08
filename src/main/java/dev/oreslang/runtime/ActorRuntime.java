@@ -4869,6 +4869,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
         }
+        if (value instanceof ActorLocalReferences.Ref<?>
+                || value instanceof ActorLocalReferences.WeakRef<?>) {
+            throw new SecurityException(
+                    "actor-local Ref<T>/WeakRef<T> cannot cross actor or freeze boundaries");
+        }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
                 || value instanceof ActorRuntime.ContinuationTarget) {
