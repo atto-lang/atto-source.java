@@ -109,6 +109,25 @@ final class ActorLocalReferencesLanguageTest {
     }
 
     @Test
+    void bufferedChannelsCannotCarryActorLocalHandlesEvenWhenNested() {
+        for (String payload : new String[]{
+                "Ref<int>",
+                "WeakRef<int>",
+                "List<Ref<int>>",
+                "Option<WeakRef<int>>"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "fnc bad(): void { val channel: Channel<" + payload
+                                    + "> = Channel.new<" + payload + ">(1); return; }")),
+                    payload);
+            assertTrue(failure.getMessage().contains("actor-local")
+                    || failure.getMessage().contains("Ref/WeakRef"), failure.getMessage());
+        }
+    }
+
+    @Test
     void compilerRejectsCompositeGetCopyAndBorrowStorage() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
