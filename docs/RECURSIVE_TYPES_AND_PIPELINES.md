@@ -19,7 +19,10 @@ val int result = 2 |> increment |> scale(10);
 
 The compiler lowers this to `scale(increment(2), 10)` before static
 analysis. The left side is evaluated once; right-hand side must be a
-callable reference, member reference, lambda, or a call expression.
+named callable, a direct member callable, a lambda, or a call whose
+callee is one of these. Computed callees such as `factory()(extra)`
+are rejected: ordinary call evaluation would evaluate the factory
+before the piped value. Bind computed callables to a name first.
 `value |> f(extra)` prepends `value` to the arguments of `f`. Use
 parentheses for intentionally mixed operator precedence. Neither bitwise
 `|` nor lambda delimiters `|x|` change. Bindings and expression
@@ -37,6 +40,12 @@ type IntNode = Node<int>;
 
 type First = Option<Second>;
 type Second = Result<int, First>;
+
+// Canonical explicit record syntax; legacy { ... } record types also parse.
+type NodeRecord = struct{
+  value: int,
+  next: Option<NodeRecord>
+};
 ```
 
 The resolver terminates guarded cycles using a compiler-internal
@@ -53,8 +62,43 @@ type Growing<T> = Option<Growing<List<T>>>;  // error
 These are static type-graph rules. They do not themselves add ADT
 constructors, automatic cyclic allocation, cycle-aware serialization,
 actor sendability, or exhaustive constructor-pattern proofs.
-The current checker conservatively refuses unverified cross-actor
-transport where a recursive marker cannot be proven data-only.
+One-step unfolding makes a recursive back-edge compatible with its
+declared concrete data shape, including nested `Option<NodeRecord>`
+and recursive field access. The checker conservatively rejects
+recursive markers that reach actor-message or async-transfer signatures:
+this is **not yet** a cycle-aware serializer.
+
+## Circular values and ownership
+
+A recursive *type* is not necessarily a cyclic *value*. For example,
+`Option<NodeRecord>` permits finite linked lists terminating at `None`.
+Actual circular values preserve object identity: two references may
+point to the same object, including a node that points back to itself.
+
+Within an owning context, the runtime uses identity-aware and bounded
+diagnostic traversal: printing an object, map, list, Option or Result
+that contains a cycle emits `<circular>` rather than overflowing the
+stack. The JVM heap collector can reclaim unreachable cycles; the
+additional Oreslang resource collector is not itself a tracing
+collector for guest object graphs.
+
+The compiler must **not** relax move/borrow safety to create cycles.
+In particular, an owned `NodeRecord` placed inside its own `Option`
+would require invalid duplication of ownership unless a distinct
+reference handle is available. A future managed local `Ref<T>` or
+weak-reference design must specify allocation, identity, lifetime,
+mutation authority, cleanup and actor confinement before supporting
+source-level cyclic construction through that handle.
+
+**Current boundary:** cyclic mutable graphs are disallowed in actor
+mailboxes, freeze/copy transport, shared-mutex publication and async
+task detachment. Repeated references to an acyclic subtree remain
+valid and must not be confused with a genuine cycle. Actor-reference
+handle cycles are a different kind of graph, not by-value transfer.
+
+Potential DoS via deeply nested values is bounded in runtime display
+and async detachment; recursive type comparisons have a compiler
+nesting limit rather than exhausting the Java call stack.
 
 ## Module/class declarations are not values
 
