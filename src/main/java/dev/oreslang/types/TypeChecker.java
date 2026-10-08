@@ -7133,6 +7133,33 @@ public final class TypeChecker {
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
 
+    /** One-step iso-recursive unfolding for structural data compatibility. */
+    private Type unfoldRecursiveAlias(Named reference) {
+        String qualified = reference.name().substring("$recursive_alias$".length());
+        Ast.TypeAliasDecl alias = findTypeAlias(qualified);
+        if (alias == null) {
+            throw new IllegalArgumentException("unknown recursive alias marker '" + qualified + "'");
+        }
+        if (alias.genericParameters().size() != reference.arguments().size()) {
+            throw new IllegalArgumentException("invalid recursive alias instantiation '" + qualified + "'");
+        }
+
+        List<Ast.TypeRef> symbolicArguments = alias.genericParameters().stream()
+                .map(Ast.TypeRef::simple).toList();
+        AliasFrame previous = resolvingAliases.put(alias, new AliasFrame(0, symbolicArguments));
+        int previousDepth = recursiveAliasGuardDepth;
+        recursiveAliasGuardDepth = 0;
+        try {
+            Type body = resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
+            return substituteGenerics(body, genericBindings(
+                    alias.genericParameters(), reference.arguments(), "recursive alias " + qualified));
+        } finally {
+            recursiveAliasGuardDepth = previousDepth;
+            if (previous == null) resolvingAliases.remove(alias);
+            else resolvingAliases.put(alias, previous);
+        }
+    }
+
     private boolean assignable(Type actual, Type expected) {
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
@@ -7149,6 +7176,44 @@ public final class TypeChecker {
         if (actual instanceof Generic actualGeneric) {
             return expected instanceof Generic expectedGeneric
                     && actualGeneric.name().equals(expectedGeneric.name());
+        }
+        // A recursive marker is an internal back-edge, not a separate runtime
+        // class. Unfold a single layer when comparing it to its concrete data
+        // representation; two markers retain nominal recursion identity.
+        if (actual instanceof Named actualRecursive
+                && actualRecursive.name().startsWith("$recursive_alias$")) {
+            if (expected instanceof Named expectedRecursive
+                    && expectedRecursive.name().startsWith("$recursive_alias$")) {
+                return actualRecursive.equals(expectedRecursive);
+            }
+            return assignable(unfoldRecursiveAlias(actualRecursive), expected);
+        }
+        if (expected instanceof Named expectedRecursive
+                && expectedRecursive.name().startsWith("$recursive_alias$")) {
+            return assignable(actual, unfoldRecursiveAlias(expectedRecursive));
+        }
+        if (actual instanceof ListType aList && expected instanceof ListType bList) {
+            return assignable(aList.element(), bList.element())
+                    && assignable(bList.element(), aList.element());
+        }
+        if (actual instanceof Tuple aTuple && expected instanceof Tuple bTuple) {
+            if (aTuple.kind() != bTuple.kind()
+                    || aTuple.elements().size() != bTuple.elements().size()) return false;
+            for (int i = 0; i < aTuple.elements().size(); i++) {
+                if (!assignable(aTuple.elements().get(i), bTuple.elements().get(i))) return false;
+            }
+            return true;
+        }
+        if (actual instanceof Named aNamed && expected instanceof Named bNamed
+                && aNamed.name().equals(bNamed.name())) {
+            if (aNamed.arguments().size() != bNamed.arguments().size()) return false;
+            for (int i = 0; i < aNamed.arguments().size(); i++) {
+                if (!assignable(aNamed.arguments().get(i), bNamed.arguments().get(i))
+                        || !assignable(bNamed.arguments().get(i), aNamed.arguments().get(i))) {
+                    return false;
+                }
+            }
+            return true;
         }
         if (actual instanceof Union source) {
             return source.options().stream().allMatch(option -> assignable(option, expected));
