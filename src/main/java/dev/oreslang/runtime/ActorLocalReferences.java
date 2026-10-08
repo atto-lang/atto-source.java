@@ -111,16 +111,16 @@ public final class ActorLocalReferences {
     }
 
     public static final class WeakRef<T> {
-        private final Object ownerDomain;
+        private final WeakReference<Object> ownerDomain;
         private final WeakReference<Cell<T>> target;
 
         private WeakRef(Cell<T> cell) {
-            this.ownerDomain = cell.ownerDomain;
+            this.ownerDomain = new WeakReference<>(cell.ownerDomain);
             this.target = new WeakReference<>(cell);
         }
 
         public Optional<Ref<T>> upgrade() {
-            if (requireActorDomain() != ownerDomain) {
+            if (requireActorDomain() != ownerDomain.get()) {
                 throw new SecurityException(
                         "actor-local WeakRef<T> accessed outside its owning actor");
             }
