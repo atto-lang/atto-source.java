@@ -53,6 +53,29 @@ final class RecursiveValueGraphHardeningTest {
     }
 
     @Test
+    void uninhabitableRequiredRecursiveFieldsAreRejected() {
+        for (String impossible : new String[]{
+                "type Bad = struct{ next: Bad };",
+                "type Bad = Result<Bad, Bad>;",
+                "type Bad = [int, Bad];",
+                "type Bad = Tuple[Bad];"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(impossible)),
+                    impossible);
+            assertTrue(failure.getMessage().contains("finite base")
+                    || failure.getMessage().contains("cycle"), failure.getMessage());
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Node = struct{
+                  value: int,
+                  next: Option<Node>
+                };
+                """)));
+    }
+
+    @Test
     void cyclicClassTypeCannotBeMistakenForSendableActorMessage() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
