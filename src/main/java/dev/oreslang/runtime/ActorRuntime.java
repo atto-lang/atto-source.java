@@ -1190,6 +1190,20 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        /** Called only through an admitted runtime-owned request envelope. */
+        Object requestActor(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                Object request,
+                ActorContext<Object> context) throws Exception;
+    }
+
+    /** Explicit actor-fatal source panic, distinct from request-local throws. */
+    public static final class ActorPanicException extends RuntimeException {
+        public ActorPanicException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     public interface ActorContext<M> {
@@ -1499,6 +1513,12 @@ public final class ActorRuntime implements AutoCloseable {
      * actor's bounded runtime-continuation lane may execute.
      */
     public void suspendCurrentUserMailboxUntil(OresFuture<?> future) {
+        suspendCurrentUserMailboxUntil(future, null);
+    }
+
+    /** Request variant: normal exceptions reject only this reply; panic fails the actor. */
+    public void suspendCurrentUserMailboxUntil(
+            OresFuture<?> future, OresFuture<Object> reply) {
         Objects.requireNonNull(future, "future");
         requireCallerRuntimeAffinity("suspend current actor mailbox turn");
         ActorCell<?> cell = currentActor.get();
@@ -1521,7 +1541,7 @@ public final class ActorRuntime implements AutoCloseable {
             cell.sourceReceiveSuspended = true;
         }
 
-        future.whenCompleteRuntime((ignored, failure) -> {
+        future.whenCompleteRuntime((value, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
                 synchronized (cell.lifecycleLock) {
                     cell.sourceReceiveSuspended = false;
@@ -1534,9 +1554,16 @@ public final class ActorRuntime implements AutoCloseable {
                             && cell.endRequested) {
                         return;
                     }
+                    if (reply != null && !isFatalRequestFailure(terminal)) {
+                        reply.failFromRuntime(terminal);
+                        return;
+                    }
                     if (terminal instanceof RuntimeException runtime) throw runtime;
                     if (terminal instanceof Error error) throw error;
                     throw new RuntimeException(terminal);
+                }
+                if (reply != null && !reply.isDone()) {
+                    completeRequestReply(cell, reply, value);
                 }
             })) {
                 synchronized (cell.lifecycleLock) {
@@ -1549,6 +1576,42 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
         });
+    }
+
+    private static boolean isFatalRequestFailure(Throwable failure) {
+        return failure instanceof ActorPanicException
+                || failure instanceof SecurityException
+                || failure instanceof Error;
+    }
+
+    /** No guest callable can settle, forge or retain the reply authority. */
+    private void completeRequestReply(
+            ActorCell<?> cell, OresFuture<Object> reply, Object result) {
+        if (reply.isDone() || cell.stopped.get()) return;
+        try {
+            validateMessageGraph(result);
+            requireOwnedActorRefs(result, new IdentityHashMap<>(), 0);
+            requireMutexTransport(cell, result, new IdentityHashMap<>(), 0);
+            if (cell.kind == ActorKind.UNTRUSTED) {
+                rejectUntrustedInboundCapabilities(result, new IdentityHashMap<>(), 0);
+            }
+            Object prepared = isPrivateKind(cell.kind)
+                    ? isolateCopy(result) : freezeForTransport(result);
+            // A reply is limited independently of the inbox capacity. This
+            // guards the source actor against unbounded result graphs.
+            long bytes = isPrivateKind(cell.kind)
+                    ? estimatePrivateTransportBytes(prepared, new IdentityHashMap<>(), 0,
+                            cell.policy.maxHeapBytes())
+                    : estimateSharedMailboxBytes(prepared, new IdentityHashMap<>(), 0);
+            if (bytes > cell.policy.maxHeapBytes()) {
+                throw new IllegalStateException(
+                        "actor request reply exceeds heap transport quota");
+            }
+            reply.completeFromRuntime(prepared);
+        } catch (RuntimeException violation) {
+            reply.failFromRuntime(violation);
+            if (violation instanceof SecurityException) throw violation;
+        }
     }
 
     public final class ActorRef<M> {
