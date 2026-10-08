@@ -161,9 +161,9 @@ public abstract class OresSubscription<T> {
         source.whenCompleteRuntime((notification, failure) -> {
             boolean cleanup = false;
             synchronized (gate) {
-                if (cancelled || exposed.isDone()) {
-                    // Cancellation has won; a late producer completion must
-                    // never resurrect the released subscription.
+                if (cancelled) {
+                    // Subscription cancellation has won; a late producer
+                    // completion must never resurrect the released subscription.
                     if (active == exposed) active = null;
                     pulling = false;
                     return;
