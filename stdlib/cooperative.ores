@@ -38,4 +38,53 @@ define module cooperative as
     }
     return;
   }
+  // Scan emits one prefix result per input element; the initial seed is
+  // not emitted. Reduction callbacks execute in source order, exactly once.
+  pub fnc scan<T, R>(Array<T> values, R initial, Fnc<R, T, R> combine): Array<R> {
+    let mut Array<R> output = new Array<R>();
+    let accumulator = initial;
+    val count = values.size;
+    rt cooperative for let i = 0; i < count; i++ {
+      accumulator = combine(accumulator, values.get(i));
+      output.add(accumulator);
+    }
+    return output;
+  }
+
+  // Short-circuit operators preserve the predicate's side effects, and stop
+  // without a gratuitous handoff after a decisive result.
+  pub fnc any<T>(Array<T> values, Fnc<T, bool> predicate): bool {
+    val count = values.size;
+    rt cooperative for let i = 0; i < count; i++ {
+      if predicate(values.get(i)); do
+        return true;
+      fi
+    }
+    return false;
+  }
+
+  pub fnc all<T>(Array<T> values, Fnc<T, bool> predicate): bool {
+    val count = values.size;
+    rt cooperative for let i = 0; i < count; i++ {
+      if !predicate(values.get(i)); do
+        return false;
+      fi
+    }
+    return true;
+  }
+
+  // Both dimensions use the same task-local loop cooperation engine, rather
+  // than spawning a Future per callback or per nested element.
+  pub fnc flatMap<T, R>(Array<T> values, Fnc<T, Array<R>> transform): Array<R> {
+    let mut Array<R> output = new Array<R>();
+    val count = values.size;
+    rt cooperative for let i = 0; i < count; i++ {
+      val chunk = transform(values.get(i));
+      val n = chunk.size;
+      rt cooperative for let j = 0; j < n; j++ {
+        output.add(chunk.get(j));
+      }
+    }
+    return output;
+  }
 end
