@@ -4033,9 +4033,17 @@ public final class TypeChecker {
         if (alias == null || alias.genericParameters().size() != named.arguments().size()) {
             throw new IllegalArgumentException("unknown recursive type alias '" + name + "'");
         }
-        Type shape = resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
-        return substituteGenerics(shape,
-                genericBindings(alias.genericParameters(), named.arguments(), "recursive type " + name));
+        // Resolve the alias body in its declaration module, not whichever
+        // module happened to request a member or sendability check.
+        String previousModule = currentLexicalModule;
+        try {
+            currentLexicalModule = typeAliasOwners.get(alias);
+            Type shape = resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
+            return substituteGenerics(shape,
+                    genericBindings(alias.genericParameters(), named.arguments(), "recursive type " + name));
+        } finally {
+            currentLexicalModule = previousModule;
+        }
     }
 
     /** Nominal/structural view used only to resolve members on a polymorphic receiver. */
