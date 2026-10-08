@@ -1106,9 +1106,21 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = matchContextualKeyword("structural");
+
+            // Migration spelling for named-argument-friendly declarations:
+            // |value: Type| is accepted, while oreslang-format emits |Type value|.
+            if (!structural && check(IDENT) && checkNext(COLON)) {
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after compatibility parameter name");
+                Ast.TypeRef type = parseTypeRef();
+                boolean mutable = match(MUT);
+                params.add(new Ast.Param(type, name, false, mutable));
+                continue;
+            }
+
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
-            String name = consume(IDENT, "lambda-style callable declaration parameters require 'Type name'").lexeme();
+            String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
@@ -1189,9 +1201,21 @@ public final class Parser {
                 if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
                 structural = true;
             }
+
+            // Temporary compatibility spelling: name: Type. Canonical source
+            // remains Type name so ':' stays available for named call arguments.
+            if (!structural && check(IDENT) && checkNext(COLON)) {
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after compatibility parameter name");
+                Ast.TypeRef type = parseTypeRef();
+                boolean mutable = match(MUT);
+                params.add(new Ast.Param(type, name, false, mutable));
+                continue;
+            }
+
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
-            String name = consume(IDENT, "expected parameter name").lexeme();
+            String name = consume(IDENT, "expected parameter name after type").lexeme();
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
