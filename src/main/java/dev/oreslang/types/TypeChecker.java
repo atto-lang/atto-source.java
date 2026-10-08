@@ -57,6 +57,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Qualified imported module/class/package namespaces are compile-time only. */
+    private final Set<String> importedStaticNamespaces = new HashSet<>();
     /** Active aliases carry their guard depth and original instantiation. */
     private record AliasFrame(int guardDepth, List<Ast.TypeRef> arguments) { }
     private final IdentityHashMap<Ast.TypeAliasDecl, AliasFrame> resolvingAliases = new IdentityHashMap<>();
@@ -140,6 +142,11 @@ public final class TypeChecker {
                         || imported.kind() == Ast.ImportKind.CLASS
                         || ImportRules.isJavaPath(imported.path())) {
                     importedValues.add(name);
+                }
+                if (imported.kind() == Ast.ImportKind.CLASS
+                        || imported.kind() == Ast.ImportKind.MODULE
+                        || imported.kind() == Ast.ImportKind.ALL) {
+                    importedStaticNamespaces.add(name);
                 }
             }
         }
@@ -1803,6 +1810,11 @@ public final class TypeChecker {
                 rejectUnimportedClassNamespace(classNamespace);
                 throw new IllegalArgumentException("class '" + name.name()
                         + "' is a static namespace, not a value; use new or reference a static member");
+            }
+            if (importedStaticNamespaces.contains(name.name())) {
+                throw new IllegalArgumentException("imported namespace '" + name.name()
+                        + "' is a static module/class/package declaration, not a runtime value; "
+                        + "select one of its static members");
             }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
@@ -4298,6 +4310,9 @@ public final class TypeChecker {
     private Type staticNamespaceReceiverType(
             Ast.Expr receiver, Env env, Set<String> generics, Type self) {
         if (receiver instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+            if (importedStaticNamespaces.contains(name.name())) {
+                return Unknown.INSTANCE; // static selector access, never a first-class namespace value
+            }
             Ast.ModuleDecl module = modules.get(name.name());
             if (module != null) {
                 rejectUnimportedModuleNamespace(name.name());
