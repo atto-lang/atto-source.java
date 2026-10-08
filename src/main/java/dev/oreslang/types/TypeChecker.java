@@ -7442,6 +7442,9 @@ public final class TypeChecker {
     }
 
     private void requireAssignable(Type actual, Type expected, String where) {
+        if (actual instanceof ClassNamespace) {
+            throw new IllegalArgumentException(where + " cannot use a class declaration as a runtime value; use a static member instead");
+        }
         if (!assignable(actual, expected)) throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
     }
 
