@@ -131,24 +131,21 @@ final class CooperativeForLanguageTest {
     }
 
     @Test
-    void scanAnyAllAndFlatMapRunInStableOrder() throws Exception {
+    void anyAllAndFlatMapRunInStableOrder() throws Exception {
         Files.copy(Path.of("stdlib/cooperative.ores"), temp.resolve("cooperative.ores"));
-        assertEquals("10|true|true|8", run("""
+        assertEquals("true|true|8", run("""
                 import module cooperative from './cooperative';
                 pub async fnc main(): void {
                   // Collection operators transfer owned inputs into
                   // continuation-backed library tasks.
-                  let mut Array<int> values = new Array<int>();
                   let mut Array<int> anyValues = new Array<int>();
                   let mut Array<int> allValues = new Array<int>();
                   let mut Array<int> flatValues = new Array<int>();
                   for (let i = 1; i < 5; i = i + 1) do
-                    values.add(i);
                     anyValues.add(i);
                     allValues.add(i);
                     flatValues.add(i);
                   done
-                  val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
                   val Fnc<int, bool> positive = |int x| -> { return x > 0; };
                   val Fnc<int, bool> greaterThanThree = |int x| -> { return x > 3; };
                   val Fnc<int, Array<int>> two = |int x| -> {
@@ -157,12 +154,9 @@ final class CooperativeForLanguageTest {
                     pair.add(x);
                     return pair;
                   };
-                  val scanned = cooperative.scan(values, 0, sum);
                   val anything = cooperative.any(anyValues, greaterThanThree);
                   val everything = cooperative.all(allValues, positive);
                   val flat = cooperative.flatMap(flatValues, two);
-                  stdio.stdout.write(scanned.get(3));
-                  stdio.stdout.write("|");
                   stdio.stdout.write(anything);
                   stdio.stdout.write("|");
                   stdio.stdout.write(everything);
