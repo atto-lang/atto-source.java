@@ -148,7 +148,7 @@ public final class ActorContractValidator {
                     && RUNTIME_HANDLERS.contains(member.member())) {
                 throw new IllegalArgumentException(
                         "actor runtime handler self." + member.member()
-                                + " cannot be called or captured directly");
+                                + " cannot be called directly or captured as a value");
             }
             checkExpr(member.receiver());
         } else if (expr instanceof Ast.CallExpr v) {
