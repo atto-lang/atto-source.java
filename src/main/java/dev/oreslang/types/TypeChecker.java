@@ -6687,12 +6687,21 @@ public final class TypeChecker {
         }
     }
 
+    private final Set<Type> validatingPointerTargets = new HashSet<>();
+
     private void requirePointerTarget(Type target) {
-        boolean referenceBacked = target instanceof Record || target instanceof ListType
-                || (target instanceof Named named && findClass(named.name()) != null
-                    && findClass(named.name()).actorKind() == Ast.ActorKind.NONE);
-        if (!referenceBacked || !isSharedSafe(target, new LinkedHashSet<>(), Map.of())) {
-            throw new IllegalArgumentException("Pointer<T> requires concrete owned class, struct, or array data without borrowed/runtime capabilities");
+        if (!validatingPointerTargets.add(target)) {
+            throw new IllegalArgumentException("Pointer<T> target graph cannot recursively contain pointer capabilities");
+        }
+        try {
+            boolean referenceBacked = target instanceof Record || target instanceof ListType
+                    || (target instanceof Named named && findClass(named.name()) != null
+                        && findClass(named.name()).actorKind() == Ast.ActorKind.NONE);
+            if (!referenceBacked || !isSharedSafe(target, new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException("Pointer<T> requires concrete owned class, struct, or array data without borrowed/runtime capabilities");
+            }
+        } finally {
+            validatingPointerTargets.remove(target);
         }
     }
 

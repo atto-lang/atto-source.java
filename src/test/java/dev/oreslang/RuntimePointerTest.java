@@ -156,6 +156,15 @@ final class RuntimePointerTest {
         reject("const Pointer<int> p = rt ref 7;", "Pointer<T>");
     }
 
+    @Test void recursivePointerTargetGraphsFailWithADiagnostic() {
+        var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Node as
+                  pub val Pointer<Node> next;
+                end
+                """)));
+        assertTrue(error.getMessage().contains("Pointer<T>"), error.getMessage());
+    }
+
     @Test void symbolicPointerAndBorrowSyntaxIsRejected() {
         for (String expression : new String[] {"&box", "&mut box", "*box"}) {
             var e = assertThrows(IllegalArgumentException.class, () -> Parser.parse(BOX + "fnc bad(): void { const p = " + expression + "; return; }"));
