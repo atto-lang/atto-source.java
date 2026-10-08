@@ -34,6 +34,58 @@ public final class ActorLocalReference {
         }
     }
 
+    /**
+     * Validate actor identity transitively before publishing a new cell value.
+     * Guest class/Option/Result values expose their children through SharedState.
+     * Cycles and repeated DAG nodes are valid locally, but foreign actor handles
+     * must never be hidden behind those aggregate objects.
+     */
+    private static void requireLocalGraph(Object value, Object domain) {
+        requireLocalGraph(value, domain, new java.util.IdentityHashMap<>(), 0, new int[1]);
+    }
+
+    private static void requireLocalGraph(
+            Object value, Object domain,
+            java.util.IdentityHashMap<Object, Boolean> visited,
+            int depth, int[] nodes) {
+        if (value == null) return;
+        if (value instanceof Strong<?> strong) {
+            strong.checkedCell(domain);
+            return;
+        }
+        if (value instanceof Weak<?> weak) {
+            weak.checkDomain(domain);
+            return;
+        }
+        if (value instanceof String || value instanceof Number
+                || value instanceof Boolean || value instanceof Character
+                || value instanceof Enum<?>) return;
+        if (depth > 96 || ++nodes[0] > 100_000) {
+            throw new IllegalArgumentException("actor-local Ref value graph exceeds traversal limits");
+        }
+        if (visited.put(value, Boolean.TRUE) != null) return;
+        if (value instanceof java.util.Map<?, ?> map) {
+            for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
+                requireLocalGraph(entry.getKey(), domain, visited, depth + 1, nodes);
+                requireLocalGraph(entry.getValue(), domain, visited, depth + 1, nodes);
+            }
+        } else if (value instanceof java.lang.Iterable<?> iterable) {
+            for (Object child : iterable) {
+                requireLocalGraph(child, domain, visited, depth + 1, nodes);
+            }
+        } else if (value instanceof OresMutex.SharedState state) {
+            for (Object child : state.sharedStateChildren()) {
+                requireLocalGraph(child, domain, visited, depth + 1, nodes);
+            }
+        } else if (value.getClass().isArray()) {
+            int n = java.lang.reflect.Array.getLength(value);
+            for (int i = 0; i < n; i++) {
+                requireLocalGraph(java.lang.reflect.Array.get(value, i),
+                        domain, visited, depth + 1, nodes);
+            }
+        }
+    }
+
     private static final class Cell<T> {
         private final Object owner;
         private T value;
@@ -69,15 +121,21 @@ public final class ActorLocalReference {
         }
 
         public void set(T replacement) {
-            checkedCell(currentDomain()).value =
-                    Objects.requireNonNull(replacement, "Ref<T>.set does not accept null; use Option<T>");
+            Object domain = currentDomain();
+            Cell<T> state = checkedCell(domain);
+            T next = Objects.requireNonNull(replacement, "Ref<T>.set does not accept null; use Option<T>");
+            requireLocalGraph(next, domain);
+            state.value = next;
         }
 
         /** Transfers the former owned value out, replacing it atomically within the actor turn. */
         public T swap(T replacement) {
-            Cell<T> state = checkedCell(currentDomain());
+            Object domain = currentDomain();
+            Cell<T> state = checkedCell(domain);
+            T next = Objects.requireNonNull(replacement, "Ref<T>.swap does not accept null");
+            requireLocalGraph(next, domain);
             T previous = state.value;
-            state.value = Objects.requireNonNull(replacement, "Ref<T>.swap does not accept null");
+            state.value = next;
             return previous;
         }
 
@@ -146,12 +204,15 @@ public final class ActorLocalReference {
     }
 
     public static <T> Strong<T> create(T initial) {
-        return new Strong<>(new Cell<>(currentDomain(), initial));
+        Object domain = currentDomain();
+        requireLocalGraph(initial, domain);
+        return new Strong<>(new Cell<>(domain, initial));
     }
 
     // Package-private hooks exercise ownership without forging an actor context
     // or relaxing the public runtime's actor-turn admission check.
     static <T> Strong<T> createForDomain(Object domain, T initial) {
+        requireLocalGraph(initial, domain);
         return new Strong<>(new Cell<>(domain, initial));
     }
 
@@ -164,7 +225,10 @@ public final class ActorLocalReference {
     }
 
     static <T> void setForDomain(Strong<T> handle, Object domain, T replacement) {
-        handle.checkedCell(domain).value = Objects.requireNonNull(replacement);
+        Cell<T> cell = handle.checkedCell(domain);
+        T next = Objects.requireNonNull(replacement);
+        requireLocalGraph(next, domain);
+        cell.value = next;
     }
 
     static <T> T getCopyForDomain(Strong<T> handle, Object domain) {
@@ -173,8 +237,10 @@ public final class ActorLocalReference {
 
     static <T> T swapForDomain(Strong<T> handle, Object domain, T replacement) {
         Cell<T> cell = handle.checkedCell(domain);
+        T next = Objects.requireNonNull(replacement);
+        requireLocalGraph(next, domain);
         T previous = cell.value;
-        cell.value = Objects.requireNonNull(replacement);
+        cell.value = next;
         return previous;
     }
 
