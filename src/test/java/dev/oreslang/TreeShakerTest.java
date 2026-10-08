@@ -130,7 +130,7 @@ final class TreeShakerTest {
                 }
                 """, BuildOptions.executable(Map.of()));
 
-        assertTrue(result.retained("service.transform"));
+        assertTrue(result.retained("service.transform"), "retained=" + result.retainedSymbols() + " removed=" + result.removedSymbols());
         assertTrue(result.retained("service.direct_only"));
         assertTrue(result.removed("service.private_helper"));
     }
