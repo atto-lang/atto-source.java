@@ -2566,7 +2566,7 @@ public final class OresEvalRootNode extends RootNode {
                                                 t2.scheduleLoopContinuation(
                                                         loopEnv,
                                                         loop.cooperative(),
-                                                        (resumed, ignored, failure2) -> runForIteration(
+                                                        (resumed, discardedResumeValue, failure2) -> runForIteration(
                                                                 resumed, loop, loopEnv, continuation));
                                             }
                                         });
