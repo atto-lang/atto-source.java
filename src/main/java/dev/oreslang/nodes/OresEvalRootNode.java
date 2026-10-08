@@ -8860,11 +8860,11 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
+        @Override public Iterable<?> sharedStateChildren(){return present && value != null ? List.of(value) : List.of();}
         @Override public String toString(){return GraphDisplay.format(this);}
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren(){return List.of(value);}
+        @Override public Iterable<?> sharedStateChildren(){return value == null ? List.of() : List.of(value);}
         @Override public String toString(){return GraphDisplay.format(this);}
     }
     private record OptionUnwrapError(String reason) {
