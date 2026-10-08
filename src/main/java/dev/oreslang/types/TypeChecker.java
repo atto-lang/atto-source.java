@@ -2277,7 +2277,9 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                // A module/class/imported static namespace may be the receiver
+                // of a qualified call without ever becoming a runtime value.
+                Type receiver = deref(staticNamespaceReceiverType(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
 
