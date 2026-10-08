@@ -90,7 +90,7 @@ final class ActorHiddenEntryContractTest {
                     return self.run(job);
                   }
                 end
-                """, "cannot be called or captured directly");
+                """, "cannot be called directly");
         rejects("""
                 define actor Worker as
                   fnc run(int job): int {
@@ -98,7 +98,7 @@ final class ActorHiddenEntryContractTest {
                     return job;
                   }
                 end
-                """, "cannot be called or captured directly");
+                """, "cannot be called directly");
         rejects("""
                 define actor Worker as
                   fnc run(int job): int {
@@ -109,7 +109,7 @@ final class ActorHiddenEntryContractTest {
                     return job;
                   }
                 end
-                """, "cannot be called or captured directly");
+                """, "cannot be called directly");
         rejects("""
                 define actor Worker as
                   on_start(): void {
@@ -117,7 +117,7 @@ final class ActorHiddenEntryContractTest {
                     return;
                   }
                 end
-                """, "cannot be called or captured directly");
+                """, "cannot be called directly");
         rejects("""
                 define actor Worker as
                   receive(ActorMail<int> mail): void {
@@ -125,7 +125,7 @@ final class ActorHiddenEntryContractTest {
                     return;
                   }
                 end
-                """, "cannot be called or captured directly");
+                """, "cannot be called directly");
     }
 
     @Test
