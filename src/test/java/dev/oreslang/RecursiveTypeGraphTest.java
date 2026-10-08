@@ -4,6 +4,11 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.runtime.ActorRuntime;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -35,6 +40,31 @@ final class RecursiveTypeGraphTest {
                 fnc value(Node item): int { return item.value; }
                 fnc next_value(Node item): int { return item.next.unwrap().value; }
                 """);
+    }
+
+    @Test
+    void executesFiniteNestedNodeValues() throws Exception {
+        String program = """
+                type Node = struct{
+                    value: int,
+                    next: Option<Node>
+                };
+
+                pub routine main(): void {
+                    val Node tail = struct{value: int, next: Option<Node>}{value: 2, next: None};
+                    val Node head = struct{value: int, next: Option<Node>}{value: 1, next: Some(tail)};
+                    stdio.println(head.next.unwrap().value);
+                    return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "recursive-node.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("2\\n", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
