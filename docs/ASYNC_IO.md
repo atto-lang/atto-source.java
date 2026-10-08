@@ -90,8 +90,8 @@ and chunked/unknown-length responses are independently capped while reading.
 The response stream is closed on overflow; HTTP redirects remain disabled.
 Large responses need separately designed chunked/backpressured streaming APIs.
 
-`socket.read_line_async()` admits at most **65,536 UTF-16 characters** in
-one line. A line exceeding that bound fails and closes its connection rather
+`socket.read_line_async()` admits at most **65,536 UTF-8 bytes** in
+one line (before UTF-8 decoding). A line exceeding that bound fails and closes its connection rather
 than silently returning a truncated record. LF, CRLF, CR, and a trailing EOF
 line are accepted. `socket.write_text_async()` admits at most **65,536 UTF-8
 bytes** per write call. The underlying compatibility methods share these
