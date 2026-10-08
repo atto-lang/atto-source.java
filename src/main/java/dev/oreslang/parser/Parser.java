@@ -719,6 +719,11 @@ public final class Parser {
     }
 
     private void validateActorMethodModifiers(Modifiers modifiers) {
+        if (modifiers.visibility == Ast.Visibility.PUBLIC) {
+            throw error(peek(),
+                    "actor methods cannot be public; mailbox entry is an implicit runtime operation, "
+                            + "not a guest-visible method");
+        }
         if (modifiers.generator || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
                 || modifiers.shared || modifiers.untrusted) {
             throw error(peek(), "actor methods do not accept generator, nlex, abstract, shared, or untrusted modifiers");

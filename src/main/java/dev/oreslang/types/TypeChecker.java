@@ -955,6 +955,12 @@ public final class TypeChecker {
 
         for (Ast.MethodDecl method : klass.methods()) {
             if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' cannot declare public method '"
+                                + method.name() + "'; mailbox entry is runtime-internal");
+            }
+            if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
                             || method.name().equals("end")

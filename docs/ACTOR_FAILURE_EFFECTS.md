@@ -1,5 +1,17 @@
 # Actor failure effects
 
+## Actor API boundary
+
+Guest actor classes have **no public methods** (including static methods).
+Actors do not have constructors and may not invoke `super`. The transport
+entrypoint belongs to an implicit runtime-managed actor superclass and is
+not part of the language-visible callable API. A declared
+`receive(ActorMail<T> mail)` or `on_start()` is an **actor-private hook**
+invoked internally by the VM, never `actorRef.receive(...)` or a publicly
+callable method. Other instance methods and static helpers on an actor are
+also private and actor-local. Actor *type* visibility is separate: a public
+actor type can be imported and spawned, without exposing any public methods.
+
 Oreslang treats guest exceptional control as three separate effects:
 
 | Effect | Local catcher | At an actor mailbox boundary |
