@@ -51,6 +51,16 @@ final class PipelineAndRecursiveAliasTest {
     }
 
     @Test
+    void rejectsPipelinesWithEffectfulComputedCallees() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc main(): void {
+                  val result = 1 |> factory()(2);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void guardedRecursiveDataAliasesResolveWithFiniteCompilerTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 type Node<T> = Option<[T, Node<T>]>;
