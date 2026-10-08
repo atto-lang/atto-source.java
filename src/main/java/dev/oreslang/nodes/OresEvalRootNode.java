@@ -8197,7 +8197,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
-        private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
+        private String display(Object value) { return GraphDisplay.format(value); }
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
@@ -8494,7 +8494,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Object get(Object key) { return fields.get(key); }
         @Override public boolean containsKey(Object key) { return fields.containsKey(key); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
-        @Override public String toString() { return "infer struct" + fields; }
+        @Override public String toString() { return GraphDisplay.format(this); }
     }
 
     private record SourceActorState(
@@ -8522,11 +8522,119 @@ public final class OresEvalRootNode extends RootNode {
             this.fields = fields;
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
-        @Override public String toString(){
-            LinkedHashMap<String,Object> display = new LinkedHashMap<>();
-            fields.forEach((name, value) ->
-                    display.put(name, value == Evaluator.UNINITIALIZED_FIELD ? "<uninitialized>" : value));
-            return klass.name()+display;
+        @Override public String toString(){ return GraphDisplay.format(this); }
+    }
+
+    /**
+     * Bounded, identity-aware source-value display.
+     *
+     * Cyclic object graphs are valid inside their owning execution domain.
+     * Printing must not recurse forever, nor should a maliciously deep graph
+     * crash a log path or allocate unbounded diagnostic strings. The active
+     * path is distinct from "ever seen" so shared DAG subtrees are displayed
+     * normally instead of being mistaken for cycles.
+     */
+    private static final class GraphDisplay {
+        private static final int MAX_DEPTH = 48;
+        private static final int MAX_NODES = 512;
+        private static final int MAX_LENGTH = 16_384;
+
+        private static String format(Object value) {
+            StringBuilder out = new StringBuilder();
+            append(value, out, new IdentityHashMap<>(), new int[]{MAX_NODES}, 0);
+            return out.toString();
+        }
+
+        private static void append(
+                Object value, StringBuilder out, IdentityHashMap<Object, Boolean> active,
+                int[] remaining, int depth) {
+            if (out.length() >= MAX_LENGTH) return;
+            if (value == Evaluator.UNINITIALIZED_FIELD) {
+                out.append("<uninitialized>");
+                return;
+            }
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Enum<?> || value instanceof Complex) {
+                appendText(out, String.valueOf(value));
+                return;
+            }
+            if (active.containsKey(value)) {
+                out.append("<circular>");
+                return;
+            }
+            if (depth >= MAX_DEPTH || remaining[0]-- <= 0) {
+                out.append("<truncated>");
+                return;
+            }
+            active.put(value, Boolean.TRUE);
+            try {
+                if (value instanceof OresObject object) {
+                    appendText(out, object.klass.name());
+                    appendMap(object.fields, out, active, remaining, depth);
+                } else if (value instanceof ReadonlyRecordValue readonly) {
+                    out.append("infer struct");
+                    appendMap(readonly.fields, out, active, remaining, depth);
+                } else if (value instanceof OptionValue option) {
+                    if (!option.present()) out.append("None");
+                    else {
+                        out.append("Some(");
+                        append(option.value(), out, active, remaining, depth + 1);
+                        out.append(')');
+                    }
+                } else if (value instanceof ResultValue result) {
+                    out.append(result.ok() ? "Ok(" : "Err(");
+                    append(result.value(), out, active, remaining, depth + 1);
+                    out.append(')');
+                } else if (value instanceof Map<?, ?> map) {
+                    appendMap(map, out, active, remaining, depth);
+                } else if (value instanceof Iterable<?> iterable) {
+                    out.append('[');
+                    boolean first = true;
+                    for (Object item : iterable) {
+                        if (out.length() >= MAX_LENGTH) break;
+                        if (!first) out.append(", ");
+                        first = false;
+                        append(item, out, active, remaining, depth + 1);
+                    }
+                    out.append(']');
+                } else if (value.getClass().isArray()) {
+                    out.append('[');
+                    int length = java.lang.reflect.Array.getLength(value);
+                    for (int i = 0; i < length && out.length() < MAX_LENGTH; i++) {
+                        if (i > 0) out.append(", ");
+                        append(java.lang.reflect.Array.get(value, i), out, active, remaining, depth + 1);
+                    }
+                    out.append(']');
+                } else {
+                    appendText(out, String.valueOf(value));
+                }
+            } finally {
+                active.remove(value);
+            }
+        }
+
+        private static void appendMap(
+                Map<?, ?> values, StringBuilder out,
+                IdentityHashMap<Object, Boolean> active, int[] remaining, int depth) {
+            out.append('{');
+            boolean first = true;
+            for (Map.Entry<?, ?> entry : values.entrySet()) {
+                if (out.length() >= MAX_LENGTH) break;
+                if (!first) out.append(", ");
+                first = false;
+                append(entry.getKey(), out, active, remaining, depth + 1);
+                out.append('=');
+                append(entry.getValue(), out, active, remaining, depth + 1);
+            }
+            out.append('}');
+        }
+
+        private static void appendText(StringBuilder out, String text) {
+            int available = MAX_LENGTH - out.length();
+            if (available <= 0) return;
+            if (text.length() <= available) out.append(text);
+            else out.append(text, 0, available);
         }
     }
 
@@ -8673,11 +8781,11 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
-        @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
+        @Override public String toString(){return GraphDisplay.format(this);}
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){return List.of(value);}
-        @Override public String toString(){return ok ? "Ok(" + value + ")" : "Err(" + value + ")";}
+        @Override public String toString(){return GraphDisplay.format(this);}
     }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
