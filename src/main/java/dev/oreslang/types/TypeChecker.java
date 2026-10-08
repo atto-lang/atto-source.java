@@ -826,6 +826,75 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * @Implementation identifies a runtime-owned actor hook, not a public method.
+     * @Override identifies an inherited source method slot. Both are opt-in
+     * readability checks and never grant dispatch, visibility or capabilities.
+     * Resolution happens after linking, so imported parent classes are checked.
+     */
+    private void validateMethodIntentAnnotations(Ast.ClassDecl klass) {
+        for (Ast.MethodDecl method : klass.methods()) {
+            boolean implementation = false;
+            boolean override = false;
+            for (Ast.Annotation annotation : method.annotations()) {
+                if (!annotation.name().equals("Implementation")
+                        && !annotation.name().equals("Override")) continue;
+                if (!annotation.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("@" + annotation.name()
+                            + " on " + klass.name() + "." + method.name()
+                            + " does not accept arguments");
+                }
+                if (annotation.name().equals("Implementation")) {
+                    if (implementation) {
+                        throw new IllegalArgumentException("duplicate @Implementation on "
+                                + klass.name() + "." + method.name());
+                    }
+                    implementation = true;
+                } else {
+                    if (override) {
+                        throw new IllegalArgumentException("duplicate @Override on "
+                                + klass.name() + "." + method.name());
+                    }
+                    override = true;
+                }
+            }
+            if (implementation && (klass.actorKind() == Ast.ActorKind.NONE
+                    || !(method.name().equals("run")
+                            || method.name().equals("receive")
+                            || method.name().equals("on_start")))) {
+                throw new IllegalArgumentException(
+                        "@Implementation on " + klass.name() + "." + method.name()
+                                + " requires a reserved actor run/receive/on_start hook");
+            }
+            if (override) {
+                if (method.isStatic()) {
+                    throw new IllegalArgumentException(
+                            "@Override requires an inherited instance method: "
+                                    + klass.name() + "." + method.name());
+                }
+                boolean found = false;
+                for (Ast.TypeRef parentRef : klass.parents()) {
+                    Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                    if (parent == null) continue;
+                    for (Ast.MethodDecl inherited : effectiveInstanceMethods(
+                            parent, new LinkedHashSet<>()).values()) {
+                        if (inherited.name().equals(method.name())
+                                && inherited.arity() == method.arity()) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    throw new IllegalArgumentException(
+                            "@Override on " + klass.name() + "." + method.name()
+                                    + " has no inherited instance method with arity "
+                                    + method.arity());
+                }
+            }
+        }
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -877,6 +946,8 @@ public final class TypeChecker {
                                 + "member-value and direct-call syntax must remain unambiguous");
             }
         }
+        validateMethodIntentAnnotations(klass);
+
         // Every effective (kind, name, arity) slot must have one statically
         // determined implementation. This is the vtable/static-table contract
         // shared by AOT and JIT. Multiple-inheritance collisions require the
