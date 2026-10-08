@@ -104,7 +104,7 @@ public final class TypeChecker {
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
-                "HttpServer", "HttpExchange", "HttpHandler",
+                "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
@@ -2761,6 +2761,8 @@ public final class TypeChecker {
                             "unknown Channel member '" + member.member() + "'");
                 };
             }
+            Type ioMember = builtinIoMember(sumReceiver, member.member());
+            if (ioMember != null) return ioMember;
             Type httpMember = builtinHttpMember(sumReceiver, member.member());
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
@@ -4109,6 +4111,44 @@ public final class TypeChecker {
         return actorClass;
     }
 
+    private static Type builtinIoMember(Type receiver, String name) {
+        if (!(receiver instanceof Named named)) return null;
+        Type result;
+        List<Type> parameters;
+        switch (named.name()) {
+            case "fs", "File" -> {
+                switch (name) {
+                    case "read_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
+                    case "exists_async" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
+                    case "write_text_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "remove_async", "mkdir_all_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    default -> { return null; }
+                }
+            }
+            case "network", "net" -> {
+                if (!name.equals("connect_async")) return null;
+                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+            }
+            case "TcpConnection" -> {
+                switch (name) {
+                    case "read_line_async" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
+                    case "write_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    default -> { return null; }
+                }
+            }
+            case "http" -> {
+                switch (name) {
+                    case "get_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
+                    case "post_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    default -> { return null; }
+                }
+            }
+            default -> { return null; }
+        }
+        return new Function(parameters, new Named("Future", List.of(result)));
+    }
+
     private static Type builtinHttpMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
         Type exchange = new Named("HttpExchange", List.of());
@@ -4271,7 +4311,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
+        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")

@@ -121,3 +121,10 @@ filesystem or process metadata and are available to shared and isolated actors.
 Monotonic timestamps are not portable across processes or restarts. Clock calls
 are observations, not pure functions. String literals accept four-hex-digit
 Unicode escapes, allowing native serializers to cover JSON control characters.
+
+## Protected actor backend work
+
+The planned native socket and request-scoped endpoint transfer paths, including
+serialized-only untrusted handlers, are described in
+[Actor physical boundaries](runtime/actor-physical-boundaries.md). The standalone
+native transfer tests do not change the JDK transport ownership model above.

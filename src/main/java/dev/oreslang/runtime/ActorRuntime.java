@@ -419,18 +419,24 @@ public final class ActorRuntime implements AutoCloseable {
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
-        this.privateDispatcher = newDispatcher(
-                dispatcherConfig.privateParallelism(),
-                dispatcherConfig.maxActors(),
-                "ores-private-actor-dispatcher-");
-        this.sharedDispatcher = newDispatcher(
-                dispatcherConfig.sharedParallelism(),
-                dispatcherConfig.maxActors(),
-                "ores-shared-actor-dispatcher-");
-        this.untrustedDispatcher = newDispatcher(
-                Math.max(1, dispatcherConfig.privateParallelism()),
-                dispatcherConfig.maxActors(),
-                "ores-untrusted-actor-dispatcher-");
+        ExecutorService privatePool = null;
+        ExecutorService sharedPool = null;
+        ExecutorService untrustedPool;
+        try {
+            privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
+                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
+            sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
+                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
+            untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
+                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
+        } catch (RuntimeException | Error failure) {
+            if (privatePool != null) privatePool.shutdownNow();
+            if (sharedPool != null) sharedPool.shutdownNow();
+            throw failure;
+        }
+        this.privateDispatcher = privatePool;
+        this.sharedDispatcher = sharedPool;
+        this.untrustedDispatcher = untrustedPool;
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
@@ -444,11 +450,27 @@ public final class ActorRuntime implements AutoCloseable {
      * never carrier identity and source semantics do not depend on this value.</p>
      */
     public CarrierBackend carrierBackend() {
-        return privateDispatcher instanceof NativeCarrierExecutor
-                && sharedDispatcher instanceof NativeCarrierExecutor
-                && untrustedDispatcher instanceof NativeCarrierExecutor
+        return usesNativeCarriers(privateDispatcher)
+                && usesNativeCarriers(sharedDispatcher)
+                && usesNativeCarriers(untrustedDispatcher)
                 ? CarrierBackend.NATIVE_PTHREAD
                 : CarrierBackend.JVM_THREAD_POOL;
+    }
+
+    /** Placement is not a separate-heap guarantee. CPU -1 means no hard binding. */
+    public record ActorPlacement(int lane, int cpu, String affinity) { }
+
+    public Optional<ActorPlacement> placementFor(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor placement");
+        Objects.requireNonNull(ref);
+        if (!ref.ownedBy(this)) throw new IllegalArgumentException("ActorRef belongs to another runtime");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return Optional.empty();
+        if (dispatcherFor(cell.kind) instanceof ActorAffinityDispatcher lanes) {
+            int cpu = lanes.cpuForLane(cell.dispatchLane);
+            return Optional.of(new ActorPlacement(cell.dispatchLane, cpu, cpu < 0 ? "lane" : "cpu"));
+        }
+        return Optional.of(new ActorPlacement(-1, -1, "none"));
     }
 
     /**
@@ -547,7 +569,9 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        return cell != null && cell.mailbox instanceof ChannelRuntime.Channel<?>;
+        return cell != null
+                && cell.mailbox instanceof ChannelRuntime.Channel<?>
+                && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
     }
 
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
@@ -1436,8 +1460,11 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                cell.continuationQueue.addLast(
-                        MessageEnvelope.continuation(continuation));
+                if (!cell.continuationMailbox.tryWrite(
+                        MessageEnvelope.continuation(continuation))) {
+                    throw new IllegalStateException(
+                            "actor continuation mailbox capacity invariant violated for " + actorId);
+                }
                 admitted = true;
 
                 // If this continuation was published by the actor envelope that
@@ -5487,6 +5514,28 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    private static boolean usesNativeCarriers(ExecutorService executor) {
+        return executor instanceof NativeCarrierExecutor
+                || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
+    }
+
+    private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+        String mode = System.getProperty("ores.actor.affinity", "lane").trim();
+        if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
+        if (!mode.equals("lane") && !mode.equals("cpu")) {
+            throw new IllegalArgumentException("ores.actor.affinity must be lane, cpu, or none");
+        }
+        int[] cpus = new int[0];
+        if (mode.equals("cpu")) {
+            String configured = System.getProperty("ores.actor.cpus", "").trim();
+            if (configured.isEmpty()) throw new IllegalArgumentException("CPU affinity requires ores.actor.cpus");
+            cpus = java.util.Arrays.stream(configured.split(",", -1))
+                    .map(String::trim).mapToInt(Integer::parseInt).toArray();
+        }
+        return new ActorAffinityDispatcher(parallelism, capacity, cpus,
+                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
+    }
+
     private static ExecutorService newDispatcher(
             int parallelism,
             int readyQueueCapacity,
@@ -5555,6 +5604,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
         private final ActorKind kind;
+        private final int dispatchLane;
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
@@ -5595,8 +5645,9 @@ public final class ActorRuntime implements AutoCloseable {
         private int queuedContinuations;
         private long nextUserMessageSequence;
         private ActorInboxMail<M> activeMail;
-        private final ArrayDeque<MessageEnvelope> continuationQueue =
-                new ArrayDeque<>();
+        /** Bounded control channel: completion threads enqueue, never invoke guest code. */
+        private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
+                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -5635,6 +5686,8 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCell<?> parent) {
             this.ref = ref;
             this.kind = kind;
+            this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
+                    ? lanes.reserveLane() : -1;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
@@ -5743,7 +5796,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationQueue.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
         }
 
         private OresScheduler sourceScheduler() {
@@ -6018,7 +6071,12 @@ public final class ActorRuntime implements AutoCloseable {
             if (stopped.get() || forceKillFenced || closed.get()) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
-                dispatcherFor(kind).execute(this::runBatch);
+                ExecutorService dispatcher = dispatcherFor(kind);
+                if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+                    lanes.executeOnLane(dispatchLane, this::runBatch);
+                } else {
+                    dispatcher.execute(this::runBatch);
+                }
             } catch (RejectedExecutionException rejected) {
                 scheduled.set(false);
                 stop();
@@ -6031,6 +6089,10 @@ public final class ActorRuntime implements AutoCloseable {
             boolean carrierEntered = false;
             boolean reschedule = false;
             try {
+                if (dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes) {
+                    int cpu = lanes.cpuForLane(dispatchLane);
+                    if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
+                }
                 synchronized (lifecycleLock) {
                     // shutdownNow() may leave a queued executor task that races
                     // with explicit queued-schedule cancellation. If shutdown
@@ -6159,7 +6221,7 @@ public final class ActorRuntime implements AutoCloseable {
 
                         // Continuations always outrank user mail. While a
                         // source receive is suspended, user mail is not runnable.
-                        envelope = continuationQueue.pollFirst();
+                        envelope = continuationMailbox.tryRead().orElse(null);
                         if (envelope == null && !sourceReceiveSuspended) {
                             envelope = mailbox.tryRead().orElse(null);
                         }
@@ -6276,10 +6338,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void drainMailboxReservations() {
             synchronized (lifecycleLock) {
-                MessageEnvelope continuation;
-                while ((continuation = continuationQueue.pollFirst()) != null) {
+                while (continuationMailbox.drainOne(continuation -> {
                     releaseMailboxSlot(true);
                     continuation.close();
+                })) {
+                    // Reclaim admitted control mail even after termination closes the channel.
                 }
                 sourceHandoffRequested = false;
             }
@@ -6317,6 +6380,7 @@ public final class ActorRuntime implements AutoCloseable {
                 stopped.set(true);
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
+                continuationMailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
