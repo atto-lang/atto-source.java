@@ -168,6 +168,21 @@ final class TupleCoreReconciliationTest {
                 """));
     }
 
+    @Test
+    void tupleIntrinsicCannotBeRedefinedOrInherited() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Tuple as
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                type Tuple = int;
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Bad extends Tuple[int] as
+                end
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "tuple-core-reconciliation.ores")
