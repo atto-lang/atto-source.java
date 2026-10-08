@@ -32,7 +32,7 @@ user-controlled data are included. Different phases can overlap and **must not
 be summed** as mutually exclusive CPU time.
 
 The current instrumentation includes CONTROL and actor-pool startup, context
-startup, HTTP listener setup, request admission/dispatch, actor readiness and
+startup, HTTP listener setup, request admission/dispatch, the deadline-timer schedule and actor spawn, actor readiness and
 claim, and HTTP / standard-library asynchronous I/O queue and work. HTTP
 `receive` timing begins **inside** the virtual-thread handler and therefore
 cannot detect how long the JDK's transport waits before scheduling that handler.
