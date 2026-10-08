@@ -103,6 +103,28 @@ final class ActorGroupWakeRegistryTest {
     }
 
     @Test
+    void boundedWakeBudgetCannotBeExhaustedByUnboundedPendingFutures() {
+        ActorGroupWakeRegistry registry = new ActorGroupWakeRegistry(2);
+        Object owner = new Object();
+        var first = registry.register(owner);
+        var second = registry.register(owner);
+        assertEquals(2, registry.outstanding());
+        assertThrows(IllegalStateException.class, () -> registry.register(owner));
+        assertTrue(registry.claim(first));
+        assertThrows(IllegalStateException.class, () -> registry.register(owner),
+                "claimed wake is still a queued/retained frame root");
+        assertTrue(registry.release(first));
+        var third = registry.register(owner);
+        assertTrue(registry.current(third));
+        registry.revokeOwner(owner);
+        assertEquals(0, registry.outstanding());
+        assertFalse(registry.current(second));
+        assertFalse(registry.current(third));
+        assertThrows(IllegalArgumentException.class, () -> new ActorGroupWakeRegistry(0));
+        assertThrows(IllegalArgumentException.class, () -> new ActorGroupWakeRegistry(65_537));
+    }
+
+    @Test
     void rejectsNullOwnerAndKeepsGroupUnavailableOnceSealed() {
         ActorGroupWakeRegistry registry = new ActorGroupWakeRegistry();
         assertThrows(NullPointerException.class, () -> registry.register(null));
