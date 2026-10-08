@@ -517,8 +517,12 @@ public final class OresEvalRootNode extends RootNode {
                         "actor '" + state.object().klass.name()
                                 + "' has no receive(ActorMail<T>) handler");
             }
-            if (methodContainsPotentialSuspension(receive)) {
+            if (methodContainsPotentialSuspension(receive)
+                    || receive.body().stream().anyMatch(this::containsSourceLoop)) {
                 /*
+                 * A synchronous receive method with a CPU-only loop also needs
+                 * a heap-owned SourceTask: its loop backedges can then hand
+                 * off without turning receive(...) into an async protocol.
                  * The source scheduler unwinds every cooperate/await into a
                  * heap-owned continuation. ActorRuntime then gates later user
                  * mail until this Future completes, while prioritizing only
