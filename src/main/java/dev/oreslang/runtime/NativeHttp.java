@@ -229,6 +229,9 @@ public final class NativeHttp implements AutoCloseable {
         boolean transportClosed;
         String ticket;
         final String requestId = UUID.randomUUID().toString();
+        final long admittedNanos = System.nanoTime();
+        final OresFuture<Object> completion = new OresFuture<>(() -> false, () -> { });
+        int responseStatus;
         String operationId = "";
         int pipelineId = -1, contractId = -1;
         final Map<String, List<String>> params = new LinkedHashMap<>();
@@ -242,6 +245,7 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (this) {
                 alreadyClosed = terminal;
                 send = !terminal && !committed && !busy;
+                if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
@@ -265,6 +269,7 @@ public final class NativeHttp implements AutoCloseable {
             if (server.active.remove(this)) {
                 synchronized (server) { server.pending.removeIf(exchange -> exchange.state == this); }
                 server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
+                completion.completeFromRuntime((long) responseStatus);
             }
         }
     }
@@ -321,6 +326,8 @@ public final class NativeHttp implements AutoCloseable {
         public String serverTiming() { return "actor-startup;dur=" + startupNanos() / 1_000_000.0 + ", move-to-claim;dur=" + transferNanos() / 1_000_000.0; }
         public long startupNanos() { synchronized (state) { checkOwner(); return state.spawnNanos == 0 ? 0 : Math.max(0, state.readyNanos - state.spawnNanos); } }
         public long transferNanos() { synchronized (state) { checkOwner(); return state.claimedNanos == 0 ? 0 : Math.max(0, state.claimedNanos - state.movedNanos); } }
+        public long admittedNanos() { synchronized (state) { checkOwner(); return state.admittedNanos; } }
+        public OresFuture<Object> completion() { synchronized (state) { checkOwner(); return state.completion; } }
         public String requestId() { synchronized (state) { checkOwner(); return state.requestId; } }
         public String operationId() { synchronized (state) { checkOwner(); return state.operationId; } }
         public int pipelineId() { synchronized (state) { checkOwner(); return state.pipelineId; } }
@@ -403,6 +410,7 @@ public final class NativeHttp implements AutoCloseable {
                 synchronized (state) {
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
+                    state.responseStatus = status;
                 }
                 boolean noBody = noBody(status);
                 if (state.raw.getRequestMethod().equals("HEAD") && status != 204 && status != 205)
@@ -418,6 +426,7 @@ public final class NativeHttp implements AutoCloseable {
                 synchronized (state) {
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
+                    state.responseStatus = status;
                 }
                 state.suppressBody = noBody(status);
                 state.raw.sendResponseHeaders(status, state.suppressBody ? -1 : 0);
@@ -453,7 +462,11 @@ public final class NativeHttp implements AutoCloseable {
                     } catch (Throwable failure) {
                         synchronized (state) { state.busy = false; }
                         state.abort("body too large".equals(failure.getMessage()) ? 413 : 500);
+                        SourceBoundaryTrace.record(failure, "native:http", state.requestId, "I/O");
                         result.failFromRuntime(failure);
+                        if (failure instanceof VirtualMachineError fatal) throw fatal;
+                        if (failure instanceof ThreadDeath fatal) throw fatal;
+                        if (failure instanceof LinkageError fatal) throw fatal;
                     }
                 });
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }

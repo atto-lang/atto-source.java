@@ -851,6 +851,19 @@ public final class OresEvalRootNode extends RootNode {
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
                     throws Exception {
+                try {
+                    return resumeSource(resume);
+                } catch (RuntimeException failure) {
+                    awaitingContinuation = null;
+                    nextStep = null;
+                    initialBlockEnv = null;
+                    throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
+                            function != null ? function.name() : method != null ? method.name() : "<block>",
+                            resume.initial() ? "source task" : "resumed source task");
+                }
+            }
+
+            private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
                 nextStep = null;
 
                 if (resume.initial()) {
@@ -1342,7 +1355,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (call.callee() instanceof Ast.MemberExpr member) {
                     // Resolve local method families conservatively across
                     // overrides, without turning every builtin call into a task.
-                    for (Ast.ClassDecl klass : new LinkedHashSet<>(classes.values())) {
+                    // Declaration aliases refer to the same AST object. Structural
+                    // record hashing recursively walks entire class bodies here.
+                    Set<Ast.ClassDecl> visitedClasses = java.util.Collections.newSetFromMap(
+                            new IdentityHashMap<>());
+                    for (Ast.ClassDecl klass : classes.values()) {
+                        if (!visitedClasses.add(klass)) continue;
                         for (Ast.MethodDecl method : klass.methods()) {
                             if (method.name().equals(member.member())
                                     && method.arity() == call.arguments().size()
@@ -4366,6 +4384,8 @@ public final class OresEvalRootNode extends RootNode {
                         "function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
+            } catch (RuntimeException failure) {
+                throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, fn.name(), "function");
             }
         }
 
@@ -4447,6 +4467,8 @@ public final class OresEvalRootNode extends RootNode {
                 return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a method boundary", signal);
+            } catch (RuntimeException failure) {
+                throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, method.name(), "method");
             }
         }
 
@@ -5998,6 +6020,8 @@ public final class OresEvalRootNode extends RootNode {
                     case "actor_startup_ns" -> exchange.startupNanos();
                     case "move_to_claim_ns" -> exchange.transferNanos();
                     case "request_id" -> exchange.requestId();
+                    case "admitted_ns" -> exchange.admittedNanos();
+                    case "completion" -> exchange.completion();
                     case "operation_id" -> exchange.operationId();
                     case "pipeline_id" -> (long) exchange.pipelineId();
                     case "contract_id" -> (long) exchange.contractId();
@@ -6090,6 +6114,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
+                    case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
+                    case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
+                    case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
@@ -8587,7 +8614,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
     private static final class OresPanic extends RuntimeException {
-        private OresPanic(String message) { super(message, null, false, false); }
+        private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }

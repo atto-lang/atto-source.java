@@ -71,6 +71,53 @@ class NativeHttpTest {
             assertTrue(output.contains(expected), output);
     }
 
+    @Test void completionSurvivesMoveAndIncludesActorFinalization() throws Exception {
+        String output = run("""
+            define isoactor Owner as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                stdio.println(request.admitted_ns <= process.monotonic_ns());
+                await request.respond(201, "text/plain", "observed");
+                stdio.println("actor-finished");
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val completion = request.completion;
+              http.handler("Owner").dispatch(rt borrow mut request);
+              try { request.completion; } catch (err) { stdio.println("moved-observer-rejected"); }
+              val int status = await completion;
+              stdio.println(status);
+              stdio.println(server.active);
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> assertEquals(201, request(port, "GET", "/", "").statusCode()));
+        assertTrue(output.contains("true"), output);
+        assertTrue(output.contains("moved-observer-rejected"), output);
+        assertTrue(output.indexOf("actor-finished") < output.lastIndexOf("201"), output);
+        assertTrue(output.contains("201\n0"), output);
+    }
+
+    @Test void completionReportsDeadlineWithoutAnActor() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 100);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val completion = request.completion;
+              stdio.println(await completion);
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> assertEquals(504, request(port, "GET", "/", "").statusCode()));
+        assertTrue(output.contains("504"), output);
+    }
+
     @Test void sharedHandlerStreamsWithoutBlockingTheActorCarrier() throws Exception {
         run("""
             define actor Stream as
@@ -99,20 +146,25 @@ class NativeHttpTest {
     }
 
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
-        String source = """
-            define actor Bad as
-              receive(ActorMail<String> mail): void {
-                val Array<int> values = new Array<int>();
-                val borrowed = &values;
-                val request = http.claim(mail.value);
-                await request.respond(200, "text/plain", "bad");
-                stdio.println(borrowed.size);
-                return;
-              }
-            end
-            """;
-        Exception error = assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+        for (String binding : new String[] {
+                "val borrowed = rt borrow values;",
+                "val borrowed = (rt borrow values);",
+                "val (borrowed) = tuple (rt borrow values);"}) {
+            String source = """
+                define actor Bad as
+                  receive(ActorMail<String> mail): void {
+                    val Array<int> values = new Array<int>();
+                    %s
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "bad");
+                    stdio.println(borrowed.size);
+                    return;
+                  }
+                end
+                """.formatted(binding);
+            Exception error = assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+        }
     }
 
     @FunctionalInterface interface Client { void run(int port) throws Exception; }

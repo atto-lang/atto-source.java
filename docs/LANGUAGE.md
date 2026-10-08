@@ -1361,6 +1361,9 @@ The same Oreslang source model supports three deployment profiles:
 
 The CLI accepts `--mode=jit|aot|hybrid` and `--platform=server|windows|macos|linux|android|ios`. The iOS execution contract is intentionally AOT-only. Source hot reload does not depend on executable dynamic libraries, JNI, or NFI.
 
+Build capability is fixed in the native executable; `--build-info` reports it.
+AOT-only images reject runtime requests for JIT/hybrid. See [native deployment](NATIVE_DEPLOYMENT.md).
+
 Maven profiles:
 - `mvn -Pnative-aot -DskipTests package`
 - `mvn -Pnative-hybrid -DskipTests package`
@@ -1723,30 +1726,50 @@ fnc example(): void {
 }
 ```
 
-Shared immutable borrowing uses `&T`:
+Immutable borrowing uses `rt borrow value`, with `borrow T` in type positions:
 
 ```ores
-fnc inspect(&Bar value): void {
+fnc inspect(borrow Bar value): void {
   stdio.println(value.foo);
   return;
 }
 ```
 
-Exclusive mutable borrowing uses `&mut T`:
+Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
 
 ```ores
-fnc change(&mut Bar value): void {
+fnc change(borrow mut Bar value): void {
   value.foo = "changed";
   return;
 }
 
 fnc example(): void {
-  let Bar b = new Bar();
-  change(&mut b);
-  stdio.println(b.foo); // owner is usable again after the call
+  val Bar b = new Bar();
+  change(rt borrow mut b);
+  stdio.println(b.foo);
   return;
 }
 ```
+
+Parentheses group expressions; they do not create singleton tuples:
+
+```ores
+val Array<int> values = new Array<int>();
+val borrowed = (rt borrow values);
+```
+
+The explicit `tuple (...)` constructor supports zero, one, or multiple elements.
+Parenthesized sequence bindings can unpack it:
+
+```ores
+val (borrowed) = tuple (rt borrow values);
+```
+
+Immediate tuple unpacking gives each borrowed binding a lexical lease. Storing
+borrows in an owned tuple remains rejected until container lifetimes are supported.
+Neither `await` nor `rt cooperate` may suspend with an ordinary live borrow.
+Legacy ampersand borrow spellings remain parser compatibility aliases; new code
+uses the keyword forms above. There is no pointer dereference operation.
 
 Borrow rules:
 

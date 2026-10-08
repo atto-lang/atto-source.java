@@ -1254,7 +1254,7 @@ public final class Parser {
             return marked;
         }
 
-        if (match(AMP)) {
+        if (matchContextualKeyword("borrow") || match(AMP)) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
         }
@@ -1511,7 +1511,7 @@ public final class Parser {
             Ast.BindingKind inherited = parseBindingKind();
             boolean inheritedMutableReferent = parseReferentMutability(inherited);
             return parseDestructure(
-                    check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT,
+                    (check(LBRACKET) || check(LPAREN)) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT,
                     inherited,
                     inheritedMutableReferent);
         }
@@ -2153,8 +2153,11 @@ public final class Parser {
             boolean inheritedMutableReferent) {
         Token.Type close;
         if (kind == Ast.DestructureKind.SEQUENCE) {
-            consume(LBRACKET, "expected '['");
-            close = RBRACKET;
+            if (match(LPAREN)) close = RPAREN;
+            else {
+                consume(LBRACKET, "expected '['");
+                close = RBRACKET;
+            }
         } else {
             consume(LBRACE, "expected '{'");
             close = RBRACE;
@@ -2214,6 +2217,7 @@ public final class Parser {
         Token.Type close;
         if (open == LBRACKET) close = RBRACKET;
         else if (open == LBRACE) close = RBRACE;
+        else if (open == LPAREN) close = RPAREN;
         else return false;
 
         int depth = 0;
@@ -2750,6 +2754,10 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, and share");
         }
 
+        // Mutable borrows use the same ownership checks as the legacy spelling.
+        if (name.equals("borrow") && match(MUT)) {
+            return new Ast.UnaryExpr("&mut", parseUnary());
+        }
         Ast.Expr argument;
         if (match(LPAREN)) {
             if (check(RPAREN)) {
@@ -2956,6 +2964,13 @@ public final class Parser {
             advance(); // contextual infer
             consume(STRUCT, "expected 'struct' after infer");
             return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+        }
+        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after tuple");
+            List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after explicit tuple");
+            return new Ast.TupleExpr(items);
         }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
