@@ -122,6 +122,10 @@ final class ActorLocalReferencesTest {
                     assertThrows(SecurityException.class,
                             () -> ChannelRuntime.write(channel,
                                     new java.lang.ref.WeakReference<>(weak)));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> ChannelRuntime.write(channel,
+                                    java.util.Collections.nCopies(100_001, "bounded")),
+                            "very large payload graphs must fail closed before queueing");
                     OresMutex.SharedState wrapped = () -> List.of(weak);
                     assertThrows(SecurityException.class,
                             () -> ChannelRuntime.write(channel, wrapped));
