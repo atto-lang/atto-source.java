@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
@@ -19,6 +20,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Trusted native host-I/O implementations for Oreslang.
@@ -27,7 +29,32 @@ import java.util.List;
  * Guest code never receives Java IO/HTTP/socket objects.</p>
  */
 public final class NativeIo {
+    // Whole-text APIs must not allocate unbounded attacker-supplied payloads.
+    static final int MAX_HTTP_TEXT_BYTES = 4 * 1024 * 1024;
+    static final int MAX_SOCKET_LINE_CHARS = 64 * 1024;
+    static final int MAX_SOCKET_WRITE_BYTES = 64 * 1024;
+
     private NativeIo() { }
+
+    private static void rejectBlockingUntrustedNetwork(String operation) {
+        // AsyncNativeIo runs host I/O on a non-actor worker.
+        if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+            throw new SecurityException(operation
+                    + " cannot block an untrusted actor carrier; use the async network API");
+        }
+    }
+
+    static byte[] checkedNetworkText(String text, int limit, String operation) {
+        Objects.requireNonNull(text, operation + " text");
+        if (text.length() > limit) {
+            throw new IllegalArgumentException(operation + " exceeds " + limit + " UTF-8 bytes");
+        }
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > limit) {
+            throw new IllegalArgumentException(operation + " exceeds " + limit + " UTF-8 bytes");
+        }
+        return bytes;
+    }
 
     public static String readText(OresContext context, String rawPath) {
         Path path = canonicalExistingPath(rawPath);
@@ -122,6 +149,7 @@ public final class NativeIo {
             String method,
             String rawUri,
             String body) {
+        rejectBlockingUntrustedNetwork("http." + method.toLowerCase());
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
@@ -129,7 +157,8 @@ public final class NativeIo {
         HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(30));
         if ("POST".equals(method)) {
-            request.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+            request.POST(HttpRequest.BodyPublishers.ofByteArray(
+                    checkedNetworkText(body, MAX_HTTP_TEXT_BYTES, "http.post_text")));
         } else {
             request.GET();
         }
@@ -141,10 +170,21 @@ public final class NativeIo {
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
         try (client) {
-            HttpResponse<String> response = client.send(
-                    request.build(),
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            return response.body();
+            HttpResponse<InputStream> response = client.send(
+                    request.build(), HttpResponse.BodyHandlers.ofInputStream());
+            try (InputStream bodyStream = response.body()) {
+                long declared = response.headers().firstValueAsLong("content-length").orElse(-1L);
+                if (declared > MAX_HTTP_TEXT_BYTES) {
+                    throw new IllegalStateException("HTTP response exceeds "
+                            + MAX_HTTP_TEXT_BYTES + " bytes");
+                }
+                byte[] bytes = bodyStream.readNBytes(MAX_HTTP_TEXT_BYTES + 1);
+                if (bytes.length > MAX_HTTP_TEXT_BYTES) {
+                    throw new IllegalStateException("HTTP response exceeds "
+                            + MAX_HTTP_TEXT_BYTES + " bytes");
+                }
+                return new String(bytes, StandardCharsets.UTF_8);
+            }
         } catch (IOException failure) {
             throw new IllegalStateException("HTTP request failed for " + endpoint + ": " + failure.getMessage(), failure);
         } catch (InterruptedException interrupted) {
@@ -154,6 +194,7 @@ public final class NativeIo {
     }
 
     public static TcpConnection connect(OresContext context, String host, int port) {
+        rejectBlockingUntrustedNetwork("network.connect");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("network.connect host cannot be blank");
         }
@@ -180,6 +221,7 @@ public final class NativeIo {
         private final Socket socket;
         private final BufferedReader reader;
         private final BufferedWriter writer;
+        private boolean skipLineFeed;
 
         private TcpConnection(OresContext context, String endpoint, Socket socket) throws IOException {
             this.context = context;
@@ -191,17 +233,39 @@ public final class NativeIo {
                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
         }
 
-        public String readLine() {
+        public synchronized String readLine() {
+            rejectBlockingUntrustedNetwork("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try {
-                return reader.readLine();
+                StringBuilder line = new StringBuilder();
+                while (true) {
+                    int value = reader.read();
+                    if (value < 0) return line.isEmpty() ? null : line.toString();
+                    if (skipLineFeed) {
+                        skipLineFeed = false;
+                        if (value == '\n') continue;
+                    }
+                    if (value == '\n') return line.toString();
+                    if (value == '\r') {
+                        skipLineFeed = true;
+                        return line.toString();
+                    }
+                    if (line.length() == MAX_SOCKET_LINE_CHARS) {
+                        close();
+                        throw new IllegalStateException("network line exceeds "
+                                + MAX_SOCKET_LINE_CHARS + " UTF-16 characters");
+                    }
+                    line.append((char) value);
+                }
             } catch (IOException failure) {
                 throw new IllegalStateException("network read failed for " + endpoint + ": " + failure.getMessage(), failure);
             }
         }
 
         public void writeText(String value) {
+            rejectBlockingUntrustedNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
+            checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES, "network.socket.write_text");
             try {
                 writer.write(value);
                 writer.flush();
