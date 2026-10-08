@@ -123,10 +123,9 @@ final class TreeShakerTest {
                 end
 
                 pub routine main(): void {
-                  val alias = service;
-                  val Fnc<int, int> callback = alias.transform;
+                  val Fnc<int, int> callback = service.transform;
                   stdio.stdout.write(callback(4));
-                  stdio.stdout.write(alias.direct_only(4));
+                  stdio.stdout.write(service.direct_only(4));
                   return;
                 }
                 """, BuildOptions.executable(Map.of()));
