@@ -57,7 +57,15 @@ type Broken = Broken;                       // error
 type Left = Right; type Right = Left;        // error
 type BrokenUnion = int | BrokenUnion;        // error
 type Growing<T> = Option<Growing<List<T>>>;  // error
+type Impossible = struct{ next: Impossible };    // error: no finite base
+type DeadEnd = Result<DeadEnd, DeadEnd>;           // error: no finite base
 ```
+
+Recursive aliases must also have a finite value witness: an optional
+edge can terminate at `None`, a dynamic collection can be empty,
+and `Result` needs at least one nonrecursive alternative.
+A required owning field of exactly the same recursive type cannot
+be initialized without a separate reference mechanism.
 
 These are static type-graph rules. They do not themselves add ADT
 constructors, automatic cyclic allocation, cycle-aware serialization,
