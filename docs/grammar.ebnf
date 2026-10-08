@@ -259,8 +259,12 @@ comparison      = additive
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
 unary           = [ "!" | "-" | "+" | "await" ] postfix
-                | "&" [ "mut" ] unary
+                | runtime_expr
                 | channel_expr ;
+runtime_expr    = "rt" "borrow" [ "mut" ] unary
+                | "rt" ( "copy" | "take" | "share" | "ref" | "unref" | "deref" )
+                  ( unary | "(" expression ")" )
+                | "rt" ( "cooperate" | "yield" ) [ "(" ")" ] ;
 
 channel_expr    = [ channel_wait_mode ] "readch" unary
                 | [ channel_wait_mode ] "writech" unary "," expression
@@ -335,7 +339,7 @@ type_atom       = borrow_type
                 | "void"
                 | "null" ;
 
-borrow_type     = "&" [ "mut" ] type_atom ;
+borrow_type     = "borrow" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
 record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
@@ -606,7 +610,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - self is an immutable receiver borrow and cannot be rebound.
    - Parameters are immutable by default. Type "mut" name grants mutation of an
      owned parameter inside the callee, e.g. Bar mut b.
-   - &T is a shared immutable borrow. &mut T is an exclusive mutable borrow.
+   - borrow T is a shared immutable borrow. borrow mut T is an exclusive mutable borrow.
    - Non-Copy values move through by-value bindings, arguments, and returns.
    - Structural parameters are read-only borrowed views and do not consume the
      passed value.

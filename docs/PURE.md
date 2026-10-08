@@ -131,7 +131,7 @@ Local mutation is allowed when the mutated storage is invocation-private.
 Conceptually, mutation through a caller-visible mutable borrow is rejected:
 
 ```ores
-pub pure fnc increment(&mut Counter counter): void {
+pub pure fnc increment(borrow mut Counter counter): void {
   counter.value += 1; // ERROR: caller-visible mutation
 }
 ```
@@ -149,8 +149,8 @@ The built-in ownership operations therefore interact with purity as follows:
 - `copy(struct)`: compiler-derived recursive copy is pure only when every nested copy step is pure;
 - `copy(class)`: invokes the class copy contract and is pure only when that concrete class copy implementation is compiler-proven pure and satisfies the fresh/non-aliasing copy rules;
 - `take`: allowed as an ownership transfer; subsequent mutation is allowed only under unique ownership;
-- `borrow` / `&T`: allowed for read-only access to explicit input state;
-- mutable borrow / `&mut T`: forbidden in a pure contract because the caller retains observable ownership;
+- `borrow` / `borrow T`: allowed for read-only access to explicit input state;
+- mutable borrow / `borrow mut T`: forbidden in a pure contract because the caller retains observable ownership;
 - `share`: allowed only for a deeply immutable/frozen snapshot; access to a live mutable shared region is forbidden.
 
 This aligns purity with the struct/class split: structs receive compiler-derived value-copy semantics; classes never become pure-copyable merely because a method named `copy` exists.
@@ -408,7 +408,7 @@ At each call site, the checker substitutes ownership provenance:
 - `write(fresh)` -> `local_mutation`, allowed;
 - `write(self)` where `self` is uniquely owned/moved into the invocation -> `local_mutation`, allowed;
 - `write(param0)` where param0 is an owned `Type mut name` parameter consumed by the invocation -> local/owned mutation, allowed;
-- `write(self/param)` through a caller-visible `&mut`, shared alias, captured alias, singleton/global region, or unknown provenance -> `external_mutation`, forbidden;
+- `write(self/param)` through a caller-visible `borrow mut`, shared alias, captured alias, singleton/global region, or unknown provenance -> `external_mutation`, forbidden;
 - unknown or unsupported provenance -> fail closed.
 
 This is required for code such as:
@@ -423,7 +423,7 @@ pub pure fnc sort_owned(List<int> mut values): List<int> {
 without incorrectly blessing:
 
 ```ores
-pub pure fnc sort_borrowed(&mut List<int> values): void {
+pub pure fnc sort_borrowed(borrow mut List<int> values): void {
   values.sort_in_place(); // ERROR: write(self) targets caller-visible storage
 }
 ```

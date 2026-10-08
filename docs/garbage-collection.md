@@ -31,3 +31,17 @@ Actor termination retires that semantic domain deterministically. Runtime/intero
 ## Shutdown
 
 Context shutdown closes the actor runtime first, stops the periodic sweeper, then drains remaining runtime cleanup hooks. Shutdown cleanup is best-effort; durable external resources should still use explicit close/release APIs.
+
+## Managed pointers
+
+`rt ref` creates a strong `Pointer<T>` handle. The handle stores a normal managed
+reference to its target, including when the operand is a fresh struct/class/array.
+It never stores an untracked numeric address. JVM and Native Image tracing see
+that reference directly; no weak cleanup-registry entry is used to own the target.
+
+`rt unref` and `rt deref` both expose a compiler-checked read-only view. Neither
+releases the handle, decrements a reference count, requests collection, or frees
+the target. The compiler prevents a view from outliving its owning pointer and
+blocks moves of that pointer while its views remain live. Collection timing is
+unspecified, and backend environments may retain values beyond their last use.
+External resources still require their own explicit close/release protocols.

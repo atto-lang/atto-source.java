@@ -126,7 +126,7 @@ final class EqualityIdentityOperatorTest {
                   val Box first = new Box();
                   val Box second = new Box();
                   val values = arr[1, 2];
-                  val same_values = &values;
+                  val same_values = rt borrow values;
                   val other_values = arr[1, 2];
 
                   stdio.println(first eq first);

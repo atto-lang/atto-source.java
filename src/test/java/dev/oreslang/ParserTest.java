@@ -903,8 +903,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        return &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        return rt borrow mut self;
                       }
                     }
                     """));
@@ -916,8 +916,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        val alias = &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        val alias = rt borrow mut self;
                         return alias;
                       }
                     }
@@ -956,7 +956,7 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    fnc inspect(&Account account): int {
+                    fnc inspect(borrow Account account): int {
                       return 1;
                     }
 
@@ -964,7 +964,7 @@ final class ParserTest {
                       let balance = 100;
 
                       pub fnc inspectSelf(): int {
-                        return inspect(&self);
+                        return inspect(rt borrow self);
                       }
                     }
                     """));

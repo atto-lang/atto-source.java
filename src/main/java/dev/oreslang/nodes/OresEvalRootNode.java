@@ -4011,7 +4011,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object unaryValue(String operator, Object value) {
             return switch (operator) {
-                case "&", "&mut", "+" -> value;
+                case "borrow", "borrow mut", "+" -> value;
                 case "!" -> !truth(value);
                 case "~" -> ~integralLong(value);
                 case "-" -> negate(value);
@@ -5460,6 +5460,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
+                case "ref" -> new dev.oreslang.runtime.OresPointer(value);
+                case "unref", "deref" -> {
+                    if (!(value instanceof dev.oreslang.runtime.OresPointer pointer)) {
+                        throw new IllegalArgumentException("rt " + operation + " requires Pointer<T>");
+                    }
+                    yield pointer.target();
+                }
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
                 // Static ownership checking currently admits rt copy only for proven
@@ -5630,7 +5637,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);
                 return switch (unary.operator()) {
-                    case "&", "&mut" -> value;
+                    case "borrow", "borrow mut" -> value;
                     case "!" -> !truth(value);
                     case "~" -> ~integralLong(value);
                     case "+" -> value;

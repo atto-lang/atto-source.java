@@ -1254,7 +1254,10 @@ public final class Parser {
             return marked;
         }
 
-        if (matchContextualKeyword("borrow") || match(AMP)) {
+        if (match(AMP, STAR)) {
+            throw error(previous(), "symbolic pointer/borrow types are not supported; use Pointer<T> or borrow T");
+        }
+        if (matchContextualKeyword("borrow")) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
         }
@@ -2677,9 +2680,8 @@ public final class Parser {
 
     private Ast.Expr parseUnary() {
         if (match(BANG, TILDE, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
-        if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+        if (match(AMP, STAR)) {
+            throw error(previous(), "symbolic address-of/borrowing/dereference is not supported; use rt ref, rt borrow, or rt deref");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
@@ -2748,15 +2750,16 @@ public final class Parser {
         }
 
         if (!name.equals("copy") && !name.equals("take")
-                && !name.equals("borrow") && !name.equals("share")) {
+                && !name.equals("borrow") && !name.equals("share")
+                && !name.equals("ref") && !name.equals("unref") && !name.equals("deref")) {
             throw error(operation,
                     "unknown rt operation '" + name
-                            + "'; supported operations are cooperate, copy, take, borrow, and share");
+                            + "'; supported operations are cooperate, copy, take, borrow, share, ref, unref, and deref");
         }
 
-        // Mutable borrows use the same ownership checks as the legacy spelling.
+        // Mutable borrows use an internal keyword unary node.
         if (name.equals("borrow") && match(MUT)) {
-            return new Ast.UnaryExpr("&mut", parseUnary());
+            return new Ast.UnaryExpr("borrow mut", parseUnary());
         }
         Ast.Expr argument;
         if (match(LPAREN)) {

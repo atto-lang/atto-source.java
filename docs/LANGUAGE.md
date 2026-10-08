@@ -717,7 +717,7 @@ val same = parsed.unwrap_safe();            // Ok(123)
 
 Like Rust methods that take `self`, extraction consumes a move-only `Option` or `Result`. `Option<T>` is `Copy` exactly when `T` is `Copy`; `Result<T,E>` is `Copy` exactly when both payload types are `Copy`.
 
-Owned sum values cannot hide lexical borrows until explicit lifetime parameters exist, so `Some(&value)`, `Ok(&value)`, and `Err(&value)` are rejected.
+Owned sum values cannot hide lexical borrows until explicit lifetime parameters exist, so `Some(rt borrow value)`, `Ok(rt borrow value)`, and `Err(rt borrow value)` are rejected.
 
 Panics are distinct from ordinary recoverable errors. Normal `try/catch` does not swallow an unwrap panic, while lexical cleanup and `finally` still execute during unwind. Use `unwrap_safe()`, matching, or explicit variant inspection when absence/failure should remain data.
 
@@ -1700,7 +1700,7 @@ Class fields follow the same bias: a field declared with `val` or `const` cannot
 
 ## Ownership, moves, and borrows
 
-Oreslang uses Rust-style affine ownership for mutable/heap-backed values.
+Oreslang uses managed object references with compiler-checked affine ownership for mutable/heap-backed values. Ownership operations use words, without symbolic pointer syntax.
 
 The initial `Copy` family is:
 
@@ -1768,8 +1768,57 @@ val (borrowed) = tuple (rt borrow values);
 Immediate tuple unpacking gives each borrowed binding a lexical lease. Storing
 borrows in an owned tuple remains rejected until container lifetimes are supported.
 Neither `await` nor `rt cooperate` may suspend with an ordinary live borrow.
-Legacy ampersand borrow spellings remain parser compatibility aliases; new code
-uses the keyword forms above. There is no pointer dereference operation.
+Symbolic borrow types, address-of, and dereference expressions are rejected.
+Use keyword borrow types and the runtime operations below. Arithmetic multiplication,
+bitwise/logical AND, and wildcard imports retain their ordinary meanings.
+
+### Runtime ownership and pointers
+
+| Operation | Contract on this compiler head |
+| --- | --- |
+| `rt copy value` | Independent copy of a proven Copy value. Move-only operands remain rejected until the copy protocol is integrated. |
+| `rt share value` | Accepts Copy values. Move-only shared ownership remains rejected until its full contract is integrated. |
+| `rt take value` | Transfers ownership and invalidates a move-only source. Cannot turn a borrow into ownership. |
+| `rt borrow value` | Lexical read-only view. `rt borrow mut value` requests exclusive mutable access. |
+| `rt ref value` | Transfers owned reference-backed data into a strong, move-only `Pointer<T>`. |
+| `rt unref pointer` | Read-only borrowed access to the pointee, without copying or releasing it. |
+| `rt deref pointer` | Exact synonym of `rt unref`, including lifetime and mutability checks. |
+
+Each one-operand operation accepts command or parenthesized form. Bare `ref`,
+`unref`, and `deref` names are ordinary application identifiers. `Pointer` is a
+compiler-owned type; only `rt ref` constructs it.
+
+```ores
+const Pointer<{value: int}> pointer = rt ref struct{value: int}{value: 7};
+const {value: int} view = rt unref pointer;
+const same = rt deref(pointer);
+stdio.println(view.value + same.value);
+```
+
+A pointer strongly retains a newly constructed target, including an empty
+`struct{}{}`. Taking a reference to a named owned value consumes that binding;
+subsequent access is through the pointer. Bind the pointer before dereferencing
+it: views require a named owner that the compiler can track. Plain `T` annotations
+on dereferenced local bindings preserve the inferred read-only borrow capability.
+
+The view does not grant mutation, ownership, or an independent lifetime. It
+blocks moving/rebinding its pointer owner while live, and cannot escape through
+returns, closures, owned aggregates, or suspension. Inner aliases each retain a
+lexical loan. Temporary call loans remain active while later arguments evaluate.
+Nested reference-backed fields remain borrowed; casts and annotations cannot
+upgrade them to owned values. Move-only method results through a borrow require
+an explicit lifetime contract and are currently rejected conservatively.
+
+Pointer targets are concrete owned classes, structs, and arrays/lists whose
+reachable type graph contains data rather than borrowed/runtime capabilities.
+Scalars, closures, actor handles, nested pointers, and unresolved generic targets
+are rejected. A pointer is local ownership authority, not actor/channel/isolate
+transport authority. `rt copy`/`rt share` do not duplicate pointer handles.
+
+These are managed handles, not numeric addresses: no pointer arithmetic, manual
+free, or pinning is implied. `unref` and `deref` never request garbage collection.
+The JVM or Native Image collector reclaims unreachable managed graphs; any live
+pointer or live view keeps its target reachable. See [garbage collection](garbage-collection.md).
 
 Borrow rules:
 
@@ -1819,7 +1868,7 @@ Actors/isolate message passing remains the primary concurrency model, but the ow
 
 The same compiled program can target a secondary multi-threaded runtime because:
 
-- mutable state has one owner unless temporarily accessed through an exclusive `&mut` borrow;
+- mutable state has one owner unless temporarily accessed through an exclusive `borrow mut` borrow;
 - shared aliases are immutable;
 - move-only values cannot remain accessible from both sides of an ownership transfer;
 - closures cannot smuggle an outstanding stack borrow into a longer-lived task;

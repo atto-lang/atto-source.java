@@ -9,7 +9,7 @@ exchange, executor, and stream objects are never available to guest code.
 
 `server.accept()` returns `Future<HttpExchange>` to the supervisor. Register a
 source actor with `http.handler("ActorType")` in the actor's declaring source
-unit. `handler.dispatch(&mut exchange)` creates a fresh actor and moves the
+unit. `handler.dispatch(rt borrow mut exchange)` creates a fresh actor and moves the
 exchange to it. Handler declarations must be shared or isolated, not untrusted.
 The runtime checks the kind against the code image when initializing the actor.
 

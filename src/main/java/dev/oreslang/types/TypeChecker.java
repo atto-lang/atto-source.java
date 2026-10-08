@@ -103,7 +103,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Pointer", "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -145,6 +145,12 @@ public final class TypeChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                String declaredName = decl instanceof Ast.ClassDecl c ? c.name()
+                        : decl instanceof Ast.InterfaceDecl i ? i.name()
+                        : decl instanceof Ast.TypeAliasDecl a ? a.name() : "";
+                if (declaredName.equals("Pointer")) {
+                    throw new IllegalArgumentException("Pointer is a compiler-owned built-in type");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
@@ -1359,6 +1365,15 @@ public final class TypeChecker {
             Type declared = declaredAhead == null
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
+            // A plain annotation on a dereferenced local must retain the borrow
+            // capability in the environment, rather than laundering it into ownership.
+            if (actual instanceof Borrow borrowed && !borrowed.mutable()
+                    && binding.initializer() instanceof Ast.RuntimeCallExpr runtime
+                    && (runtime.operation().equals("unref") || runtime.operation().equals("deref"))
+                    && !(declared instanceof Borrow)) {
+                requireAssignable(borrowed.target(), declared, "pointee for " + binding.name());
+                declared = new Borrow(declared, false);
+            }
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
@@ -1791,8 +1806,8 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
-            if (unary.operator().equals("&")) return new Borrow(operand, false);
-            if (unary.operator().equals("&mut")) return new Borrow(operand, true);
+            if (unary.operator().equals("borrow")) return new Borrow(operand, false);
+            if (unary.operator().equals("borrow mut")) return new Borrow(operand, true);
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
@@ -1904,6 +1919,17 @@ public final class TypeChecker {
             }
             Type operand = typeOf(runtime.arguments().getFirst(), env, generics, self);
             return switch (runtime.operation()) {
+                case "ref" -> {
+                    requirePointerTarget(operand);
+                    yield new Named("Pointer", List.of(operand));
+                }
+                case "unref", "deref" -> {
+                    if (!(operand instanceof Named pointer) || !pointer.name().equals("Pointer")
+                            || pointer.arguments().size() != 1) {
+                        throw new IllegalArgumentException("rt " + runtime.operation() + " requires Pointer<T>");
+                    }
+                    yield new Borrow(pointer.arguments().getFirst(), false);
+                }
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
                 default -> throw new IllegalArgumentException(
@@ -2925,6 +2951,9 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Pointer")) {
+                throw new IllegalArgumentException("Pointer<T> is constructed only with rt ref");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
@@ -3299,7 +3328,7 @@ public final class TypeChecker {
             Set<Ast.ClassDecl> seen,
             Map<String, Type> genericBindings) {
         // Check the borrow wrapper BEFORE deref can erase lifetime metadata.
-        if (type instanceof Borrow) return true;
+        if (type instanceof Borrow || (type instanceof Named n && n.name().equals("Pointer"))) return true;
         type = deref(type);
         if (type instanceof SelfType receiverSelf) {
             return containsChannelBorrow(receiverSelf.bound(), seen, genericBindings);
@@ -4278,7 +4307,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
+        if (named.name().equals("Pointer") || named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -6658,6 +6687,15 @@ public final class TypeChecker {
         }
     }
 
+    private void requirePointerTarget(Type target) {
+        boolean referenceBacked = target instanceof Record || target instanceof ListType
+                || (target instanceof Named named && findClass(named.name()) != null
+                    && findClass(named.name()).actorKind() == Ast.ActorKind.NONE);
+        if (!referenceBacked || !isSharedSafe(target, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException("Pointer<T> requires concrete owned class, struct, or array data without borrowed/runtime capabilities");
+        }
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
@@ -6738,6 +6776,14 @@ public final class TypeChecker {
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 yield resolveCollectionType(ref, generics, self, allowNullMarker);
+            }
+            case "Pointer" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Pointer<T> requires exactly one explicit target type");
+                }
+                Type target = resolve(ref.arguments().getFirst(), generics, self);
+                requirePointerTarget(target);
+                yield new Named("Pointer", List.of(target));
             }
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "

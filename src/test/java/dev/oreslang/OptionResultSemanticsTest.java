@@ -233,7 +233,7 @@ final class OptionResultSemanticsTest {
 
                 fnc bad(): void {
                   let Box box = new Box();
-                  val maybe = Some(&box);
+                  val maybe = Some(rt borrow box);
                   return;
                 }
                 """)));

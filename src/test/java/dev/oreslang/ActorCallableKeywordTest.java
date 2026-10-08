@@ -139,7 +139,7 @@ final class ActorCallableKeywordTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                actor fnc invalid(&int value): void { return; }
+                actor fnc invalid(borrow int value): void { return; }
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
