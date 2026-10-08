@@ -1421,7 +1421,9 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForStmt loop) {
-                return (loop.initializer() != null
+                // An explicit cooperative loop is a real suspension effect,
+                // including when reached through an imported module function.
+                return loop.cooperative() || (loop.initializer() != null
                                 && statementContainsPotentialSuspension(
                                         loop.initializer(), seen))
                         || (loop.condition() != null
