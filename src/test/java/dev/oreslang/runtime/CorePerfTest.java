@@ -100,6 +100,23 @@ class CorePerfTest {
         assertThrows(IllegalArgumentException.class, () -> recorder.recordEvent(0, 0L));
     }
 
+    @Test void durationValidationHandlesOverflowAndBackwardsClocks() {
+        assertTrue(CorePerf.validDuration(12L, 12L));
+        assertTrue(CorePerf.validDuration(-12L, 12L));
+        assertFalse(CorePerf.validDuration(12L, 11L));
+        assertFalse(CorePerf.validDuration(Long.MIN_VALUE, Long.MAX_VALUE));
+        assertFalse(CorePerf.validDuration(-1L, Long.MAX_VALUE));
+
+        var recorder = new CorePerf.Recorder(2);
+        assertThrows(IllegalArgumentException.class,
+                () -> recorder.record(CorePerf.HTTP_RECEIVE, Long.MIN_VALUE, Long.MAX_VALUE));
+        // Bad samples must not consume bounded cold-start capture slots.
+        recorder.record(CorePerf.HTTP_RECEIVE, 10L, 12L);
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        assertTrue(bytes.toString(StandardCharsets.UTF_8).contains("\"recorded\":1,\"reserved\":1"));
+    }
+
     @Test void invalidSamplesFailClosed() {
         var recorder = new CorePerf.Recorder(1);
         assertThrows(IllegalArgumentException.class, () -> recorder.record(0, 1L, 2L));
