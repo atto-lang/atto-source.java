@@ -34,6 +34,7 @@ public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy guestPolicy;
     private final ExecutionProfile executionProfile;
     private final AtomicLong sequence = new AtomicLong();
+    private boolean closed;
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
@@ -57,6 +58,16 @@ public final class HotReloadManager implements AutoCloseable {
         this.supervisorPolicy.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
                 "HotReloadManager");
+        // Trusted parents may narrow authority, but must never grant a
+        // hot-loaded guest more permission or resource budget than they own.
+        if (!this.supervisorPolicy.capabilities().containsAll(this.guestPolicy.capabilities())
+                || this.guestPolicy.maxHeapBytes() > this.supervisorPolicy.maxHeapBytes()
+                || this.guestPolicy.maxMailboxMessages() > this.supervisorPolicy.maxMailboxMessages()
+                || this.guestPolicy.maxWallTime().compareTo(this.supervisorPolicy.maxWallTime()) > 0
+                || (this.supervisorPolicy.adversarial() && !this.guestPolicy.adversarial())) {
+            throw new SecurityException(
+                    "hot-loaded guest policy must be no more permissive than its supervisor");
+        }
     }
 
     public static HotReloadManager forUntrustedActors(
@@ -95,6 +106,7 @@ public final class HotReloadManager implements AutoCloseable {
     private void validateAdmissionInputs(
             String codeUnitId,
             String sourceText) {
+        requireOpen();
         java.util.Objects.requireNonNull(codeUnitId, "codeUnitId");
         java.util.Objects.requireNonNull(sourceText, "sourceText");
         if (codeUnitId.isBlank()) {
@@ -114,6 +126,7 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+        requireOpen();
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
             throw new IllegalStateException(
@@ -140,8 +153,15 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
-        generation.start();
-        return generation;
+        try {
+            generation.start();
+            return generation;
+        } catch (RuntimeException | Error failure) {
+            // Generation.start() closes its context on most guest failures,
+            // but the manager must also release its registry/quota reservation.
+            retire(generation.id());
+            throw failure;
+        }
     }
 
     /** Last generation staged, retained for compatibility with the single-unit API. */
@@ -168,8 +188,18 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized int liveGenerations() { return generations.size(); }
 
+    private void requireOpen() {
+        if (closed) {
+            throw new IllegalStateException("hot reload manager is closed");
+        }
+    }
+
     @Override
     public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         for (Generation generation : generations.values()) generation.close();
         generations.clear();
         activeByCodeUnit.clear();
@@ -219,7 +249,7 @@ public final class HotReloadManager implements AutoCloseable {
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
             try {
                 return context.eval(source);
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | Error failure) {
                 close();
                 throw failure;
             }
