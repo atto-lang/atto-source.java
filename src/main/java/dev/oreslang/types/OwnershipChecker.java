@@ -412,6 +412,12 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
+            // Blocking select suspends the current frame: the same ownership
+            // constraint as await applies. Nonblocking select only registers
+            // its own owned/captured work; it does not suspend this frame.
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "select");
+            }
             if (selected.mode() != Ast.WaitMode.IMMEDIATE
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error("cannot suspend or arm nb select while holding a MutexGuard");
@@ -956,6 +962,10 @@ public final class OwnershipChecker {
             return awaitedValue;
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            if (channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope,
+                        channelOp.operation() == Ast.ChannelOperation.WRITE ? "writech" : "readch");
+            }
             if (channelOp.mode() != Ast.WaitMode.IMMEDIATE
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error("cannot suspend or register a channel waiter while holding a MutexGuard");
@@ -991,6 +1001,9 @@ public final class OwnershipChecker {
             return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "dynamic select");
+            }
             if (selected.mode() != Ast.WaitMode.IMMEDIATE
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error("cannot suspend or register dynamic select while holding a MutexGuard");
