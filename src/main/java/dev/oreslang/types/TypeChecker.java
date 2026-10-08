@@ -57,7 +57,10 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
-    private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    /** Active aliases carry their guard depth and original instantiation. */
+    private record AliasFrame(int guardDepth, List<Ast.TypeRef> arguments) { }
+    private final IdentityHashMap<Ast.TypeAliasDecl, AliasFrame> resolvingAliases = new IdentityHashMap<>();
+    private int recursiveAliasGuardDepth;
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Unlike private-member access, declaration origin must survive nlex.
@@ -6832,9 +6835,34 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * A guard represents a data indirection (record, tuple, collection,
+     * function or concrete named data type). Unions and alias-to-alias edges
+     * are transparent and cannot make a cycle productive on their own.
+     */
+    private Type resolveGuarded(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
+        recursiveAliasGuardDepth++;
+        try {
+            return resolve(ref, generics, self, allowNullMarker);
+        } finally {
+            recursiveAliasGuardDepth--;
+        }
+    }
+
+    private boolean isRecursiveAliasGuard(Ast.TypeRef ref) {
+        if (Set.of("Option", "Result", "Array", "List", "Vector", "Slice",
+                "Tuple", "FixedArray", "FixedList", "Fnc", "Function",
+                "Mutex", "SharedMutex", "Channel", "Future", "Generator",
+                "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult",
+                "ActorMail", "ActorOutput", "ActorOutputStream").contains(ref.name())) {
+            return true;
+        }
+        return findClass(ref.name()) != null || findInterface(ref.name()) != null;
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
-        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        if (ref.isBorrow()) return new Borrow(resolveGuarded(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) {
@@ -6857,13 +6885,13 @@ public final class TypeChecker {
             List<Ast.TypeRef> elements = positionalTypeArguments(ref);
             validateFixedExtentMetadata("Tuple", metadata, elements.size());
             return new Tuple(elements.stream()
-                    .map(element -> resolve(element, generics, self, allowNullMarker))
+                    .map(element -> resolveGuarded(element, generics, self, allowNullMarker))
                     .toList(), TupleKind.TUPLE);
         }
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
-                members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
+                members.put(member.getKey(), resolveGuarded(member.getValue(), generics, self, allowNullMarker));
             }
             return new Record(members, ref.isReadonlyRecordType());
         }
@@ -6877,7 +6905,23 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
             }
-            if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            AliasFrame active = resolvingAliases.get(alias);
+            if (active != null) {
+                if (recursiveAliasGuardDepth <= active.guardDepth()) {
+                    throw new IllegalArgumentException("unguarded type alias cycle involving '" + alias.name()
+                            + "'; introduce an Option, List, record, tuple or another concrete data constructor");
+                }
+                if (!active.arguments().equals(ref.arguments())) {
+                    throw new IllegalArgumentException("non-regular recursive type alias '" + alias.name()
+                            + "' changes its type arguments across recursion");
+                }
+                String owner = typeAliasOwners.get(alias);
+                String qualified = owner == null || owner.equals("__root__")
+                        ? alias.name() : owner + "." + alias.name();
+                return new Named("$recursive_alias$" + qualified,
+                        ref.arguments().stream().map(arg -> resolve(arg, generics, self, allowNullMarker)).toList());
+            }
+            resolvingAliases.put(alias, new AliasFrame(recursiveAliasGuardDepth, ref.arguments()));
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
@@ -6889,6 +6933,9 @@ public final class TypeChecker {
             }
         }
 
+        boolean guardedConstructor = isRecursiveAliasGuard(ref);
+        if (guardedConstructor) recursiveAliasGuardDepth++;
+        try {
         return switch (ref.name()) {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
@@ -7025,6 +7072,9 @@ public final class TypeChecker {
                 yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
         };
+        } finally {
+            if (guardedConstructor) recursiveAliasGuardDepth--;
+        }
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
