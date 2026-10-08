@@ -54,6 +54,16 @@ public final class CorePerf {
                 + " completed phases buffered; JSONL exported at JVM shutdown");
     }
 
+    /** Startup-only metadata. Guest and hot-path code never consult it. */
+    public static void actorBackend(boolean nativeCarriers, int privateParallelism, int sharedParallelism) {
+        Recorder recorder = active;
+        if (recorder != null) {
+            recorder.backend = nativeCarriers ? "native_pthread" : "jvm_thread_pool";
+            recorder.privateParallelism = privateParallelism;
+            recorder.sharedParallelism = sharedParallelism;
+        }
+    }
+
     /** Zero allocation and no clock read on the disabled hot path. */
     public static long start() {
         Recorder recorder = active;
@@ -87,6 +97,9 @@ public final class CorePerf {
         private final long[] durations;
         private final long[] threadIds;
         private volatile boolean saturated;
+        private volatile String backend = "unknown";
+        private volatile int privateParallelism;
+        private volatile int sharedParallelism;
 
         Recorder(int capacity) {
             if (capacity < 1) throw new IllegalArgumentException("capacity must be positive");
@@ -117,6 +130,9 @@ public final class CorePerf {
         void dump(PrintStream out) {
             int reserved = Math.min(capacity, cursor.get());
             out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"begin\",\"capacity\":" + capacity + "}");
+            out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"backend\",\"actor_carriers\":\""
+                    + backend + "\",\"private_parallelism\":" + privateParallelism
+                    + ",\"shared_parallelism\":" + sharedParallelism + "}");
             for (int i = 0; i < reserved; i++) {
                 int phase = published.get(i);
                 if (phase == 0) continue; // unfinished concurrent event
