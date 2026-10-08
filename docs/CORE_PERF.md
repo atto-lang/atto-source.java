@@ -24,7 +24,7 @@ the enabled path captures monotonic timestamps and atomically reserves a slot.
 The fixed-capacity buffer intentionally stops collecting when full so warm
 traffic cannot evict the first cold-start samples.
 
-Events are serialized as `ores-core-perf.v1` JSON Lines to **stderr on clean
+Backend metadata (native pthread versus lazy JVM fallback, including configured\nactor-pool sizes) is written once at dump time.\n\nEvents are serialized as `ores-core-perf.v1` JSON Lines to **stderr on clean
 JVM shutdown** (Ctrl-C/SIGTERM). SIGKILL and crashes do not invoke shutdown
 hooks. Each phase provides `start_ns` relative to recorder installation,
 `duration_ns`, and `thread_id`; no request body, path, header, or other
