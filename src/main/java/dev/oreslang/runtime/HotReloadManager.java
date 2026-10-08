@@ -140,7 +140,7 @@ public final class HotReloadManager implements AutoCloseable {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
-            Generation generation = new Generation(id, codeUnitId, sourceDigest, context, source, executionProfile);
+            Generation generation = new Generation(this, id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
@@ -188,6 +188,13 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized int liveGenerations() { return generations.size(); }
 
+    /** Closed guest contexts must not remain in the manager's active registry. */
+    private synchronized void onGenerationClosed(Generation generation) {
+        generations.remove(generation.id(), generation);
+        activeByCodeUnit.remove(generation.codeUnitId(), generation);
+        active.compareAndSet(generation, null);
+    }
+
     private void requireOpen() {
         if (closed) {
             throw new IllegalStateException("hot reload manager is closed");
@@ -200,10 +207,14 @@ public final class HotReloadManager implements AutoCloseable {
             return;
         }
         closed = true;
-        for (Generation generation : generations.values()) generation.close();
+        // Snapshot first: each Generation.close() re-enters onGenerationClosed.
+        java.util.List<Generation> toClose = java.util.List.copyOf(generations.values());
         generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
+        for (Generation generation : toClose) {
+            generation.close();
+        }
     }
 
     private static String digest(String text) {
@@ -216,6 +227,7 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public static final class Generation implements AutoCloseable {
+        private final HotReloadManager owner;
         private final long id;
         private final String codeUnitId;
         private final String sha256;
@@ -225,7 +237,8 @@ public final class HotReloadManager implements AutoCloseable {
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private Generation(long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
+        private Generation(HotReloadManager owner, long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
+            this.owner = owner;
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
@@ -257,7 +270,13 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) context.close(true);
+            if (closed.compareAndSet(false, true)) {
+                try {
+                    context.close(true);
+                } finally {
+                    owner.onGenerationClosed(this);
+                }
+            }
         }
     }
 }
