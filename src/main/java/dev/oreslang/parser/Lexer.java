@@ -60,7 +60,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
@@ -92,6 +92,230 @@ public final class Lexer {
             else if (c == '/' && match('*')) depth++;
             else if (c == '*' && match('/')) depth--;
         }
+    }
+
+
+    /**
+     * Backticks are interpolated String expressions. Desugar during lexing into a
+     * parenthesized String concatenation, keeping interpolation expressions
+     * parenthesized so their operators retain their own precedence.
+     *
+     * A literal segment is always a String (including an empty segment). To
+     * interpolate non-String values, callers must convert explicitly.
+     */
+    private void template() {
+        final int openingLine = line;
+        final int openingColumn = startColumn;
+        tokens.add(new Token(LPAREN, "(", openingLine, openingColumn));
+        StringBuilder literal = new StringBuilder();
+        int segmentLine = line;
+        int segmentColumn = column;
+
+        while (!isAtEnd()) {
+            char c = advance();
+            if (c == '`') {
+                tokens.add(new Token(STRING, literal.toString(), segmentLine, segmentColumn));
+                tokens.add(new Token(RPAREN, ")", line, column));
+                return;
+            }
+            if (c == '\\') {
+                if (isAtEnd()) throw error("unterminated template escape");
+                char escaped = advance();
+                if (escaped == '\n') newline();
+                literal.append(switch (escaped) {
+                    case 'u' -> unicodeEscape();
+                    case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t';
+                    case '"', '\'', '\\', '`', '
+        StringBuilder value = new StringBuilder();
+        while (!isAtEnd() && peek() != quote) {
+            char c = advance();
+            if (c == '\n') { newline(); value.append('\n'); continue; }
+            if (c == '\\') {
+                if (isAtEnd()) throw error("unterminated string escape");
+                char escaped = advance();
+                value.append(switch (escaped) {
+                    case 'u' -> unicodeEscape();
+                    case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\'' -> '\''; case '\\' -> '\\'; default -> escaped;
+                });
+            } else value.append(c);
+        }
+        if (isAtEnd()) throw error("unterminated string");
+        advance();
+        tokens.add(new Token(STRING, value.toString(), line, startColumn));
+    }
+
+    private char unicodeEscape() {
+        int code = 0;
+        for (int i = 0; i < 4; i++) {
+            if (isAtEnd()) throw error("incomplete Unicode escape");
+            char digit = advance();
+            int hex = digit >= '0' && digit <= '9' ? digit - '0'
+                    : digit >= 'a' && digit <= 'f' ? digit - 'a' + 10
+                    : digit >= 'A' && digit <= 'F' ? digit - 'A' + 10 : -1;
+            if (hex < 0) throw error("invalid Unicode escape");
+            code = (code << 4) | hex;
+        }
+        return (char) code;
+    }
+
+    private void number() {
+        while (isDigit(peek()) || peek() == '_') advance();
+        boolean floating = false;
+        if (peek() == '.' && isDigit(peekNext())) {
+            floating = true; advance();
+            while (isDigit(peek()) || peek() == '_') advance();
+        }
+        if (peek() == 'e' || peek() == 'E') {
+            floating = true; advance();
+            if (peek() == '+' || peek() == '-') advance();
+            if (!isDigit(peek())) throw error("malformed exponent");
+            while (isDigit(peek()) || peek() == '_') advance();
+        }
+        if (peek() == 'i') { advance(); add(IMAG); }
+        else add(floating ? FLOAT : INT);
+    }
+
+    private void identifier() {
+        while (isIdentPart(peek())) advance();
+        String text = source.substring(start, current);
+        add(KEYWORDS.getOrDefault(text, IDENT));
+    }
+
+    private boolean isAtEnd() { return current >= source.length(); }
+    private char advance() { char c = source.charAt(current++); column++; return c; }
+    private boolean match(char expected) {
+        if (isAtEnd() || source.charAt(current) != expected) return false;
+        current++; column++; return true;
+    }
+    private char peek() { return isAtEnd() ? '\0' : source.charAt(current); }
+    private char peekNext() { return current + 1 >= source.length() ? '\0' : source.charAt(current + 1); }
+    private void newline() { line++; column = 1; }
+    private void add(Token.Type type) { tokens.add(new Token(type, source.substring(start, current), line, startColumn)); }
+    private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
+    private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
+    private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
+    private IllegalArgumentException error(String message) {
+        return new IllegalArgumentException("Oreslang lexer error at " + line + ":" + startColumn + ": " + message);
+    }
+}
+ -> escaped;
+                    default -> escaped;
+                });
+                continue;
+            }
+            if (c == '
+        StringBuilder value = new StringBuilder();
+        while (!isAtEnd() && peek() != quote) {
+            char c = advance();
+            if (c == '\n') { newline(); value.append('\n'); continue; }
+            if (c == '\\') {
+                if (isAtEnd()) throw error("unterminated string escape");
+                char escaped = advance();
+                value.append(switch (escaped) {
+                    case 'u' -> unicodeEscape();
+                    case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\'' -> '\''; case '\\' -> '\\'; default -> escaped;
+                });
+            } else value.append(c);
+        }
+        if (isAtEnd()) throw error("unterminated string");
+        advance();
+        tokens.add(new Token(STRING, value.toString(), line, startColumn));
+    }
+
+    private char unicodeEscape() {
+        int code = 0;
+        for (int i = 0; i < 4; i++) {
+            if (isAtEnd()) throw error("incomplete Unicode escape");
+            char digit = advance();
+            int hex = digit >= '0' && digit <= '9' ? digit - '0'
+                    : digit >= 'a' && digit <= 'f' ? digit - 'a' + 10
+                    : digit >= 'A' && digit <= 'F' ? digit - 'A' + 10 : -1;
+            if (hex < 0) throw error("invalid Unicode escape");
+            code = (code << 4) | hex;
+        }
+        return (char) code;
+    }
+
+    private void number() {
+        while (isDigit(peek()) || peek() == '_') advance();
+        boolean floating = false;
+        if (peek() == '.' && isDigit(peekNext())) {
+            floating = true; advance();
+            while (isDigit(peek()) || peek() == '_') advance();
+        }
+        if (peek() == 'e' || peek() == 'E') {
+            floating = true; advance();
+            if (peek() == '+' || peek() == '-') advance();
+            if (!isDigit(peek())) throw error("malformed exponent");
+            while (isDigit(peek()) || peek() == '_') advance();
+        }
+        if (peek() == 'i') { advance(); add(IMAG); }
+        else add(floating ? FLOAT : INT);
+    }
+
+    private void identifier() {
+        while (isIdentPart(peek())) advance();
+        String text = source.substring(start, current);
+        add(KEYWORDS.getOrDefault(text, IDENT));
+    }
+
+    private boolean isAtEnd() { return current >= source.length(); }
+    private char advance() { char c = source.charAt(current++); column++; return c; }
+    private boolean match(char expected) {
+        if (isAtEnd() || source.charAt(current) != expected) return false;
+        current++; column++; return true;
+    }
+    private char peek() { return isAtEnd() ? '\0' : source.charAt(current); }
+    private char peekNext() { return current + 1 >= source.length() ? '\0' : source.charAt(current + 1); }
+    private void newline() { line++; column = 1; }
+    private void add(Token.Type type) { tokens.add(new Token(type, source.substring(start, current), line, startColumn)); }
+    private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
+    private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
+    private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
+    private IllegalArgumentException error(String message) {
+        return new IllegalArgumentException("Oreslang lexer error at " + line + ":" + startColumn + ": " + message);
+    }
+}
+ && match('{')) {
+                tokens.add(new Token(STRING, literal.toString(), segmentLine, segmentColumn));
+                tokens.add(new Token(PLUS, "+", line, column));
+                tokens.add(new Token(LPAREN, "(", line, column));
+
+                int expressionStart = tokens.size();
+                int braceDepth = 0;
+                boolean closed = false;
+                while (!isAtEnd()) {
+                    int before = tokens.size();
+                    start = current;
+                    startColumn = column;
+                    scanToken(); // Reuses lexical rules for quotes, comments and nested templates.
+                    if (tokens.size() == before) continue; // whitespace/comment
+                    Token.Type last = tokens.get(tokens.size() - 1).type();
+                    if (last == LBRACE) braceDepth++;
+                    else if (last == RBRACE) {
+                        if (braceDepth == 0) {
+                            tokens.remove(tokens.size() - 1); // consumes the interpolation delimiter
+                            if (tokens.size() == expressionStart) {
+                                throw error("empty template interpolation");
+                            }
+                            closed = true;
+                            break;
+                        }
+                        braceDepth--;
+                    }
+                }
+                if (!closed) throw error("unterminated template interpolation");
+                tokens.add(new Token(RPAREN, ")", line, column));
+                tokens.add(new Token(PLUS, "+", line, column));
+                literal.setLength(0);
+                segmentLine = line;
+                segmentColumn = column;
+                continue;
+            }
+            if (c == '\n') newline();
+            literal.append(c);
+        }
+        throw error("unterminated template literal");
     }
 
     private void string(char quote) {
