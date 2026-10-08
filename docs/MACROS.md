@@ -78,11 +78,14 @@ returning an immutable token list plus a snapshot of each definition's mode and
 SHA-256 fingerprint. The overload without a snapshot is a new compilation lineage.
 
 `Parser.parseWithMacroSnapshot(source, previousSnapshot)` expands and parses,
-returning a program and a new macro snapshot. A caller implementing hot reload
-must persist the snapshot alongside its code generation and pass it to the next
-compile. **Existing hot reload has not yet been wired to persist/pass the snapshot
-in this PR.** Consequently the AOT edit guard is enforced by this new API, not
-automatically for every reload integration yet.
+returning a program and a new macro snapshot. `IncrementalCompiler` now persists
+per-code-unit snapshots transactionally, and `HotReloadManager` fences AOT
+definitions before staging a replacement generation. Retiring a generation does
+not discard its AOT lineage; `IncrementalCompiler.clear()` or closing the hot
+reload manager starts a new lineage. The macro mode itself cannot switch within
+one lineage. Other clients calling raw `Parser.parse()` initiate fresh,
+independent compilation lineages; they must use the snapshot-aware API to
+enforce a reload boundary.
 
 The fingerprint includes mode, ordered captures and template token types/lexemes.
 Macros are not runtime values: no actor may mutate a definition shared by another
