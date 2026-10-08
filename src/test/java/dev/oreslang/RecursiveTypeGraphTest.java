@@ -173,6 +173,29 @@ final class RecursiveTypeGraphTest {
     }
 
     @Test
+    void borrowedReferencesCannotHideInsideRecursiveOrAliasedClassFields() {
+        for (String type : new String[] {
+                "Option<&Link>",
+                "Nested",
+                "Alias"
+        }) {
+            String program = """
+                    define class Link as
+                        pub let int id = 0;
+                    end
+                    type Alias = &Link;
+                    type Nested = Option<Alias>;
+                    define class Carrier as
+                        pub let %s link = None;
+                    end
+                    """.formatted(type);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(program)), program);
+            assertTrue(error.getMessage().contains("borrowed reference"), error.getMessage());
+        }
+    }
+
+    @Test
     void ownershipClassifiesAliasesWithoutTurningRecursiveRecordsIntoCopyValues() {
         assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
                 type Flag = bool;

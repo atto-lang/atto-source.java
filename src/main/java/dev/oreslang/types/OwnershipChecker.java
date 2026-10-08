@@ -112,9 +112,11 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
-            if (fieldType != null && fieldType.isBorrow()) {
+            if (containsBorrowUnderAliases(fieldType,
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
                 throw error("field '" + klass.name() + "." + field.name()
-                        + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
+                        + "' cannot store a borrowed reference, including through type aliases or nested containers; "
+                        + "class/actor fields must own, copy, share, or proxy their state");
             }
         }
 
@@ -2936,6 +2938,33 @@ public final class OwnershipChecker {
         if (type == null) return ValueKind.MOVE_ONLY;
         if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
+    }
+
+    /** A type alias cannot hide a borrow inside persistent class/actor state. */
+    private boolean containsBorrowUnderAliases(
+            Ast.TypeRef type, Set<Ast.TypeAliasDecl> visiting) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        Ast.TypeAliasDecl alias = typeAliases.get(
+                currentModule == null ? type.name() : currentModule + "." + type.name());
+        if (alias == null) alias = typeAliases.get(type.name());
+        if (alias != null) {
+            if (alias.genericParameters().size() != type.arguments().size()) {
+                return true; // Malformed alias must not bypass ownership validation.
+            }
+            if (!visiting.add(alias)) return false;
+            try {
+                return containsBorrowUnderAliases(substituteType(
+                        alias.target(), genericBindings(alias.genericParameters(), type.arguments())),
+                        visiting);
+            } finally {
+                visiting.remove(alias);
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowUnderAliases(argument, visiting)) return true;
+        }
+        return false;
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
