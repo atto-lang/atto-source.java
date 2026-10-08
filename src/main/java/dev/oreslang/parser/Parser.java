@@ -2567,12 +2567,42 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parsePipeline();
         if (!match(QUESTION)) return condition;
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
         Ast.Expr whenFalse = parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    /**
+     * Left-associative value-first pipeline. Lower immediately to an ordinary
+     * call so typing, ownership, generic inference and suspendable execution
+     * all use the existing call path. The left operand is evaluated once.
+     *
+     * value |> f          => f(value)
+     * value |> f(extra)   => f(value, extra)
+     * value |> f |> g     => g(f(value))
+     */
+    private Ast.Expr parsePipeline() {
+        Ast.Expr value = parseLogicalOr();
+        while (match(PIPE_FORWARD)) {
+            Token pipe = previous();
+            Ast.Expr target = parsePostfix();
+            if (target instanceof Ast.CallExpr call) {
+                List<Ast.Expr> arguments = new ArrayList<>();
+                arguments.add(value);
+                arguments.addAll(call.arguments());
+                value = new Ast.CallExpr(call.callee(), call.typeArguments(),
+                        call.typeArgumentsPresent(), arguments);
+            } else if (target instanceof Ast.NameExpr || target instanceof Ast.MemberExpr
+                    || target instanceof Ast.LambdaExpr) {
+                value = new Ast.CallExpr(target, List.of(value));
+            } else {
+                throw error(pipe, "pipeline right-hand side must be a callable or call expression");
+            }
+        }
+        return value;
     }
 
     private Ast.Expr parseLogicalOr() {
