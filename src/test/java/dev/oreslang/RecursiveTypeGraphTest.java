@@ -64,7 +64,7 @@ final class RecursiveTypeGraphTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("2\\n", output.toString(StandardCharsets.UTF_8));
+        assertEquals("2\n", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
