@@ -342,6 +342,71 @@ structural pin projection and destructor/drop validity.
 users to write Rust's Pin<T> API.** In particular, thread/core pinning
 for Hungry Actors and *address* pinning for native frames are unrelated.
 
+### Rust stack/local pinning and nested async frames
+
+Primary references:
+- [`std::pin::pin!`](https://doc.rust-lang.org/std/pin/macro.pin.html): unlike `Box::pin`, local pinning does not require a *new* allocation. Locals that cross await inside an async function may reside in its **enclosing future frame**, itself possibly heap allocated.
+- [Tokio `pin!` source](https://docs.rs/tokio/latest/src/tokio/macros/pin.rs.html): moves the value into its final local binding before constructing the pinned borrow, then shadows direct access to prevent relocation in safe Rust.
+- [`futures::pin_mut!`](https://docs.rs/futures/latest/futures/macro.pin_mut.html): soft-deprecated in favor of standard library `pin!` (available since Rust 1.68).
+
+For an identifier, Tokio uses the following conceptual shadowing sequence:
+
+```rust
+let fut = async_work();   // may be moved before it is pinned
+let mut fut = fut;        // move into final local place
+let mut fut = unsafe {
+    std::pin::Pin::new_unchecked(&mut fut)
+};
+```
+
+The macro encapsulates carefully audited unsafe implementation details;
+users should normally prefer `std::pin::pin!`. Shadowing is **not by itself**
+a lifetime guarantee: the compiler must also ensure the pinned owner cannot
+be moved, replaced or destroyed before the pinning borrow is finished,
+including in-place destruction of any pinned fields.
+
+The pointee guarantee starts **when pinning is established**, not at the
+first poll. An `Unpin` pointee can safely move; futures from async functions
+are usually `!Unpin` even if not every specific future is self-referential.
+The pointer or Box *handle* is still movable while the pinned pointee remains
+in stable storage.
+
+**Crucial Oreslang distinction:** a child locally pinned inside an async
+function may be an inline field of the parent compiler-generated state
+machine. If the parent has been boxed or placed in a native actor arena,
+the child's local slot lives there, **not necessarily on the physical
+carrier thread's call stack**. Parent/child pinning and ownership must
+survive suspension even if the logical actor resumes on another OS thread.
+
+| Placement | Per-child separate allocation | Constraint |
+| --- | --- | --- |
+| Synchronous stack-local | No | Cannot survive function return/unwind |
+| Nested in enclosing async frame | Not required | Stable owning parent frame while address-sensitive child is live |
+| Preallocated actor arena | No per-operation allocation when capacity suffices | Pinned region lease and checked frame/slot size; arena not reset while children live |
+| `Box::pin` standalone future | Typically yes | Independent owner whose handle moves while pointee remains stable |
+
+The desired future LLVM/native lowering in Oreslang should:
+1. Place nested async state-machine frames into statically laid out
+   parent-frame/actor-arena slots instead of boxing every child.
+2. Keep purely offset-based frames relocatable, with validated region
+   generation and address/size; do **not** create raw interior pointers.
+3. Establish native address-stable ownership **before** any operation can
+   create self-references. Respect pin projection and in-place drop.
+4. Reject borrow escape to another actor, isolate or caller's expired
+   scope. Avoid exposing JVM object addresses in the Graal backend.
+5. Keep actor-group rotation blocked while a parent, child, waker, native
+   borrow, DMA lease or external callback still retains the old heap.
+6. Treat `no additional child Box` as different from `zero heap allocations`:
+   futures, executors, JNI and Graal may allocate for unrelated reasons.
+   An HPC strict build must verify allocations transitively or fail.
+
+`HpcLocalPinPlan` + `HpcLocalPinPlanTest` now cover synchronous local,
+nested parent-frame, actor arena and independent storage; invalid parent
+pinning, borrowing beyond scope, moving a pinned value, missing in-place
+drop, and pending wake/lease before group retirement. They are **inert
+validation**, not a compiler macro, a physical native pin, a memory
+allocator, or a new guest language feature.
+
 ### Actual current Oreslang scheduling
 
 OresScheduler.Task is a resumable logical state machine. It returns Await,
