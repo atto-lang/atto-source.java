@@ -173,6 +173,32 @@ final class RecursiveTypeGraphTest {
     }
 
     @Test
+    void ownershipClassifiesAliasesWithoutTurningRecursiveRecordsIntoCopyValues() {
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                type Flag = bool;
+                fnc consume(Flag flag): void { return; }
+                fnc okay(): void {
+                    val Flag flag = true;
+                    consume(flag);
+                    consume(flag);
+                    return;
+                }
+                """)));
+
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        type Node = struct{value: int, next: Option<Node>};
+                        fnc consume(Node node): void { return; }
+                        fnc bad(Node node): void {
+                            consume(node);
+                            consume(node);
+                            return;
+                        }
+                        """)));
+        assertTrue(moved.getMessage().contains("moved"), moved.getMessage());
+    }
+
+    @Test
     void rejectsImplicitCyclesCreatedByMovingAnOwnerIntoItsOwnField() {
         IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
