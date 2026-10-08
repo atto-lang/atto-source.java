@@ -100,3 +100,24 @@ chunked transfer, and streaming. It rejects absolute/network-path/fragment
 request targets when they reach its handler. TLS termination, HTTP/2,
 WebSockets, multipart parsing, JSON codecs, compression, and signed cookies
 remain separate adapters/libraries. This is not a hostile-code sandbox.
+
+## Native telemetry observation
+
+Capture `exchange.completion: Future<int>` before dispatch/move. It resolves once
+transport closure **and actor finalization** release admission, with the HTTP
+status, or 0 when a response was interrupted/closed without a complete status
+outcome. The future carries no exchange or socket authority and remains usable
+after the observer loses exchange ownership. Getting it from a moved/closed
+exchange is rejected. Awaiting it inside the owning handler before `self.end()`
+would wait for that handler itself; capture/await it in the supervisor instead.
+`exchange.admitted_ns` is the monotonic admission timestamp, readable only by the
+current owner while open. Transport rejection before admission has no exchange
+and is accounted for by `server.rejected`, not by these futures.
+
+`process.monotonic_ns()` returns a process-local monotonic nanosecond clock for
+intervals; `process.unix_ms()` returns epoch milliseconds for timestamps;
+`process.unique_id()` returns a random UUID. They expose no host object, network,
+filesystem or process metadata and are available to shared and isolated actors.
+Monotonic timestamps are not portable across processes or restarts. Clock calls
+are observations, not pure functions. String literals accept four-hex-digit
+Unicode escapes, allowing native serializers to cover JSON control characters.
