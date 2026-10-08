@@ -2990,6 +2990,39 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Tuple")) {
+                if (created.type().inferArguments()) {
+                    throw new IllegalArgumentException("Tuple constructor infers its slots without '<>'; use new Tuple(...)");
+                }
+                if (created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("new Tuple(...) requires at least one element");
+                }
+                for (Ast.Expr argument : created.arguments()) {
+                    if (argument instanceof Ast.NamedArgExpr || argument instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException(
+                                "Tuple constructor accepts positional elements only; named/spread args are not allowed");
+                    }
+                }
+                if (created.type().arguments().isEmpty()) {
+                    return new Tuple(created.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList());
+                }
+                Type target = resolve(created.type(), generics, self);
+                if (!(target instanceof Tuple expected) || expected.kind() != TupleKind.TUPLE) {
+                    throw new IllegalArgumentException("new Tuple[...] requires a tuple type");
+                }
+                if (expected.elements().size() != created.arguments().size()) {
+                    throw new IllegalArgumentException("Tuple constructor arity mismatch: expected "
+                            + expected.elements().size() + ", got " + created.arguments().size());
+                }
+                for (int i = 0; i < expected.elements().size(); i++) {
+                    Type actual = typeOfAgainstExpected(
+                            created.arguments().get(i), expected.elements().get(i), env, generics, self);
+                    requireAssignable(actual, expected.elements().get(i), "Tuple constructor slot " + i);
+                }
+                return expected;
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
