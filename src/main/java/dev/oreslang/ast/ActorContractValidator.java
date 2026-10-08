@@ -187,7 +187,7 @@ public final class ActorContractValidator {
         } else if (expr instanceof Ast.TupleExpr v) {
             for (Ast.Expr item : v.elements()) checkExpr(item);
         } else if (expr instanceof Ast.ObjectExpr v) {
-            for (Ast.ObjectEntry entry : v.entries()) checkExpr(entry.value());
+            for (Ast.ObjectField field : v.fields()) checkExpr(field.value());
         } else if (expr instanceof Ast.LambdaExpr v) {
             checkExpr(v.expressionBody());
             checkStmts(v.blockBody());
