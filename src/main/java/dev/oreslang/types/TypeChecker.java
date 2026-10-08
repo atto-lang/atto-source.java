@@ -7336,7 +7336,10 @@ public final class TypeChecker {
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.ReturnStmt || stmt instanceof Ast.FailureStmt) return true;
+            if (stmt instanceof Ast.RecoverStmt recovered
+                    && definitelyReturns(recovered.body())
+                    && definitelyReturns(recovered.handler())) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
@@ -7364,6 +7367,9 @@ public final class TypeChecker {
     private boolean containsBreakForCurrentLoop(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
+            if (stmt instanceof Ast.RecoverStmt recovered
+                    && (containsBreakForCurrentLoop(recovered.body())
+                        || containsBreakForCurrentLoop(recovered.handler()))) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {

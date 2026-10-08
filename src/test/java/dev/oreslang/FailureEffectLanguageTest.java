@@ -65,6 +65,25 @@ final class FailureEffectLanguageTest {
     }
 
     @Test
+    void nestedPayloadCallsRemainReachableThroughStaticPasses() throws Exception {
+        String source = """
+                fnc payload(): string {
+                  return "kept";
+                }
+                pub fnc main(): void {
+                  rt recover {
+                    raise payload();
+                  } on raise (Error err) {
+                    stdio.stdout.write(err);
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("kept", run(source));
+    }
+
+    @Test
     void panicCannotBeRecoveredOrCaught() throws Exception {
         String source = """
                 pub fnc main(): void {
