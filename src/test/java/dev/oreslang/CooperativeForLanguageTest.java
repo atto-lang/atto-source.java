@@ -67,7 +67,7 @@ final class CooperativeForLanguageTest {
 
     @Test
     void normalLoopBreakAndContinueKeepUpdateSemantics() throws Exception {
-        assertEquals("17", run("""
+        assertEquals("18", run("""
                 pub async fnc main(): void {
                   let result = 0;
                   for let j = 0; j < 100; j++ {

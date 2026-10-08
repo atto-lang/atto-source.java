@@ -29,10 +29,13 @@ continues to mean asynchronous dependency suspension, not voluntary CPU
 time slicing.
 
 `stdlib/cooperative.ores` supplies ordered sequential `map`, `filter`,
-`reduce`, and `forEach` using **ordinary for loops**. These are no per-item
-Future allocations. Underlying loops receive cooperative preemption only
-when they are continuation-lowered; until general synchronous helper lowering
-is complete, do not describe all helper calls as universally preemptible.
+`reduce`, and `forEach` using **ordinary for loops**. Their implementations
+include one optional internal `rt cooperate` before large inputs to ensure the
+current interpreter continuation-lowers these synchronous helper bodies; the
+runtime then automatically time-slices their plain loops. This does not create
+per-item Futures or change the caller's syntax. Ultimately the compiler should
+be able to recognize and lower all eligible synchronous helper loops without
+the library-internal scheduling point.
 
 ## Next hardening gates
 

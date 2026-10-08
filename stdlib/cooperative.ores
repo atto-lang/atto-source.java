@@ -4,6 +4,12 @@ define module cooperative as
   pub fnc map<T, R>(Array<T> values, Fnc<T, R> transform): Array<R> {
     let mut Array<R> output = new Array<R>();
     val count = values.size;
+    // Until ordinary synchronous helpers are auto-lowered, an internal,
+    // size-gated cooperate point promotes this helper into a SourceTask.
+    // The remaining plain loop yields adaptively through the runtime.
+    if count > 128; do
+      rt cooperate;
+    fi
     for let i = 0; i < count; i++ {
       output.add(transform(values.get(i)));
     }
@@ -13,6 +19,12 @@ define module cooperative as
   pub fnc filter<T>(Array<T> values, Fnc<T, bool> predicate): Array<T> {
     let mut Array<T> output = new Array<T>();
     val count = values.size;
+    // Until ordinary synchronous helpers are auto-lowered, an internal,
+    // size-gated cooperate point promotes this helper into a SourceTask.
+    // The remaining plain loop yields adaptively through the runtime.
+    if count > 128; do
+      rt cooperate;
+    fi
     for let i = 0; i < count; i++ {
       val item = values.get(i);
       if predicate(item); do
@@ -25,6 +37,12 @@ define module cooperative as
   pub fnc reduce<T, R>(Array<T> values, R initial, Fnc<R, T, R> combine): R {
     let result = initial;
     val count = values.size;
+    // Until ordinary synchronous helpers are auto-lowered, an internal,
+    // size-gated cooperate point promotes this helper into a SourceTask.
+    // The remaining plain loop yields adaptively through the runtime.
+    if count > 128; do
+      rt cooperate;
+    fi
     for let i = 0; i < count; i++ {
       result = combine(result, values.get(i));
     }
@@ -33,6 +51,12 @@ define module cooperative as
 
   pub fnc forEach<T>(Array<T> values, Fnc<T, void> action): void {
     val count = values.size;
+    // Until ordinary synchronous helpers are auto-lowered, an internal,
+    // size-gated cooperate point promotes this helper into a SourceTask.
+    // The remaining plain loop yields adaptively through the runtime.
+    if count > 128; do
+      rt cooperate;
+    fi
     for let i = 0; i < count; i++ {
       action(values.get(i));
     }
