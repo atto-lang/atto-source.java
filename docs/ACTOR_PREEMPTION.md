@@ -92,7 +92,8 @@ a handoff must never reset a logical task's quota.
 The source interpreter now lowers `for`, `for-of`, destructuring `for-of`,
 and `loop` back-edges **inside an existing `SourceTask`** into an iterative
 callback trampoline. No `await` or explicit `rt cooperate` is needed in such
-a loop. Every 32 back-edges, the task polls cancellation and runtime quotas.
+a loop. Every 32 back-edges, a trusted source task polls cancellation and runtime
+state; an UNTRUSTED task charges fuel at **every** back-edge.
 It cooperates after a nominal 2 ms soft quantum or at most 512 back-edges,
 whichever is reached first at a poll. The continuation preserves loop indices,
 iterator cursors, locals, and pending callbacks. A new physical dispatch can
@@ -103,7 +104,11 @@ single iteration bodies, synchronous helper calls, host/FFI calls, JIT pauses,
 GC pauses, and OS scheduling delays may exceed it. The bounded back-edge count
 also prevents deep recursive Java interpreter stacks. Nested loops in
 `if`/`match`/`switch`/`try`/block contexts are lowered when the enclosing
-source task is already continuation-backed.
+source task is already continuation-backed. The runtime does not cooperate
+while an enclosing lexical environment holds a live `MutexGuard`; these
+no-yield regions must remain bounded or the carrier can still starve. Successful
+source loop cooperation decisions are counted in
+`process.descriptor.source_loop_cooperates`.
 
 **Not automatically suspendable yet:** a normal synchronous function or actor
 receive/run body that has not been transformed into a source task. Its
