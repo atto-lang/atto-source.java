@@ -409,7 +409,7 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
@@ -421,6 +421,10 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        // A callback captured for an earlier await must never resume a later
+        // suspension, even when detach races a producer already dispatching it.
+        // Task identity is stable across carrier migration; wake epochs are not.
+        private final AtomicLong wakeEpoch = new AtomicLong();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -465,6 +469,9 @@ public final class OresScheduler implements AutoCloseable {
             Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
             CURRENT_TASK_DOMAIN.set(this);
             try {
+                // Revoke the previous suspension's callback epoch before
+                // entering any new compiler-generated continuation turn.
+                wakeEpoch.incrementAndGet();
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
                 if (resume == null) {
@@ -545,6 +552,7 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
 
+            final long epoch = wakeEpoch.incrementAndGet();
             try {
                 // Hot path: terminal Futures are immutable. Observe their
                 // already-published terminal state directly and enqueue the
@@ -557,18 +565,18 @@ public final class OresScheduler implements AutoCloseable {
                 // through a later dispatch after the current stack unwinds.
                 Object terminal = awaited.runtimeTerminalStateOrNull();
                 if (terminal != null) {
-                    deliverAwaitCompletion(
+                    deliverAwaitCompletion(epoch,
                             OresFuture.runtimeTerminalValue(terminal),
                             OresFuture.runtimeTerminalFailure(terminal));
                     return;
                 }
 
-                // Pending path: TaskRunner itself is the reusable callback
-                // target, avoiding a new captured lambda for every await. The
-                // detachable registration remains per suspension so scheduler
-                // close/task cancellation can sever retention safely.
+                // The existing Future registration is per suspension; bind an
+                // immutable epoch to its callback as well. A reusable callback
+                // targeting a TaskRunner alone cannot distinguish stale wakeups
+                // after the task has begun its next await.
                 OresFuture.RuntimeWaiterRegistration<?> registration =
-                        awaited.whenCompleteRuntimeCancellable(this);
+                        awaited.whenCompleteRuntimeCancellable(new EpochWaiter(epoch));
 
                 OresFuture.RuntimeWaiterRegistration<?> previous =
                         activeAwaitRegistration.getAndSet(registration);
@@ -586,18 +594,28 @@ public final class OresScheduler implements AutoCloseable {
             }
         }
 
-        @Override
-        public void accept(Object value, Throwable failure) {
-            deliverAwaitCompletion(value, failure);
+        private final class EpochWaiter implements BiConsumer<Object, Throwable> {
+            private final long epoch;
+
+            private EpochWaiter(long epoch) {
+                this.epoch = epoch;
+            }
+
+            @Override
+            public void accept(Object value, Throwable failure) {
+                deliverAwaitCompletion(epoch, value, failure);
+            }
         }
 
-        private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) return;
+        private void deliverAwaitCompletion(long epoch, Object value, Throwable failure) {
+            if (wakeEpoch.get() != epoch || phase.get() != WAITING) return;
 
             Resume resume = Resume.completed(
                     value,
                     failure == null ? null : OresFuture.unwrap(failure));
             if (!pendingResume.compareAndSet(null, resume)) {
+                // Cancellation or a newer await epoch can win concurrently.
+                if (wakeEpoch.get() != epoch || phase.get() != WAITING) return;
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
                 return;
@@ -646,6 +664,7 @@ public final class OresScheduler implements AutoCloseable {
 
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
+            wakeEpoch.incrementAndGet();
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -677,6 +696,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void cancelFromFuture() {
+            wakeEpoch.incrementAndGet();
             detachActiveAwaitRegistration();
             int observed;
             do {
