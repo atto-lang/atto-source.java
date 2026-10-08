@@ -97,7 +97,9 @@ public final class HotReloadManager implements AutoCloseable {
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
         Parser.MacroParseResult parsed = Parser.parseWithMacroSnapshot(
                 unit.sourceText(), macroSnapshotsByCodeUnit.get(unit.unitId()));
-        CapabilityChecker.check(unit.program(), guestPolicy);
+        // Admission must validate the actual staged source, not just a caller-supplied
+        // cached AST: otherwise the source and its actor/ownership checks can diverge.
+        CapabilityChecker.check(OresCompiler.analyze(parsed.program()), guestPolicy);
         Generation staged = stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
         macroSnapshotsByCodeUnit.put(unit.unitId(), parsed.snapshot());
         return staged;
