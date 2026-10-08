@@ -243,6 +243,16 @@ reference isolation option.
 | Separate worker process | Yes | Quiesce and retire/replenish worker deterministically; any explicit GC request is confined to that process |
 | Future LLVM/native region heap | Not applicable | Deterministic region/arena drop after references, DMA and I/O leases end |
 
+**Optional bounded Native Image experiment:** GraalVM Native Image supports
+the Epsilon/no-op collector (native-image --gc=epsilon). It performs no
+reclaiming GC, but **retains allocated objects forever until the worker
+is destroyed**. It is suitable only for measured, short-lived
+process/isolate epochs with a strict heap budget and immediate
+rotate-and-recreate on pressure, never indefinite HOT operation and
+never an implicit FaaS/default GC selection. Verify how this backend
+interacts with Oreslang's embedded guest interpreter and isolation
+requirements before considering it even for trusted actors.
+
 An independently collected group may never leak raw mutable managed references
 to another heap. Messages must be bounded and copied, frozen, or transferred
 through explicit native region capabilities and generation-fenced ownership.
