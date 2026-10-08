@@ -8737,8 +8737,10 @@ public final class OresEvalRootNode extends RootNode {
             // semantics that are intentionally not part of the current model.
             if (value instanceof OresMutex.Shared<?>) return false;
 
-            if (!seen.add(value)) return true;
-
+            // An active-path revisit is a cycle, not a harmless DAG alias.
+            // Do not publish circular mutable state across shared actor domains.
+            if (!seen.add(value)) return false;
+            try {
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
             }
@@ -8777,6 +8779,9 @@ public final class OresEvalRootNode extends RootNode {
             // values rather than silently turning SharedMutex into an escape
             // hatch for Java references.
             return false;
+            } finally {
+                seen.remove(value);
+            }
         }
     }
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
