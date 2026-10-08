@@ -622,11 +622,24 @@ public final class TypeChecker {
                 if (local.isStatic() != staticNamespace || !local.overloadIdentity().equals(entry.getKey())) continue;
                 for (MethodOrigin origin : entry.getValue()) {
                     for (Ast.MethodDecl parentMethod : origin.owner().methods()) {
-                        if (parentMethod.isStatic() == staticNamespace
-                                && parentMethod.overloadIdentity().equals(entry.getKey())
-                                && parentMethod.genericParameters().size() != local.genericParameters().size()) {
+                        if (parentMethod.isStatic() != staticNamespace
+                                || !parentMethod.overloadIdentity().equals(entry.getKey())) continue;
+                        if (parentMethod.genericParameters().size() != local.genericParameters().size()) {
                             throw new IllegalArgumentException("incompatible generic arity for method slot '"
                                     + klass.name() + "." + local.name() + "' with arity " + local.arity());
+                        }
+                        // Dispatch selects the child's declaration, but inherited public
+                        // contracts still advertise this slot to callers (including through
+                        // a base-typed receiver). A private override would typecheck as
+                        // public and then fail runtime access checks.
+                        if (parentMethod.visibility() == Ast.Visibility.PUBLIC
+                                && local.visibility() != Ast.Visibility.PUBLIC) {
+                            String kind = staticNamespace ? "static function" : "method";
+                            throw new IllegalArgumentException("private " + kind + " '"
+                                    + klass.name() + "." + local.name() + "' with arity " + local.arity()
+                                    + " cannot override inherited public " + kind + " from "
+                                    + methodOriginLabel(origin)
+                                    + "; keep the overriding declaration public");
                         }
                     }
                 }
