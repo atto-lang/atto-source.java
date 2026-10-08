@@ -1,0 +1,340 @@
+package dev.oreslang.parser;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+import static dev.oreslang.parser.Token.Type.*;
+
+/**
+ * Bounded, expression-only declarative macro expansion, before parsing and ownership checking.
+ * No runtime objects, actors or capabilities are exposed to this pass.
+ *
+ * This intentionally excludes binding-introducing templates until identifier hygiene has a
+ * proper symbol-identity representation. Captured input tokens retain their source positions;
+ * template tokens point at the invocation.
+ */
+public final class MacroExpander {
+    private static final int MAX_DEFINITIONS = 256;
+    private static final int MAX_DEPTH = 32;
+    private static final int MAX_OUTPUT_TOKENS = 50_000;
+
+    public enum Mode { AOT, JIT }
+
+    public record Fingerprint(Mode mode, String sha256) {
+        public Fingerprint {
+            Objects.requireNonNull(mode);
+            Objects.requireNonNull(sha256);
+        }
+    }
+
+    /** Immutable data to fence AOT declarations across compilation generations. */
+    public record Snapshot(Map<String, Fingerprint> definitions) {
+        public Snapshot {
+            definitions = Map.copyOf(definitions);
+        }
+    }
+
+    public record Result(List<Token> tokens, Snapshot snapshot) {
+        public Result {
+            tokens = List.copyOf(tokens);
+            Objects.requireNonNull(snapshot);
+        }
+    }
+
+    private record Parameter(String name, String kind) { }
+    private record Definition(String name, Mode mode, List<Parameter> params,
+                              List<Token> template, Fingerprint fingerprint) { }
+    private record Parsed(Definition definition, int next) { }
+
+    private MacroExpander() { }
+
+    public static Result expand(List<Token> source) {
+        return expand(source, null);
+    }
+
+    /**
+     * AOT macros must remain byte-for-byte semantically identical to the previous generation.
+     * JIT macros may change, but the caller must publish the freshly checked code as a new
+     * generation; this API never patches a live actor or JIT-compiled function in place.
+     */
+    public static Result expand(List<Token> source, Snapshot previous) {
+        Objects.requireNonNull(source);
+        if (source.isEmpty() || source.getLast().type() != EOF) {
+            throw new IllegalArgumentException("macro expansion requires a complete token stream");
+        }
+        Map<String, Definition> definitions = new LinkedHashMap<>();
+        List<Token> remaining = new ArrayList<>();
+        int end = source.size() - 1;
+        for (int i = 0; i < end;) {
+            int start = i;
+            Mode mode = Mode.AOT;
+            if (at(source, i, AT) && named(source, i + 1, "expand")
+                    && at(source, i + 2, LPAREN)) {
+                if (!at(source, i + 3, IDENT) || !at(source, i + 4, RPAREN)) {
+                    throw fail(source.get(i), "expected @expand(aot) or @expand(jit)");
+                }
+                String value = source.get(i + 3).lexeme();
+                mode = switch (value) {
+                    case "aot" -> Mode.AOT;
+                    case "jit" -> Mode.JIT;
+                    default -> throw fail(source.get(i + 3), "unknown macro expansion mode: " + value);
+                };
+                i += 5;
+                if (!named(source, i, "macro_rules")) {
+                    // Non-macro annotations belong to the ordinary parser, not this pass.
+                    i = start;
+                }
+            }
+            if (named(source, i, "macro_rules") && at(source, i + 1, BANG)) {
+                Parsed parsed = parseDefinition(source, i, mode);
+                if (definitions.putIfAbsent(parsed.definition.name, parsed.definition) != null) {
+                    throw fail(source.get(i), "duplicate macro definition: " + parsed.definition.name);
+                }
+                if (definitions.size() > MAX_DEFINITIONS) {
+                    throw fail(source.get(i), "too many macro definitions");
+                }
+                i = parsed.next;
+            } else {
+                remaining.add(source.get(start));
+                i = start + 1;
+            }
+        }
+
+        Map<String, Fingerprint> hashes = new LinkedHashMap<>();
+        definitions.forEach((name, definition) -> hashes.put(name, definition.fingerprint));
+        Snapshot snapshot = new Snapshot(hashes);
+        if (previous != null) {
+            for (var entry : previous.definitions().entrySet()) {
+                if (entry.getValue().mode() == Mode.AOT
+                        && !entry.getValue().equals(hashes.get(entry.getKey()))) {
+                    throw new IllegalArgumentException("AOT macro changed or disappeared across generations: "
+                            + entry.getKey());
+                }
+            }
+        }
+
+        int[] emitted = {0};
+        List<Token> output = new ArrayList<>(expandTokens(remaining, definitions, 0, emitted));
+        output.add(source.getLast());
+        if (output.size() > MAX_OUTPUT_TOKENS) {
+            throw new IllegalArgumentException("macro expansion exceeds token budget");
+        }
+        return new Result(output, snapshot);
+    }
+
+    private static Parsed parseDefinition(List<Token> tokens, int position, Mode mode) {
+        int i = position + 2;
+        Token name = need(tokens, i++, IDENT, "expected macro name");
+        need(tokens, i++, LBRACE, "expected '{' after macro name");
+        int openPattern = i++;
+        need(tokens, openPattern, LPAREN, "expected macro parameter pattern");
+        int closePattern = close(tokens, openPattern);
+        List<Parameter> params = new ArrayList<>();
+        for (int p = openPattern + 1; p < closePattern;) {
+            need(tokens, p++, DOLLAR, "expected '$' for a macro parameter");
+            Token parameter = need(tokens, p++, IDENT, "expected parameter name");
+            need(tokens, p++, COLON, "expected ':' for a macro parameter");
+            Token kind = need(tokens, p++, IDENT, "expected parameter kind");
+            if (!List.of("expr", "ident", "tt").contains(kind.lexeme())) {
+                throw fail(kind, "supported macro parameter kinds: expr, ident, tt");
+            }
+            if (params.stream().anyMatch(existing -> existing.name.equals(parameter.lexeme()))) {
+                throw fail(parameter, "duplicate macro parameter");
+            }
+            params.add(new Parameter(parameter.lexeme(), kind.lexeme()));
+            if (p < closePattern) {
+                need(tokens, p++, COMMA, "expected ',' between macro parameters");
+                if (p == closePattern) throw fail(tokens.get(p - 1), "trailing macro parameter comma");
+            }
+        }
+        i = closePattern + 1;
+        need(tokens, i++, FAT_ARROW, "expected '=>' after macro pattern");
+        int openBody = i++;
+        need(tokens, openBody, LBRACE, "expected '{' around macro expression");
+        int closeBody = close(tokens, openBody);
+        List<Token> template = List.copyOf(tokens.subList(openBody + 1, closeBody));
+        if (template.isEmpty()) throw fail(tokens.get(openBody), "macro expression cannot be empty");
+        validateTemplate(template, params);
+        i = closeBody + 1;
+        if (at(tokens, i, SEMICOLON)) i++;
+        need(tokens, i++, RBRACE, "expected '}' after macro rule");
+        if (at(tokens, i, SEMICOLON)) i++;
+        String hash = fingerprint(mode, params, template);
+        return new Parsed(new Definition(name.lexeme(), mode, List.copyOf(params),
+                template, new Fingerprint(mode, hash)), i);
+    }
+
+    private static void validateTemplate(List<Token> template, List<Parameter> params) {
+        Map<String, Integer> useCounts = new LinkedHashMap<>();
+        params.forEach(param -> useCounts.put(param.name, 0));
+        for (int i = 0; i < template.size(); i++) {
+            Token token = template.get(i);
+            if (token.type() == DOLLAR) {
+                Token next = need(template, ++i, IDENT, "expected captured parameter after '$'");
+                if (!useCounts.containsKey(next.lexeme())) {
+                    throw fail(next, "unknown macro capture: " + next.lexeme());
+                }
+                if (useCounts.merge(next.lexeme(), 1, Integer::sum) > 1) {
+                    throw fail(next, "each capture may be evaluated only once in this first macro version");
+                }
+                continue;
+            }
+            if (token.type() == IDENT && !(i > 0 && template.get(i - 1).type() == DOT)) {
+                throw fail(token, "introduced identifiers require a future hygienic binding implementation");
+            }
+            // Deliberately expression-only. In particular, do not introduce lexical bindings,
+            // declarations, actor definitions, or local scopes without hygienic symbol IDs.
+            if (List.of(SEMICOLON, VAL, LET, CONST, FNC, ROUTINE, DEFINE, CLASS, MODULE,
+                    ACTOR, ISOACTOR, IMPORT, RETURN).contains(token.type())) {
+                throw fail(token, "only expression macro bodies are supported");
+            }
+        }
+    }
+
+    private static List<Token> expandTokens(List<Token> input, Map<String, Definition> definitions,
+                                             int depth, int[] emitted) {
+        if (depth > MAX_DEPTH) {
+            throw new IllegalArgumentException("macro expansion depth exceeded");
+        }
+        List<Token> result = new ArrayList<>();
+        for (int i = 0; i < input.size();) {
+            Token token = input.get(i);
+            if (token.type() == IDENT && at(input, i + 1, BANG)
+                    && i + 2 < input.size() && opening(input.get(i + 2).type())) {
+                Definition definition = definitions.get(token.lexeme());
+                if (definition == null) {
+                    throw fail(token, "unknown macro: " + token.lexeme());
+                }
+                int close = close(input, i + 2);
+                List<List<Token>> args = splitArguments(input.subList(i + 3, close));
+                if (args.size() != definition.params.size()) {
+                    throw fail(token, "macro " + definition.name + " expected "
+                            + definition.params.size() + " arguments, got " + args.size());
+                }
+                Map<String, List<Token>> captures = new LinkedHashMap<>();
+                for (int p = 0; p < args.size(); p++) {
+                    Parameter parameter = definition.params.get(p);
+                    List<Token> arg = args.get(p);
+                    if (arg.isEmpty()) throw fail(token, "empty macro argument");
+                    if (parameter.kind.equals("ident")
+                            && (arg.size() != 1 || arg.getFirst().type() != IDENT)) {
+                        throw fail(token, "macro parameter $" + parameter.name + " requires an identifier");
+                    }
+                    if (parameter.kind.equals("tt")
+                            && !(arg.size() == 1 || (opening(arg.getFirst().type())
+                            && close(arg, 0) == arg.size() - 1))) {
+                        throw fail(token, "macro parameter $" + parameter.name + " requires one token tree");
+                    }
+                    captures.put(parameter.name, arg);
+                }
+                List<Token> substitution = new ArrayList<>();
+                for (int t = 0; t < definition.template.size(); t++) {
+                    Token part = definition.template.get(t);
+                    if (part.type() == DOLLAR) {
+                        substitution.addAll(captures.get(definition.template.get(++t).lexeme()));
+                    } else {
+                        substitution.add(new Token(part.type(), part.lexeme(), token.line(), token.column()));
+                    }
+                }
+                result.addAll(expandTokens(substitution, definitions, depth + 1, emitted));
+                i = close + 1;
+            } else {
+                result.add(token);
+                i++;
+            }
+            if (++emitted[0] > MAX_OUTPUT_TOKENS || result.size() > MAX_OUTPUT_TOKENS) {
+                throw fail(token, "macro expansion token budget exceeded");
+            }
+        }
+        return result;
+    }
+
+    private static List<List<Token>> splitArguments(List<Token> contents) {
+        if (contents.isEmpty()) return List.of();
+        List<List<Token>> args = new ArrayList<>();
+        int start = 0;
+        for (int i = 0; i < contents.size(); i++) {
+            if (opening(contents.get(i).type())) {
+                i = close(contents, i);
+            } else if (contents.get(i).type() == COMMA) {
+                args.add(List.copyOf(contents.subList(start, i)));
+                start = i + 1;
+            }
+        }
+        args.add(List.copyOf(contents.subList(start, contents.size())));
+        return args;
+    }
+
+    private static int close(List<Token> tokens, int start) {
+        ArrayDeque<Token.Type> stack = new ArrayDeque<>();
+        for (int i = start; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (opening(type)) stack.push(closing(type));
+            else if (type == RPAREN || type == RBRACE || type == RBRACKET) {
+                if (stack.isEmpty() || stack.pop() != type) {
+                    throw fail(tokens.get(i), "mismatched macro delimiters");
+                }
+                if (stack.isEmpty()) return i;
+            }
+        }
+        throw fail(tokens.get(start), "unterminated macro delimiter group");
+    }
+
+    private static boolean opening(Token.Type type) {
+        return type == LPAREN || type == LBRACE || type == LBRACKET;
+    }
+
+    private static Token.Type closing(Token.Type type) {
+        return switch (type) {
+            case LPAREN -> RPAREN;
+            case LBRACE -> RBRACE;
+            case LBRACKET -> RBRACKET;
+            default -> throw new IllegalArgumentException("not an opening delimiter: " + type);
+        };
+    }
+
+    private static String fingerprint(Mode mode, List<Parameter> params, List<Token> template) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update((mode.name() + "\n").getBytes(StandardCharsets.UTF_8));
+            for (Parameter p : params) {
+                digest.update((p.name + ":" + p.kind + "\n").getBytes(StandardCharsets.UTF_8));
+            }
+            for (Token token : template) {
+                digest.update((token.type().name() + "\0" + token.lexeme() + "\0")
+                        .getBytes(StandardCharsets.UTF_8));
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    private static Token need(List<Token> tokens, int index, Token.Type type, String error) {
+        if (!at(tokens, index, type)) {
+            throw fail(tokens.get(Math.min(index, tokens.size() - 1)), error);
+        }
+        return tokens.get(index);
+    }
+
+    private static boolean at(List<Token> tokens, int index, Token.Type type) {
+        return index >= 0 && index < tokens.size() && tokens.get(index).type() == type;
+    }
+
+    private static boolean named(List<Token> tokens, int index, String name) {
+        return at(tokens, index, IDENT) && tokens.get(index).lexeme().equals(name);
+    }
+
+    private static IllegalArgumentException fail(Token token, String message) {
+        return new IllegalArgumentException("Oreslang macro error at " + token.line()
+                + ":" + token.column() + ": " + message);
+    }
+}
