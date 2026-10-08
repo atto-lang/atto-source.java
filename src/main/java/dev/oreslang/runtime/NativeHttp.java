@@ -30,6 +30,7 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     public synchronized Server listen(String host, int port, int capacity, int bodyLimit, int deadlineMillis) {
+        long perf = CorePerf.start();
         if (closed) throw new IllegalStateException("HTTP runtime closed");
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP listeners belong to the supervisor");
         if (host == null || host.isBlank() || port < 0 || port > 65535
@@ -42,6 +43,7 @@ public final class NativeHttp implements AutoCloseable {
                     capacity, bodyLimit, deadlineMillis);
             servers.add(server);
             server.transport.start();
+            CorePerf.end(CorePerf.HTTP_LISTEN, perf);
             return server;
         } catch (IOException e) { throw new IllegalStateException("HTTP listen failed", e); }
     }
@@ -74,18 +76,28 @@ public final class NativeHttp implements AutoCloseable {
         }
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
         public void dispatch(Exchange exchange) {
+            long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
             synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
             ActorRuntime.ActorRef<Object> actor = null;
             try {
                 actor = context.actors().spawnCodeActor(kind, code, type);
                 actor.ready().whenCompleteRuntime((ignored, failure) -> {
-                    synchronized (exchange.state) { exchange.state.readyNanos = System.nanoTime(); }
+                    long spawn;
+                    long ready;
+                    synchronized (exchange.state) {
+                        exchange.state.readyNanos = System.nanoTime();
+                        spawn = exchange.state.spawnNanos;
+                        ready = exchange.state.readyNanos;
+                    }
+                    CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
                 actor.send(exchange.moveTo(actor));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
+            } finally {
+                CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
             }
         }
     }
@@ -98,6 +110,7 @@ public final class NativeHttp implements AutoCloseable {
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
             exchange.state.ticket = null;
             exchange.state.claimedNanos = System.nanoTime();
+            CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
             return exchange;
         }
     }
@@ -147,6 +160,8 @@ public final class NativeHttp implements AutoCloseable {
             return waiter;
         }
         private void receive(HttpExchange raw) {
+            long perf = CorePerf.start();
+            try {
             if (!admission.tryAcquire()) { rejected.incrementAndGet(); reject(raw, 503); return; }
             State state = null;
             try {
@@ -166,6 +181,9 @@ public final class NativeHttp implements AutoCloseable {
             } catch (RuntimeException failure) {
                 if (state != null && active.contains(state)) state.abort(500);
                 else { admission.release(); raw.close(); }
+            }
+            } finally {
+                CorePerf.end(CorePerf.HTTP_RECEIVE, perf);
             }
         }
         private void validateRequest(HttpExchange raw) {
@@ -453,8 +471,11 @@ public final class NativeHttp implements AutoCloseable {
                 state.busy = true;
             }
             OresFuture<Object> result = new OresFuture<>(() -> false, () -> { });
+            long queued = CorePerf.start();
             try {
                 io.execute(() -> {
+                    CorePerf.end(CorePerf.HTTP_IO_QUEUE, queued);
+                    long workPerf = CorePerf.start();
                     try {
                         Object value = operation.call();
                         synchronized (state) { state.busy = false; }
@@ -467,6 +488,8 @@ public final class NativeHttp implements AutoCloseable {
                         if (failure instanceof VirtualMachineError fatal) throw fatal;
                         if (failure instanceof ThreadDeath fatal) throw fatal;
                         if (failure instanceof LinkageError fatal) throw fatal;
+                    } finally {
+                        CorePerf.end(CorePerf.HTTP_IO_WORK, workPerf);
                     }
                 });
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
