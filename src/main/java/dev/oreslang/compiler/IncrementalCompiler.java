@@ -137,12 +137,16 @@ public final class IncrementalCompiler {
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
-            for (Ast.Annotation annotation : module.annotations()) {
-                if (annotation.name().equals("AdheresTo")) {
-                    abi.append(" module-annotation AdheresTo:");
-                    for (Ast.TypeRef arg : annotation.arguments()) abi.append(typeRef(arg)).append(',');
-                    abi.append('\n');
-                }
+            // Module conformance is part of the exported ABI. A hot-loaded
+            // generation may only replace a module against the same declared
+            // contract surface (or an explicitly checked migration).
+            if (!module.contracts().isEmpty()) {
+                abi.append(" conforms ");
+                module.contracts().stream()
+                        .map(IncrementalCompiler::typeRef)
+                        .sorted()
+                        .forEach(ref -> abi.append(ref).append(','));
+                abi.append('\n');
             }
             for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
         }
