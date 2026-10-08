@@ -1306,6 +1306,9 @@ public final class OwnershipChecker {
                         }
                         return new ValueInfo(payload, ValueKind.COPY, null);
                     }
+                    if (op.equals("clear")) {
+                        return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                    }
                     if (op.equals("is_set")) {
                         return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
                     }
