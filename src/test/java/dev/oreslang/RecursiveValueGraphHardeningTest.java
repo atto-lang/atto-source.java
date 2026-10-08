@@ -30,6 +30,15 @@ final class RecursiveValueGraphHardeningTest {
                 fnc accept(Node node): void {
                   return;
                 }
+
+                fnc follow(Node node): Node {
+                  val Option<Node> next = node.next;
+                  return next.unwrap();
+                }
+
+                fnc wrap(Node node): Option<Node> {
+                  return Some(node);
+                }
                 """)));
     }
 
