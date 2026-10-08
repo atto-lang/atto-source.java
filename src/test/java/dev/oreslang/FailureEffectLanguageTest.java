@@ -86,6 +86,32 @@ final class FailureEffectLanguageTest {
     }
 
     @Test
+    void strongerRaiseSurvivesFinallyAndDeferThrows() throws Exception {
+        String source = """
+                fnc cleanup(): void {
+                  throw "cleanup";
+                }
+                pub fnc main(): void {
+                  rt recover {
+                    defer cleanup();
+                    try {
+                      raise "strong";
+                    } catch (err) {
+                      stdio.stdout.write("wrong");
+                    } finally {
+                      throw "weaker";
+                    }
+                  } on raise (Error err) {
+                    stdio.stdout.write(err);
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("strong", run(source));
+    }
+
+    @Test
     void bareFailuresAreRejectedByParser() {
         assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.parseAndTypeCheck("pub fnc main(): void { throw; }"));

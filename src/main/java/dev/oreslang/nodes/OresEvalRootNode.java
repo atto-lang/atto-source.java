@@ -4489,26 +4489,50 @@ public final class OresEvalRootNode extends RootNode {
             executeBlock(statements, parent, false);
         }
 
+        private static boolean preserveStrongEffect(Throwable inFlight) {
+            return inFlight instanceof OresFailure.Raise
+                    || inFlight instanceof OresFailure.Panic
+                    || inFlight instanceof ActorRuntime.ActorCancellationSignal
+                    || inFlight instanceof java.util.concurrent.CancellationException
+                    || inFlight instanceof VirtualMachineError
+                    || inFlight instanceof ThreadDeath
+                    || inFlight instanceof LinkageError;
+        }
+
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
+            Throwable inFlight = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
+                inFlight = signal;
                 throw signal;
             } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+                inFlight = signal;
                 throw signal;
             } catch (RuntimeException | Error failure) {
+                inFlight = failure;
                 abnormalExit = true;
                 throw failure;
             } finally {
                 boolean deferredFailure = false;
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
-                } catch (RuntimeException | Error failure) {
-                    deferredFailure = true;
-                    throw failure;
+                    while (!deferred.isEmpty()) {
+                        try {
+                            eval(deferred.pop(), env);
+                        } catch (RuntimeException | Error cleanup) {
+                            deferredFailure = true;
+                            if (preserveStrongEffect(inFlight)) {
+                                // Cleanup cannot downgrade a panic, raise, or cancellation.
+                                // Continue running other defers in LIFO order.
+                                if (cleanup != inFlight) inFlight.addSuppressed(cleanup);
+                            } else {
+                                throw cleanup;
+                            }
+                        }
+                    }
                 } finally {
                     env.releaseMutexGuards(abnormalExit || deferredFailure);
                 }
@@ -4730,17 +4754,32 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
-                // A call under catch/finally is not a proper tail call: the
-                // caller still owns exception/cleanup semantics after the call.
-                try { executeBlock(tried.body(), env, true); }
-                catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresFailure.Raise | OresFailure.Panic fatal) { throw fatal; }
-                catch (OresFailure.Throw failure) {
-                    Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure.value(), Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv, true);
-                } finally { executeBlock(tried.finallyBody(), env, true); }
+                // Only throw is caught. Strong effects still run finally, but
+                // a weaker cleanup throw must not hide raise/panic/cancellation.
+                Throwable inFlight = null;
+                try {
+                    try { executeBlock(tried.body(), env, true); }
+                    catch (TailCallSignal signal) { throw signal; }
+                    catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                    catch (OresFailure.Throw failure) {
+                        Env catchEnv = new Env(env);
+                        catchEnv.define(tried.errorName(), failure.value(), Ast.BindingKind.VAL);
+                        executeBlock(tried.catchBody(), catchEnv, true);
+                    }
+                } catch (RuntimeException | Error failure) {
+                    inFlight = failure;
+                    throw failure;
+                } finally {
+                    try {
+                        executeBlock(tried.finallyBody(), env, true);
+                    } catch (RuntimeException | Error cleanup) {
+                        if (preserveStrongEffect(inFlight)) {
+                            if (cleanup != inFlight) inFlight.addSuppressed(cleanup);
+                        } else {
+                            throw cleanup;
+                        }
+                    }
+                }
                 return;
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
