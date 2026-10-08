@@ -120,6 +120,7 @@ type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
+                | IDENT ":" type_ref [ "mut" ]  (* compatibility; formatter emits type-first *)
                 | "structural" type_ref IDENT
                 | "@Structural" type_ref IDENT
                 | IDENT "structural" type_ref ;
