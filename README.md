@@ -36,3 +36,5 @@ Native inbound HTTP capabilities and actor-owned request transfer are documented
 The implemented actor scheduling guarantees, native descriptor-transfer experiment,
 and remaining physical-isolation work are tracked in
 [Actor physical boundaries](docs/runtime/actor-physical-boundaries.md).
+
+Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
