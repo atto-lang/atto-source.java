@@ -1409,13 +1409,23 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new SecurityException("untrusted task resumed outside its owning actor");
             }
             UntrustedTaskQuota previous = CURRENT_UNTRUSTED_TASK_QUOTA.get();
-            quota.enter();
-            CURRENT_UNTRUSTED_TASK_QUOTA.set(quota);
+            boolean entered = false;
             try {
+                quota.enter();
+                entered = true;
+                CURRENT_UNTRUSTED_TASK_QUOTA.set(quota);
                 return task.resume(resume);
+            } catch (UntrustedActorQuotaExceededException exceeded) {
+                // Exhaustion is actor-fatal, not merely a failed child Future:
+                // otherwise hostile code could repeatedly mint new task budgets.
+                cell.fail(exceeded);
+                throw exceeded;
             } finally {
                 try {
-                    quota.leave();
+                    if (entered) quota.leave();
+                } catch (UntrustedActorQuotaExceededException exceeded) {
+                    cell.fail(exceeded);
+                    throw exceeded;
                 } finally {
                     if (previous == null) CURRENT_UNTRUSTED_TASK_QUOTA.remove();
                     else CURRENT_UNTRUSTED_TASK_QUOTA.set(previous);
