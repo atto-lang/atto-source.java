@@ -64,6 +64,22 @@ cross message/freeze/async/shared-memory or buffered-channel/select boundaries. 
 statically on known types and dynamically by the transport graph admission
 validator. Java host access does not turn them into transportable data.
 
+Runtime buffered-channel admission now traverses recognized language
+`SharedState` wrappers, Java maps, iterables, arrays, `Optional`, and
+`Map.Entry` containers, rejecting nested managed-reference capabilities.
+Java `AtomicReference` and `java.lang.ref.Reference` wrappers are rejected
+outright because their referents can change between select registration and
+commit. The traversal has a 100,000-node budget, matching mailbox graph
+validation, to fail closed on pathologically large payloads.
+
+**Outstanding hardening before production use:** arbitrary opaque host objects
+are not reflectively inspected; mutable Java containers may also change after
+their initial admission check while a buffered write/select is pending.
+Preventing those escapes completely requires a canonical snapshot or
+ownership-transfer protocol at channel commit/read boundaries, or a
+fail-closed allowlist for every host payload kind. This draft does not claim
+those cases are secure yet.
+
 The ordinary JVM tracing collector can reclaim an unreachable group of
 strongly cyclic cells. A weak handle never keeps the cell or actor domain
 alive. Garbage collection is deliberately not relied upon to enforce actor
