@@ -97,6 +97,51 @@ final class ActorLocalRefLanguageTest {
     }
 
     @Test
+    void droppingOrMovingStrongHandleInvalidatesFurtherUse() {
+        for (String source : new String[]{
+                """
+                actor fnc bad(): void {
+                  val Ref<int> handle = Ref.new<int>(1);
+                  handle.drop();
+                  handle.get_copy();
+                  return;
+                }
+                """,
+                """
+                actor fnc bad(): void {
+                  val Ref<int> handle = Ref.new<int>(1);
+                  val Ref<int> moved = handle;
+                  handle.set(2);
+                  return;
+                }
+                """
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+        }
+    }
+
+    @Test
+    void nestedActorAndSharedMemoryBoundariesRejectLocalHandles() {
+        for (String type : new String[]{
+                "Option<Ref<int>>", "List<WeakRef<int>>",
+                "Result<int, Ref<int>>"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "actor fnc bad(" + type + " value): void { return; }")));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        actor fnc bad(): void {
+                          val SharedMutex<Ref<int>> invalid =
+                              SharedMutex.new(Ref.new<int>(1));
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
     void getCopyCannotExposeAliasedAggregates() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
