@@ -9,6 +9,58 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorLocalReferenceTest {
     @Test
+    void actorDomainSurvivesSeparateTurnsAndRejectsAnotherActor() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 8, 128);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var saved = new java.util.concurrent.atomic.AtomicReference<ActorLocalReference.Strong<Long>>();
+            var errors = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var created = new java.util.concurrent.CountDownLatch(1);
+            var visitedAgain = new java.util.concurrent.CountDownLatch(1);
+            var foreignDenied = new java.util.concurrent.CountDownLatch(1);
+
+            var owner = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                try {
+                    if (message == 1) {
+                        saved.set(ActorLocalReference.create(5L));
+                        created.countDown();
+                    } else if (message == 2) {
+                        assertEquals(5L, saved.get().getCopy());
+                        saved.get().set(6L);
+                        visitedAgain.countDown();
+                        context.self().stop();
+                    }
+                } catch (Throwable failure) {
+                    errors.compareAndSet(null, failure);
+                    created.countDown();
+                    visitedAgain.countDown();
+                    context.self().stop();
+                }
+            });
+            var foreign = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                try {
+                    assertThrows(SecurityException.class, saved.get()::getCopy);
+                    foreignDenied.countDown();
+                } catch (Throwable failure) {
+                    errors.compareAndSet(null, failure);
+                    foreignDenied.countDown();
+                } finally {
+                    context.self().stop();
+                }
+            });
+
+            owner.send(1);
+            assertTrue(created.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            foreign.send(1);
+            assertTrue(foreignDenied.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            owner.send(2);
+            assertTrue(visitedAgain.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(errors.get(), () -> "actor-local domain regression: " + errors.get());
+            assertTrue(owner.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(foreign.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void publicFactoryRequiresActiveActorTurn() {
         assertThrows(IllegalStateException.class, () -> ActorLocalReference.create(1L));
     }
