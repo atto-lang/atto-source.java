@@ -131,7 +131,9 @@ final class TreeShakerTest {
                 """, BuildOptions.executable(Map.of()));
 
         assertTrue(result.retained("service.transform"), "retained=" + result.retainedSymbols() + " removed=" + result.removedSymbols());
-        assertTrue(result.retained("service.direct_only"));
+        // The direct-only routine is now statically resolved and constant-inlined;
+        // without a first-class module alias there is no need to retain it.
+        assertTrue(result.removed("service.direct_only"));
         assertTrue(result.removed("service.private_helper"));
     }
 
