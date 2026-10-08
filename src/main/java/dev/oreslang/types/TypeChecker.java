@@ -3425,8 +3425,8 @@ public final class TypeChecker {
         // until channel-bound lifetimes are expressible and checked.
         if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
-                    where + " cannot transport borrowed payloads, including nested fields: "
-                            + "channel storage may outlive their owners");
+                    where + " cannot transport borrows or actor-local Ref/WeakRef handles, including nested fields: "
+                            + "channel storage may outlive an actor turn");
         }
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
@@ -3539,6 +3539,7 @@ public final class TypeChecker {
                     && containsChannelBorrow(bound, seen, genericBindings);
         }
         if (!(type instanceof Named named)) return false;
+        if (named.name().equals("Ref") || named.name().equals("WeakRef")) return true;
 
         for (Type argument : named.arguments()) {
             if (containsChannelBorrow(argument, seen, genericBindings)) return true;
