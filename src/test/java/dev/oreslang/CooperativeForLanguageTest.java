@@ -100,6 +100,69 @@ final class CooperativeForLanguageTest {
     }
 
     @Test
+    void largeSequentialReduceAndFilterReuseSameSourceTaskQuantum() throws Exception {
+        Files.copy(Path.of("stdlib/cooperative.ores"), temp.resolve("cooperative.ores"));
+        String output = run("""
+                import module cooperative from './cooperative';
+                pub async fnc main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  for (let i = 0; i < 2000; i = i + 1) do
+                    values.add(1);
+                  done
+                  val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
+                  val Fnc<int, bool> keep = |int x| -> { return x == 1; };
+                  val filtered = cooperative.filter<int>(values, keep);
+                  val result = cooperative.reduce<int, int>(filtered, 0, sum);
+                  stdio.stdout.write(result);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(filtered.size);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("2000|2000|"), output);
+        long handoffs = Long.parseLong(output.substring("2000|2000|".length()));
+        assertTrue(handoffs > 0, "collection operators should share real scheduler handoffs");
+    }
+
+    @Test
+    void scanAnyAllAndFlatMapRunInStableOrder() throws Exception {
+        Files.copy(Path.of("stdlib/cooperative.ores"), temp.resolve("cooperative.ores"));
+        assertEquals("10|true|true|8", run("""
+                import module cooperative from './cooperative';
+                pub async fnc main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(1);
+                  values.add(2);
+                  values.add(3);
+                  values.add(4);
+                  val Fnc<int, int, int> sum = |int a, int b| -> { return a + b; };
+                  val Fnc<int, bool> positive = |int x| -> { return x > 0; };
+                  val Fnc<int, bool> greaterThanThree = |int x| -> { return x > 3; };
+                  val Fnc<int, Array<int>> two = |int x| -> {
+                    let mut Array<int> pair = new Array<int>();
+                    pair.add(x);
+                    pair.add(x);
+                    return pair;
+                  };
+                  val scanned = cooperative.scan<int, int>(values, 0, sum);
+                  val anything = cooperative.any<int>(values, greaterThanThree);
+                  val everything = cooperative.all<int>(values, positive);
+                  val flat = cooperative.flatMap<int, int>(values, two);
+                  stdio.stdout.write(scanned.get(3));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(anything);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(everything);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(flat.size);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void untrustedCodeCannotBypassContinuationQuotaGuardThroughLoop() {
         var program = TypeChecker.check(Parser.parse("""
                 define module app as
