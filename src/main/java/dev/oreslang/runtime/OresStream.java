@@ -5,6 +5,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** A pull stream with exactly one subscription. Observable permits multiple subscriptions. */
 public abstract class OresStream<T> extends OresObservable<T> {
+    private OresSubscription<T> readerSubscription;
+
+    /**
+     * A Stream has one underlying subscription, but readers may hand off
+     * that subscription by releasing their lease. This preserves the cursor
+     * and does not restart an actor producer or cancel pending work.
+     */
+    public final synchronized OresSubscription.Reader<T> getReader() {
+        if (readerSubscription == null) {
+            readerSubscription = subscribe();
+        }
+        return readerSubscription.getReader();
+    }
+
     public static <T> OresStream<T> fromValues(List<? extends T> values) {
         OresObservable<T> source = OresObservable.fromValues(values);
         return new OresStream<>() {
