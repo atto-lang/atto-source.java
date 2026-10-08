@@ -83,7 +83,7 @@ class CorePerfTest {
         String output = bytes.toString(StandardCharsets.UTF_8);
         assertTrue(output.contains("\"recorded\":0,\"reserved\":1"));
         recorder.record(CorePerf.ACTOR_READY, 10L, 12L);
-        assertEquals(1, recorder.reserve() + 1); // capacity reached; no further slots.
+        assertEquals(-1, recorder.reserve()); // capacity reached; no further slots.
     }
 
     @Test void debugEventsContainOnlyFixedNamesAndNumericValues() {
