@@ -81,7 +81,9 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
             ActorRuntime.ActorRef<Object> actor = null;
             try {
+                long spawnPerf = CorePerf.start();
                 actor = context.actors().spawnCodeActor(kind, code, type);
+                CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
                 actor.ready().whenCompleteRuntime((ignored, failure) -> {
                     long spawn;
                     long ready;
@@ -171,7 +173,9 @@ public final class NativeHttp implements AutoCloseable {
                     if (stopped) { admission.release(); reject(raw, 503); return; }
                     active.add(state); accepted.incrementAndGet();
                     State timed = state;
+                    long schedulePerf = CorePerf.start();
                     state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
+                    CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
                     Exchange exchange = new Exchange(state, context, 0);
                     if (waiter == null) pending.add(exchange);
                     else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
