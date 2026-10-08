@@ -6019,16 +6019,11 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "read_line_async" -> (Invokable) args -> {
                         requireZero(args, "socket.read_line_async");
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.read_line_async", () -> {
-                                    String value = socket.readLine();
-                                    return new OptionValue(value != null, value);
-                                });
+                        return socket.readLineAsync(value -> new OptionValue(value != null, value));
                     };
                     case "write_text_async" -> (Invokable) args -> {
                         String value = requireStringArg(args, "socket.write_text_async");
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.write_text_async", () -> { socket.writeText(value); return null; });
+                        return socket.writeTextAsync(value);
                     };
                     case "close_async" -> (Invokable) args -> {
                         requireZero(args, "socket.close_async");
