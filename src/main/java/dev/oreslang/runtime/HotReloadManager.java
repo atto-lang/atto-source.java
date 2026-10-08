@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.parser.MacroExpander;
+import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -36,6 +38,7 @@ public final class HotReloadManager implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
+    private final Map<String, MacroExpander.Snapshot> macroSnapshotsByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
     public HotReloadManager(
@@ -76,8 +79,12 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(String name, String sourceText) {
         validateAdmissionInputs(name, sourceText);
-        OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText);
+        Parser.MacroParseResult parsed = Parser.parseWithMacroSnapshot(
+                sourceText, macroSnapshotsByCodeUnit.get(name));
+        CapabilityChecker.check(OresCompiler.analyze(parsed.program()), guestPolicy);
+        Generation staged = stage(name, digest(sourceText), sourceText);
+        macroSnapshotsByCodeUnit.put(name, parsed.snapshot());
+        return staged;
     }
 
     /**
@@ -88,8 +95,12 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
+        Parser.MacroParseResult parsed = Parser.parseWithMacroSnapshot(
+                unit.sourceText(), macroSnapshotsByCodeUnit.get(unit.unitId()));
         CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        Generation staged = stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        macroSnapshotsByCodeUnit.put(unit.unitId(), parsed.snapshot());
+        return staged;
     }
 
     private void validateAdmissionInputs(
@@ -173,6 +184,7 @@ public final class HotReloadManager implements AutoCloseable {
         for (Generation generation : generations.values()) generation.close();
         generations.clear();
         activeByCodeUnit.clear();
+        macroSnapshotsByCodeUnit.clear();
         active.set(null);
     }
 
