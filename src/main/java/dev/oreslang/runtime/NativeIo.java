@@ -1,11 +1,10 @@
 package dev.oreslang.runtime;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
@@ -31,7 +30,7 @@ import java.util.Objects;
 public final class NativeIo {
     // Whole-text APIs must not allocate unbounded attacker-supplied payloads.
     static final int MAX_HTTP_TEXT_BYTES = 4 * 1024 * 1024;
-    static final int MAX_SOCKET_LINE_CHARS = 64 * 1024;
+    static final int MAX_SOCKET_LINE_BYTES = 64 * 1024;
     static final int MAX_SOCKET_WRITE_BYTES = 64 * 1024;
 
     private NativeIo() { }
@@ -219,55 +218,61 @@ public final class NativeIo {
         private final OresContext context;
         private final String endpoint;
         private final Socket socket;
-        private final BufferedReader reader;
-        private final BufferedWriter writer;
+        private final BufferedInputStream reader;
+        private final OutputStream writer;
         private boolean skipLineFeed;
 
         private TcpConnection(OresContext context, String endpoint, Socket socket) throws IOException {
             this.context = context;
             this.endpoint = endpoint;
             this.socket = socket;
-            this.reader = new BufferedReader(
-                    new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-            this.writer = new BufferedWriter(
-                    new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
+            this.reader = new BufferedInputStream(socket.getInputStream());
+            this.writer = socket.getOutputStream();
         }
 
         public synchronized String readLine() {
             rejectBlockingUntrustedNetwork("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try {
-                StringBuilder line = new StringBuilder();
+                // Bound actual inbound bytes, not decoded UTF-16 characters:
+                // multi-byte UTF-8 sequences must not bypass the line budget.
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream(256);
                 while (true) {
                     int value = reader.read();
-                    if (value < 0) return line.isEmpty() ? null : line.toString();
+                    if (value < 0) return bytes.size() == 0 ? null : bytes.toString(StandardCharsets.UTF_8);
                     if (skipLineFeed) {
                         skipLineFeed = false;
                         if (value == '\n') continue;
                     }
-                    if (value == '\n') return line.toString();
+                    if (value == '\n') return bytes.toString(StandardCharsets.UTF_8);
                     if (value == '\r') {
                         skipLineFeed = true;
-                        return line.toString();
+                        return bytes.toString(StandardCharsets.UTF_8);
                     }
-                    if (line.length() == MAX_SOCKET_LINE_CHARS) {
-                        close();
+                    if (bytes.size() == MAX_SOCKET_LINE_BYTES) {
+                        try {
+                            close();
+                        } catch (RuntimeException closeFailure) {
+                            // Keep the size-limit failure as the primary cause.
+                        }
                         throw new IllegalStateException("network line exceeds "
-                                + MAX_SOCKET_LINE_CHARS + " UTF-16 characters");
+                                + MAX_SOCKET_LINE_BYTES + " UTF-8 bytes");
                     }
-                    line.append((char) value);
+                    bytes.write(value);
                 }
             } catch (IOException failure) {
                 throw new IllegalStateException("network read failed for " + endpoint + ": " + failure.getMessage(), failure);
             }
         }
 
-        public void writeText(String value) {
+        public synchronized void writeText(String value) {
             rejectBlockingUntrustedNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
-            checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES, "network.socket.write_text");
+            // Reuse the bounded UTF-8 encoding instead of encoding the String
+            // again inside a BufferedWriter with a separate output buffer.
+            byte[] bytes = checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES, "network.socket.write_text");
             try {
-                writer.write(value);
+                writer.write(bytes);
                 writer.flush();
             } catch (IOException failure) {
                 throw new IllegalStateException("network write failed for " + endpoint + ": " + failure.getMessage(), failure);
