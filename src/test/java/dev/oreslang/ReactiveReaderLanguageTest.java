@@ -58,6 +58,25 @@ final class ReactiveReaderLanguageTest {
                 """)));
     }
 
+    @Test
+    void readerCannotCrossActorCallableBoundary() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc invalid(Reader<int> lease): int { return 1; }
+                """)));
+    }
+
+    @Test
+    void readerTypeResolvesAsAnExplicitOpaqueCapability() {
+        TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val values = Observable.from_values([1]);
+                  val Reader<int> lease = values.subscribe().get_reader();
+                  lease.release_lock();
+                  return;
+                }
+                """));
+    }
+
     private static String run(String source) throws Exception {
         var program = Parser.parse(source);
         TypeChecker.check(program);
