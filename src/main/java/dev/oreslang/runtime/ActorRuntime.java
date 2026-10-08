@@ -4887,6 +4887,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "channel capability is execution-domain local and cannot cross actor mailboxes");
         }
+        if (value instanceof ActorLocalReference.Strong<?>
+                || value instanceof ActorLocalReference.Weak<?>) {
+            throw new SecurityException("actor-local Ref/WeakRef cannot cross actor boundaries");
+        }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
