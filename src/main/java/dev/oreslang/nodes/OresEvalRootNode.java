@@ -1253,6 +1253,15 @@ public final class OresEvalRootNode extends RootNode {
                         && expressionContainsPotentialSuspension(
                                 ret.value(), seen);
             }
+            if (stmt instanceof Ast.FailureStmt failed) {
+                return expressionContainsPotentialSuspension(failed.value(), seen);
+            }
+            if (stmt instanceof Ast.RecoverStmt recovered) {
+                return recovered.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen))
+                        || recovered.handler().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
+            }
             if (stmt instanceof Ast.ExprStmt expr) {
                 return expressionContainsPotentialSuspension(
                         expr.expression(), seen);
@@ -1607,7 +1616,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = reconcileSourceFlow(initialFlow, SourceFlow.throwing(failure));
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1620,6 +1629,22 @@ public final class OresEvalRootNode extends RootNode {
                     defers,
                     initialFlow,
                     continuation);
+        }
+
+        /** Apply the same cleanup precedence in suspended and synchronous execution. */
+        private SourceFlow reconcileSourceFlow(SourceFlow previous, SourceFlow cleanup) {
+            if (cleanup.kind() == SourceFlowKind.NORMAL) return previous;
+            if (previous.kind() == SourceFlowKind.NORMAL) return cleanup;
+            Throwable original = previous.failure();
+            Throwable newer = cleanup.failure();
+            if (original == null) return cleanup;
+            if (newer == null) return previous;
+            if (failurePriority(original) >= failurePriority(newer)) {
+                if (newer != original) original.addSuppressed(newer);
+                return previous;
+            }
+            if (original != newer) newer.addSuppressed(original);
+            return cleanup;
         }
 
         private void runOneDefer(
@@ -1635,7 +1660,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = reconcileSourceFlow(currentFlow, SourceFlow.throwing(failure));
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1647,14 +1672,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    reconcileSourceFlow(currentFlow, SourceFlow.throwing(failure)),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -1744,6 +1766,45 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             SourceFlow.throwing(failure2));
+                                }
+                            });
+                    return;
+                }
+
+                if (stmt instanceof Ast.FailureStmt failed) {
+                    evalSuspendableExpr(
+                            task,
+                            failed.value(),
+                            env,
+                            (t, value, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, SourceFlow.throwing(failure));
+                                } else {
+                                    Throwable raised = switch (failed.kind()) {
+                                        case THROW -> new OresFailure.Throw(value);
+                                        case RAISE -> new OresFailure.Raise(value);
+                                        case PANIC -> new OresFailure.Panic(value);
+                                    };
+                                    continuation.accept(t, SourceFlow.throwing(raised));
+                                }
+                            });
+                    return;
+                }
+
+                if (stmt instanceof Ast.RecoverStmt recovered) {
+                    runBlock(
+                            task,
+                            recovered.body(),
+                            env,
+                            (t, flow) -> {
+                                if (flow.failure() instanceof OresFailure.Raise raised
+                                        && raised.localToCurrentActorDomain()) {
+                                    Env recovery = new Env(env);
+                                    recovery.define(recovered.errorName(),
+                                            raised.value(), Ast.BindingKind.VAL);
+                                    runBlock(t, recovered.handler(), recovery, continuation);
+                                } else {
+                                    continuation.accept(t, flow);
                                 }
                             });
                     return;
@@ -1885,11 +1946,11 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.failure() instanceof OresFailure.Throw thrown) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
-                                            flow.failure(),
+                                            thrown.value(),
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -1903,10 +1964,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            reconcileSourceFlow(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -1915,10 +1973,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            reconcileSourceFlow(flow, finallyFlow)));
                                 }
                             });
                     return;
