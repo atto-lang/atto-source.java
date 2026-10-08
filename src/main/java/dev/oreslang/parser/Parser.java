@@ -1551,6 +1551,21 @@ public final class Parser {
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
+        if (match(THROW, RAISE, PANIC)) {
+            Token.Type effect = previous().type();
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(previous(), "failure effect requires a value");
+            }
+            Ast.Expr value = parseExpression();
+            consumeExpressionStatementTerminator(value, "failure effect should end with ';'");
+            Ast.FailureKind kind = switch (effect) {
+                case THROW -> Ast.FailureKind.THROW;
+                case RAISE -> Ast.FailureKind.RAISE;
+                case PANIC -> Ast.FailureKind.PANIC;
+                default -> throw new AssertionError(effect);
+            };
+            return new Ast.FailureStmt(kind, value);
+        }
         if (match(YIELD)) {
             boolean delegated = match(STAR);
             if (check(SEMICOLON) || isSafeStatementBoundary()) {
@@ -1585,6 +1600,12 @@ public final class Parser {
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
+        if (check(RT) && checkNext(IDENT)
+                && tokens.get(current + 1).lexeme().equals("recover")) {
+            advance(); // rt
+            advance(); // recover (contextual)
+            return parseRecovery();
+        }
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
             return new Ast.LoopStmt(parseLoopBody());
@@ -2544,6 +2565,21 @@ public final class Parser {
         return new Ast.TryStmt(body, error, catchBody, finallyBody);
     }
 
+    private Ast.RecoverStmt parseRecovery() {
+        List<Ast.Stmt> body = parseBlock();
+        Token on = consume(IDENT, "rt recover requires 'on raise (Error err)'");
+        if (!on.lexeme().equals("on")) throw error(on, "expected 'on raise' after rt recover");
+        consume(RAISE, "rt recover only handles raise, not throw or panic");
+        consume(LPAREN, "expected '(' after on raise");
+        // The named type is a declaration-level annotation; payload refinement
+        // is intentionally deferred until effect types are represented in Types.
+        Ast.TypeRef errorType = parseTypeRef();
+        String errorName = consume(IDENT, "expected recovery binding name").lexeme();
+        consume(RPAREN, "expected ')' after recovery binding");
+        List<Ast.Stmt> handler = parseBlock();
+        return new Ast.RecoverStmt(body, errorType, errorName, handler);
+    }
+
     private List<Ast.Stmt> parseUntil(Token.Type... terminators) {
         List<Ast.Stmt> body = new ArrayList<>();
         outer: while (!check(EOF)) {
@@ -2952,7 +2988,7 @@ public final class Parser {
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
-                    INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
+                    INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER, THROW, RAISE, PANIC,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
         };

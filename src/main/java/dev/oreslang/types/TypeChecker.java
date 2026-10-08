@@ -1440,6 +1440,21 @@ public final class TypeChecker {
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
+        if (stmt instanceof Ast.FailureStmt failed) {
+            typeOf(failed.value(), env, generics, self);
+            return;
+        }
+        if (stmt instanceof Ast.RecoverStmt recovered) {
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            checkBlock(recovered.body(), env, generics, expectedReturn, self);
+            Map<Env.Binding, Set<String>> normal = env.initializationSnapshot();
+            env.restoreInitialization(before);
+            Env handler = new Env(env);
+            handler.define(recovered.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
+            checkBlock(recovered.handler(), handler, generics, expectedReturn, self);
+            env.mergeInitialization(List.of(normal, env.initializationSnapshot()));
+            return;
+        }
         if (stmt instanceof Ast.YieldStmt yielded) {
             if (!currentGenerator) {
                 throw new IllegalArgumentException("'yield' may only appear inside a generator fnc or routine");
@@ -6078,6 +6093,12 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(binding.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DestructureStmt destructure) {
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.FailureStmt failed) {
+                rejectStaticClassGenericReferences(failed.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.RecoverStmt recovered) {
+                rejectStaticClassGenericReference(recovered.errorType(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(recovered.body(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(recovered.handler(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.YieldStmt yielded) {
