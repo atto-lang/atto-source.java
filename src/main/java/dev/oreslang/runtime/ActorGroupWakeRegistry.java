@@ -24,16 +24,14 @@ public final class ActorGroupWakeRegistry {
         private final ActorGroupWakeRegistry registry;
         private final Object owner;
         private final long groupEpoch;
-        private final long ownerEpoch;
         private final long sequence;
         private State state = State.PENDING;
 
         private Ticket(ActorGroupWakeRegistry registry, Object owner,
-                       long groupEpoch, long ownerEpoch, long sequence) {
+                       long groupEpoch, long sequence) {
             this.registry = registry;
             this.owner = owner;
             this.groupEpoch = groupEpoch;
-            this.ownerEpoch = ownerEpoch;
             this.sequence = sequence;
         }
 
@@ -44,7 +42,6 @@ public final class ActorGroupWakeRegistry {
 
     private enum State { PENDING, CLAIMED, RELEASED }
 
-    private final Map<Object, Long> ownerEpochs = new HashMap<>();
     private final Map<Object, Set<Ticket>> tickets = new HashMap<>();
     private long groupEpoch = 1;
     private long nextSequence;
@@ -59,8 +56,7 @@ public final class ActorGroupWakeRegistry {
         if (sealed) throw new IllegalStateException("ActorGroup wake registry is sealed");
         long sequence = Math.incrementExact(nextSequence);
         nextSequence = sequence;
-        Ticket ticket = new Ticket(this, owner, groupEpoch,
-                ownerEpochs.getOrDefault(owner, 1L), sequence);
+        Ticket ticket = new Ticket(this, owner, groupEpoch, sequence);
         tickets.computeIfAbsent(owner, ignored -> new HashSet<>()).add(ticket);
         return ticket;
     }
@@ -96,8 +92,6 @@ public final class ActorGroupWakeRegistry {
     /** A leaving/cancelled actor invalidates even already-claimed callbacks. */
     public synchronized void revokeOwner(Object owner) {
         Objects.requireNonNull(owner, "owner");
-        long previous = ownerEpochs.getOrDefault(owner, 1L);
-        ownerEpochs.put(owner, Math.incrementExact(previous));
         Set<Ticket> owned = tickets.remove(owner);
         if (owned != null) {
             for (Ticket ticket : owned) ticket.state = State.RELEASED;
@@ -114,7 +108,6 @@ public final class ActorGroupWakeRegistry {
             for (Ticket ticket : byOwner) ticket.state = State.RELEASED;
         }
         tickets.clear();
-        ownerEpochs.clear();
     }
 
     public synchronized boolean sealed() {
@@ -134,7 +127,6 @@ public final class ActorGroupWakeRegistry {
         return ticket != null
                 && ticket.registry == this
                 && !sealed
-                && ticket.groupEpoch == groupEpoch
-                && ticket.ownerEpoch == ownerEpochs.getOrDefault(ticket.owner, 1L);
+                && ticket.groupEpoch == groupEpoch;
     }
 }
