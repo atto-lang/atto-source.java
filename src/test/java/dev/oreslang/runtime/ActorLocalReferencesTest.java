@@ -89,6 +89,63 @@ final class ActorLocalReferencesTest {
     }
 
     @Test
+    void strongCyclesCanBeSeveredAndWeakParentEdgesRemainNonOwning() throws Exception {
+        CompletableFuture<Void> verified = new CompletableFuture<>();
+        AtomicReference<ActorLocalReferences.Ref<Object>> escaped = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            var actor = actors.<String>spawn(() -> (message, context) -> {
+                try {
+                    ActorLocalReferences.Ref<Object> first = ActorLocalReferences.empty();
+                    ActorLocalReferences.Ref<Object> second = ActorLocalReferences.empty();
+
+                    // Two strongly connected cells: legal within one actor.
+                    first.set(List.of(second));
+                    second.set(List.of(first));
+                    assertTrue(first.sameIdentity(
+                            (ActorLocalReferences.Ref<?>) ((List<?>) second.take()
+                                    .orElseThrow()).getFirst()));
+                    assertFalse(second.isSet());
+                    second.set(List.of(first));
+
+                    // Clearing either direction breaks the strong cycle
+                    // without materializing or copying the old payload.
+                    first.clear();
+                    assertFalse(first.isSet());
+                    first.clear(); // idempotent
+                    assertTrue(second.isSet());
+                    second.clear();
+                    assertFalse(second.isSet());
+
+                    // Preferred tree pattern: parent owns child, while the
+                    // child only observes its parent via a weak reference.
+                    ActorLocalReferences.Ref<Object> parent = ActorLocalReferences.empty();
+                    ActorLocalReferences.Ref<Object> child = ActorLocalReferences.empty();
+                    parent.set(List.of(child));
+                    child.set(List.of(parent.downgrade()));
+                    @SuppressWarnings("unchecked")
+                    ActorLocalReferences.WeakRef<Object> backEdge =
+                            (ActorLocalReferences.WeakRef<Object>)
+                                    ((List<?>) child.take().orElseThrow()).getFirst();
+                    assertTrue(parent.sameIdentity(backEdge.upgrade().orElseThrow()));
+                    assertFalse(child.isSet());
+                    parent.clear();
+                    assertFalse(parent.isSet());
+                    // Weak upgrades track the lifetime of the cell, not
+                    // whether its Option-like payload is currently present.
+                    assertTrue(parent.sameIdentity(backEdge.upgrade().orElseThrow()));
+                    escaped.set(parent);
+                    verified.complete(null);
+                } catch (Throwable problem) {
+                    verified.completeExceptionally(problem);
+                }
+            });
+            actor.send("verify");
+            verified.get(10, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class, () -> escaped.get().clear());
+        }
+    }
+
+    @Test
     void bufferedChannelsAndSelectWritesRejectActorLocalHandlesAtRuntime() throws Exception {
         CompletableFuture<Boolean> verified = new CompletableFuture<>();
         try (ActorRuntime runtime = new ActorRuntime()) {
