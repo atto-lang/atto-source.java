@@ -44,4 +44,20 @@ final class CycleSafeDisplayTest {
         assertTrue(OresEvalRootNode.CycleSafeDisplay.render(nested).contains("<truncated>"));
         assertTrue(OresEvalRootNode.CycleSafeDisplay.render("x".repeat(200000)).length() <= 65536);
     }
+
+    @Test
+    void hugeLazyCollectionStopsReadingWhenNodeBudgetIsReached() {
+        List<Integer> huge = new java.util.AbstractList<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public Integer get(int index) {
+                if (index >= 8192) {
+                    throw new AssertionError("formatter iterated beyond the node budget");
+                }
+                return index;
+            }
+        };
+        String rendered = OresEvalRootNode.CycleSafeDisplay.render(huge);
+        assertTrue(rendered.contains("<truncated>"));
+        assertTrue(rendered.length() <= 65536);
+    }
 }
