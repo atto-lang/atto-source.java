@@ -6299,6 +6299,11 @@ public final class OresEvalRootNode extends RootNode {
                         java.util.Optional<?> item = ref.take();
                         return new OptionValue(item.isPresent(), item.orElse(null));
                     };
+                    case "clear" -> (Invokable) args -> {
+                        requireZero(args, "Ref.clear");
+                        ref.clear();
+                        return null;
+                    };
                     case "set" -> (Invokable) args -> {
                         requireOne(args, "Ref.set");
                         @SuppressWarnings("unchecked")
