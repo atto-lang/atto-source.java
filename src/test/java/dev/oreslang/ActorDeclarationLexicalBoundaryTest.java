@@ -628,6 +628,62 @@ final class ActorDeclarationLexicalBoundaryTest {
 
 
     @Test
+    void ordinaryClassBoundaryIncludesStaticFunctionsAndFieldInitializers() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc helper(): int { return 7; }
+
+                define class Worker as
+                  val int value = helper();
+
+                  pub static fnc calculate(): int {
+                    return helper();
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void ordinaryClassAndModuleCanReadTheirNormalSameFileLexicalEnvironment() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc rootHelper(): int { return 5; }
+
+                define module services as
+                  fnc localHelper(): int { return rootHelper(); }
+
+                  define class Worker as
+                    pub calculate(): int {
+                      return localHelper() + rootHelper();
+                    }
+                  end
+
+                  pub fnc run(): int {
+                    return rootHelper();
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void actorInsideModuleCannotReadItsContainingModuleCallableImplicitly() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module services as
+                          fnc helper(): int { return 7; }
+
+                          define actor Worker as
+                            pub calculate(): int {
+                              return helper();
+                            }
+                          end
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("actor 'Worker'"),
+                failure.getMessage());
+    }
+
+
+    @Test
     void actorBoundaryAlsoAppliesToFieldInitializersAndStaticFunctions() {
         IllegalArgumentException fieldInitializer = assertThrows(
                 IllegalArgumentException.class,
