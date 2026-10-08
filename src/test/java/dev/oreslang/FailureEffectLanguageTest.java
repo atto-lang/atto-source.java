@@ -154,6 +154,48 @@ final class FailureEffectLanguageTest {
     }
 
     @Test
+    void raiseAfterCooperativeSuspensionSkipsCatchAndReachesRecover() throws Exception {
+        String source = """
+                pub async routine main(): void {
+                  rt recover {
+                    try {
+                      rt cooperate;
+                      raise "after-suspension";
+                    } catch (err) {
+                      stdio.stdout.write("wrong");
+                    }
+                  } on raise (Error err) {
+                    stdio.stdout.write(err);
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("after-suspension", run(source));
+    }
+
+    @Test
+    void deferredCleanupThrowCannotDowngradeSuspendedRaise() throws Exception {
+        String source = """
+                fnc cleanup(): void {
+                  throw "cleanup";
+                }
+                pub async routine main(): void {
+                  rt recover {
+                    defer cleanup();
+                    rt cooperate;
+                    raise "preserved";
+                  } on raise (Error err) {
+                    stdio.stdout.write(err);
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("preserved", run(source));
+    }
+
+    @Test
     void bareFailuresAreRejectedByParser() {
         assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.parseAndTypeCheck("pub fnc main(): void { throw; }"));
