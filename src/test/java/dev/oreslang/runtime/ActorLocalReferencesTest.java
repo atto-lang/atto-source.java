@@ -105,6 +105,23 @@ final class ActorLocalReferencesTest {
                             () -> ChannelRuntime.write(channel, java.util.Map.of("weak", weak)));
                     assertThrows(SecurityException.class,
                             () -> ChannelRuntime.write(channel, new Object[]{List.of(strong)}));
+                    // Java-facing channel APIs must also inspect wrappers
+                    // that are not Iterable, Map, array, or SharedState.
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel, Optional.of(strong)));
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel,
+                                    List.of(Optional.of(weak))));
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel, java.util.Map.entry("ref", strong)));
+                    // Mutable wrappers have a check/use race when a select
+                    // registration waits before committing its payload.
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel,
+                                    new AtomicReference<>(strong)));
+                    assertThrows(SecurityException.class,
+                            () -> ChannelRuntime.write(channel,
+                                    new java.lang.ref.WeakReference<>(weak)));
                     OresMutex.SharedState wrapped = () -> List.of(weak);
                     assertThrows(SecurityException.class,
                             () -> ChannelRuntime.write(channel, wrapped));
