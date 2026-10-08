@@ -76,11 +76,14 @@ class CorePerfTest {
 
     @Test void incompleteReservationsAreNotReportedAsRecorded() {
         var recorder = new CorePerf.Recorder(2);
-        recorder.record(CorePerf.ACTOR_READY, 10L, 12L);
+        int slot = recorder.reserve();
+        assertEquals(0, slot);
         var bytes = new ByteArrayOutputStream();
         recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
         String output = bytes.toString(StandardCharsets.UTF_8);
-        assertTrue(output.contains("\"recorded\":1,\"reserved\":1"));
+        assertTrue(output.contains("\"recorded\":0,\"reserved\":1"));
+        recorder.record(CorePerf.ACTOR_READY, 10L, 12L);
+        assertEquals(1, recorder.reserve() + 1); // capacity reached; no further slots.
     }
 
     @Test void debugEventsContainOnlyFixedNamesAndNumericValues() {
