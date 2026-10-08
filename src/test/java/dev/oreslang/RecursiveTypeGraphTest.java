@@ -61,7 +61,7 @@ final class RecursiveTypeGraphTest {
     void supportsNominalSelfReferencesAndGuardedResultUnions() {
         checks("""
                 define class Link as
-                    pub let Option<Link> next = None();
+                    pub let Option<Link> next = None;
                 end
                 fnc read(Link link): Option<Link> { return link.next; }
                 """);
