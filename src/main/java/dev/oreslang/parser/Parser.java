@@ -23,8 +23,29 @@ public final class Parser {
     private int current;
     private boolean suppressRefinementOperators;
 
+    private final MacroExpander.Snapshot macroSnapshot;
+
     public Parser(List<Token> tokens) {
-        this.tokens = List.copyOf(tokens);
+        this(tokens, null);
+    }
+
+    public Parser(List<Token> tokens, MacroExpander.Snapshot previousMacros) {
+        MacroExpander.Result expanded = MacroExpander.expand(tokens, previousMacros);
+        this.tokens = expanded.tokens();
+        this.macroSnapshot = expanded.snapshot();
+    }
+
+    /** Compilation callers may use this snapshot to fence AOT macros during hot reload. */
+    public MacroExpander.Snapshot macroSnapshot() {
+        return macroSnapshot;
+    }
+
+    public record MacroParseResult(Ast.Program program, MacroExpander.Snapshot snapshot) { }
+
+    public static MacroParseResult parseWithMacroSnapshot(
+            String source, MacroExpander.Snapshot previousMacros) {
+        Parser parser = new Parser(new Lexer(source).scan(), previousMacros);
+        return new MacroParseResult(parser.parseProgram(), parser.macroSnapshot());
     }
 
     public static Ast.Program parse(String source) {
