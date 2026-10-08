@@ -201,6 +201,9 @@ public final class TypeChecker {
         if (map.putIfAbsent(qualified, value) != null) {
             throw new IllegalArgumentException("duplicate " + kind + " '" + qualified + "'; fnc/routine declarations cannot overload");
         }
+        // A third declaration must not restore a short name after two
+        // modules made that name ambiguous. Qualified bindings remain valid.
+        if (ambiguous.contains(name)) return;
         T previous = map.putIfAbsent(name, value);
         if (previous != null && previous != value) {
             ambiguous.add(name);
