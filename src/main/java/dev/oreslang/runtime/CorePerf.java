@@ -24,13 +24,16 @@ public final class CorePerf {
     public static final int HTTP_IO_WORK = 10;
     public static final int ASYNC_IO_QUEUE = 11;
     public static final int ASYNC_IO_WORK = 12;
+    public static final int HTTP_TIMER_SCHEDULE = 13;
+    public static final int ACTOR_SPAWN = 14;
 
     private static final String[] NAMES = {
         "unused", "vm.control.startup", "actor.pools.startup",
         "context.startup", "http.listen", "http.receive",
         "http.dispatch", "actor.ready", "http.claim",
         "http.io.queue", "http.io.work",
-        "async.io.queue", "async.io.work"
+        "async.io.queue", "async.io.work",
+        "http.timer.schedule", "actor.spawn"
     };
     private static final int DEFAULT_CAPACITY = 8192;
     private static volatile Recorder active;
