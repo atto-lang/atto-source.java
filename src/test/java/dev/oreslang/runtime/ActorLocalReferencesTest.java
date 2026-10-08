@@ -22,10 +22,17 @@ final class ActorLocalReferencesTest {
         AtomicReference<ActorLocalReferences.Ref<Object>> escaped = new AtomicReference<>();
         AtomicReference<ActorLocalReferences.WeakRef<Object>> weak = new AtomicReference<>();
         CompletableFuture<Void> done = new CompletableFuture<>();
+        CompletableFuture<String> secondTurn = new CompletableFuture<>();
 
         try (ActorRuntime actors = new ActorRuntime()) {
             var actor = actors.<String>spawn(() -> (message, context) -> {
                 try {
+                    if (message.equals("again")) {
+                        ActorLocalReferences.Ref<Object> retained = escaped.get();
+                        assertTrue(retained.sameIdentity(weak.get().upgrade().orElseThrow()));
+                        secondTurn.complete((String) retained.getCopy());
+                        return;
+                    }
                     ActorLocalReferences.Ref<Object> first = ActorLocalReferences.empty();
                     assertFalse(first.isSet());
                     assertEquals(Optional.empty(), first.take());
@@ -55,6 +62,9 @@ final class ActorLocalReferencesTest {
 
             actor.send("test");
             done.get(10, TimeUnit.SECONDS);
+            actor.send("again");
+            assertEquals("again", secondTurn.get(10, TimeUnit.SECONDS),
+                    "same logical actor must retain access across scheduler/mailbox turns");
 
             assertThrows(IllegalStateException.class, () -> escaped.get().take());
             assertThrows(IllegalStateException.class, () -> escaped.get().set("outside"));
