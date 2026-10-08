@@ -6,7 +6,6 @@ import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Field;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -59,10 +58,10 @@ final class UntrustedSourceTaskQuotaTest {
                 assertTrue(started.await(5, TimeUnit.SECONDS));
                 var result = taskResult.get();
                 assertNotNull(result);
-                ExecutionException failure = assertThrows(ExecutionException.class,
-                        () -> result.get(5, TimeUnit.SECONDS));
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
                 assertInstanceOf(ActorRuntime.UntrustedActorQuotaExceededException.class,
-                        failure.getCause());
+                        actor.failure().orElseThrow(),
+                        "an exhausted task quota must fail-stop its actor");
                 assertEquals(2, resumes.get());
                 assertNotEquals(0L, firstDispatch.get());
                 assertNotEquals(0L, secondDispatch.get());
@@ -116,10 +115,10 @@ final class UntrustedSourceTaskQuotaTest {
                 assertTrue(firstResume.await(5, TimeUnit.SECONDS));
                 Thread.sleep(400); // UNTRUSTED policy's 250ms wall budget runs across await
                 awaited.completeFromRuntime(1);
-                ExecutionException failure = assertThrows(ExecutionException.class,
-                        () -> taskResult.get().get(5, TimeUnit.SECONDS));
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
                 assertInstanceOf(ActorRuntime.UntrustedActorQuotaExceededException.class,
-                        failure.getCause());
+                        actor.failure().orElseThrow(),
+                        "an expired awaited source task must fail-stop its actor");
                 assertEquals(1, resumes.get(),
                         "expired task must fail before guest code is reentered");
             } finally {
