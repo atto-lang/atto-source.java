@@ -4367,7 +4367,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw fatal;
             } catch (java.util.concurrent.CancellationException cancelled) {
                 throw cancelled;
-            } catch (RuntimeException ordinaryFailure) {
+            } catch (OresFailure.Throw ordinaryFailure) {
                 // trap is deliberately lossy: ordinary guest/runtime failure
                 // becomes None. Panic and scheduler cancellation remain distinct
                 // non-trappable control channels.
@@ -4736,9 +4736,9 @@ public final class OresEvalRootNode extends RootNode {
                 catch (TailCallSignal signal) { throw signal; }
                 catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                 catch (OresFailure.Raise | OresFailure.Panic fatal) { throw fatal; }
-                catch (RuntimeException failure) {
+                catch (OresFailure.Throw failure) {
                     Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                    catchEnv.define(tried.errorName(), failure.value(), Ast.BindingKind.VAL);
                     executeBlock(tried.catchBody(), catchEnv, true);
                 } finally { executeBlock(tried.finallyBody(), env, true); }
                 return;
@@ -8703,7 +8703,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
     private static final class OresCastError extends OresFailure.Throw {
-        private OresCastError(String message) { super(message, null, false, false); }
+        private OresCastError(String message) { super(message); }
     }
     private static List<Object> immutableIoStrings(List<Object> args) {
         // Only immutable host values may cross into an I/O worker.

@@ -285,7 +285,8 @@ Untrusted actor resource cancellation/termination cannot be swallowed by
 ## Host/native failures
 
 Only failures explicitly classified as ordinary Ores `throw` may become
-`None`.
+`None`. A guest `raise` bypasses catches and traps and is handled only by a
+same-domain `rt recover` statement; `panic` always terminates its actor.
 
 VM-fatal errors, OOM/stack corruption, process termination, scheduler
 interruption/cancellation, and unknown native failures must not be blanket
