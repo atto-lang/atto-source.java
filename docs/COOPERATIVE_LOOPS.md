@@ -1,35 +1,47 @@
-# Cooperative counted loops
+# Automatic cooperative scheduling for source loops
 
-`rt cooperative for let i = 0; i < end; i++ { ... }` is a distinct
-source statement. It uses the existing counted-for grammar (with or without
-parenthesized header). It does not change normal `for`, `for await` or `for-of`.
+No syntax annotation or `await` is needed. Ordinary `for`, `loop`,
+`for-of`, and destructuring `for-of` use scheduler-controlled, resumable
+loop back-edges **when running in a heap-owned SourceTask**.
 
-A loop checks a task-local quantum at each **completed back-edge** (after
-body and update, even on `continue`). At 16-iteration boundaries it checks
-for a 1 ms elapsed-turn target; it always offers a scheduler handoff after
-128 iterations. A handoff uses `OresScheduler.cooperate()`, not `Thread.yield()`,
-and resumes from the saved environment without replaying the body, update, or
-condition. A terminating condition or `break` does not yield gratuitously.
+The current soft policy samples runtime/cancellation state every 16 back-edges,
+uses a nominal 1 ms CPU-turn wall-clock target, and permits at most
+128 back-edges per cooperative turn (unless a live MutexGuard defers yielding).
+The task returns `OresScheduler.cooperate()` after the loop's body and update,
+and its saved continuation resumes on a new dispatch **after** the old carrier
+has fully unwound. No iteration or side effect is replayed.
 
-The bytecode/Graal scheduler fully unwinds the previous carrier before
-admitting the saved task continuation. Actor single-writer, mailbox control
-lane, structured cancellation and borrow/MutexGuard suspension restrictions
-remain intact. `UNTRUSTED` actor code remains fail-closed until logical-task
-CPU/fuel/deadline accounting survives continuation hops.
+These numbers are heuristics, not realtime deadline guarantees. A long single
+iteration, blocking native/FFI call, GC or JIT pause can overshoot the quantum.
+For UNTRUSTED actors, fuel/cancellation is charged at every back-edge but
+automatic cooperation is disabled until logical-task quota continuity survives
+scheduler handoff. Memory quota is **not** a CPU/GPU scheduling entitlement.
 
-`stdlib/cooperative.ores` provides sequential `map`, `filter`,
-`reduce`, and `forEach` for `Array<T>`. Callback order is stable, and
-array length is snapshotted once. These are **not** parallel operations, and
-there is no per-item async iterator / Future overhead. An exception aborts
-the current operation; no rollback of completed side effects is implied.
+Synchronous source-defined actor `receive(ActorMail<T>)` bodies containing loops
+are continuation-lowered automatically (see PR #479). Other synchronous
+functions and unary actor `run` handlers that remain on a Java evaluator stack
+cannot be forcibly stacklessly suspended by a timer; extending continuation
+lowering to these paths is a separate required hardening step. Hard termination
+of native or non-cooperating operations requires external isolation/revocation.
 
-## Follow-up work
+`rt cooperate` remains an explicit optional scheduling point. `await`
+continues to mean asynchronous dependency suspension, not voluntary CPU
+time slicing.
 
-- Measure scheduler handoff counts and tail latency under actor contention.
-- Expose actor CPU-share and GPU-work quotas as scheduler metadata. Do not
-  infer CPU rights from heap limits, and do not pretend cooperative yielding
-  provides hard real-time guarantees.
-- Generalize to for-of, stream/observable operators and typed iterators once
-  iterator suspension and lifetime rules are fully specified.
-- Investigate compiler-generated non-recursive loop continuations to improve
-  high-count throughput without Java callback stack growth.
+`stdlib/cooperative.ores` supplies ordered sequential `map`, `filter`,
+`reduce`, and `forEach` using **ordinary for loops**. These are no per-item
+Future allocations. Underlying loops receive cooperative preemption only
+when they are continuation-lowered; until general synchronous helper lowering
+is complete, do not describe all helper calls as universally preemptible.
+
+## Next hardening gates
+
+- Verify compilation and integration with GraalVM JVM/AOT/hybrid CI and exact
+  head mirrored runs, not runner-admission failures.
+- Extend safe continuation lowering to normal synchronous helpers, unary actor
+  `run` and lexical callback paths without silently changing synchronous
+  return types or promoting actor reentrancy.
+- Add per-actor CPU share, GPU work budget and live scheduler pressure as inputs
+  to the quantum; do not derive CPU share from heap size.
+- Measure actor fairness, cancellation latency, output ordering, and allocation
+  cost of collection operators under load.

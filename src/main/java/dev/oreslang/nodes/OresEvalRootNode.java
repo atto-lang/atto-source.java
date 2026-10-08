@@ -841,16 +841,14 @@ public final class OresEvalRootNode extends RootNode {
         private final class SourceTask implements OresScheduler.Task<Object> {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
-            private static final int LOOP_SAFEPOINT_INTERVAL = 32;
-            private static final int MAX_LOOP_BACKEDGES_PER_TURN = 512;
-            private static final long SOFT_LOOP_QUANTUM_NANOS = 2_000_000L;
-            private static final int COOPERATIVE_LOOP_SAMPLE_INTERVAL = 16;
-            private static final int COOPERATIVE_LOOP_MAX_BACKEDGES = 128;
-            private static final long COOPERATIVE_LOOP_QUANTUM_NANOS = 1_000_000L;
+            // Automatic for all continuation-backed source loops, including
+            // synchronous actor receive handlers. No source keyword is needed.
+            private static final int LOOP_SAFEPOINT_INTERVAL = 16;
+            private static final int MAX_LOOP_BACKEDGES_PER_TURN = 128;
+            private static final long SOFT_LOOP_QUANTUM_NANOS = 1_000_000L;
 
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
-            private boolean pendingCooperativeLoop;
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
@@ -901,7 +899,6 @@ public final class OresEvalRootNode extends RootNode {
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
-                    pendingCooperativeLoop = false;
                     nextStep = null;
                     initialBlockEnv = null;
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -993,13 +990,6 @@ public final class OresEvalRootNode extends RootNode {
             private void scheduleLoopContinuation(
                     Env guardEnv,
                     SourceValueCont continuation) {
-                scheduleLoopContinuation(guardEnv, continuation, false);
-            }
-
-            private void scheduleLoopContinuation(
-                    Env guardEnv,
-                    SourceValueCont continuation,
-                    boolean explicitCooperative) {
                 Objects.requireNonNull(guardEnv, "guardEnv");
                 Objects.requireNonNull(continuation, "continuation");
                 if (pendingLoopContinuation != null || nextStep != null) {
@@ -1008,7 +998,6 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 pendingLoopGuardEnv = guardEnv;
                 pendingLoopContinuation = continuation;
-                pendingCooperativeLoop = explicitCooperative;
             }
 
             private void drainLoopContinuations() {
@@ -1017,16 +1006,12 @@ public final class OresEvalRootNode extends RootNode {
                 while (nextStep == null && pendingLoopContinuation != null) {
                     SourceValueCont next = pendingLoopContinuation;
                     Env guardEnv = pendingLoopGuardEnv;
-                    boolean explicitCooperative = pendingCooperativeLoop;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
-                    pendingCooperativeLoop = false;
                     ++backedges;
                     boolean untrusted = ActorRuntime.currentActorKind()
                             == ActorRuntime.ActorKind.UNTRUSTED;
-                    int interval = explicitCooperative
-                            ? COOPERATIVE_LOOP_SAMPLE_INTERVAL : LOOP_SAFEPOINT_INTERVAL;
-                    if (untrusted || (backedges & (interval - 1)) == 0) {
+                    if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
                         // Untrusted fuel is charged at EVERY loop backedge, not
                         // once per 32 iterations. Trusted tasks poll at 32.
                         context.schedulerSafepoint();
@@ -1034,13 +1019,9 @@ public final class OresEvalRootNode extends RootNode {
                         // mint a fresh physical-turn quota, so fail closed.
                         // Never auto-cooperate while a live lexical mutex guard
                         // is held: the guard is a no-yield critical region.
-                        int limit = explicitCooperative
-                                ? COOPERATIVE_LOOP_MAX_BACKEDGES : MAX_LOOP_BACKEDGES_PER_TURN;
-                        long quantum = explicitCooperative
-                                ? COOPERATIVE_LOOP_QUANTUM_NANOS : SOFT_LOOP_QUANTUM_NANOS;
                         if (!untrusted
-                                && (backedges >= limit
-                                    || System.nanoTime() - started >= quantum)
+                                && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
+                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
                                 && !guardEnv.hasLiveMutexGuards()) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
@@ -1414,7 +1395,7 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForStmt loop) {
-                return loop.cooperative() || (loop.initializer() != null
+                return (loop.initializer() != null
                                 && statementContainsPotentialSuspension(
                                         loop.initializer(), seen))
                         || (loop.condition() != null
@@ -2536,8 +2517,7 @@ public final class OresEvalRootNode extends RootNode {
                                 t.scheduleLoopContinuation(
                                         loopEnv,
                                         (resumed, ignored, failure) -> runForIteration(
-                                                resumed, loop, loopEnv, continuation),
-                                        loop.cooperative());
+                                                resumed, loop, loopEnv, continuation));
                             } else {
                                 evalSuspendableExpr(
                                         t,
@@ -2553,8 +2533,7 @@ public final class OresEvalRootNode extends RootNode {
                                                 t2.scheduleLoopContinuation(
                                                         loopEnv,
                                                         (resumed, ignored, failure2) -> runForIteration(
-                                                                resumed, loop, loopEnv, continuation),
-                                                        loop.cooperative());
+                                                                resumed, loop, loopEnv, continuation));
                                             }
                                         });
                             }
@@ -4888,10 +4867,6 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ForStmt loop) {
-                if (loop.cooperative()) {
-                    throw new IllegalStateException(
-                            "cooperative loop reached synchronous evaluation without continuation lowering");
-                }
                 Env loopEnv = new Env(env);
                 if (loop.initializer() != null) {
                     executeStatement(

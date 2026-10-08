@@ -1589,22 +1589,6 @@ public final class Parser {
             advance();
             return new Ast.LoopStmt(parseLoopBody());
         }
-        if (check(RT) && current + 2 < tokens.size()
-                && tokens.get(current + 1).type() == IDENT
-                && tokens.get(current + 1).lexeme().equals("cooperative")) {
-            advance(); // rt
-            advance(); // cooperative
-            consume(FOR, "rt cooperative must be followed by a for-loop");
-            if (match(AWAIT)) {
-                throw error(previous(), "rt cooperative for cannot use await iteration");
-            }
-            Ast.Stmt parsed = parseFor(false);
-            if (!(parsed instanceof Ast.ForStmt loop)) {
-                throw error(previous(), "rt cooperative for requires a counted for-loop, not for-of");
-            }
-            return new Ast.ForStmt(
-                    loop.initializer(), loop.condition(), loop.update(), loop.body(), true);
-        }
         if (match(FOR)) {
             boolean asyncIteration = match(AWAIT);
             return parseFor(asyncIteration);

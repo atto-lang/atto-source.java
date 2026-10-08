@@ -4,7 +4,7 @@ define module cooperative as
   pub fnc map<T, R>(Array<T> values, Fnc<T, R> transform): Array<R> {
     let mut Array<R> output = new Array<R>();
     val count = values.size;
-    rt cooperative for let i = 0; i < count; i++ {
+    for let i = 0; i < count; i++ {
       output.add(transform(values.get(i)));
     }
     return output;
@@ -13,7 +13,7 @@ define module cooperative as
   pub fnc filter<T>(Array<T> values, Fnc<T, bool> predicate): Array<T> {
     let mut Array<T> output = new Array<T>();
     val count = values.size;
-    rt cooperative for let i = 0; i < count; i++ {
+    for let i = 0; i < count; i++ {
       val item = values.get(i);
       if predicate(item); do
         output.add(item);
@@ -25,7 +25,7 @@ define module cooperative as
   pub fnc reduce<T, R>(Array<T> values, R initial, Fnc<R, T, R> combine): R {
     let result = initial;
     val count = values.size;
-    rt cooperative for let i = 0; i < count; i++ {
+    for let i = 0; i < count; i++ {
       result = combine(result, values.get(i));
     }
     return result;
@@ -33,7 +33,7 @@ define module cooperative as
 
   pub fnc forEach<T>(Array<T> values, Fnc<T, void> action): void {
     val count = values.size;
-    rt cooperative for let i = 0; i < count; i++ {
+    for let i = 0; i < count; i++ {
       action(values.get(i));
     }
     return;
