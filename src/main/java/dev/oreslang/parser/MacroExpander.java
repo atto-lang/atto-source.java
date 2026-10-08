@@ -77,7 +77,8 @@ public final class MacroExpander {
             int start = i;
             Mode mode = Mode.AOT;
             if (at(source, i, AT) && named(source, i + 1, "expand")
-                    && at(source, i + 2, LPAREN)) {
+                    && at(source, i + 2, LPAREN) && at(source, i + 4, RPAREN)
+                    && named(source, i + 5, "macro_rules") && at(source, i + 6, BANG)) {
                 if (!at(source, i + 3, IDENT) || !at(source, i + 4, RPAREN)) {
                     throw fail(source.get(i), "expected @expand(aot) or @expand(jit)");
                 }
@@ -88,10 +89,6 @@ public final class MacroExpander {
                     default -> throw fail(source.get(i + 3), "unknown macro expansion mode: " + value);
                 };
                 i += 5;
-                if (!named(source, i, "macro_rules")) {
-                    // Non-macro annotations belong to the ordinary parser, not this pass.
-                    i = start;
-                }
             }
             if (named(source, i, "macro_rules") && at(source, i + 1, BANG)) {
                 Parsed parsed = parseDefinition(source, i, mode);
@@ -126,10 +123,12 @@ public final class MacroExpander {
             }
         }
 
+        // Large ordinary source files must not hit a macro-only quota.
+        int budget = Math.addExact(source.size(), MAX_OUTPUT_TOKENS);
         int[] emitted = {0};
-        List<Token> output = new ArrayList<>(expandTokens(remaining, definitions, 0, emitted));
+        List<Token> output = new ArrayList<>(expandTokens(remaining, definitions, 0, emitted, budget));
         output.add(source.getLast());
-        if (output.size() > MAX_OUTPUT_TOKENS) {
+        if (output.size() > budget) {
             throw new IllegalArgumentException("macro expansion exceeds token budget");
         }
         return new Result(output, snapshot);
@@ -206,7 +205,7 @@ public final class MacroExpander {
     }
 
     private static List<Token> expandTokens(List<Token> input, Map<String, Definition> definitions,
-                                             int depth, int[] emitted) {
+                                             int depth, int[] emitted, int budget) {
         if (depth > MAX_DEPTH) {
             throw new IllegalArgumentException("macro expansion depth exceeded");
         }
@@ -250,13 +249,13 @@ public final class MacroExpander {
                         substitution.add(new Token(part.type(), part.lexeme(), token.line(), token.column()));
                     }
                 }
-                result.addAll(expandTokens(substitution, definitions, depth + 1, emitted));
+                result.addAll(expandTokens(substitution, definitions, depth + 1, emitted, budget));
                 i = close + 1;
             } else {
                 result.add(token);
                 i++;
             }
-            if (++emitted[0] > MAX_OUTPUT_TOKENS || result.size() > MAX_OUTPUT_TOKENS) {
+            if (++emitted[0] > budget || result.size() > budget) {
                 throw fail(token, "macro expansion token budget exceeded");
             }
         }
