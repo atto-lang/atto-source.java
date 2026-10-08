@@ -847,6 +847,7 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
+            private boolean pendingLoopAggressive;
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
@@ -897,6 +898,7 @@ public final class OresEvalRootNode extends RootNode {
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
+                    pendingLoopAggressive = false;
                     nextStep = null;
                     initialBlockEnv = null;
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -988,6 +990,13 @@ public final class OresEvalRootNode extends RootNode {
             private void scheduleLoopContinuation(
                     Env guardEnv,
                     SourceValueCont continuation) {
+                scheduleLoopContinuation(guardEnv, false, continuation);
+            }
+
+            private void scheduleLoopContinuation(
+                    Env guardEnv,
+                    boolean aggressive,
+                    SourceValueCont continuation) {
                 Objects.requireNonNull(guardEnv, "guardEnv");
                 Objects.requireNonNull(continuation, "continuation");
                 if (pendingLoopContinuation != null || nextStep != null) {
@@ -995,31 +1004,50 @@ public final class OresEvalRootNode extends RootNode {
                             "source task attempted overlapping loop continuations");
                 }
                 pendingLoopGuardEnv = guardEnv;
+                pendingLoopAggressive = aggressive;
                 pendingLoopContinuation = continuation;
             }
 
+            /**
+             * The only source-loop preemption engine. Automatic and explicit
+             * cooperative loops share the same continuation queue, actor lease,
+             * mailbox priority and exactly-once resume behavior. An explicit
+             * hint changes its policy, never its suspension mechanism.
+             */
             private void drainLoopContinuations() {
-                long started = System.nanoTime();
+                final long started = System.nanoTime();
                 int backedges = 0;
+                int aggressiveBackedges = 0;
                 while (nextStep == null && pendingLoopContinuation != null) {
                     SourceValueCont next = pendingLoopContinuation;
                     Env guardEnv = pendingLoopGuardEnv;
+                    boolean aggressive = pendingLoopAggressive;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
+                    pendingLoopAggressive = false;
                     ++backedges;
+                    if (aggressive) ++aggressiveBackedges;
                     boolean untrusted = ActorRuntime.currentActorKind()
                             == ActorRuntime.ActorKind.UNTRUSTED;
-                    if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
-                        // Untrusted fuel is charged at EVERY loop backedge, not
-                        // once per 32 iterations. Trusted tasks poll at 32.
+                    if (untrusted && aggressive) {
+                        // Never grant a fresh physical-turn quota via an explicit
+                        // policy hint until issue #402 covers every task path.
+                        throw new SecurityException(
+                                "rt cooperative for requires continuation-safe untrusted task quotas");
+                    }
+                    final boolean poll = untrusted
+                            || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0
+                            || (aggressive && (aggressiveBackedges & 15) == 0);
+                    if (poll) {
+                        // UNTRUSTED fuel: every backedge. Trusted cancellation:
+                        // sampled, with tighter samples for cooperative loops.
                         context.schedulerSafepoint();
-                        // Issue #402: an UNTRUSTED carrier handoff can currently
-                        // mint a fresh physical-turn quota, so fail closed.
-                        // Never auto-cooperate while a live lexical mutex guard
-                        // is held: the guard is a no-yield critical region.
+                        boolean countExceeded = backedges >= MAX_LOOP_BACKEDGES_PER_TURN
+                                || aggressiveBackedges >= 128;
+                        boolean clockExceeded = System.nanoTime() - started
+                                >= (aggressive ? 1_000_000L : SOFT_LOOP_QUANTUM_NANOS);
                         if (!untrusted
-                                && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
-                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
+                                && (countExceeded || clockExceeded)
                                 && !guardEnv.hasLiveMutexGuards()) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
@@ -2428,6 +2456,12 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ForStmt loop,
                 Env parent,
                 SourceFlowCont continuation) {
+            if (loop.cooperative()
+                    && ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                continuation.accept(task, SourceFlow.throwing(new SecurityException(
+                        "untrusted actor cannot use rt cooperative for until task quotas are durable")));
+                return;
+            }
             Env loopEnv = new Env(parent);
             if (loop.initializer() == null) {
                 runForIteration(
@@ -2514,6 +2548,7 @@ public final class OresEvalRootNode extends RootNode {
                             if (loop.update() == null) {
                                 t.scheduleLoopContinuation(
                                         loopEnv,
+                                        loop.cooperative(),
                                         (resumed, ignored, failure) -> runForIteration(
                                                 resumed, loop, loopEnv, continuation));
                             } else {
@@ -2530,6 +2565,7 @@ public final class OresEvalRootNode extends RootNode {
                                             } else {
                                                 t2.scheduleLoopContinuation(
                                                         loopEnv,
+                                                        loop.cooperative(),
                                                         (resumed, ignored, failure2) -> runForIteration(
                                                                 resumed, loop, loopEnv, continuation));
                                             }
@@ -4865,6 +4901,10 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ForStmt loop) {
+                if (loop.cooperative()) {
+                    throw new IllegalStateException(
+                            "cooperative loop must be evaluated inside a continuation-backed source task");
+                }
                 Env loopEnv = new Env(env);
                 if (loop.initializer() != null) {
                     executeStatement(
