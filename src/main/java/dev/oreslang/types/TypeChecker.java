@@ -1758,7 +1758,8 @@ public final class TypeChecker {
             validateActorCallableBoundaryType(named.arguments().getFirst(), actorKind, false, where + " item");
             return;
         }
-        if (named.name().equals("Subscription") || named.name().equals("Notification"))
+        if (named.name().equals("Subscription") || named.name().equals("Reader")
+                || named.name().equals("Notification"))
             throw new IllegalArgumentException(where + " cannot transport subscription control state");
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")) {
@@ -3000,7 +3001,7 @@ public final class TypeChecker {
                 }
                 yield new Named("Mutex", List.of(element));
             }
-            case "Observable", "Stream", "Subscription", "Notification" -> {
+            case "Observable", "Stream", "Subscription", "Reader", "Notification" -> {
                 if (ref.arguments().size() != 1)
                     throw new IllegalArgumentException(ref.name() + " requires one item type");
                 Type item = resolve(ref.arguments().getFirst(), generics, self);
