@@ -4334,6 +4334,14 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        // Recursive alias markers are finite compiler graph back-edges, not
+        // evidence of a serializable/sendable recursive value. Until ownership
+        // and transport prove each edge, actor mail must fail closed.
+        if (named.name().startsWith("$recursive_alias$")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport recursive alias graph '" + named.name()
+                            + "' across an actor boundary without an explicit cycle-aware copy/serialization contract");
+        }
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
@@ -4417,6 +4425,7 @@ public final class TypeChecker {
             return true;
         }
         if (!(type instanceof Named named)) return false;
+        if (named.name().startsWith("$recursive_alias$")) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
