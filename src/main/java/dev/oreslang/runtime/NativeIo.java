@@ -269,7 +269,11 @@ public final class NativeIo {
             Objects.requireNonNull(convert, "convert");
             context.requirePermission(RuntimePermissions.Permission.NET,
                     endpoint, "network.socket.read_line_async");
-            reserveRead();
+            try {
+                reserveRead();
+            } catch (IllegalStateException overlap) {
+                return OresFuture.failed(overlap);
+            }
             try {
                 OresFuture<T> result = context.nativeIo().submit(
                         context, RuntimePermissions.Permission.NET, "socket.read_line_async",
@@ -338,7 +342,11 @@ public final class NativeIo {
                     endpoint, "network.socket.write_text_async");
             byte[] bytes = checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES,
                     "network.socket.write_text_async");
-            reserveWrite();
+            try {
+                reserveWrite();
+            } catch (IllegalStateException overlap) {
+                return OresFuture.failed(overlap);
+            }
             try {
                 OresFuture<Void> result = context.nativeIo().submit(
                         context, RuntimePermissions.Permission.NET, "socket.write_text_async",
