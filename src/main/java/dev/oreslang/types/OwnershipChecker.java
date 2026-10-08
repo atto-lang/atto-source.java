@@ -36,6 +36,9 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
+    private String currentModule;
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -59,12 +62,14 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
             }
         }
     }
 
     private static <T> void index(Map<String,T> map, Set<String> ambiguous, String module, String name, T value) {
         map.put(module + "." + name, value);
+        if (ambiguous.contains(name)) return;
         T previous = map.putIfAbsent(name, value);
         if (previous != null && previous != value) {
             map.remove(name);
@@ -74,9 +79,15 @@ public final class OwnershipChecker {
 
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+            String previousModule = currentModule;
+            currentModule = module.name();
+            try {
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
+                    else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+                }
+            } finally {
+                currentModule = previousModule;
             }
         }
     }
@@ -102,9 +113,10 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
-            if (fieldType != null && fieldType.isBorrow()) {
+            if (containsBorrowUnderAliases(fieldType,
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
                 throw error("field '" + klass.name() + "." + field.name()
-                        + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
+                        + "' cannot store a borrowed reference, including nested alias values; class/actor fields must own, copy, share, or proxy their state");
             }
         }
 
@@ -797,6 +809,11 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
+            if (assignment.target() instanceof Ast.MemberExpr member) {
+                ensureMutableReceiver(member.receiver(), scope, "field '" + member.member() + "'");
+            } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            }
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
             }
@@ -3010,19 +3027,71 @@ public final class OwnershipChecker {
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
+    private Ast.TypeAliasDecl ownershipTypeAlias(Ast.TypeRef type) {
+        String local = currentModule == null ? type.name() : currentModule + "." + type.name();
+        Ast.TypeAliasDecl declaration = typeAliases.get(local);
+        if (declaration != null) return declaration;
+        if (ambiguousTypeAliases.contains(type.name())) {
+            throw error("ambiguous type alias '" + type.name() + "'; qualify its module");
+        }
+        return typeAliases.get(type.name());
+    }
+
+    private boolean containsBorrowUnderAliases(Ast.TypeRef type, Set<Ast.TypeAliasDecl> visiting) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        Ast.TypeAliasDecl alias = ownershipTypeAlias(type);
+        if (alias != null) {
+            if (alias.genericParameters().size() != type.arguments().size()) return true;
+            if (!visiting.add(alias)) return false;
+            try {
+                return containsBorrowUnderAliases(substituteType(
+                        alias.target(), genericBindings(alias.genericParameters(), type.arguments())), visiting);
+            } finally {
+                visiting.remove(alias);
+            }
+        }
+        if (type.isRecordType()) {
+            for (Ast.TypeRef field : type.recordMembers().values()) {
+                if (containsBorrowUnderAliases(field, visiting)) return true;
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowUnderAliases(argument, visiting)) return true;
+        }
+        return false;
+    }
+
     private boolean isCopyType(Ast.TypeRef type) {
+        return isCopyType(type, java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private boolean isCopyType(Ast.TypeRef type, Set<Ast.TypeAliasDecl> visiting) {
         if (type == null || type.isBorrow()) return false;
-        if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
-        if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.isUnion() || type.isTupleType()) {
+            return type.arguments().stream().allMatch(element -> isCopyType(element, visiting));
+        }
+        Ast.TypeAliasDecl alias = ownershipTypeAlias(type);
+        if (alias != null) {
+            if (alias.genericParameters().size() != type.arguments().size()) return false;
+            if (!visiting.add(alias)) return false;
+            try {
+                return isCopyType(substituteType(
+                        alias.target(), genericBindings(alias.genericParameters(), type.arguments())), visiting);
+            } finally {
+                visiting.remove(alias);
+            }
+        }
+        if (type.isRecordType()) return false;
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
-            case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
+            case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst(), visiting);
             case "Result" -> type.arguments().size() == 2
-                    && isCopyType(type.arguments().get(0))
-                    && isCopyType(type.arguments().get(1));
+                    && isCopyType(type.arguments().get(0), visiting)
+                    && isCopyType(type.arguments().get(1), visiting);
             default -> false;
         };
     }
