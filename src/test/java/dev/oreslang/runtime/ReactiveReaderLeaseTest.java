@@ -141,4 +141,89 @@ final class ReactiveReaderLeaseTest {
             assertEquals(0, runtime.actorCount());
         }
     }
+
+    @Test
+    void staleReaderCannotCancelTheReplacementReader() throws Exception {
+        OresStream<Integer> stream = OresStream.fromValues(List.of(3, 4));
+        var old = stream.getReader();
+        assertEquals(3, read(old.next()).value());
+        old.releaseLock();
+        var replacement = stream.getReader();
+        assertThrows(IllegalStateException.class, old::cancel);
+        assertThrows(IllegalStateException.class, old::releaseLock);
+        assertEquals(4, read(replacement.next()).value());
+        replacement.releaseLock();
+    }
+
+    @Test
+    void cancellingTheReturnedFutureDoesNotLoseSubscriptionCleanup() throws Exception {
+        OresFuture<OresNotification<Integer>> pending = new OresFuture<>();
+        AtomicInteger cleanup = new AtomicInteger();
+        OresSubscription<Integer> sub = new OresSubscription<>() {
+            @Override protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                return pending;
+            }
+            @Override protected void cancelFromRuntime() { cleanup.incrementAndGet(); }
+        };
+        var reader = sub.getReader();
+        var inFlight = reader.next();
+        assertTrue(inFlight.cancel(false));
+        assertTrue(inFlight.isCancelled());
+        assertTrue(pending.isCancelled());
+        assertTrue(sub.isTerminated());
+        assertEquals(1, cleanup.get());
+        reader.releaseLock();
+        assertTrue(read(sub.next()).isComplete());
+        assertEquals(1, cleanup.get());
+    }
+
+    @Test
+    void subscriptionCancellationBeatsLateProducerResult() throws Exception {
+        OresFuture<OresNotification<Integer>> pending = new OresFuture<>();
+        AtomicInteger cleanup = new AtomicInteger();
+        OresSubscription<Integer> sub = new OresSubscription<>() {
+            @Override protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                return pending;
+            }
+            @Override protected void cancelFromRuntime() { cleanup.incrementAndGet(); }
+        };
+        var reader = sub.getReader();
+        var inFlight = reader.next();
+        assertTrue(reader.cancel());
+        assertTrue(inFlight.isCancelled());
+        assertFalse(pending.completeFromRuntime(OresNotification.next(88)),
+                "cancelled sources cannot publish a late item");
+        reader.releaseLock();
+        assertEquals(1, cleanup.get());
+        assertTrue(read(sub.next()).isComplete());
+    }
+
+    @Test
+    void runtimeRejectsNullNextItemsWithoutMistakingThemForComplete() {
+        assertThrows(IllegalArgumentException.class, () -> OresNotification.next(null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OresNotification<>(OresNotification.Kind.NEXT, null));
+        assertTrue(OresNotification.complete().isComplete());
+    }
+
+    @Test
+    void completedPullAlwaysReleasesDemandBeforeReaderCanBeReleased() throws Exception {
+        for (int iteration = 0; iteration < 150; iteration++) {
+            OresFuture<OresNotification<Integer>> source = new OresFuture<>();
+            OresSubscription<Integer> sub = new OresSubscription<>() {
+                @Override protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                    return source;
+                }
+            };
+            var reader = sub.getReader();
+            var pending = reader.next();
+            Thread producer = new Thread(
+                    () -> source.completeFromRuntime(OresNotification.next(9)));
+            producer.start();
+            assertEquals(9, read(pending).value());
+            reader.releaseLock();
+            producer.join(3000);
+            assertFalse(producer.isAlive());
+        }
+    }
 }
