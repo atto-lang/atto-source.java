@@ -1,0 +1,94 @@
+package dev.oreslang;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+@Timeout(20)
+final class SourceLoopSoftPreemptionTest {
+    @Test
+    void asyncForLoopRunsThousandsOfIterationsWithoutStackGrowthOrReplay() throws Exception {
+        assertEquals("10000", run("""
+                async fnc count(): int {
+                  let total = 0;
+                  for (let i = 0; i < 10000; i = i + 1) {
+                    total = total + 1;
+                  }
+                  return total;
+                }
+
+                pub async fnc main(): void {
+                  stdio.stdout.write(await count());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void nestedIfAndLoopPreserveContinueBreakAndMutableLocals() throws Exception {
+        assertEquals("667", run("""
+                async fnc count(): int {
+                  let count = 0;
+                  let i = 0;
+                  if true; do
+                    loop do
+                      i = i + 1;
+                      if i % 3 == 0; do
+                        continue;
+                      fi
+                      count = count + 1;
+                      if i == 1000; do
+                        break;
+                      fi
+                    done
+                  fi
+                  return count;
+                }
+
+                pub async fnc main(): void {
+                  stdio.stdout.write(await count());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void nestedForOfDoesNotRepeatConsumedIteratorElementsAfterCooperate() throws Exception {
+        assertEquals("2400", run("""
+                async fnc count(): int {
+                  let total = 0;
+                  for (let i = 0; i < 600; i = i + 1) do
+                    for const item of arr[1, 2, 3, 4] do
+                      total = total + 1;
+                    done
+                  done
+                  return total;
+                }
+
+                pub async fnc main(): void {
+                  stdio.stdout.write(await count());
+                  return;
+                }
+                """));
+    }
+
+    private static String run(String sourceText) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, sourceText, "source-loop-quantum.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+}
