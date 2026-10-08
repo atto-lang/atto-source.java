@@ -226,4 +226,38 @@ final class ReactiveReaderLeaseTest {
             assertFalse(producer.isAlive());
         }
     }
+    @Test
+    void cancellationWinsAgainstLateProducerCompletion() throws Exception {
+        OresFuture<OresNotification<Integer>> source = new OresFuture<>();
+        OresSubscription<Integer> sub = new OresSubscription<>() {
+            @Override protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                return source;
+            }
+        };
+        var reader = sub.getReader();
+        var pending = reader.next();
+        assertTrue(reader.cancel());
+        assertTrue(pending.isCancelled());
+        source.completeFromRuntime(OresNotification.next(77));
+        reader.releaseLock();
+        assertTrue(read(sub.next()).isComplete());
+    }
+
+    @Test
+    void lateReaderCannotCancelNewReaderAfterHandoff() throws Exception {
+        var sub = OresObservable.fromValues(List.of(1, 2)).subscribe();
+        var old = sub.getReader();
+        assertEquals(1, read(old.next()).value());
+        old.releaseLock();
+        var current = sub.getReader();
+        assertThrows(IllegalStateException.class, old::cancel);
+        assertEquals(2, read(current.next()).value());
+        current.releaseLock();
+    }
+
+    @Test
+    void nullNextNotificationIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> OresNotification.next(null));
+    }
+
 }
