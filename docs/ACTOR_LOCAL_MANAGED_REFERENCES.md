@@ -125,6 +125,41 @@ would leak a mutable alias to owned data. A scoped `ref.with_read` or
 exclusive `ref.with_mut` API needs dedicated lifetime tracking and
 reentrancy/actor-turn audits before it can be introduced.
 
+## Async suspension and pinning audit
+
+Oreslang's Java/Graal source continuation frames are heap-owned and retain
+**managed object references**, not raw pointers into a movable Java stack.
+`OresScheduler` can move a logical task *handle* between ready queues and
+carrier threads without relocating an address-sensitive Rust-style future.
+This avoids a user-facing `Pin<T>` requirement for the reference backend.
+
+The safety contract is nonetheless strict:
+
+1. A `Ref<T>` or `WeakRef<T>` captured in an actor source continuation
+   remains confined to its original actor execution domain. Resume after
+   `await` or cooperation must re-enter that domain before any access.
+2. An ordinary lexical `&T` or `&mut T` borrow cannot cross a suspension
+   point today. `OwnershipChecker.checkSuspensionBorrows` deliberately
+   rejects it; the actor runtime's implicit `self` borrow is the only
+   special mailbox-owned exception.
+3. A registered suspended `OresScheduler` task must have at most one
+   continuation wake. Cancellation detaches the waiter; completing the
+   producer after cancellation must not re-enter the task or touch retained
+   actor-local cells.
+4. `Ref<T>` strong/weak *reachability* is independent of pinned-address
+   guarantees. Cycles are GC-reclaimed when unreachable, not automatically
+   broken when an `await` finishes or a task is cancelled.
+5. Future LLVM/raw-pointer backends must use stable-address storage,
+   generation-checked handles, or relocatable frame-relative references.
+   Moving a frame with untracked internal raw pointers is forbidden; any
+   native pinning mechanism is backend-internal.
+
+Regressions in `ActorLocalReferencesTest` exercise a self-cyclic cell across
+a suspended actor task, mailbox re-entry, identity-preserving weak upgrade,
+and cancellation followed by late completion. These tests validate behavior
+on the active backend; they are **not** proof of every possible interleaving
+or of native LLVM pointer safety.
+
 ## Validation
 
 Maven regression suites: `ActorLocalReferencesTest` (Java runtime) and
