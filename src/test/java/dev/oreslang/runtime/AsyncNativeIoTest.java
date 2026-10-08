@@ -402,4 +402,39 @@ class AsyncNativeIoTest {
             assertEquals("Some(pong)\n", output.replace("\r", ""));
         }
     }
+
+    @Test void concurrentReadsOnSameSocketDoNotConsumeMultipleBlockedWorkers() throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var peers = Executors.newSingleThreadExecutor()) {
+            server.setSoTimeout(5000);
+            var exchange = peers.submit(() -> {
+                try (var peer = server.accept()) {
+                    // Give both independently submitted native I/O jobs an
+                    // opportunity to start before completing the blocked read.
+                    Thread.sleep(400);
+                    peer.getOutputStream().write("one\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    peer.shutdownOutput();
+                }
+                return null;
+            });
+            String output = run("""
+                pub async routine main(): void {
+                  val socket = await network.connect_async("127.0.0.1", %d);
+                  val first = socket.read_line_async();
+                  val second = socket.read_line_async();
+                  try { stdio.println(await first); }
+                  catch (failure) { stdio.println("overlap-rejected"); }
+                  try { stdio.println(await second); }
+                  catch (failure) { stdio.println("overlap-rejected"); }
+                  await socket.close_async();
+                  return;
+                }
+                """.formatted(server.getLocalPort()), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getLocalPort()),
+                    new ByteArrayOutputStream());
+            exchange.get(5, TimeUnit.SECONDS);
+            assertTrue(output.contains("Some(one)"), output);
+            assertEquals(1, output.split("overlap-rejected", -1).length - 1, output);
+        }
+    }
 }
