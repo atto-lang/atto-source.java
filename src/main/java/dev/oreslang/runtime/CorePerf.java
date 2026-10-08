@@ -93,9 +93,10 @@ public final class CorePerf {
         shutdownHookInstalled = true;
     }
 
-    /** Query only at setup boundaries; hot paths should use start/end directly. */
+    /** Query only at setup boundaries; saturated recorders need no new wrappers. */
     public static boolean enabled() {
-        return active != null;
+        Recorder recorder = active;
+        return recorder != null && !recorder.saturated;
     }
 
     static boolean debugEnabled() {
@@ -130,7 +131,11 @@ public final class CorePerf {
         if (started == 0L) return;
         Recorder recorder = active;
         if (recorder != null && !recorder.saturated) {
-            recorder.record(phase, started, System.nanoTime());
+            long finished = System.nanoTime();
+            // Diagnostics must not change request outcomes if a clock sample is invalid.
+            if (validDuration(started, finished)) {
+                recorder.record(phase, started, finished);
+            }
         }
     }
 
@@ -138,9 +143,14 @@ public final class CorePerf {
     public static void elapsed(int phase, long started, long ended) {
         Recorder recorder = active;
         if (recorder != null && !recorder.saturated
-                && started != 0L && ended - started >= 0L) {
+                && started != 0L && validDuration(started, ended)) {
             recorder.record(phase, started, ended);
         }
+    }
+
+    /** Guard subtraction overflow as well as reversed timestamps. */
+    static boolean validDuration(long started, long finished) {
+        return finished >= started && finished - started >= 0L;
     }
 
     /** Package-visible recorder for tests; separate from global CLI state. */
@@ -168,7 +178,7 @@ public final class CorePerf {
 
         void record(int phase, long started, long finished) {
             long duration = finished - started;
-            if (phase < 1 || phase >= NAMES.length || finished < started || duration < 0L) {
+            if (phase < 1 || phase >= NAMES.length || !validDuration(started, finished)) {
                 throw new IllegalArgumentException("invalid core perf sample");
             }
             int index = reserve();
