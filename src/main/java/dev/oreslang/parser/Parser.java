@@ -2598,6 +2598,18 @@ public final class Parser {
             Token pipe = previous();
             Ast.Expr target = parsePostfix();
             if (target instanceof Ast.CallExpr call) {
+                // Callee evaluation precedes argument evaluation in ordinary
+                // calls. Reject effectful computed callee expressions here:
+                // lowering them as f(value) would otherwise evaluate the RHS
+                // factory before the piped LHS, contrary to value-first usage.
+                if (!(call.callee() instanceof Ast.NameExpr
+                        || call.callee() instanceof Ast.LambdaExpr
+                        || call.callee() instanceof Ast.MemberExpr member
+                            && member.receiver() instanceof Ast.NameExpr)) {
+                    throw error(pipe,
+                            "pipeline calls require a named callable or a direct member callable; "
+                                    + "evaluate computed callable expressions in a separate binding first");
+                }
                 List<Ast.Expr> arguments = new ArrayList<>();
                 arguments.add(value);
                 arguments.addAll(call.arguments());
