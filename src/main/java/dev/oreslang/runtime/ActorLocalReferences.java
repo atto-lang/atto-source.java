@@ -30,6 +30,10 @@ public final class ActorLocalReferences {
         if (!(value instanceof OresMutex.SharedState)
                 && !(value instanceof java.util.Map<?, ?>)
                 && !(value instanceof Iterable<?>)
+                && !(value instanceof java.util.Optional<?>)
+                && !(value instanceof java.util.Map.Entry<?, ?>)
+                && !(value instanceof java.util.concurrent.atomic.AtomicReference<?>)
+                && !(value instanceof java.lang.ref.Reference<?>)
                 && !value.getClass().isArray()) {
             return;
         }
@@ -42,11 +46,24 @@ public final class ActorLocalReferences {
                 throw new SecurityException(
                         "actor-local Ref<T>/WeakRef<T> cannot enter a buffered channel or select case");
             }
+            // Mutable/GC-managed host wrappers cannot be proven safe at the
+            // time a deferred select write eventually commits. Reject rather
+            // than scanning a transient snapshot that can change afterward.
+            if (node instanceof java.util.concurrent.atomic.AtomicReference<?>
+                    || node instanceof java.lang.ref.Reference<?>) {
+                throw new SecurityException(
+                        "mutable host reference wrapper cannot enter a buffered channel or select case");
+            }
             if (seen.put(node, Boolean.TRUE) != null) continue;
             if (node instanceof OresMutex.SharedState state) {
                 for (Object child : state.sharedStateChildren()) {
                     if (child != null) pending.add(child);
                 }
+            } else if (node instanceof java.util.Optional<?> optional) {
+                optional.ifPresent(pending::add);
+            } else if (node instanceof java.util.Map.Entry<?, ?> entry) {
+                if (entry.getKey() != null) pending.add(entry.getKey());
+                if (entry.getValue() != null) pending.add(entry.getValue());
             } else if (node instanceof java.util.Map<?, ?> map) {
                 for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
                     if (entry.getKey() != null) pending.add(entry.getKey());
