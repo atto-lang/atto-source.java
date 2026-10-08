@@ -58,6 +58,8 @@ public final class HpcActorGroupGcPlan {
             int poolGroups,
             int activeActorTurns,
             int pendingCompletions,
+            int suspendedFrames,
+            int registeredWakers,
             int externalLeases,
             long usedHeapBytes,
             long softLimitBytes,
@@ -67,7 +69,8 @@ public final class HpcActorGroupGcPlan {
             Objects.requireNonNull(backend, "backend");
             Objects.requireNonNull(policy, "policy");
             if (poolGroups < 1 || activeActorTurns < 0
-                    || pendingCompletions < 0 || externalLeases < 0) {
+                    || pendingCompletions < 0 || suspendedFrames < 0
+                    || registeredWakers < 0 || externalLeases < 0) {
                 throw new IllegalArgumentException("negative activity or no actor groups");
             }
             if (usedHeapBytes < 0 || softLimitBytes <= 0
@@ -135,13 +138,19 @@ public final class HpcActorGroupGcPlan {
             return new Report(Decision.REJECT_NEW_WORK, true, reasons);
         }
 
+        // A pending Future may own an async frame and its whole region despite
+        // zero executing actors and no completion queued yet. Waiters may hold
+        // the same region via callback registrations. They must be detached
+        // and drained before the group backing heap can be retired.
         if (request.activeActorTurns() != 0
                 || request.pendingCompletions() != 0
+                || request.suspendedFrames() != 0
+                || request.registeredWakers() != 0
                 || request.externalLeases() != 0) {
             if (request.usedHeapBytes() >= request.softLimitBytes()) {
                 reasons.add("soft heap budget reached while busy: schedule drain promptly");
             } else {
-                reasons.add("defer explicit group maintenance until all turns/I/O/leases quiesce");
+                reasons.add("defer explicit group maintenance until turns, suspended frames, wakers, I/O and leases quiesce");
             }
             return new Report(Decision.DRAIN_FIRST, true, reasons);
         }
