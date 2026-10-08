@@ -176,6 +176,20 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void preservesUnrelatedAnnotationsWithSimilarNames() {
+        List<Token> original = new Lexer("@expand(foo) fnc unrelated(): void {}").scan();
+        assertEquals(original, MacroExpander.expand(original).tokens());
+    }
+
+    @Test
+    void largeOrdinarySourcesDoNotExhaustTheMacroOnlyTokenBudget() {
+        StringBuilder large = new StringBuilder();
+        for (int i = 0; i < 60_000; i++) large.append("x ");
+        List<Token> original = new Lexer(large.toString()).scan();
+        assertEquals(original, MacroExpander.expand(original).tokens());
+    }
+
+    @Test
     void scalarAndStringArgumentsRetainLexemeValues() {
         String source = """
                 macro_rules! identity { ($value:expr) => { $value }; }
