@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Trusted native host-I/O implementations for Oreslang.
@@ -220,8 +221,10 @@ public final class NativeIo {
         private final Socket socket;
         private final BufferedInputStream reader;
         private final OutputStream writer;
-        // TCP is full duplex: a blocked read cannot hold the write lock.
-        private final Object writeLock = new Object();
+        // Fail fast on overlapping operations rather than parking extra I/O
+        // workers on a socket monitor; read and write remain full duplex.
+        private final AtomicBoolean readBusy = new AtomicBoolean();
+        private final AtomicBoolean writeBusy = new AtomicBoolean();
         private boolean skipLineFeed;
 
         private TcpConnection(OresContext context, String endpoint, Socket socket) throws IOException {
@@ -232,9 +235,12 @@ public final class NativeIo {
             this.writer = socket.getOutputStream();
         }
 
-        public synchronized String readLine() {
+        public String readLine() {
             rejectBlockingUntrustedNetwork("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
+            if (!readBusy.compareAndSet(false, true)) {
+                throw new IllegalStateException("concurrent reads on one TCP connection are not supported");
+            }
             try {
                 // Bound actual inbound bytes, not decoded UTF-16 characters:
                 // multi-byte UTF-8 sequences must not bypass the line budget.
@@ -264,6 +270,8 @@ public final class NativeIo {
                 }
             } catch (IOException failure) {
                 throw new IllegalStateException("network read failed for " + endpoint + ": " + failure.getMessage(), failure);
+            } finally {
+                readBusy.set(false);
             }
         }
 
@@ -271,13 +279,16 @@ public final class NativeIo {
             rejectBlockingUntrustedNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             byte[] bytes = checkedNetworkText(value, MAX_SOCKET_WRITE_BYTES, "network.socket.write_text");
-            synchronized (writeLock) {
-                try {
-                    writer.write(bytes);
-                    writer.flush();
-                } catch (IOException failure) {
-                    throw new IllegalStateException("network write failed for " + endpoint + ": " + failure.getMessage(), failure);
-                }
+            if (!writeBusy.compareAndSet(false, true)) {
+                throw new IllegalStateException("concurrent writes on one TCP connection are not supported");
+            }
+            try {
+                writer.write(bytes);
+                writer.flush();
+            } catch (IOException failure) {
+                throw new IllegalStateException("network write failed for " + endpoint + ": " + failure.getMessage(), failure);
+            } finally {
+                writeBusy.set(false);
             }
         }
 
