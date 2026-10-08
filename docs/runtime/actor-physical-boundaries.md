@@ -65,6 +65,30 @@ Do not describe macOS lane placement as hard CPU affinity. Multiple actors and
 lanes can share a CPU; affinity does not reserve it exclusively. The configured
 CPU list currently applies to each actor-kind pool, not separate cpusets per kind.
 
+## Lifecycle control is independent of data capacity
+
+The three channels above are not a complete description of actor lifecycle state.
+`self.end()` requests a local lifecycle transition directly; it does not publish an
+output or reserve an inbox/continuation slot. It seals admission and cancels queued
+work. Finalization still waits for the current execution boundary, child teardown,
+and registered cleanup. It does not wait for the output consumer to drain data.
+Already-buffered output remains readable after `actor.done()` completes; stream
+exhaustion and actor termination are distinct observations. An extra output emitted
+by cleanup into a full stream fails cleanup and completes termination exceptionally,
+rather than waiting for the consumer.
+
+For remote protected workers, reserve a lifecycle signaling path independent of
+body/output/continuation credits. Idempotent stop/cancel state can be latched and
+wake the scheduler; it need not allocate a fourth general-purpose Channel. Any
+cross-actor guest callback induced by a signal still runs under the recipient's
+execution lease. OS-level force termination is a separate supervisor capability.
+
+Erlang is an influence, not this runtime's channel layout: ordinary messages are
+also signals, trapped exit and monitor signals may become queued messages, and
+signal ordering must be respected. Runtime signal handling does not imply every
+exit notification overtakes application messages. See the official
+[process and signal semantics](https://www.erlang.org/doc/system/ref_man_processes.html).
+
 ## Physical heap backend decision
 
 Start with exec'd workers as the reference protected backend. Each live isolated

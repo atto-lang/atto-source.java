@@ -124,4 +124,60 @@ final class ActorEndCleanupTest {
                     ref.failure().orElseThrow().getMessage());
         }
     }
+    @Test
+    void endDoesNotNeedCapacityInFullInboxControlInboxOrOutput() throws Exception {
+        IsolatePolicy baseline = IsolatePolicy.developer();
+        IsolatePolicy oneSlot = new IsolatePolicy(baseline.capabilities(), baseline.maxHeapBytes(),
+                1, baseline.maxWallTime(), baseline.adversarial());
+        AtomicInteger receives = new AtomicInteger();
+        AtomicInteger resumptions = new AtomicInteger();
+        AtomicInteger cleanups = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime(oneSlot)) {
+            var actor = runtime.<String>spawnSharedTrusted(context -> (message, turn) -> {
+                receives.incrementAndGet();
+                runtime.emitCurrentActorOutput("buffered");
+                turn.self().send("must-not-run");
+                // Fill the independent control quota without letting this turn yield.
+                for (int i = 0; i < 1024; i++) {
+                    runtime.startActorTask(resume -> {
+                        resumptions.incrementAndGet();
+                        return OresScheduler.done(null);
+                    });
+                }
+                assertTrue(turn.self().isAlive());
+                runtime.endCurrentActorWithCleanup(cleanups::incrementAndGet);
+            });
+            actor.send("go");
+            // Deliberately do not consume any output before observing actor termination.
+            actor.done().get(2, java.util.concurrent.TimeUnit.SECONDS);
+            assertFalse(actor.isAlive());
+            assertEquals(1, receives.get());
+            assertEquals(0, resumptions.get());
+            assertEquals(1, cleanups.get());
+            assertFalse(actor.outputs().isDone(), "buffered output survives actor termination");
+            assertEquals("buffered", actor.outputs().next().join().value().value());
+            assertTrue(actor.outputs().next().join().done());
+        }
+    }
+
+    @Test
+    void cleanupEmissionIntoFullOutputFailsWithoutStrandingTermination() throws Exception {
+        IsolatePolicy baseline = IsolatePolicy.developer();
+        IsolatePolicy oneSlot = new IsolatePolicy(baseline.capabilities(), baseline.maxHeapBytes(),
+                1, baseline.maxWallTime(), baseline.adversarial());
+        try (ActorRuntime runtime = new ActorRuntime(oneSlot)) {
+            var actor = runtime.<String>spawnSharedTrusted(context -> (message, turn) -> {
+                runtime.emitCurrentActorOutput("buffered");
+                runtime.endCurrentActorWithCleanup(() -> runtime.emitCurrentActorOutput("overflow"));
+            });
+            actor.send("go");
+            var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> actor.done().get(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertFalse(actor.isAlive());
+            assertEquals("buffered", actor.outputs().next().join().value().value());
+            assertThrows(java.util.concurrent.CompletionException.class, () -> actor.outputs().next().join());
+        }
+    }
+
 }
