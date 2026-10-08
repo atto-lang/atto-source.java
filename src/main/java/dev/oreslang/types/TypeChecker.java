@@ -5220,6 +5220,7 @@ public final class TypeChecker {
                     }
                     yield new Function(List.of(), element);
                 }
+                case "clear" -> new Function(List.of(), Primitive.VOID);
                 case "take" -> new Function(List.of(), new Named("Option", List.of(element)));
                 case "set" -> new Function(List.of(element), Primitive.VOID);
                 case "downgrade" -> new Function(List.of(), new Named("WeakRef", List.of(element)));
