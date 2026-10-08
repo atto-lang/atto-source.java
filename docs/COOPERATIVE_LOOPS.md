@@ -46,6 +46,14 @@ cooperation decisions, not per-element or per-loop checks.
 - `map<T,R>`, `filter<T>`, `reduce<T,R>`, `forEach<T>`
 - `scan<T,R>`, `flatMap<T,R>`, `any<T>`, `all<T>`
 
+**Ownership contract:** the current `Array<T>` input parameter is **owned and
+consumed** by every cooperative collection operator. The caller must not
+reuse its original binding after the call; obtain any needed length/metadata
+before passing it. A plain `borrow Array<T>` cannot be carried across a
+cooperative handoff. Non-consuming variants would need an explicit
+shareable-readonly handle or an owned snapshot, with the associated lifetime,
+aliasing and heap-budget rules. Do not silently copy or alias mutable elements.
+
 All iterate with the *same* source `rt cooperative for` backedges. Nested
 `flatMap` loops share the enclosing source task's bounded turn, rather than
 spawning extra Futures or worker actors for each nested element. They do not
