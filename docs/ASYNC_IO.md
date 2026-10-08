@@ -79,3 +79,30 @@ carrier**, proving that the first actor's pending read does not occupy that carr
 EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
+
+
+## Bounded network text APIs
+
+Whole-text HTTP calls, including `http.get_text_async` and
+`http.post_text_async`, admit at most **4 MiB UTF-8 bytes** per request
+body and response body. A declared oversized response is rejected immediately,
+and chunked/unknown-length responses are independently capped while reading.
+The response stream is closed on overflow; HTTP redirects remain disabled.
+Large responses need separately designed chunked/backpressured streaming APIs.
+
+`socket.read_line_async()` admits at most **65,536 UTF-16 characters** in
+one line. A line exceeding that bound fails and closes its connection rather
+than silently returning a truncated record. LF, CRLF, CR, and a trailing EOF
+line are accepted. `socket.write_text_async()` admits at most **65,536 UTF-8
+bytes** per write call. The underlying compatibility methods share these
+limits, even when dispatched through a bounded I/O worker.
+
+A synchronous network call from an **UNTRUSTED** actor turn now fails closed
+rather than blocking its assigned carrier. The `*_async` family moves native
+blocking calls onto bounded I/O workers so awaiting network data can release
+the actor carrier. This is defensive hardening, **not** a claim that untrusted
+actors currently have network authority: `untrustedActor()` still defaults
+to zero capabilities and effective untrusted actor policies strip requested
+NETWORK grants. Scoped opt-in network grants, per-actor byte and concurrency
+budgets, and full compiler-driven preemption for untrusted loops remain in
+#485, #484 and #402.
