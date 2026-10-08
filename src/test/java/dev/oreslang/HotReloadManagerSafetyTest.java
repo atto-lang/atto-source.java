@@ -102,6 +102,31 @@ final class HotReloadManagerSafetyTest {
     }
 
     @Test
+    void directGenerationCloseEvictsDeadActivePointersAndRegistrations() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var generation = manager.loadAndStart("service.ores", GOOD);
+            generation.close();
+            generation.close();
+            assertTrue(generation.closed());
+            assertNull(manager.active("service.ores"));
+            assertNull(manager.active());
+            assertEquals(0, manager.liveGenerations());
+            assertTrue(manager.activeGenerations().isEmpty());
+        }
+    }
+
+    @Test
+    void directFailedStartAlsoEvictsClosedGeneration() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var generation = manager.load("service.ores", BAD);
+            assertThrows(RuntimeException.class, generation::start);
+            assertTrue(generation.closed());
+            assertNull(manager.active("service.ores"));
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
     void failedLaterVersionReleasesQuotaWithoutClosingPreviouslyStartedContext() {
         try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
             var healthy = manager.loadAndStart("service.ores", GOOD);
