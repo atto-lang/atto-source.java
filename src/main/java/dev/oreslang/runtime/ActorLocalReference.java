@@ -84,8 +84,12 @@ public final class ActorLocalReference {
         /** Copies only immutable scalar values; never silently aliases aggregate state. */
         public T getCopy() {
             T result = checkedCell(currentDomain()).value;
-            if (!(result instanceof String || result instanceof Number || result instanceof Boolean
-                    || result instanceof Character || result instanceof Enum<?>)) {
+            if (!(result instanceof String || result instanceof Boolean
+                    || result instanceof Character || result instanceof Byte
+                    || result instanceof Short || result instanceof Integer
+                    || result instanceof Long || result instanceof Float
+                    || result instanceof Double || result instanceof java.math.BigInteger
+                    || result instanceof java.math.BigDecimal)) {
                 throw new IllegalArgumentException(
                         "Ref<T>.get_copy requires a Copy scalar; use swap for owned aggregate state");
             }
@@ -107,22 +111,31 @@ public final class ActorLocalReference {
 
     /** Weak handle holds no strong pointer to the stored cell. */
     public static final class Weak<T> {
-        private final Object owner;
+        // Weak handles must not keep an actor's execution domain (and its
+        // retained runtime state) alive after all strong handles have vanished.
+        private final WeakReference<Object> owner;
         private final WeakReference<Cell<T>> pointer;
 
         private Weak(Cell<T> cell) {
-            this.owner = cell.owner;
+            this.owner = new WeakReference<>(cell.owner);
             this.pointer = new WeakReference<>(cell);
         }
 
+        private void checkDomain(Object domain) {
+            Object expected = owner.get();
+            if (expected == null || expected != domain) {
+                throw new SecurityException("WeakRef<T> actor execution domain expired or does not match");
+            }
+        }
+
         public Optional<Strong<T>> upgrade() {
-            requireOwner(owner, currentDomain());
+            checkDomain(currentDomain());
             Cell<T> state = pointer.get();
             return state == null ? Optional.empty() : Optional.of(new Strong<>(state));
         }
 
         public boolean isAlive() {
-            requireOwner(owner, currentDomain());
+            checkDomain(currentDomain());
             return pointer.get() != null;
         }
 
@@ -159,7 +172,7 @@ public final class ActorLocalReference {
     }
 
     static <T> Optional<Strong<T>> upgradeForDomain(Weak<T> handle, Object domain) {
-        requireOwner(handle.owner, domain);
+        handle.checkDomain(domain);
         Cell<T> state = handle.pointer.get();
         return state == null ? Optional.empty() : Optional.of(new Strong<>(state));
     }
