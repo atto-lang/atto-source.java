@@ -16,6 +16,19 @@ import java.util.Optional;
 public final class ActorLocalReferences {
     private ActorLocalReferences() { }
 
+    // Match the mailbox graph's 100k-node limit. Admission must not allocate
+    // an unbounded pending queue or iterate attacker-controlled graphs forever.
+    private static final int MAX_CHANNEL_GRAPH_NODES = 100_000;
+
+    private static void enqueueChild(java.util.ArrayDeque<Object> pending, Object child) {
+        if (child == null) return;
+        if (pending.size() >= MAX_CHANNEL_GRAPH_NODES) {
+            throw new IllegalArgumentException(
+                    "buffered channel payload exceeds maximum graph nodes " + MAX_CHANNEL_GRAPH_NODES);
+        }
+        pending.add(child);
+    }
+
     /**
      * Buffered channels and select write registrations may outlive a mailbox turn.
      * Reject actor-local capabilities before retaining a payload, including
@@ -39,8 +52,13 @@ public final class ActorLocalReferences {
         }
         java.util.ArrayDeque<Object> pending = new java.util.ArrayDeque<>();
         java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
-        pending.add(value);
+        enqueueChild(pending, value);
+        int visited = 0;
         while (!pending.isEmpty()) {
+            if (++visited > MAX_CHANNEL_GRAPH_NODES) {
+                throw new IllegalArgumentException(
+                        "buffered channel payload exceeds maximum graph nodes " + MAX_CHANNEL_GRAPH_NODES);
+            }
             Object node = pending.removeLast();
             if (node instanceof Ref<?> || node instanceof WeakRef<?>) {
                 throw new SecurityException(
@@ -57,26 +75,26 @@ public final class ActorLocalReferences {
             if (seen.put(node, Boolean.TRUE) != null) continue;
             if (node instanceof OresMutex.SharedState state) {
                 for (Object child : state.sharedStateChildren()) {
-                    if (child != null) pending.add(child);
+                    if (child != null) enqueueChild(pending, child);
                 }
             } else if (node instanceof java.util.Optional<?> optional) {
-                optional.ifPresent(pending::add);
+                optional.ifPresent(child -> enqueueChild(pending, child));
             } else if (node instanceof java.util.Map.Entry<?, ?> entry) {
-                if (entry.getKey() != null) pending.add(entry.getKey());
-                if (entry.getValue() != null) pending.add(entry.getValue());
+                if (entry.getKey() != null) enqueueChild(pending, entry.getKey());
+                if (entry.getValue() != null) enqueueChild(pending, entry.getValue());
             } else if (node instanceof java.util.Map<?, ?> map) {
                 for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
-                    if (entry.getKey() != null) pending.add(entry.getKey());
-                    if (entry.getValue() != null) pending.add(entry.getValue());
+                    if (entry.getKey() != null) enqueueChild(pending, entry.getKey());
+                    if (entry.getValue() != null) enqueueChild(pending, entry.getValue());
                 }
             } else if (node instanceof Iterable<?> iterable) {
                 for (Object child : iterable) {
-                    if (child != null) pending.add(child);
+                    if (child != null) enqueueChild(pending, child);
                 }
             } else if (node.getClass().isArray()) {
                 for (int i = 0; i < java.lang.reflect.Array.getLength(node); i++) {
                     Object child = java.lang.reflect.Array.get(node, i);
-                    if (child != null) pending.add(child);
+                    if (child != null) enqueueChild(pending, child);
                 }
             }
         }
