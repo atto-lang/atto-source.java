@@ -80,6 +80,7 @@ final class UntrustedSourceTaskQuotaTest {
         AtomicReference<OresFuture<Integer>> taskResult = new AtomicReference<>();
         OresFuture<Integer> awaited = new OresFuture<>();
         CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch firstResume = new CountDownLatch(1);
         AtomicInteger resumes = new AtomicInteger();
 
         try (SharedCodeImageStore store = new SharedCodeImageStore();
@@ -96,7 +97,10 @@ final class UntrustedSourceTaskQuotaTest {
                         ActorRuntime.ActorInboxMail<Object> mail, ActorRuntime.ActorContext<Object> context) {
                     taskResult.set(context.runtime().startActorTask(resume -> {
                         resumes.incrementAndGet();
-                        if (resume.initial()) return OresScheduler.await(awaited);
+                        if (resume.initial()) {
+                            firstResume.countDown();
+                            return OresScheduler.await(awaited);
+                        }
                         context.runtime().schedulerSafepoint();
                         return OresScheduler.done(42);
                     }));
@@ -109,6 +113,7 @@ final class UntrustedSourceTaskQuotaTest {
                 actor.send("await");
                 assertTrue(started.await(5, TimeUnit.SECONDS));
                 assertNotNull(taskResult.get());
+                assertTrue(firstResume.await(5, TimeUnit.SECONDS));
                 Thread.sleep(400); // UNTRUSTED policy's 250ms wall budget runs across await
                 awaited.completeFromRuntime(1);
                 ExecutionException failure = assertThrows(ExecutionException.class,
