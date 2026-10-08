@@ -1,0 +1,137 @@
+package dev.oreslang.runtime;
+
+import java.lang.ref.WeakReference;
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * Identity-bearing, actor-confined storage. A strong Ref owns reachability of
+ * its cell; WeakRef never prolongs reachability. Neither capability is valid
+ * outside the actor execution domain that allocated it.
+ *
+ * <p>These handles intentionally do not implement SharedState or Serializable.
+ * They must not cross actor mailboxes, async task boundaries, native/host
+ * transports, or shared-mutex publication.</p>
+ */
+public final class ActorLocalReferences {
+    private ActorLocalReferences() { }
+
+    private static Object requireActorDomain() {
+        Object domain = ActorRuntime.currentActorExecutionDomain();
+        if (domain == null) {
+            throw new IllegalStateException("Ref<T> and WeakRef<T> require an active actor turn");
+        }
+        return domain;
+    }
+
+    private static final class Cell<T> {
+        private final Object ownerDomain;
+        private T value;
+        private boolean present;
+
+        private Cell(Object ownerDomain, T initial) {
+            this.ownerDomain = ownerDomain;
+            this.value = Objects.requireNonNull(initial, "Ref.new requires an owned value");
+            this.present = true;
+        }
+
+        private void checkOwner() {
+            if (requireActorDomain() != ownerDomain) {
+                throw new SecurityException(
+                        "actor-local Ref<T> or WeakRef<T> accessed outside its owning actor");
+            }
+        }
+    }
+
+    public static <T> Ref<T> create(T initial) {
+        return new Ref<>(new Cell<>(requireActorDomain(), initial));
+    }
+
+    public static final class Ref<T> {
+        private final Cell<T> cell;
+
+        private Ref(Cell<T> cell) { this.cell = Objects.requireNonNull(cell); }
+
+        public boolean isSet() {
+            cell.checkOwner();
+            return cell.present;
+        }
+
+        /** Consumes the cell's value, leaving an empty cell; it never duplicates ownership. */
+        public Optional<T> take() {
+            cell.checkOwner();
+            if (!cell.present) return Optional.empty();
+            T previous = cell.value;
+            cell.value = null;
+            cell.present = false;
+            return Optional.of(previous);
+        }
+
+        /** Discards the prior value, moving a replacement into the cell. */
+        public void set(T replacement) {
+            cell.checkOwner();
+            cell.value = Objects.requireNonNull(replacement, "Ref.set requires owned data");
+            cell.present = true;
+        }
+
+        /**
+         * Copies only known immutable scalar data. For arbitrary owned T, use
+         * take() or an eventual lexical read-borrow operation instead.
+         */
+        public T getCopy() {
+            cell.checkOwner();
+            if (!cell.present) {
+                throw new IllegalStateException("Ref<T> cell is empty");
+            }
+            if (!isScalar(cell.value)) {
+                throw new IllegalArgumentException(
+                        "Ref.get_copy only supports immutable scalar values; use take() for owned data");
+            }
+            return cell.value;
+        }
+
+        public WeakRef<T> downgrade() {
+            cell.checkOwner();
+            return new WeakRef<>(cell);
+        }
+
+        public boolean sameIdentity(Ref<?> other) {
+            cell.checkOwner();
+            Objects.requireNonNull(other, "other").cell.checkOwner();
+            return cell == other.cell;
+        }
+
+        @Override public String toString() { return "Ref<actor-local>"; }
+    }
+
+    public static final class WeakRef<T> {
+        private final Object ownerDomain;
+        private final WeakReference<Cell<T>> target;
+
+        private WeakRef(Cell<T> cell) {
+            this.ownerDomain = cell.ownerDomain;
+            this.target = new WeakReference<>(cell);
+        }
+
+        public Optional<Ref<T>> upgrade() {
+            if (requireActorDomain() != ownerDomain) {
+                throw new SecurityException(
+                        "actor-local WeakRef<T> accessed outside its owning actor");
+            }
+            Cell<T> cell = target.get();
+            return cell == null ? Optional.empty() : Optional.of(new Ref<>(cell));
+        }
+
+        @Override public String toString() { return "WeakRef<actor-local>"; }
+    }
+
+    private static boolean isScalar(Object value) {
+        return value instanceof String || value instanceof Boolean
+                || value instanceof Character || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof Float
+                || value instanceof Double || value instanceof java.math.BigInteger
+                || value instanceof java.math.BigDecimal
+                || value instanceof java.util.UUID || value instanceof Enum<?>;
+    }
+}
