@@ -8750,7 +8750,7 @@ public final class OresEvalRootNode extends RootNode {
 
             // An active-path revisit is a cycle, not a harmless DAG alias.
             // Do not publish circular mutable state across shared actor domains.
-            if (!seen.add(value)) return false;
+            if (seen.size() >= 64 || !seen.add(value)) return false;
             try {
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
