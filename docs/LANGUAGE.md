@@ -94,13 +94,18 @@ indirection, for example `type Loop = Loop;` or
 `type Loop = struct{next: Loop};`, is rejected. Type arguments must not
 grow or change across recursive expansion.
 
-Locally owned object graphs may contain cycles; the JVM garbage collector can
-reclaim unreachable cycles. Oreslang's explicit ownership/borrow rules still
-apply to mutating references. Actor mailbox transport and async argument
-detachment remain *separate ownership boundaries*: cyclic mutable graphs are
-rejected there rather than silently shared, and actor-reference capabilities
-must not be confused with ordinary mutable object graphs. This implementation
-does not claim cyclic serialization or cross-actor identity preservation.
+The compiler also accepts nominal self-referential class fields, such as
+`Option<Link>` within `define class Link`. Recursive type **definitions**
+do not themselves confer a right to create cyclic mutable **values**:
+self-referential assignments remain subject to Oreslang's ownership and borrow
+checker, and some graph constructions may be rejected. JVM GC can collect
+unreachable cycles that arise in permitted local object graphs.
+
+Actor mailbox transport and async argument detachment remain *separate
+ownership boundaries*: cyclic mutable graphs are rejected there instead of
+silently shared. Actor-reference capabilities are not ordinary mutable object
+graphs. Cross-boundary cyclic serialization, sharing and identity-preserving
+copy are **not yet implemented**; they require a distinct explicit protocol.
 
 ### Circular imports and file initialization
 

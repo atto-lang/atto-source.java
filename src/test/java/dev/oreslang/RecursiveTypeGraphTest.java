@@ -58,6 +58,30 @@ final class RecursiveTypeGraphTest {
     }
 
     @Test
+    void supportsNominalSelfReferencesAndGuardedResultUnions() {
+        checks("""
+                define class Link as
+                    pub let Option<Link> next = None();
+                end
+                fnc read(Link link): Option<Link> { return link.next; }
+                """);
+        checks("""
+                type Step = Result<int, Step>;
+                fnc keep(Step step): Step { return step; }
+                """);
+    }
+
+    @Test
+    void recursiveAliasesMustNotCollapseDifferentFieldTypes() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                type IntNode = struct{value: int, next: Option<IntNode>};
+                type TextNode = struct{value: string, next: Option<TextNode>};
+                fnc accept(IntNode node): void { return; }
+                fnc wrong(TextNode node): void { accept(node); return; }
+                """)));
+    }
+
+    @Test
     void preservesPreviouslySupportedBareStructuralTypeSyntax() {
         checks("""
                 type Point = {x: int, y: int};
