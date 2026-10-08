@@ -2247,6 +2247,7 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && factory.name().equals("Ref")
+                    && env.lookup("Ref") == null
                     && (factoryCall.member().equals("new") || factoryCall.member().equals("empty"))) {
                 if (currentActorKind == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException("Ref." + factoryCall.member()
