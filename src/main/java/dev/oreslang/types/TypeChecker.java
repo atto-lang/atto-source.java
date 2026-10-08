@@ -2741,7 +2741,8 @@ public final class TypeChecker {
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
                 return new Function(List.of(), Primitive.INT);
             }
-            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
+                    && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
@@ -2827,6 +2828,13 @@ public final class TypeChecker {
                             "unknown ActorMail member '" + member.member() + "'");
                 };
             }
+            // Array/list and tuple lengths are native integer properties.
+            // Returning Unknown here makes safe bounds checks and subtraction
+            // fail typechecking even when the receiver is statically typed.
+            if ((sumReceiver instanceof ListType || sumReceiver instanceof Tuple)
+                    && member.member().equals("length")) {
+                return Primitive.INT;
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
                 if (member.member().equals("replace_literal")) {
@@ -2852,13 +2860,7 @@ public final class TypeChecker {
             if (mutexMember != null) return mutexMember;
 
             Type selectedReceiver = deref(receiver);
-            // Array/list and tuple lengths are native integer properties.
-            // Returning Unknown here makes safe bounds checks and subtraction
-            // fail typechecking even when the receiver is statically typed.
-            if ((selectedReceiver instanceof ListType || selectedReceiver instanceof Tuple)
-                    && member.member().equals("length")) {
-                return Primitive.INT;
-            }
+
             if (selectedReceiver instanceof Named selected
                     && selected.name().equals("SelectResult")) {
                 return switch (member.member()) {
@@ -6287,7 +6289,7 @@ public final class TypeChecker {
             if (!(spreadType instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
                 throw new IllegalArgumentException(
                         label + " spread requires a statically known tuple; got " + spreadType
-                                + ". Runtime-length collections require an explicitly variadic callable.");
+                                + ". Runtime-length spread arguments require a variadic callable.");
             }
             for (Type element : tuple.elements()) {
                 expanded.add(new ExpandedCallArgument(null, element));
