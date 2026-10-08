@@ -120,6 +120,22 @@ final class RecursiveTypeGraphTest {
     }
 
     @Test
+    void recursivePayloadSafetyChecksInspectEveryField() {
+        checks("""
+                type Safe = struct{value: int, next: Option<Safe>};
+                async fnc okay(Safe safe): int { return safe.value; }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                type Unsafe = struct{
+                    value: int,
+                    next: Option<Unsafe>,
+                    channel: Channel<int>
+                };
+                async fnc bad(Unsafe unsafe): int { return unsafe.value; }
+                """)));
+    }
+
+    @Test
     void rejectsUnguardedCyclesAndUnboundedGenericExpansion() {
         rejects("type Loop = Loop;", "unguarded type alias cycle");
         rejects("type A = B; type B = A;", "unguarded type alias cycle");

@@ -65,6 +65,8 @@ public final class TypeChecker {
     private int typeIndirectionDepth;
     private record AssignmentPair(Type actual, Type expected) { }
     private final Set<AssignmentPair> assignmentsInProgress = new HashSet<>();
+    private final Set<Named> checkingSharedRecursiveAliases = new HashSet<>();
+    private final Set<Named> checkingActorRecursiveAliases = new HashSet<>();
     private static final String RECURSIVE_ALIAS_PREFIX = "$recursive_alias$";
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -4298,6 +4300,15 @@ public final class TypeChecker {
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where) {
+        if (type instanceof Named named && named.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
+            if (!checkingActorRecursiveAliases.add(named)) return;
+            try {
+                validateActorCallableBoundaryType(unfoldRecursiveAlias(named), actorKind, returnPosition, where);
+            } finally {
+                checkingActorRecursiveAliases.remove(named);
+            }
+            return;
+        }
         if (returnPosition && type == Primitive.VOID) return;
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
@@ -4395,6 +4406,14 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
+        if (type instanceof Named named && named.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
+            if (!checkingSharedRecursiveAliases.add(named)) return true;
+            try {
+                return isSharedSafe(unfoldRecursiveAlias(named), seen, genericBindings);
+            } finally {
+                checkingSharedRecursiveAliases.remove(named);
+            }
+        }
         if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
