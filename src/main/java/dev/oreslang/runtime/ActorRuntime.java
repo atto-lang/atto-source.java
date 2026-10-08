@@ -836,7 +836,8 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            OresFuture<Object> reply) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
@@ -845,7 +846,15 @@ public final class ActorRuntime implements AutoCloseable {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, null);
+        }
+
+        private static MessageEnvelope request(
+                Object value, Runnable release, ActorId sender, long sequence,
+                OresFuture<Object> reply) {
+            if (sequence < 0) throw new IllegalArgumentException("actor request sequence cannot be negative");
+            return new MessageEnvelope(value, release, null, sender, sequence,
+                    Objects.requireNonNull(reply, "reply future"));
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -854,7 +863,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    null);
         }
 
         private boolean isContinuation() {
@@ -1607,6 +1617,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
+        }
+
+        /** Runtime-owned request/reply operation. Guest code never owns a reply slot. */
+        public OresFuture<Object> request(M message) {
+            return ActorRuntime.this.request(this, message);
         }
 
         public void stop() {
@@ -5619,6 +5634,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Reply authority belongs to this actor cell and is never guest-visible. */
+        private final Set<OresFuture<Object>> pendingReplies = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6372,6 +6389,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<OresFuture<Object>> replies;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -6385,6 +6403,8 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                replies = List.copyOf(pendingReplies);
+                pendingReplies.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
@@ -6392,6 +6412,10 @@ public final class ActorRuntime implements AutoCloseable {
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
             for (OresFuture<?> future : pending) future.cancel(false);
+            for (OresFuture<Object> reply : replies) {
+                reply.failFromRuntime(
+                        cause == null ? terminated(ref) : cause);
+            }
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
