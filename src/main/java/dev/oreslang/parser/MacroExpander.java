@@ -113,8 +113,13 @@ public final class MacroExpander {
         Snapshot snapshot = new Snapshot(hashes);
         if (previous != null) {
             for (var entry : previous.definitions().entrySet()) {
+                Fingerprint current = hashes.get(entry.getKey());
+                if (current != null && entry.getValue().mode() != current.mode()) {
+                    throw new IllegalArgumentException("macro expansion mode changed across generations: "
+                            + entry.getKey());
+                }
                 if (entry.getValue().mode() == Mode.AOT
-                        && !entry.getValue().equals(hashes.get(entry.getKey()))) {
+                        && !entry.getValue().equals(current)) {
                     throw new IllegalArgumentException("AOT macro changed or disappeared across generations: "
                             + entry.getKey());
                 }
