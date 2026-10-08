@@ -38,7 +38,8 @@ pub async routine main(): void {
 
   // A request goes through the runtime mailbox, not Worker.run().
   val result = await worker.request(job);
-  await worker.done; // after the actor has been stopped/finalized
+  worker.stop();
+  await worker.done; // settles after actor finalization
   return;
 }
 \`\`\`
