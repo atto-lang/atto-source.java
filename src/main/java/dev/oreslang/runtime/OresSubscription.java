@@ -25,6 +25,76 @@ public abstract class OresSubscription<T> {
     private boolean terminal;
     private boolean pulling;
     private OresFuture<OresNotification<T>> active;
+    private Reader<T> reader;
+
+    /**
+     * Acquires an exclusive logical reader lease for this subscription.
+     * Other subscriptions to an Observable are independent: this is not a
+     * global or OS read/write lock.
+     */
+    public final Reader<T> getReader() {
+        synchronized (gate) {
+            if (reader != null) {
+                throw new IllegalStateException("subscription already has an active reader");
+            }
+            if (pulling) {
+                throw new IllegalStateException("cannot acquire reader while a pull is outstanding");
+            }
+            reader = new Reader<>(this);
+            return reader;
+        }
+    }
+
+    public final boolean isLocked() {
+        synchronized (gate) {
+            return reader != null;
+        }
+    }
+
+    private void releaseReader(Reader<T> lease) {
+        synchronized (gate) {
+            if (reader != lease) {
+                throw new IllegalStateException("reader lease has already been released");
+            }
+            if (pulling) {
+                throw new IllegalStateException("cannot release reader with an outstanding next()");
+            }
+            reader = null;
+        }
+    }
+
+    /** A revocable, exclusive consumer capability; release does not cancel the source. */
+    public static final class Reader<T> implements AutoCloseable {
+        private final OresSubscription<T> subscription;
+
+        private Reader(OresSubscription<T> subscription) {
+            this.subscription = subscription;
+        }
+
+        public OresFuture<OresNotification<T>> next() {
+            return subscription.nextWithReader(this);
+        }
+
+        /** Cancel the subscription and its outstanding pull, not merely this lease. */
+        public boolean cancel() {
+            synchronized (subscription.gate) {
+                if (subscription.reader != this) {
+                    throw new IllegalStateException("reader lease has been released");
+                }
+            }
+            return subscription.cancel();
+        }
+
+        /** Refuses release while a read is pending; cancellation is a separate action. */
+        public void releaseLock() {
+            subscription.releaseReader(this);
+        }
+
+        @Override
+        public void close() {
+            releaseLock();
+        }
+    }
 
     /**
      * Request exactly one next stream notification.
@@ -33,7 +103,15 @@ public abstract class OresSubscription<T> {
      * or terminal completion, next returns COMPLETE.</p>
      */
     public final OresFuture<OresNotification<T>> next() {
+        return nextWithReader(null);
+    }
+
+    private OresFuture<OresNotification<T>> nextWithReader(Reader<T> lease) {
         synchronized (gate) {
+            if (reader != lease) {
+                return OresFuture.failed(new IllegalStateException(
+                        "subscription reader lock is held or the reader was released"));
+            }
             if (cancelled || terminal) {
                 return OresFuture.completed(OresNotification.complete());
             }
@@ -54,6 +132,12 @@ public abstract class OresSubscription<T> {
                 pulling = false;
                 terminal = true;
             }
+            // Synchronous producer failure must also run source cleanup once.
+            try {
+                cancelRuntimeOnce();
+            } catch (RuntimeException | Error ignored) {
+                // Preserve the original source failure.
+            }
             return OresFuture.failed(failure);
         }
 
@@ -70,42 +154,39 @@ public abstract class OresSubscription<T> {
         }
 
         source.whenCompleteRuntime((notification, failure) -> {
-            boolean shouldCancelRuntime = false;
+            boolean cleanup = false;
+            Throwable effectiveFailure = failure;
             synchronized (gate) {
+                if (failure != null || notification == null || notification.isComplete()) {
+                    terminal = true;
+                    cleanup = true;
+                    if (failure == null && notification == null) {
+                        effectiveFailure = new IllegalStateException(
+                                "rx-ores source completed a pull with null notification");
+                    }
+                }
+
+                // Complete the exposed Future BEFORE freeing the demand slot.
+                // A producer may settle on another thread, but the critical
+                // section contains only runtime state transitions, no guest code.
+                if (!exposed.isDone()) {
+                    if (effectiveFailure == null) {
+                        exposed.completeFromRuntime(notification);
+                    } else {
+                        exposed.failFromRuntime(OresFuture.unwrap(effectiveFailure));
+                    }
+                }
                 if (active == exposed) {
                     active = null;
                 }
                 pulling = false;
-
-                if (failure != null) {
-                    terminal = true;
-                    shouldCancelRuntime = true;
-                } else if (notification == null) {
-                    terminal = true;
-                    shouldCancelRuntime = true;
-                    failure = new IllegalStateException(
-                            "rx-ores source completed a pull with null notification");
-                } else if (notification.isComplete()) {
-                    terminal = true;
-                    shouldCancelRuntime = true;
-                }
             }
-
-            if (shouldCancelRuntime) {
+            if (cleanup) {
                 try {
                     cancelRuntimeOnce();
                 } catch (RuntimeException | Error ignored) {
                     // Stream terminal state is already authoritative.
                 }
-            }
-
-            if (exposed.isDone()) {
-                return;
-            }
-            if (failure == null) {
-                exposed.completeFromRuntime(notification);
-            } else {
-                exposed.failFromRuntime(OresFuture.unwrap(failure));
             }
         });
 
