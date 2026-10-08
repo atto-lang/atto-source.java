@@ -9,6 +9,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.HotReloadManager;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.NativeIo;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
@@ -174,6 +175,29 @@ final class UntrustedActorTest {
             ref.send("ping");
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
             assertTrue(ref.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void untrustedActorCannotEnterBlockingNetworkApisEvenWithNullContext() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var ref = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
+                // The carrier guard must execute before permissions, DNS or
+                // network I/O. A future opt-in NET grant must not weaken it.
+                assertTrue(assertThrows(SecurityException.class,
+                        () -> NativeIo.connect(null, "127.0.0.1", 1))
+                        .getMessage().contains("cannot block an untrusted actor carrier"));
+                assertTrue(assertThrows(SecurityException.class,
+                        () -> NativeIo.httpGetText(null, "http://127.0.0.1:1/"))
+                        .getMessage().contains("cannot block an untrusted actor carrier"));
+                assertTrue(assertThrows(SecurityException.class,
+                        () -> NativeIo.httpPostText(null, "http://127.0.0.1:1/", "body"))
+                        .getMessage().contains("cannot block an untrusted actor carrier"));
+                turn.self().stop();
+            });
+            ref.send("check");
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty(), () -> String.valueOf(ref.failure()));
         }
     }
 
