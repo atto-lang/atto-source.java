@@ -109,7 +109,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Ref", "WeakRef", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -1791,6 +1791,7 @@ public final class TypeChecker {
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
+            if (name.name().equals("Ref")) return new Named("$RefFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
@@ -2242,6 +2243,42 @@ public final class TypeChecker {
                 return futureCall.member().equals("all")
                         ? new Named("Future", List.of(new ListType(value)))
                         : new Named("Future", List.of(value));
+            }
+            if (call.callee() instanceof Ast.MemberExpr factoryCall
+                    && factoryCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("Ref")
+                    && (factoryCall.member().equals("new") || factoryCall.member().equals("empty"))) {
+                if (currentActorKind == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("Ref." + factoryCall.member()
+                            + " requires execution inside an actor");
+                }
+                Type element;
+                if (factoryCall.member().equals("empty")) {
+                    if (!call.arguments().isEmpty()
+                            || !call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                        throw new IllegalArgumentException("Ref.empty<T>() requires one explicit type argument and no value");
+                    }
+                    element = resolve(call.typeArguments().getFirst(), generics, self);
+                } else {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException("Ref.new expects exactly one owned value");
+                    }
+                    element = typeOf(call.arguments().getFirst(), env, generics, self);
+                    if (call.typeArgumentsPresent()) {
+                        if (call.typeArguments().size() != 1) {
+                            throw new IllegalArgumentException("Ref.new<T>(value) accepts one explicit type argument");
+                        }
+                        Type expected = resolve(call.typeArguments().getFirst(), generics, self);
+                        requireAssignable(element, expected, "Ref.new<T> initializer");
+                        element = expected;
+                    }
+                }
+                if (element == Primitive.VOID || element == Unknown.INSTANCE
+                        || element instanceof Borrow || element instanceof Function
+                        || element instanceof ClassNamespace) {
+                    throw new IllegalArgumentException("Ref<T> requires a concrete owned data type");
+                }
+                return new Named("Ref", List.of(element));
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
@@ -2874,6 +2911,8 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type managedRefMember = builtinManagedRefMember(sumReceiver, member.member());
+            if (managedRefMember != null) return managedRefMember;
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
@@ -4449,6 +4488,7 @@ public final class TypeChecker {
         }
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Ref") || named.name().equals("WeakRef")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
@@ -4533,6 +4573,7 @@ public final class TypeChecker {
         if (named.name().startsWith("$recursive_alias$")) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
+                || named.name().equals("Ref") || named.name().equals("WeakRef")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -5161,6 +5202,37 @@ public final class TypeChecker {
             return new Record(members, record.readOnly());
         }
         return type;
+    }
+
+    private Type builtinManagedRefMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
+        Type element = named.arguments().getFirst();
+        if (named.name().equals("Ref")) {
+            return switch (member) {
+                case "is_set" -> new Function(List.of(), Primitive.BOOL);
+                case "get_copy" -> {
+                    if (!(element instanceof Primitive primitive && primitive != Primitive.VOID)
+                            && !(element instanceof StringLiteral)) {
+                        throw new IllegalArgumentException(
+                                "Ref.get_copy() supports immutable scalar types only; use take() for owned values");
+                    }
+                    yield new Function(List.of(), element);
+                }
+                case "take" -> new Function(List.of(), new Named("Option", List.of(element)));
+                case "set" -> new Function(List.of(element), Primitive.VOID);
+                case "downgrade" -> new Function(List.of(), new Named("WeakRef", List.of(element)));
+                case "same_identity" -> new Function(List.of(named), Primitive.BOOL);
+                default -> throw new IllegalArgumentException("unknown Ref<T> member '" + member + "'");
+            };
+        }
+        if (named.name().equals("WeakRef")) {
+            if (member.equals("upgrade")) {
+                return new Function(List.of(), new Named(
+                        "Option", List.of(new Named("Ref", List.of(element)))));
+            }
+            throw new IllegalArgumentException("unknown WeakRef<T> member '" + member + "'");
+        }
+        return null;
     }
 
     private Type builtinFutureMember(Type receiver, String member) {
@@ -6986,7 +7058,7 @@ public final class TypeChecker {
     private boolean isRecursiveAliasGuard(Ast.TypeRef ref) {
         if (Set.of("Option", "Result", "Array", "List", "Vector", "Slice",
                 "Tuple", "FixedArray", "FixedList", "Fnc", "Function",
-                "Mutex", "SharedMutex", "Channel", "Future", "Generator",
+                "Mutex", "SharedMutex", "Ref", "WeakRef", "Channel", "Future", "Generator",
                 "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult",
                 "ActorMail", "ActorOutput", "ActorOutputStream").contains(ref.name())) {
             return true;
@@ -7132,6 +7204,17 @@ public final class TypeChecker {
                 yield new Named("Result", List.of(
                         resolve(ref.arguments().get(0), generics, self),
                         resolve(ref.arguments().get(1), generics, self)));
+            }
+            case "Ref", "WeakRef" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(ref.name() + " requires exactly one explicit owned type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID || element instanceof Borrow
+                        || element instanceof Function || element instanceof ClassNamespace) {
+                    throw new IllegalArgumentException(ref.name() + "<T> requires owned, non-function data");
+                }
+                yield new Named(ref.name(), List.of(element));
             }
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
