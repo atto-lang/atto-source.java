@@ -212,8 +212,23 @@ public final class HotReloadManager implements AutoCloseable {
         generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
+        Throwable failure = null;
         for (Generation generation : toClose) {
-            generation.close();
+            try {
+                generation.close();
+            } catch (RuntimeException | Error closingFailure) {
+                if (failure == null) {
+                    failure = closingFailure;
+                } else {
+                    failure.addSuppressed(closingFailure);
+                }
+            }
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
         }
     }
 
