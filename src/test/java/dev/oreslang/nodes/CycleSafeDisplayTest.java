@@ -50,7 +50,7 @@ final class CycleSafeDisplayTest {
         List<Integer> huge = new java.util.AbstractList<>() {
             @Override public int size() { return Integer.MAX_VALUE; }
             @Override public Integer get(int index) {
-                if (index >= 8192) {
+                if (index >= 8191) {
                     throw new AssertionError("formatter iterated beyond the node budget");
                 }
                 return index;
