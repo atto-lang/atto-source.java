@@ -147,6 +147,17 @@ public final class ActorLocalReference {
         return new Weak<>(handle.checkedCell(domain));
     }
 
+    static <T> void setForDomain(Strong<T> handle, Object domain, T replacement) {
+        handle.checkedCell(domain).value = Objects.requireNonNull(replacement);
+    }
+
+    static <T> T swapForDomain(Strong<T> handle, Object domain, T replacement) {
+        Cell<T> cell = handle.checkedCell(domain);
+        T previous = cell.value;
+        cell.value = Objects.requireNonNull(replacement);
+        return previous;
+    }
+
     static <T> Optional<Strong<T>> upgradeForDomain(Weak<T> handle, Object domain) {
         requireOwner(handle.owner, domain);
         Cell<T> state = handle.pointer.get();
