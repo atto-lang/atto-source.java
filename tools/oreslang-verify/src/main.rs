@@ -12,16 +12,27 @@ fn json_quote(s:&str)->String{
  }
  out.push('"');out
 }
-fn visit(path:&Path,files:&mut Vec<std::path::PathBuf>)->Result<(),String>{
- if path.is_dir(){
-  let entries=fs::read_dir(path).map_err(|e|e.to_string())?;
-  for entry in entries{
+/// Bounded local file traversal: no symlink cycles, aliases, huge source inputs.
+fn visit_inner(path:&Path,files:&mut Vec<std::path::PathBuf>,depth:usize)->Result<(),String>{
+ if depth>64{return Err(format!("directory depth exceeded: {}",path.display()))}
+ let meta=fs::symlink_metadata(path).map_err(|e|format!("{}: {e}",path.display()))?;
+ if meta.file_type().is_symlink(){return Err(format!("symlink input refused: {}",path.display()))}
+ if meta.is_dir(){
+  for entry in fs::read_dir(path).map_err(|e|format!("{}: {e}",path.display()))?{
    let p=entry.map_err(|e|e.to_string())?.path();
-   if p.is_dir(){visit(&p,files)?}else if p.extension().is_some_and(|x|x=="ores"){files.push(p)}
+   if p.is_dir()||p.extension().is_some_and(|x|x=="ores"){
+    visit_inner(&p,files,depth+1)?;
+   }
   }
- }else if path.is_file(){files.push(path.to_path_buf())}
- else{return Err(format!("path not found: {}",path.display()))}
+ }else if meta.is_file(){
+  if meta.len()>4*1024*1024{return Err(format!("Oreslang source exceeds 4 MiB: {}",path.display()))}
+  if files.len()>=20_000{return Err("Oreslang lint file limit (20000) exceeded".into())}
+  files.push(path.to_path_buf());
+ }else{return Err(format!("unsupported input type: {}",path.display()))}
  Ok(())
+}
+fn visit(path:&Path,files:&mut Vec<std::path::PathBuf>)->Result<(),String>{
+ visit_inner(path,files,0)
 }
 fn run(args:&[String])->Result<(),String>{
  if args.len()<2{return Err("usage: oreslang-verify model [--actors N --messages N --workers N --capacity N --max-states N] | trace TRACE.json | select-model [--arms N] | ir PROGRAM.json [--strict] | lint [--format json|text] [--pedantic] [--strict] PATH...".into())}
