@@ -288,6 +288,8 @@ public final class OresContext implements AutoCloseable {
                 return main.call();
             } catch (Exception failure) {
                 throw new IllegalStateException("root main failed", failure);
+            } finally {
+                vm.finishRootMain();
             }
         }
 
@@ -331,7 +333,13 @@ public final class OresContext implements AutoCloseable {
                         "root main scheduler task resumed after terminal state");
             }
         });
-        return awaitHostRootTask(task);
+        try {
+            return awaitHostRootTask(task);
+        } finally {
+            // Returning main is a process-lifetime boundary. A plain timer
+            // registration is NOT an implicit keepalive reference.
+            vm.finishRootMain();
+        }
     }
 
     /**

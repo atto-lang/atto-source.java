@@ -30,6 +30,7 @@ public final class OresVM implements AutoCloseable {
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
     private final ThreadPoolExecutor controlExecutor;
+    private final ProcessTimerService processTimers = new ProcessTimerService();
     private final OresScheduler rootScheduler;
     private final OresScheduler controlScheduler;
     private final Executor processAdmission;
@@ -79,8 +80,10 @@ public final class OresVM implements AutoCloseable {
                 rootAdmission == null ? controlExecutor : rootAdmission,
                 turnExecutor);
         try {
+            processTimers.register(rootScheduler);
             startup();
         } catch (RuntimeException | Error failure) {
+            processTimers.close();
             rootScheduler.close();
             controlScheduler.close();
             controlExecutor.shutdownNow();
@@ -176,8 +179,37 @@ public final class OresVM implements AutoCloseable {
                 1,
                 new SerialProcessExecutor(processAdmission, DEFAULT_QUEUE_CAPACITY),
                 guestTurnAdmission);
+        try {
+            processTimers.register(supervisor);
+        } catch (RuntimeException | Error failed) {
+            supervisor.close();
+            throw failed;
+        }
         supervisorSchedulers.add(supervisor);
         return supervisor;
+    }
+
+    /** Schedule process-owned timeouts; timer workers never execute user code. */
+    public ProcessTimerService.TimerHandle scheduleTimer(
+            OresScheduler owner, java.time.Duration delay, Runnable callback) {
+        if (!started() || closed.get()) {
+            throw new RejectedExecutionException("timer scheduling requires a live VM");
+        }
+        return processTimers.schedule(owner, delay, callback);
+    }
+
+    public ProcessTimerService.TimerHandle scheduleTimer(
+            OresScheduler owner, java.time.Duration delay) {
+        return scheduleTimer(owner, delay, null);
+    }
+
+    /** End the short-lived ROOT main scope without keeping it alive for timers. */
+    void finishRootMain() {
+        processTimers.closeScope(rootScheduler);
+    }
+
+    int activeTimers(OresScheduler owner) {
+        return processTimers.activeTimerCount(owner);
     }
 
     public int supervisorCount() {
@@ -212,6 +244,7 @@ public final class OresVM implements AutoCloseable {
     public synchronized void close() {
         if (!closed.compareAndSet(false, true)) return;
         startupState = StartupState.CLOSED;
+        processTimers.close();
         try {
             rootScheduler.close();
         } finally {
