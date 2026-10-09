@@ -56,20 +56,6 @@ pub fn tokens(src:&str)->Vec<Token>{
  }
  result
 }
-#[cfg(test)]
-mod tests{
- use super::*;
- #[test]fn strips_strings_comments_and_nested_comments(){
-  let t=tokens("/* defer /* await */ defer */ // await\n \"defer\" 'await' `defer` value");
-  assert_eq!(t.len(),1);assert_eq!(t[0].value,"value");
- }
- #[test]fn line_positions(){
-  let t=tokens("hi\n  await");
-  assert_eq!((t[1].line,t[1].col),(2,3));
- }
-}
-
-
 /// Reject malformed source instead of producing a misleading clean lint result.
 /// This is lexical structural validation, not the Oreslang parser.
 pub fn tokens_checked(src: &str) -> Result<Vec<Token>, String> {
@@ -155,3 +141,18 @@ pub fn tokens_checked(src: &str) -> Result<Vec<Token>, String> {
     }
     Ok(tokens(src))
 }
+
+#[cfg(test)]
+mod tests{
+ use super::*;
+ #[test]fn strips_strings_comments_and_nested_comments(){
+  let t=tokens("/* defer /* await */ defer */ // await\n \"defer\" 'await' `defer` value");
+  assert_eq!(t.len(),1);assert_eq!(t[0].value,"value");
+ }
+ #[test]fn line_positions(){
+  let t=tokens("hi\n  await");
+  assert_eq!((t[1].line,t[1].col),(2,3));
+ }
+}
+
+
