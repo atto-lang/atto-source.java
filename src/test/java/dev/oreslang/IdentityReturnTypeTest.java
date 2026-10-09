@@ -53,7 +53,7 @@ final class IdentityReturnTypeTest {
                       return v;
                     } else {
                       return new T();
-                    }
+                    } fi
                   }
                 end
                 """, "identity return mismatch");
@@ -124,7 +124,7 @@ final class IdentityReturnTypeTest {
                     if true {
                       val v = new T();
                       return v;
-                    }
+                    } fi
                     return v;
                   }
                 end
