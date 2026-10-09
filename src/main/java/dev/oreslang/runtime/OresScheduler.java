@@ -6,6 +6,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -96,6 +97,7 @@ public final class OresScheduler implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
     private final ProcessTurnTrace turnTrace;
+    private final CopyOnWriteArrayList<Runnable> closeHooks = new CopyOnWriteArrayList<>();
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -392,6 +394,17 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
+    /** Lifecycle registration for resources owned by this logical process. */
+    void onClose(Runnable callback) {
+        Objects.requireNonNull(callback, "callback");
+        if (closed.get()) {
+            callback.run();
+            return;
+        }
+        closeHooks.add(callback);
+        if (closed.get() && closeHooks.remove(callback)) callback.run();
+    }
+
     @Override
     public void close() {
         if (CURRENT.get() == this) {
@@ -400,6 +413,10 @@ public final class OresScheduler implements AutoCloseable {
                             + "close it from an outside/root scheduler task");
         }
         if (!closed.compareAndSet(false, true)) return;
+
+        // Closing a process must first revoke its timers/async wakeups.
+        for (Runnable callback : closeHooks) callback.run();
+        closeHooks.clear();
 
         for (TaskRunner<?> task : Set.copyOf(tasks)) {
             task.cancelFromSchedulerClose();

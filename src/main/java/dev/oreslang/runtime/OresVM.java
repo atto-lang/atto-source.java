@@ -81,6 +81,7 @@ public final class OresVM implements AutoCloseable {
                 turnExecutor);
         try {
             processTimers.register(rootScheduler);
+            rootScheduler.onClose(() -> processTimers.closeScope(rootScheduler));
             startup();
         } catch (RuntimeException | Error failure) {
             processTimers.close();
@@ -181,6 +182,7 @@ public final class OresVM implements AutoCloseable {
                 guestTurnAdmission);
         try {
             processTimers.register(supervisor);
+            supervisor.onClose(() -> processTimers.closeScope(supervisor));
         } catch (RuntimeException | Error failed) {
             supervisor.close();
             throw failed;

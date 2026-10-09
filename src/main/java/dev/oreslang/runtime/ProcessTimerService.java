@@ -117,7 +117,7 @@ public final class ProcessTimerService implements AutoCloseable {
         private Scope(OresScheduler owner) { this.owner = owner; }
 
         private synchronized TimerHandle schedule(Duration delay, Runnable callback) {
-            if (closed.get() || !open) {
+            if (closed.get() || !open || owner.isClosed()) {
                 throw new RejectedExecutionException("timer owner process already exited");
             }
             TimerHandle handle = new TimerHandle(this);

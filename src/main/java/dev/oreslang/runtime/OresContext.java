@@ -305,7 +305,13 @@ public final class OresContext implements AutoCloseable {
                         throw new IllegalStateException(
                                 "root main task must begin with an initial resume");
                     }
-                    Object result = main.call();
+                    Object result;
+                    try {
+                        result = main.call();
+                    } catch (Exception | Error failure) {
+                        vm.finishRootMain();
+                        throw failure;
+                    }
                     if (result instanceof OresFuture<?> future) {
                         pc = 1;
                         return OresScheduler.await(future);
@@ -314,20 +320,28 @@ public final class OresContext implements AutoCloseable {
                         pc = 1;
                         return OresScheduler.await(OresFuture.from(stage));
                     }
+                    // Close timers BEFORE the main turn retires, so no
+                    // queued callback can outrun host-side Future settlement.
+                    vm.finishRootMain();
                     return OresScheduler.done(result);
                 }
 
                 if (pc == 1) {
-                    if (resume.failure() != null) {
-                        Throwable failure = OresFuture.unwrap(resume.failure());
-                        if (failure instanceof Exception checked) throw checked;
-                        if (failure instanceof Error error) throw error;
-                        throw new RuntimeException(failure);
+                    try {
+                        if (resume.failure() != null) {
+                            Throwable failure = OresFuture.unwrap(resume.failure());
+                            if (failure instanceof Exception checked) throw checked;
+                            if (failure instanceof Error error) throw error;
+                            throw new RuntimeException(failure);
+                        }
+                        @SuppressWarnings("unchecked")
+                        Object value = resume.value();
+                        pc = 2;
+                        return OresScheduler.done(value);
+                    } finally {
+                        // Close timers while still holding main's guest turn.
+                        vm.finishRootMain();
                     }
-                    @SuppressWarnings("unchecked")
-                    Object value = resume.value();
-                    pc = 2;
-                    return OresScheduler.done(value);
                 }
 
                 throw new IllegalStateException(
