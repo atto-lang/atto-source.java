@@ -50,7 +50,7 @@ The loader:
 
 1. validates code-unit/source admission limits before parsing;
 2. inspects the annotation-expanded declarations and verifies the requested module explicitly declares `conforms contract`;
-3. fails closed for imports, unrelated named modules, executable root-scope declarations, and generic requested contracts;
+3. fails closed for imports, unrelated named modules, executable root-scope declarations, and any generic module-contract instantiation;
 4. performs the normal full type/capability admission;
 5. stages a fresh generation without executing guest code or changing the active-generation mapping.
 
@@ -66,7 +66,7 @@ in-flight work finish against an old implementation while new work selects the
 new active generation. Invocation before initialization, or after retirement/
 close, is rejected.
 
-This API accepts a contract name, not a generic contract instantiation. The
+This API accepts contract names, not generic contract instantiations. The
 incremental compiler supports direct exported named cross-file contract conformance
 with linker-supplied type metadata, but the runtime hot-loader does not yet accept
 a source graph. Cross-file contracts and dependencies are rejected by this
@@ -141,4 +141,9 @@ simply swapping arbitrary executable memory.
 The current draft therefore provides the module-level loading and contract gate
 without pretending that actor state migration is already solved. Code-unit IDs
 are normalized before they are used as generation keys so path aliases such as
-`./worker.ores` and `worker.ores` cannot create separate active slots.
+`./worker.ores` and `worker.ores` cannot create separate active slots. Manager
+shutdown is terminal: it detaches active/registry maps under lock, closes detached
+generations outside the manager lock, and rejects later load/activation requests.
+Module initialization also runs outside the manager lock; concurrent replacement
+candidates are checked again at publication so a stale candidate cannot overwrite
+a winning generation.
