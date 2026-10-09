@@ -17,6 +17,8 @@ The safety invariant is `active_guest_turns(process_id) <= 1`, **not**
   prestarted and parallel, even though ROOT has scheduler parallelism 1.
 - ActorGroup mailmen use a *separate* CONTROL scheduler. Each GroupMailmanState
   already has its own single-execution lease across suspend/resume.
+  Strict/adversarial contexts retain their required caller-thread admission
+  queue instead of dispatching Truffle/JNI guest work onto CONTROL carriers.
 - Child actor mailboxes keep their existing per-actor single-writer gate.
   Independent supervisors and actors can run in parallel.
 

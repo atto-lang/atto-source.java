@@ -65,8 +65,11 @@ public final class OresVM implements AutoCloseable {
         // parallel with ROOT and with mailmen from other groups.
         this.controlScheduler = OresScheduler.runtimeOwned(
                 "ores-control-scheduler",
-                controlParallelism,
-                controlExecutor,
+                rootAdmission == null ? controlParallelism : 1,
+                // Strict/untrusted contexts have a caller-thread Truffle/JNI
+                // admission contract. Control/mailman turns must not escape
+                // that isolated queue onto arbitrary CONTROL carriers.
+                rootAdmission == null ? controlExecutor : rootAdmission,
                 turnExecutor);
         try {
             startup();
