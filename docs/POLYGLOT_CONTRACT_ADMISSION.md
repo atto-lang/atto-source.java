@@ -1,7 +1,7 @@
 # Polyglot TypeSpec/JSON Schema admission profile for Oreslang
 
-`ORESoftware/ores-clients-core` draft #11 emits a **declaration-only**
-`define interface ClientContract` surface. The Java parser/type-checker tests
+`ORESoftware/ores-clients-core` draft #12 emits a **declaration-only**
+`define contract ClientContract as ... end` module-contract surface, using `fnc name(String arg) => String;`. It does NOT emit a type interface or `Unknown` payload types. The Java parser/type-checker tests
 here establish language syntax admission for a representative header, **not**
 payload serializer or TJSV behavioral conformance.
 
@@ -22,3 +22,13 @@ Future target identities: `oreslang/javascript-browser` and
 `oreslang/wasm-browser`; these MUST be separately compiled and tested in a
 sandbox without ambient filesystem or Java host-access capabilities. The
 transpilers are **planned**, not declared functional by this document or test.
+
+## Exact-source admission sequence
+
+1. Compile this JUnit suite against the actual exact Java compiler PR head. Compilation/test errors block admission; syntax alone is not a runtime receipt.
+2. Generate a matching `.ores` declaration with pinned ores-clients-core and byte-compare to the compiler fixture; generator changes must update the compiler fixtures.
+3. Compile a conforming module and reject an incomplete implementation; reject injected identifiers and incorrect return-arrow signatures. A String-only header does not validate JSON.
+4. Link a native Oreslang JSON/validation adapter against pinned compiler and codec revisions. Execute both positive and negative trusted fixtures and emit only payload-free evidence.
+5. Use TJSV verifyRuntimeEvidenceAgainstCurrentInputs() against authored TypeSpec, authored JSON Schema, generated witness, exact Contract IR/parity receipt and trusted corpus digests.
+
+If native source-org Actions starts no steps, validate the exact Git tree in a **private** test repository from an organization with available minutes. Compare original Git blob identities and keep snapshots out of main.
