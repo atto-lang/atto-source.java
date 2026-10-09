@@ -158,8 +158,8 @@ final class IdentityReturnChecker {
 
     private void verify(String module, Ast.FunctionDecl function) {
         String label = "fnc " + module + "." + function.name();
-        if (function.async() || function.generator() || function.actorKind() != Ast.ActorKind.NONE) {
-            throw new IllegalArgumentException("identity returns across async/generator/actor boundaries are not yet supported in " + label);
+        if (function.async() || function.generator() || function.trapped() || function.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException("identity returns across async/generator/trap/actor boundaries are not yet supported in " + label);
         }
         String origin = checkedParameter(function.returnType(), function.parameters(), false, label);
         Scope scope = new Scope(null);
