@@ -60,6 +60,24 @@ class CooperativeBlockingIoTest {
         assertEquals("hello", Files.readString(file));
     }
 
+    @Test void explicitDenyAllSurvivesEmbeddingArgumentRoundTrip() {
+        IsolatePolicy capabilityRich = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.FILESYSTEM_READ,
+                IsolatePolicy.Capability.FILESYSTEM_WRITE,
+                IsolatePolicy.Capability.NETWORK);
+        RuntimePermissions explicit = RuntimePermissions.denyAll();
+        RuntimePermissions reconstructed = RuntimePermissions.fromApplicationArguments(
+                explicit.applicationArguments(), capabilityRich);
+        assertFalse(reconstructed.allows(RuntimePermissions.Permission.READ, root.toString()));
+        assertFalse(reconstructed.allows(RuntimePermissions.Permission.WRITE, root.toString()));
+        assertFalse(reconstructed.allows(RuntimePermissions.Permission.NET, "127.0.0.1:1"));
+        // The original legacy no-argument embedding behavior still follows
+        // declared capabilities, unlike an explicit empty permission policy.
+        RuntimePermissions legacy = RuntimePermissions.fromApplicationArguments(
+                new String[0], capabilityRich);
+        assertTrue(legacy.allows(RuntimePermissions.Permission.READ, root.toString()));
+    }
+
     @Test void blockingIOMaintainsDeniedCapabilities() throws Exception {
         String file = root.resolve("denied.txt").toString().replace("\\", "\\\\");
         String source = """
