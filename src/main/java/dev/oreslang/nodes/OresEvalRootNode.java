@@ -5921,6 +5921,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.equals("trim")) {
                     return (Invokable) args -> { requireZero(args, "string.trim"); return text.trim(); };
                 }
+                if (name.equals("is_identifier") || name.equals("is_route_segment")) {
+                    return (Invokable) args -> {
+                        requireZero(args, "string." + name);
+                        return name.equals("is_identifier")
+                            ? text.matches("[A-Za-z_][A-Za-z0-9_]*")
+                            : text.matches("(?:[A-Za-z0-9_-]+|\\\\[[A-Za-z_][A-Za-z0-9_]*\\\\])");
+                    };
+                }
                 if (name.equals("starts_with") || name.equals("ends_with") || name.equals("contains_literal")) {
                     return (Invokable) args -> {
                         requireOne(args, "string." + name);
