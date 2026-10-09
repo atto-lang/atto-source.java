@@ -7302,14 +7302,17 @@ public final class OresEvalRootNode extends RootNode {
                     throw new SecurityException("cross-runtime module state access");
                 }
                 return (ModuleState) context.actors().currentActorModuleState(
-                        codeUnitId, module.name(), ModuleState::new);
+                        codeUnitId, module.name(), codeImage().generation(), ModuleState::new);
             }
-            if (OresScheduler.current() != context.vm().rootScheduler()) {
-                throw new SecurityException(
-                        "mutable module state requires an owned ROOT or actor turn; "
-                        + "supervisor and mailman state isolation is not lowered yet");
+            OresScheduler lane = OresScheduler.current();
+            if (lane != context.vm().rootScheduler()) {
+                // Only registered supervisors may acquire this state. CONTROL
+                // mailmen and host completion threads have no module authority.
+                return (ModuleState) context.vm().currentSupervisorModuleState(
+                        codeUnitId, module.name(), codeImage().generation(), ModuleState::new);
             }
-            return rootModuleStates.computeIfAbsent(module.name(), ignored -> new ModuleState());
+            return rootModuleStates.computeIfAbsent(
+                    module.name(), ignored -> new ModuleState());
         }
 
         private Ast.FieldDecl findModuleField(Ast.ModuleDecl module, String name) {
