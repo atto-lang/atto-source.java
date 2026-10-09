@@ -1,0 +1,13 @@
+[package]
+name = "oreslang-verify"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "oreslang_verify"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oreslang-verify"
+path = "src/main.rs"
