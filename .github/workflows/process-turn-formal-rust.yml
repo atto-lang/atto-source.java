@@ -1,0 +1,27 @@
+name: Process turn formal verification (Rust)
+on:
+  pull_request:
+    paths:
+      - 'formal/process-turns/**'
+      - 'src/main/java/dev/oreslang/runtime/OresVM.java'
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
+      - 'src/main/java/dev/oreslang/runtime/SerialProcessExecutor.java'
+      - '.github/workflows/process-turn-formal-rust.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'formal/process-turns/**'
+      - '.github/workflows/process-turn-formal-rust.yml'
+  workflow_dispatch:
+
+jobs:
+  finite-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Enumerate process scheduler and timer interleavings
+        run: cargo test --manifest-path formal/process-turns/Cargo.toml -- --nocapture
