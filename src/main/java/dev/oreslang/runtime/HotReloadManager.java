@@ -670,6 +670,25 @@ public final class HotReloadManager implements AutoCloseable {
             }
         }
 
+        /**
+         * Invokes a public function from this initialized code generation.
+         * Keeping invocation generation-scoped lets existing callers finish
+         * against an older generation while a replacement is active.
+         */
+        public synchronized Value invokePublic(String functionName, Object... arguments) {
+            requireNonBlank(functionName, "functionName");
+            java.util.Objects.requireNonNull(arguments, "arguments");
+            if (closed.get()) throw new IllegalStateException("generation is closed");
+            if (!started.get()) {
+                throw new IllegalStateException("generation must be initialized before public invocation");
+            }
+            Object[] commandArguments = new Object[arguments.length + 2];
+            commandArguments[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
+            commandArguments[1] = functionName;
+            System.arraycopy(arguments, 0, commandArguments, 2, arguments.length);
+            return context.parse(source).execute(commandArguments);
+        }
+
         private synchronized Value startModule() {
             if (!initializeModuleOnly) {
                 throw new IllegalStateException("generation was not loaded through loadModule");
