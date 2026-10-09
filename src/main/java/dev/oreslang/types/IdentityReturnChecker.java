@@ -17,6 +17,7 @@ import java.util.Map;
  */
 final class IdentityReturnChecker {
     private final Map<String, List<Callable>> functions = new HashMap<>();
+    private final Map<String, Ast.ClassDecl> qualifiedClasses = new HashMap<>();
 
     private record Callable(String module, Ast.FunctionDecl function) { }
 
@@ -42,9 +43,12 @@ final class IdentityReturnChecker {
                 if (decl instanceof Ast.FunctionDecl function) {
                     checker.functions.computeIfAbsent(function.name(), unused -> new ArrayList<>())
                             .add(new Callable(module.name(), function));
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    checker.qualifiedClasses.put(module.name() + "." + klass.name(), klass);
                 }
             }
         }
+        checker.verifyOverrideContracts(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl function && function.returnType().isIdentityReturn()) {
@@ -56,6 +60,75 @@ final class IdentityReturnChecker {
                 }
             }
         }
+    }
+
+    /**
+     * Dynamic dispatch must not replace a guaranteed identity-preserving
+     * inherited method with an override that only preserves its nominal
+     * or receiver-polymorphic type. Examine the complete ancestor chain.
+     */
+    private void verifyOverrideContracts(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.ClassDecl klass)) continue;
+                java.util.Set<Ast.ClassDecl> ancestors = java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+                collectAncestors(module.name(), klass, ancestors);
+                for (Ast.MethodDecl override : klass.methods()) {
+                    if (override.isStatic()) continue;
+                    for (Ast.ClassDecl ancestor : ancestors) {
+                        for (Ast.MethodDecl inherited : ancestor.methods()) {
+                            if (inherited.isStatic()
+                                    || !inherited.name().equals(override.name())
+                                    || inherited.parameters().size() != override.parameters().size()
+                                    || !inherited.returnType().isIdentityReturn()) continue;
+                            int required = identitySlot(inherited);
+                            if (required != identitySlot(override)) {
+                                throw new IllegalArgumentException(
+                                        "cannot weaken inherited identity return of "
+                                                + ancestor.name() + "." + inherited.name()
+                                                + " in override " + klass.name() + "." + override.name());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void collectAncestors(String module, Ast.ClassDecl klass, java.util.Set<Ast.ClassDecl> seen) {
+        for (Ast.TypeRef parent : klass.parents()) {
+            Ast.ClassDecl ancestor = qualifiedClasses.get(parent.name());
+            if (ancestor == null) ancestor = qualifiedClasses.get(module + "." + parent.name());
+            if (ancestor == null) {
+                java.util.List<Ast.ClassDecl> candidates = qualifiedClasses.entrySet().stream()
+                        .filter(e -> e.getKey().endsWith("." + parent.name()))
+                        .map(Map.Entry::getValue)
+                        .distinct()
+                        .toList();
+                if (candidates.size() == 1) ancestor = candidates.getFirst();
+            }
+            if (ancestor != null && seen.add(ancestor)) {
+                String ownerModule = module;
+                for (Map.Entry<String, Ast.ClassDecl> entry : qualifiedClasses.entrySet()) {
+                    if (entry.getValue() == ancestor) {
+                        ownerModule = entry.getKey().substring(0, entry.getKey().lastIndexOf('.'));
+                        break;
+                    }
+                }
+                collectAncestors(ownerModule, ancestor, seen);
+            }
+        }
+    }
+
+    private static int identitySlot(Ast.MethodDecl method) {
+        if (!method.returnType().isIdentityReturn()) return Integer.MIN_VALUE;
+        String name = method.returnType().identityParameter();
+        if (name.equals("this")) return -1;
+        for (int i = 0; i < method.parameters().size(); i++) {
+            if (method.parameters().get(i).name().equals(name)) return i;
+        }
+        return Integer.MIN_VALUE;
     }
 
     private static String checkedParameter(Ast.TypeRef returnType, List<Ast.Param> parameters,
