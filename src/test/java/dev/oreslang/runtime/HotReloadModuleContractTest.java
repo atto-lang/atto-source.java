@@ -25,6 +25,12 @@ final class HotReloadModuleContractTest {
                     loader.loadModule("worker.ores", "Worker", source, "WorkerApi");
 
             assertEquals("worker.ores", generation.codeUnitId());
+            assertEquals(null, loader.active("worker.ores"),
+                    "a staged candidate must not become active before initialization");
+            assertEquals(false, generation.started());
+
+            generation.start();
+            loader.activateModule(generation);
             assertEquals(generation, loader.active("worker.ores"));
         }
     }
@@ -431,6 +437,44 @@ final class HotReloadModuleContractTest {
             org.junit.jupiter.api.Assertions.assertTrue(
                     failure.getMessage().contains("root scope may contain only module contract declarations"));
             assertEquals(0, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    void stagingCandidateDoesNotPublishUntilExplicitActivation() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String v1 = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            String v2 = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 2; }
+                    end
+                    """;
+
+            HotReloadManager.Generation oldGeneration =
+                    loader.reloadModule("worker.ores", "Worker", v1, "WorkerApi");
+            HotReloadManager.Generation candidate =
+                    loader.loadModule("./worker.ores", "Worker", v2, "WorkerApi");
+
+            assertEquals(oldGeneration, loader.active("worker.ores"));
+            candidate.start();
+            assertEquals(oldGeneration, loader.active("./worker.ores"),
+                    "initialization alone must not publish the candidate");
+
+            loader.activateModule(candidate);
+            assertEquals(candidate, loader.active("worker.ores"));
+            assertEquals(false, oldGeneration.closed());
+            assertEquals(2, loader.liveGenerations());
         }
     }
 }
