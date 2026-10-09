@@ -2091,9 +2091,38 @@ public final class Parser {
             type = applyTypeMetadataAnnotations(type, annotations, true);
         }
         consume(EQUAL, "binding requires initializer");
-        Ast.Expr initializer = parseExpression();
+        String inferredTypeName = null;
+        Ast.Expr initializer;
+        if (isContextualIdentifier("infer") && checkNext(LT)) {
+            advance(); // contextual 'infer'
+            consume(LT, "expected '<' after infer");
+            inferredTypeName = consume(IDENT, "expected inferred type name in infer<T>").lexeme();
+            consume(GT, "expected '>' after inferred type name");
+            if (kind != Ast.BindingKind.CONST || mutableReferent) {
+                throw error(previous(), "infer<T> requires an immutable const binding");
+            }
+            if (type == null || !type.name().equals(inferredTypeName)
+                    || !type.arguments().isEmpty() || type.inferArguments()) {
+                throw error(previous(), "binding type must match infer<T> exactly");
+            }
+            if (match(STRUCT)) {
+                initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            } else if (matchContextualKeyword("tuple")) {
+                consume(LPAREN, "expected '(' after infer<T> tuple");
+                List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
+                consume(RPAREN, "expected ')' after inferred tuple");
+                if (items.isEmpty()) {
+                    throw error(previous(), "infer<T> tuple requires at least one element");
+                }
+                initializer = new Ast.TupleExpr(items);
+            } else {
+                throw error(peek(), "infer<T> requires a struct {...} or tuple (...) literal");
+            }
+        } else {
+            initializer = parseExpression();
+        }
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
-        return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent);
+        return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
     }
 
     private Ast.TypeRef applyTypeMetadataAnnotations(
