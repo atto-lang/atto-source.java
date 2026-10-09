@@ -14,6 +14,7 @@ pub fn invariant(s:&State,cap:usize)->Result<(),String>{
   if leases[*a]{return Err("duplicate execution lease".into())}leases[*a]=true;}
  let mut in_mail=vec![false;s.status.len()];
  for (a,&has_lease) in leases.iter().enumerate(){
+  if !s.alive[a] && has_lease {return Err("terminated actor retains worker lease".into())}
   if s.waiting[a] && !s.ready[a] && has_lease {
    return Err("suspended actor holds a carrier before I/O completion".into());
   }
