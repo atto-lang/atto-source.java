@@ -1794,6 +1794,13 @@ public final class TypeChecker {
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.CastExpr cast) {
+            if (cast.targetType().name().equals("Readonly")) {
+                throw new IllegalArgumentException("Readonly<T> cannot be forged by a cast; use rt share");
+            }
+            Type castSource = deref(typeOf(cast.value(), env, generics, self));
+            if (castSource instanceof Named ro && ro.name().equals("Readonly")) {
+                throw new IllegalArgumentException("rt share readonly capability cannot be erased by a cast");
+            }
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
@@ -3021,6 +3028,9 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Readonly")) {
+                throw new IllegalArgumentException("Readonly<T> cannot be constructed; use rt share");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
