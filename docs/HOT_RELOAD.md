@@ -59,8 +59,6 @@ For manual activation, use `initializeModule(candidate)` and then
 legacy `Generation.start()` method; the manager-owned initializer ensures failed
 candidates are retired and do not leak generation slots or code-image leases.
 
-For now, the runtime loader fails closed if the source contains imports, if it
-contains more than one named module, or if the requested contract is generic.
 This API accepts a contract name, not a generic contract instantiation. The
 incremental compiler supports direct exported named cross-file contract conformance
 with linker-supplied type metadata, but the runtime hot-loader does not yet accept
@@ -75,9 +73,10 @@ reloadModule(codeUnitId, moduleName, source, contract)
 
 The candidate is staged and initialized before it becomes the active generation.
 Module startup uses the runtime's init-only entry path: it links and initializes
-the named module but does **not** invoke the source program's `main()`. The source must contain only the requested named module (plus any
-contract declarations in the synthetic root module), so unrelated named modules
-cannot be initialized as a side effect.
+the named module but does **not** invoke the source program's `main()`. The source
+must contain only the requested named module (plus any contract declarations in
+the synthetic root module), so unrelated named modules cannot be initialized as
+a side effect.
 
 If candidate initialization fails, the previous generation remains active.
 Cleanup failures are recorded as suppressed failures and cannot prevent
@@ -107,7 +106,10 @@ the narrower contract-gated path described above.
 
 The existing generation model remains the isolation boundary: code images may be
 shared when policy permits, while mutable evaluator/module/closure state remains
-generation/context-local.
+generation/context-local. Calling `Generation.close()` directly also retires that
+generation from the manager, so it cannot leave a closed generation in an active
+slot. Repeated initialization/activation of the current module generation is
+idempotent; an older staged candidate cannot overwrite a newer active generation.
 
 ## Actor follow-up
 
