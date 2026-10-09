@@ -147,6 +147,14 @@ public final class ActorAddressBus {
             target = refs.get((int) Math.floorMod(route.next++, (long) refs.size()));
         }
         // Never hold the registry monitor across transport admission/freezing.
+        // Membership may change after selection. Reject stale routes rather than
+        // delivering to an actor that has left this group.
+        synchronized (lock) {
+            requireOpen();
+            if (requireAddress(address).subscribers.get(target.id()) != target) {
+                throw new IllegalStateException("mailbox address membership changed");
+            }
+        }
         dispatch(target, message);
         return Optional.of(target.id());
     }
@@ -171,7 +179,7 @@ public final class ActorAddressBus {
         int rejected = 0;
         for (ActorRuntime.ActorRef<?> target : targets) {
             if (group.closed()) {
-                // Account for all not-yet-attempted members below.
+                // Count the remaining snapshot entries as rejected.
                 rejected = targets.size() - admitted;
                 break;
             }
