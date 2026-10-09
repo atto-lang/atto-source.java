@@ -3,8 +3,13 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -179,6 +184,38 @@ final class IdentityReturnTypeTest {
                   pub fnc replace(T v): T { return new T(); }
                 end
                 """);
+    }
+
+    @Test void mutableDecoratorPreservesRuntimeReferenceIdentity() throws Exception {
+        String program = """
+                define class T as
+                  pub val string foo = "old";
+                end
+
+                pub fnc decorate(T mut v): v {
+                  v.foo = "bar";
+                  return v;
+                }
+
+                pub fnc main(): void {
+                  val T original = new T();
+                  val T result = decorate(original);
+                  stdio.println(original is result);
+                  stdio.println(original.foo);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "identity-decorator.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("true\nbar\n", output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
     @Test void shadowedAliasDoesNotProveIdentity() {
