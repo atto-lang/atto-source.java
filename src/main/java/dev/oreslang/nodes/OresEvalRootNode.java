@@ -6191,11 +6191,24 @@ public final class OresEvalRootNode extends RootNode {
                         };
                         return context.http().handler(this, type, kind);
                     };
-                    case "listen" -> (Invokable) args -> {
-                        if (args.size() != 5) throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");
+                    case "listen", "listen_blocking" -> (Invokable) args -> {
+                        if (args.size() != 5) throw new IllegalArgumentException("http.listen_blocking(host, port, capacity, body_limit, deadline_ms)");
+                        // Legacy 'listen' is still a synchronous compatibility alias.
                         return context.http().listen(requireString(args.get(0), "host"),
                             ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue(),
                             ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue());
+                    };
+                    case "listen_async" -> (Invokable) args -> {
+                        if (args.size() != 5) throw new IllegalArgumentException("http.listen_async(host, port, capacity, body_limit, deadline_ms)");
+                        String host = requireString(args.get(0), "host");
+                        int port = ((Number) args.get(1)).intValue();
+                        int capacity = ((Number) args.get(2)).intValue();
+                        int bodyLimit = ((Number) args.get(3)).intValue();
+                        int deadline = ((Number) args.get(4)).intValue();
+                        // Snapshot primitive arguments before crossing the worker boundary.
+                        return context.nativeIo().submit(context,
+                            dev.oreslang.runtime.RuntimePermissions.Permission.NET,
+                            "http.listen_async", () -> context.http().listen(host, port, capacity, bodyLimit, deadline));
                     };
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
                     case "get_text" -> (Invokable) http::getText;
