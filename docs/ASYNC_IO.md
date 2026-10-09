@@ -79,3 +79,15 @@ carrier**, proving that the first actor's pending read does not occupy that carr
 EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
+
+## Synchronous directory operations (Oreslang stack CLI)
+
+The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): List<String>`,
+`fs.is_dir(path): bool` and `fs.is_symlink(path): bool`. `list_dir` returns only
+the immediate child **names**, sorted lexically, and refuses directories with
+more than 20,000 children. It rejects a symlink at the input path; callers
+must check children before descending. Each operation requires scoped filesystem
+read permission. These metadata operations are not a race-free openat-style
+directory handle and are not sufficient for processing hostile mutable trees.
+The language also exposes `String.split_literal`, `trim`, `starts_with`,
+`ends_with`, and `contains_literal` for source-level code generators.

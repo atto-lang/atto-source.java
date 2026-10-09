@@ -2839,10 +2839,14 @@ public final class TypeChecker {
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
-                if (member.member().equals("replace_literal")) {
-                    return new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
-                }
-                throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                return switch (member.member()) {
+                    case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
+                    case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+                    case "trim" -> new Function(List.of(), Primitive.STRING);
+                    case "starts_with", "ends_with", "contains_literal" ->
+                            new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                };
             }
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {

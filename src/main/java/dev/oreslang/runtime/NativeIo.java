@@ -45,6 +45,41 @@ public final class NativeIo {
         return Files.exists(path);
     }
 
+    /**
+     * Bounded, sorted immediate child names. This is deliberately NOT a path
+     * walker: the guest checks each next component with is_symlink and is_dir.
+     */
+    public static List<String> listDir(OresContext context, String rawPath) {
+        Path lexical = Path.of(rawPath).toAbsolutePath().normalize();
+        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), "fs.list_dir");
+        if (Files.isSymbolicLink(lexical)) throw new SecurityException("fs.list_dir refuses symlink: " + lexical);
+        Path path = canonicalExistingPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.list_dir");
+        if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("fs.list_dir requires directory: " + path);
+        }
+        try (java.util.stream.Stream<Path> stream = Files.list(path)) {
+            List<String> names = stream.map(p -> p.getFileName().toString()).sorted().limit(20001).toList();
+            if (names.size() > 20000) throw new IllegalArgumentException("fs.list_dir exceeds 20000 entries: " + path);
+            return new java.util.ArrayList<>(names);
+        } catch (IOException failure) {
+            throw ioFailure("list directory", path, failure);
+        }
+    }
+
+    /** Metadata probes never dereference the target symlink. */
+    public static boolean isSymlink(OresContext context, String rawPath) {
+        Path lexical = Path.of(rawPath).toAbsolutePath().normalize();
+        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), "fs.is_symlink");
+        return Files.isSymbolicLink(lexical);
+    }
+
+    public static boolean isDir(OresContext context, String rawPath) {
+        Path lexical = Path.of(rawPath).toAbsolutePath().normalize();
+        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), "fs.is_dir");
+        return Files.isDirectory(lexical, LinkOption.NOFOLLOW_LINKS);
+    }
+
     public static void writeText(OresContext context, String rawPath, String value) {
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.write_text");
