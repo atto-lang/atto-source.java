@@ -100,40 +100,46 @@ final class ActorSharedCodeImageWhitelistTest {
         }
     }
 
-    private static final class BlockingSharedCodeFactory
-            implements ActorRuntime.BehaviorFactory<String> {
-        private final SharedCodeImageStore.CodeImage expected;
+    // Test-only host instrumentation. No mutable runtime guest state is
+    // transported into an actor factory: actor factories stay capture-free.
+    private static volatile SharedParallelProbe sharedParallelProbe;
+
+    private static final class SharedParallelProbe {
+        private final SharedCodeImageStore.CodeImage image;
         private final java.util.concurrent.CountDownLatch arrived;
         private final java.util.concurrent.CountDownLatch released;
         private final java.util.concurrent.atomic.AtomicInteger active;
         private final java.util.concurrent.atomic.AtomicInteger maximum;
 
-        BlockingSharedCodeFactory(
-                SharedCodeImageStore.CodeImage expected,
+        private SharedParallelProbe(SharedCodeImageStore.CodeImage image,
                 java.util.concurrent.CountDownLatch arrived,
                 java.util.concurrent.CountDownLatch released,
                 java.util.concurrent.atomic.AtomicInteger active,
                 java.util.concurrent.atomic.AtomicInteger maximum) {
-            this.expected = expected;
+            this.image = image;
             this.arrived = arrived;
             this.released = released;
             this.active = active;
             this.maximum = maximum;
         }
+    }
 
+    private static final class BlockingSharedCodeFactory
+            implements ActorRuntime.BehaviorFactory<String> {
         @Override
         public ActorRuntime.Behavior<String> create(ActorRuntime.ActorContext<String> context) {
-            assertSame(expected, context.codeImage().orElseThrow());
+            assertSame(sharedParallelProbe.image, context.codeImage().orElseThrow());
             return (message, turn) -> {
-                int now = active.incrementAndGet();
-                maximum.accumulateAndGet(now, Math::max);
-                arrived.countDown();
+                SharedParallelProbe probe = sharedParallelProbe;
+                int now = probe.active.incrementAndGet();
+                probe.maximum.accumulateAndGet(now, Math::max);
+                probe.arrived.countDown();
                 try {
-                    if (!released.await(5, TimeUnit.SECONDS)) {
+                    if (!probe.released.await(5, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("shared actor parallelism test timed out");
                     }
                 } finally {
-                    active.decrementAndGet();
+                    probe.active.decrementAndGet();
                 }
                 turn.self().stop();
             };
@@ -151,8 +157,9 @@ final class ActorSharedCodeImageWhitelistTest {
             var released = new java.util.concurrent.CountDownLatch(1);
             var active = new java.util.concurrent.atomic.AtomicInteger();
             var maximum = new java.util.concurrent.atomic.AtomicInteger();
-            var behavior = new BlockingSharedCodeFactory(
+            sharedParallelProbe = new SharedParallelProbe(
                     image, arrived, released, active, maximum);
+            var behavior = new BlockingSharedCodeFactory();
             var a = runtime.spawnWithCodeImage(ActorRuntime.ActorKind.SHARED,
                     IsolatePolicy.developer(), image, behavior);
             var b = runtime.spawnWithCodeImage(ActorRuntime.ActorKind.SHARED,
@@ -167,12 +174,16 @@ final class ActorSharedCodeImageWhitelistTest {
             } finally {
                 released.countDown();
             }
-            assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
-            assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
-            assertEquals(2, maximum.get(),
-                    "do not introduce one global guest lock across all SHARED actors");
-            assertEquals(1, store.imageCount(),
-                    "both actors must share the immutable AST/program image");
+            try {
+                assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
+                assertEquals(2, maximum.get(),
+                        "do not introduce one global guest lock across all SHARED actors");
+                assertEquals(1, store.imageCount(),
+                        "both actors must share the immutable AST/program image");
+            } finally {
+                sharedParallelProbe = null;
+            }
         }
     }
 }
