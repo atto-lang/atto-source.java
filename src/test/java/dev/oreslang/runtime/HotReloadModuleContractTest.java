@@ -539,4 +539,29 @@ final class HotReloadModuleContractTest {
             assertEquals(null, loader.active());
         }
     }
+
+    @Test
+    void repeatedInitializationAndActivationDoNotRetireActiveGeneration() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String source = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            HotReloadManager.Generation generation =
+                    loader.loadModule("worker.ores", "Worker", source, "WorkerApi");
+
+            assertEquals(generation, loader.initializeModule(generation));
+            assertEquals(generation, loader.initializeModule(generation));
+            assertEquals(generation, loader.activateModule(generation));
+            assertEquals(generation, loader.activateModule(generation));
+            assertEquals(generation, loader.active("worker.ores"));
+            assertEquals(false, generation.closed());
+            assertEquals(1, loader.liveGenerations());
+        }
+    }
 }
