@@ -215,7 +215,32 @@ final class MacroExpanderTest {
                 """;
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(source));
-        assertTrue(ex.getMessage().contains("file scope"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("file prelude"), ex.getMessage());
+    }
+
+    @Test
+    void rejectsMacrosHiddenInEndDelimitedModuleScopes() {
+        String source = """
+                define module app as
+                  macro_rules! hidden { ($v:expr) => { $v }; }
+                  fnc run(): int { return hidden!(1); }
+                end
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(source));
+        assertTrue(ex.getMessage().contains("file prelude"), ex.getMessage());
+    }
+
+    @Test
+    void allowsMacrosAfterImportsButBeforeDefinitions() {
+        String source = """
+                import fnc add from "./math";
+                macro_rules! identity { ($value:expr) => { $value }; }
+                define module app as
+                  fnc run(): int { return identity!(1); }
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
     }
 
     @Test
