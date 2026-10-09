@@ -85,28 +85,31 @@ fn valid_graph(fun:&Function)->Result<(HashMap<u32,&Node>,HashSet<u32>),String>{
     Ok((by_id,seen))
 }
 fn cyclic_nodes(graph:&HashMap<u32,&Node>,reachable:&HashSet<u32>)->HashSet<u32>{
-    // Kosaraju strongly-connected components, O(vertices + edges), iterative to
-    // avoid stack overflow from attacker-supplied compiler IR.
+    // Iterative Kosaraju with true DFS finishing order.
+    // Marking nodes when merely pushed into a bulk work stack would produce
+    // incorrect order for cross edges; each frame tracks its next successor.
     let mut visited=HashSet::new();
-    let mut finish=Vec::new();
+    let mut finish=Vec::with_capacity(reachable.len());
     for &start in reachable {
-        let mut stack=vec![(start,false)];
-        while let Some((node,exit))=stack.pop(){
-            if exit { finish.push(node); continue }
-            if !visited.insert(node){continue}
-            stack.push((node,true));
-            for &next in &graph[&node].successors {
-                if reachable.contains(&next)&&!visited.contains(&next){
-                    stack.push((next,false));
+        if !visited.insert(start){continue}
+        let mut frames=vec![(start,0usize)];
+        while let Some((id,index))=frames.last_mut() {
+            if let Some(&next)=graph[id].successors.get(*index) {
+                *index+=1;
+                if reachable.contains(&next)&&visited.insert(next) {
+                    frames.push((next,0));
                 }
+            }else{
+                finish.push(*id);
+                frames.pop();
             }
         }
     }
     let mut reverse=HashMap::<u32,Vec<u32>>::new();
-    for &node in reachable { reverse.entry(node).or_default(); }
-    for &node in reachable {
-        for &next in &graph[&node].successors {
-            if reachable.contains(&next){reverse.entry(next).or_default().push(node)}
+    for &id in reachable {reverse.entry(id).or_default();}
+    for &id in reachable {
+        for &next in &graph[&id].successors {
+            if reachable.contains(&next){reverse.entry(next).or_default().push(id)}
         }
     }
     let mut assigned=HashSet::new();
@@ -115,9 +118,9 @@ fn cyclic_nodes(graph:&HashMap<u32,&Node>,reachable:&HashSet<u32>)->HashSet<u32>
         if !assigned.insert(start){continue}
         let mut component=Vec::new();
         let mut todo=vec![start];
-        while let Some(node)=todo.pop(){
-            component.push(node);
-            for &prev in &reverse[&node] {
+        while let Some(id)=todo.pop(){
+            component.push(id);
+            for &prev in &reverse[&id] {
                 if assigned.insert(prev){todo.push(prev)}
             }
         }
