@@ -68,3 +68,90 @@ mod tests{
   assert_eq!((t[1].line,t[1].col),(2,3));
  }
 }
+
+
+/// Reject malformed source instead of producing a misleading clean lint result.
+/// This is lexical structural validation, not the Oreslang parser.
+pub fn tokens_checked(src: &str) -> Result<Vec<Token>, String> {
+    let cs: Vec<char> = src.chars().collect();
+    let mut i = 0usize;
+    let mut line = 1usize;
+    let mut col = 1usize;
+    let mut delimiters: Vec<(char, usize, usize)> = Vec::new();
+    while i < cs.len() {
+        let c = cs[i];
+        let next = cs.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < cs.len() && cs[i] != '\n' {
+                step(&cs, &mut i, &mut line, &mut col);
+            }
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            let start = (line, col);
+            let mut depth = 1usize;
+            step(&cs, &mut i, &mut line, &mut col);
+            step(&cs, &mut i, &mut line, &mut col);
+            while i < cs.len() && depth != 0 {
+                if cs[i] == '/' && cs.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    step(&cs, &mut i, &mut line, &mut col);
+                    step(&cs, &mut i, &mut line, &mut col);
+                } else if cs[i] == '*' && cs.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    step(&cs, &mut i, &mut line, &mut col);
+                    step(&cs, &mut i, &mut line, &mut col);
+                } else {
+                    step(&cs, &mut i, &mut line, &mut col);
+                }
+            }
+            if depth != 0 {
+                return Err(format!("unterminated block comment at {}:{}", start.0, start.1));
+            }
+            continue;
+        }
+        if c == '"' || c == '\'' || c == '\u0060' {
+            let start = (line, col);
+            let mut closed = false;
+            step(&cs, &mut i, &mut line, &mut col);
+            while i < cs.len() {
+                if cs[i] == '\\' {
+                    step(&cs, &mut i, &mut line, &mut col);
+                    if i >= cs.len() {
+                        break;
+                    }
+                    step(&cs, &mut i, &mut line, &mut col);
+                } else if cs[i] == c {
+                    step(&cs, &mut i, &mut line, &mut col);
+                    closed = true;
+                    break;
+                } else {
+                    step(&cs, &mut i, &mut line, &mut col);
+                }
+            }
+            if !closed {
+                return Err(format!("unterminated string at {}:{}", start.0, start.1));
+            }
+            continue;
+        }
+        if matches!(c, '{' | '[' | '(') {
+            delimiters.push((c, line, col));
+        } else if matches!(c, '}' | ']' | ')') {
+            let expected = match c {
+                '}' => '{',
+                ']' => '[',
+                ')' => '(',
+                _ => unreachable!(),
+            };
+            match delimiters.pop() {
+                Some((open, _, _)) if open == expected => {}
+                _ => return Err(format!("unexpected closing delimiter {c} at {line}:{col}")),
+            }
+        }
+        step(&cs, &mut i, &mut line, &mut col);
+    }
+    if let Some((open, start_line, start_col)) = delimiters.last() {
+        return Err(format!("unclosed delimiter {open} at {start_line}:{start_col}"));
+    }
+    Ok(tokens(src))
+}
