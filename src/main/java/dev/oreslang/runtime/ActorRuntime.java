@@ -1518,8 +1518,9 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 // Do not resurrect a handler once its completion token ended.
                 if (mail != null && !cell.sourceMessages.containsKey(mail.sequence())) {
-                    throw new java.util.concurrent.CancellationException(
-                            "message " + mail.sequence() + " is already complete");
+                    // Explicit m.done() ends this handler. Discard subsequent
+                    // queued continuations without failing its owning actor.
+                    return OresScheduler.done(null);
                 }
                 return task.resume(resume);
             } finally {
@@ -1549,8 +1550,10 @@ public final class ActorRuntime implements AutoCloseable {
                 || cell.guestTurnOwner.get() != Thread.currentThread()) {
             throw new SecurityException("actor concurrency may only be configured during actor startup");
         }
-        if (maxInFlight < 1 || maxInFlight > 1024) {
-            throw new IllegalArgumentException("actor concurrency must be in 1..1024");
+        int ceiling = cell.kind == ActorKind.UNTRUSTED ? 32 : 1024;
+        if (maxInFlight < 1 || maxInFlight > ceiling) {
+            throw new IllegalArgumentException(
+                    "actor concurrency must be in 1.." + ceiling + " for " + cell.kind);
         }
         synchronized (cell.lifecycleLock) {
             if (cell.activeMail != null || !cell.sourceMessages.isEmpty()) {
@@ -5835,6 +5838,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Map<Long, DeferredMailRelease> sourceMessageReleases =
                 new LinkedHashMap<>();
         private int maxConcurrentMessages = 1;
+        private int continuationBurst;
         private final Set<Long> suspendedSourceMessages = new LinkedHashSet<>();
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -6437,14 +6441,22 @@ public final class ActorRuntime implements AutoCloseable {
                         // Stop closes the user mailbox under this same lock.
                         if (stopped.get() || finalized) break;
 
-                        // Continuations always outrank user mail. Active
-                        // source handlers count against admission but not the
-                        // single guest execution lease.
-                        envelope = continuationMailbox.tryRead().orElse(null);
-                        if (envelope == null
-                                && (codeExecutor == null
-                                        || sourceMessages.size() < maxConcurrentMessages)) {
+                        // Control work has priority, but unbounded cooperate()
+                        // loops must not starve admissible new mail. One user
+                        // turn is admitted after every eight control turns when
+                        // more than one handler may be active.
+                        boolean mayAdmit = codeExecutor == null
+                                || sourceMessages.size() < maxConcurrentMessages;
+                        boolean grantUser = mayAdmit && maxConcurrentMessages > 1
+                                && continuationBurst >= 8 && !mailbox.isEmpty();
+                        envelope = grantUser ? mailbox.tryRead().orElse(null)
+                                : continuationMailbox.tryRead().orElse(null);
+                        if (envelope == null && mayAdmit) {
                             envelope = mailbox.tryRead().orElse(null);
+                        }
+                        if (envelope != null) {
+                            continuationBurst = envelope.isContinuation()
+                                    ? Math.min(8, continuationBurst + 1) : 0;
                         }
                     }
                     if (envelope == null) break;
