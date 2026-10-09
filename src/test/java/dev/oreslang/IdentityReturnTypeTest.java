@@ -105,14 +105,80 @@ final class IdentityReturnTypeTest {
                 """, "identity return mismatch");
     }
 
-    @Test void mutableIdentityParameterFailsClosed() {
+    @Test void mutableDecoratorCanUpdateTheOriginalInstance() {
+        accepts("""
+                define module m
+                  define class T as
+                    pub val string foo = "old";
+                  end
+                  pub fnc decorate(T mut v): v {
+                    v.foo = "bar";
+                    return v;
+                  }
+                end
+                """);
+    }
+
+    @Test void mutableParameterCannotBeReboundToAnotherInstance() {
         rejects("""
                 define module m
                   define class T as
                   end
-                  pub fnc decorate(T mut v): v { return v; }
+                  pub fnc decorate(T mut v): v {
+                    v = new T();
+                    return v;
+                  }
                 end
-                """, "reassignable parameter");
+                """, "identity return rebind");
+    }
+
+    @Test void nestedExpressionCannotRebindOriginalInstance() {
+        rejects("""
+                define module m
+                  define class T as
+                  end
+                  pub fnc decorate(T mut v): v {
+                    val x = (v = new T());
+                    return v;
+                  }
+                end
+                """, "identity return rebind");
+    }
+
+    @Test void inheritedExactIdentityContractCannotBeWeakened() {
+        rejects("""
+                define module m
+                  define class Base as
+                    pub same(): this { return self; }
+                  end
+                  define class Child extends Base as
+                    pub same(): self { return self; }
+                  end
+                end
+                """, "cannot weaken inherited identity return");
+    }
+
+    @Test void inheritedExactIdentityContractMayBePreserved() {
+        accepts("""
+                define module m
+                  define class Base as
+                    pub same(): this { return self; }
+                  end
+                  define class Child extends Base as
+                    pub same(): this { return self; }
+                  end
+                end
+                """);
+    }
+
+    @Test void nominalReturnMayReplaceTheInstance() {
+        accepts("""
+                define module m
+                  define class T as
+                  end
+                  pub fnc replace(T v): T { return new T(); }
+                end
+                """);
     }
 
     @Test void shadowedAliasDoesNotProveIdentity() {
