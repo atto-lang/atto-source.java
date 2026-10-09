@@ -73,8 +73,9 @@ final class IdentityReturnChecker {
                     throw new IllegalArgumentException(
                             "identity return ': " + name + "' requires an identity-bearing object, not value type " + typeName);
                 }
-                if (param.mutable()) throw new IllegalArgumentException(
-                        "identity return ': " + name + "' cannot bind a reassignable parameter in " + label);
+                // A 'mut' parameter is permitted to mutate the object; it must
+                // not rebind the original parameter to a replacement instance.
+                // All assignment expressions are scanned separately below.
                 return name;
             }
         }
@@ -110,6 +111,7 @@ final class IdentityReturnChecker {
     private void checkBlock(List<Ast.Stmt> body, Scope parent, String origin, String module, String label) {
         Scope scope = new Scope(parent);
         for (Ast.Stmt stmt : body) {
+            verifyRebindingEffects(stmt, scope, label);
             if (stmt instanceof Ast.ReturnStmt returned) {
                 if (!proves(returned.value(), scope, module)) {
                     throw new IllegalArgumentException(
@@ -178,6 +180,116 @@ final class IdentityReturnChecker {
                     checkBlock(arm.body(), inner, origin, module, label);
                 }
             }
+        }
+    }
+
+    /**
+     * Mutability of the object and reassignability of the parameter are not
+     * the same permission. A field update through the original object is fine;
+     * rebinding an origin-bearing name is not, even inside a nested expression.
+     * This is deliberately conservative across lambdas and channel callbacks.
+     */
+    private void verifyRebindingEffects(Ast.Stmt stmt, Scope scope, String label) {
+        if (stmt instanceof Ast.ExprStmt expression) {
+            verifyExpressionEffects(expression.expression(), scope, label);
+        } else if (stmt instanceof Ast.BindingStmt binding) {
+            verifyExpressionEffects(binding.initializer(), scope, label);
+        } else if (stmt instanceof Ast.DestructureStmt destructured) {
+            verifyExpressionEffects(destructured.initializer(), scope, label);
+        } else if (stmt instanceof Ast.ReturnStmt returned) {
+            verifyExpressionEffects(returned.value(), scope, label);
+        } else if (stmt instanceof Ast.YieldStmt yielded) {
+            verifyExpressionEffects(yielded.value(), scope, label);
+        } else if (stmt instanceof Ast.DeferStmt deferred) {
+            verifyExpressionEffects(deferred.expression(), scope, label);
+        } else if (stmt instanceof Ast.IfStmt conditional) {
+            for (Ast.IfBranch branch : conditional.branches()) {
+                verifyExpressionEffects(branch.condition(), scope, label);
+            }
+        } else if (stmt instanceof Ast.MatchStmt matched) {
+            verifyExpressionEffects(matched.subject(), scope, label);
+            for (Ast.MatchArm arm : matched.arms()) verifyExpressionEffects(arm.guard(), scope, label);
+        } else if (stmt instanceof Ast.SwitchStmt switched) {
+            verifyExpressionEffects(switched.subject(), scope, label);
+            for (Ast.SwitchCase arm : switched.cases()) {
+                for (Ast.Expr choice : arm.constants()) verifyExpressionEffects(choice, scope, label);
+            }
+        } else if (stmt instanceof Ast.ForOfStmt loop) {
+            verifyExpressionEffects(loop.iterable(), scope, label);
+        } else if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            verifyExpressionEffects(loop.iterable(), scope, label);
+        } else if (stmt instanceof Ast.ForStmt loop) {
+            if (loop.initializer() != null) verifyRebindingEffects(loop.initializer(), scope, label);
+            verifyExpressionEffects(loop.condition(), scope, label);
+            verifyExpressionEffects(loop.update(), scope, label);
+        } else if (stmt instanceof Ast.SelectStmt select) {
+            for (Ast.SelectArm arm : select.arms()) {
+                verifyExpressionEffects(arm.channel(), scope, label);
+                verifyExpressionEffects(arm.value(), scope, label);
+            }
+        }
+    }
+
+    private void verifyExpressionEffects(Ast.Expr expr, Scope scope, String label) {
+        if (expr == null) return;
+        if (expr instanceof Ast.AssignExpr assign) {
+            if (assign.target() instanceof Ast.NameExpr target
+                    && Boolean.TRUE.equals(scope.get(target.name()))) {
+                throw new IllegalArgumentException(
+                        "identity return rebind in " + label
+                                + ": cannot replace original identity through '" + target.name() + "'");
+            }
+            verifyExpressionEffects(assign.target(), scope, label);
+            verifyExpressionEffects(assign.value(), scope, label);
+        } else if (expr instanceof Ast.BinaryExpr binary) {
+            verifyExpressionEffects(binary.left(), scope, label);
+            verifyExpressionEffects(binary.right(), scope, label);
+        } else if (expr instanceof Ast.UnaryExpr unary) {
+            verifyExpressionEffects(unary.operand(), scope, label);
+        } else if (expr instanceof Ast.ConditionalExpr conditional) {
+            verifyExpressionEffects(conditional.condition(), scope, label);
+            verifyExpressionEffects(conditional.whenTrue(), scope, label);
+            verifyExpressionEffects(conditional.whenFalse(), scope, label);
+        } else if (expr instanceof Ast.TypeTestExpr tested) {
+            verifyExpressionEffects(tested.value(), scope, label);
+        } else if (expr instanceof Ast.PatternTestExpr tested) {
+            verifyExpressionEffects(tested.value(), scope, label);
+        } else if (expr instanceof Ast.CastExpr cast) {
+            verifyExpressionEffects(cast.value(), scope, label);
+        } else if (expr instanceof Ast.SpreadExpr spread) {
+            verifyExpressionEffects(spread.expression(), scope, label);
+        } else if (expr instanceof Ast.CallExpr call) {
+            verifyExpressionEffects(call.callee(), scope, label);
+            for (Ast.Expr arg : call.arguments()) verifyExpressionEffects(arg, scope, label);
+        } else if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            for (Ast.Expr arg : runtime.arguments()) verifyExpressionEffects(arg, scope, label);
+        } else if (expr instanceof Ast.MemberExpr member) {
+            verifyExpressionEffects(member.receiver(), scope, label);
+        } else if (expr instanceof Ast.IndexExpr indexed) {
+            verifyExpressionEffects(indexed.receiver(), scope, label);
+            verifyExpressionEffects(indexed.index(), scope, label);
+        } else if (expr instanceof Ast.NewExpr created) {
+            for (Ast.Expr arg : created.arguments()) verifyExpressionEffects(arg, scope, label);
+        } else if (expr instanceof Ast.AwaitExpr awaited) {
+            verifyExpressionEffects(awaited.expression(), scope, label);
+        } else if (expr instanceof Ast.ChannelOpExpr channel) {
+            verifyExpressionEffects(channel.channel(), scope, label);
+            verifyExpressionEffects(channel.value(), scope, label);
+            if (!channel.callbackBody().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "identity-returning callable cannot contain a channel callback with unverified captured effects in " + label);
+            }
+        } else if (expr instanceof Ast.DynamicSelectExpr select) {
+            verifyExpressionEffects(select.cases(), scope, label);
+        } else if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) verifyExpressionEffects(element, scope, label);
+        } else if (expr instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) verifyExpressionEffects(element, scope, label);
+        } else if (expr instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) verifyExpressionEffects(field.value(), scope, label);
+        } else if (expr instanceof Ast.LambdaExpr) {
+            throw new IllegalArgumentException(
+                    "identity-returning callable cannot capture unverified lambda effects in " + label);
         }
     }
 
