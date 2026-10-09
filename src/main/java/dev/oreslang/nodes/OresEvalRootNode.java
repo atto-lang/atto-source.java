@@ -4365,6 +4365,13 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
 
+            // rt share produces an immutable capability, not a convenient
+            // way to manufacture mutable storage by crossing an async task.
+            // Preserve the frozen identity/provenance through detachment.
+            if (value instanceof ImmutableSnapshot
+                    || (value instanceof OresObject snapshot && snapshot.readonly)) {
+                return value;
+            }
             if (visiting.put(value, Boolean.TRUE) != null) {
                 throw new IllegalArgumentException(
                         "cyclic mutable values cannot cross an async task boundary");
@@ -5571,6 +5578,44 @@ public final class OresEvalRootNode extends RootNode {
          * Collections are immutable by construction, class method invocation
          * is rejected, and nested fields cannot yield writable references.
          */
+        /**
+         * Unforgeable runtime provenance for containers produced by rt share.
+         * A JVM unmodifiable view alone has no type-level provenance, so the
+         * async detacher must not turn such a snapshot back into ArrayList/Map.
+         */
+        private interface ImmutableSnapshot { }
+
+        private static final class ReadonlyListSnapshot
+                extends java.util.AbstractList<Object> implements ImmutableSnapshot {
+            private final List<Object> elements;
+            private ReadonlyListSnapshot(List<Object> elements) {
+                this.elements = java.util.Collections.unmodifiableList(new ArrayList<>(elements));
+            }
+            @Override public Object get(int index) { return elements.get(index); }
+            @Override public int size() { return elements.size(); }
+        }
+
+        private static final class ReadonlySetSnapshot
+                extends java.util.AbstractSet<Object> implements ImmutableSnapshot {
+            private final Set<Object> elements;
+            private ReadonlySetSnapshot(Set<Object> elements) {
+                this.elements = java.util.Collections.unmodifiableSet(new LinkedHashSet<>(elements));
+            }
+            @Override public java.util.Iterator<Object> iterator() { return elements.iterator(); }
+            @Override public int size() { return elements.size(); }
+        }
+
+        private static final class ReadonlyMapSnapshot
+                extends java.util.AbstractMap<Object, Object> implements ImmutableSnapshot {
+            private final Map<Object, Object> fields;
+            private ReadonlyMapSnapshot(Map<Object, Object> fields) {
+                this.fields = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+            }
+            @Override public Set<Map.Entry<Object, Object>> entrySet() {
+                return fields.entrySet();
+            }
+        }
+
         private Object deepReadonlySnapshot(
                 Object value, IdentityHashMap<Object, Boolean> visited, int depth) {
             if (depth > 128) throw new IllegalArgumentException("rt share depth limit");
@@ -5613,21 +5658,21 @@ public final class OresEvalRootNode extends RootNode {
                         fields.put(deepReadonlySnapshot(f.getKey(), visited, depth + 1),
                                 deepReadonlySnapshot(f.getValue(), visited, depth + 1));
                     }
-                    return java.util.Collections.unmodifiableMap(fields);
+                    return new ReadonlyMapSnapshot(fields);
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> values = new ArrayList<>(list.size());
                     for (Object item : list) {
                         values.add(deepReadonlySnapshot(item, visited, depth + 1));
                     }
-                    return java.util.Collections.unmodifiableList(values);
+                    return new ReadonlyListSnapshot(values);
                 }
                 if (value instanceof Set<?> set) {
                     LinkedHashSet<Object> values = new LinkedHashSet<>();
                     for (Object item : set) {
                         values.add(deepReadonlySnapshot(item, visited, depth + 1));
                     }
-                    return java.util.Collections.unmodifiableSet(values);
+                    return new ReadonlySetSnapshot(values);
                 }
                 if (value.getClass().isArray()) {
                     int len = java.lang.reflect.Array.getLength(value);
@@ -5636,7 +5681,7 @@ public final class OresEvalRootNode extends RootNode {
                         values.add(deepReadonlySnapshot(
                                 java.lang.reflect.Array.get(value, i), visited, depth + 1));
                     }
-                    return java.util.Collections.unmodifiableList(values);
+                    return new ReadonlyListSnapshot(values);
                 }
                 throw new SecurityException("rt share refuses opaque executable/host state "
                         + value.getClass().getName());
