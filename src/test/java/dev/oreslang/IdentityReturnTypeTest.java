@@ -218,6 +218,54 @@ final class IdentityReturnTypeTest {
         assertEquals("bar\n", output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
+    @Test void identityContractsRequireReferenceSemantics() {
+        rejects("""
+                fnc bad(Option<int> v): v { return v; }
+                """, "identity-bearing");
+        rejects("""
+                fnc bad(string v): v { return v; }
+                """, "identity-bearing");
+        rejects("""
+                fnc bad({n: int} v): v { return v; }
+                """, "identity-bearing");
+    }
+
+    @Test void trapCannotExportAnExactBareIdentity() {
+        rejects("""
+                define class T as
+                end
+                trap fnc bad(T v): v { return v; }
+                """, "trap/actor boundaries");
+    }
+
+    @Test void thisRequiresAnInstanceMethodReceiver() {
+        rejects("""
+                fnc bad(): this { return 1; }
+                """, "requires a non-static class instance method");
+        rejects("""
+                define class T as
+                  static fnc bad(): this { return new T(); }
+                end
+                """, "requires a non-static class instance method");
+    }
+
+    @Test void identityCanFlowThroughReferenceCollections() {
+        accepts("""
+                fnc same(Array<int> v): v { return v; }
+                """);
+    }
+
+    @Test void deferredMutationCannotReplaceTheOriginalOwner() {
+        rejects("""
+                define class T as
+                end
+                fnc bad(T mut v): v {
+                  defer (v = new T());
+                  return v;
+                }
+                """, "identity return rebind");
+    }
+
     @Test void shadowedAliasDoesNotProveIdentity() {
         rejects("""
                 define module m
