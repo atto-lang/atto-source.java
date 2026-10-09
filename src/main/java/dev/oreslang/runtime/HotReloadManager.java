@@ -1122,7 +1122,11 @@ public final class HotReloadManager implements AutoCloseable {
                 if (closed.compareAndSet(false, true)) {
                     transitioned = true;
                     try {
-                        context.close(true);
+                        // The generation has stopped admitting guest calls.
+                        // Do not force-cancel an apparently idle context:
+                        // concurrent Graal teardown must fail visibly rather
+                        // than destructively racing active VM carriers.
+                        context.close();
                     } catch (RuntimeException | Error contextFailure) {
                         failure = contextFailure;
                     } finally {
