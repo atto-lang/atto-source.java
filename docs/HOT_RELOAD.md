@@ -112,3 +112,21 @@ The current draft therefore provides the module-level loading and contract gate
 without pretending that actor state migration is already solved. Code-unit IDs
 are normalized before they are used as generation keys so path aliases such as
 `./worker.ores` and `worker.ores` cannot create separate active slots.
+
+## Generic loading and manager lifecycle
+
+The generic `loadAndStart(name, source)` stages privately and only publishes
+the candidate after successful entrypoint execution. Startup failure closes and
+retires that candidate without changing the previous active mapping. Unlike
+module-specific `reloadModule`, the generic path executes the normal main
+entrypoint. `load(name, source)` remains a lower-level staging API and can
+publish an unstarted generation; use `loadAndStart` when a running generation
+must not be displaced before startup succeeds.
+
+`HotReloadManager.close()` is idempotent, and closed managers reject new
+loads and capability-sharing approvals. Directly closed generation handles do
+not appear in `active` lookup results; callers should still retire the
+generation by ID to release its registration.
+
+These are in-memory publication and lifecycle guarantees, **not** guarantees
+of transactional I/O or external side-effect rollback.
