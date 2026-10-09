@@ -8026,6 +8026,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable, Set<Ast.TypeAliasDecl> resolving) {
             if (declared == null) return value;
+            if (declared.isIdentityReturn()) {
+                return shapeReturnedValue(declared.identityUnderlyingType(), value, callable, resolving);
+            }
 
             Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
             if (alias != null) {

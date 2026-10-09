@@ -430,6 +430,7 @@ public final class Parser {
             Ast.TypeRef returnType = check(LBRACE)
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
+            returnType = identityReturnType(returnType, params, false);
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body);
@@ -439,7 +440,7 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = identityReturnType(parseReturnType(annotations), params, false);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body);
@@ -908,7 +909,7 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = identityReturnType(parseReturnType(annotations), params, !mods.isStatic);
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
@@ -1074,6 +1075,24 @@ public final class Parser {
                 before.isAbstract || after.isAbstract,
                 before.shared || after.shared,
                 before.untrusted || after.untrusted);
+    }
+
+    /**
+     * A bare parameter identifier in a return position means exact instance
+     * identity rather than an ordinary nominal type. 'this' is the explicit
+     * receiver-identity annotation; the runtime receiver remains named 'self'.
+     */
+    private Ast.TypeRef identityReturnType(Ast.TypeRef declared, List<Ast.Param> parameters, boolean hasReceiver) {
+        if (!declared.arguments().isEmpty() || declared.inferArguments()) return declared;
+        if (declared.name().equals("this") && hasReceiver) {
+            return Ast.TypeRef.identicalTo("this", Ast.TypeRef.simple("self"));
+        }
+        for (Ast.Param param : parameters) {
+            if (declared.name().equals(param.name())) {
+                return Ast.TypeRef.identicalTo(param.name(), param.type());
+            }
+        }
+        return declared;
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {

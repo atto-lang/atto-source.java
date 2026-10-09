@@ -95,6 +95,9 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        // Provenance contracts are checked separately from ordinary type
+        // compatibility; a nominally compatible replacement must not pass.
+        IdentityReturnChecker.check(program);
         return new TypeCheckResult(program, checker.warnings);
     }
 
@@ -6860,6 +6863,7 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (ref.isIdentityReturn()) return resolve(ref.identityUnderlyingType(), generics, self, allowNullMarker);
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;

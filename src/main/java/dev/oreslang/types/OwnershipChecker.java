@@ -2208,6 +2208,7 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef substituteType(Ast.TypeRef type, Map<String, Ast.TypeRef> bindings) {
         if (type == null) return null;
+        if (type.isIdentityReturn()) return substituteType(type.identityUnderlyingType(), bindings);
         if (type.isBorrow()) {
             return Ast.TypeRef.borrowed(substituteType(type.borrowedTarget(), bindings), type.mutableBorrow());
         }

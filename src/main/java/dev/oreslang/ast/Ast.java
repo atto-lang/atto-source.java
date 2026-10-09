@@ -53,6 +53,25 @@ public final class Ast {
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
+        /**
+         * A return contract tied to the ORIGINAL identity of one argument/receiver.
+         * Only declaration parsers may construct this compiler-only marker.
+         * Its child is the ordinary value type used by all downstream passes.
+         */
+        public static TypeRef identicalTo(String parameter, TypeRef underlying) {
+            return new TypeRef("$identity$" + parameter, List.of(underlying), false);
+        }
+        public boolean isIdentityReturn() {
+            return name.startsWith("$identity$") && arguments.size() == 1;
+        }
+        public String identityParameter() {
+            if (!isIdentityReturn()) throw new IllegalStateException("not an identity return");
+            return name.substring("$identity$".length());
+        }
+        public TypeRef identityUnderlyingType() {
+            if (!isIdentityReturn()) throw new IllegalStateException("not an identity return");
+            return arguments.getFirst();
+        }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
             return new TypeRef(mutable ? "$borrow_mut$" : "$borrow$", List.of(target), false);
         }
