@@ -87,7 +87,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, INIT_ONLY_COMMAND)) {
             current.link();
-            return current.initialize();
+            return context.runRootGuestCall(current::initialize);
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
@@ -97,13 +97,14 @@ public final class OresEvalRootNode extends RootNode {
                 && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String functionName) {
             current.link();
-            return current.invokePublic(functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            Object[] callArgs = java.util.Arrays.copyOfRange(arguments, 2, arguments.length);
+            return context.runRootGuestCall(() -> current.invokePublic(functionName, callArgs));
         }
 
         // Backward-compatible single-source execution. Multi-file hosts use
         // link/init/main commands to install a full import graph before init.
         current.link();
-        current.initialize();
+        context.runRootGuestCall(current::initialize);
         return context.runRootMain(() -> current.executeMain(arguments));
     }
 

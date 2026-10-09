@@ -331,6 +331,33 @@ public final class OresContext implements AutoCloseable {
                         "root main scheduler task resumed after terminal state");
             }
         });
+        return awaitHostRootTask(task);
+    }
+
+    /**
+     * Run synchronous guest code from a host/Truffle entry point (module init,
+     * public export invocation) on the SAME ROOT process lane as main/async.
+     * Unlike runRootMain, the return value is not implicitly awaited/flattened.
+     */
+    public Object runRootGuestCall(Callable<?> guestCall) {
+        java.util.Objects.requireNonNull(guestCall, "guestCall");
+        if (vm.isRootSchedulerCurrent()) {
+            try {
+                return guestCall.call();
+            } catch (Exception failure) {
+                throw new IllegalStateException("root guest call failed", failure);
+            }
+        }
+        if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
+            throw new IllegalStateException(
+                    "cross-process synchronous ROOT guest call is not allowed; "
+                            + "send a message or schedule an async continuation");
+        }
+        OresFuture<Object> task = vm.rootScheduler().startSync(guestCall::call);
+        return awaitHostRootTask(task);
+    }
+
+    private Object awaitHostRootTask(OresFuture<?> task) {
         if (isolatedRootTurns != null) {
             while (!task.isDone()) {
                 Runnable turn = isolatedRootTurns.poll();

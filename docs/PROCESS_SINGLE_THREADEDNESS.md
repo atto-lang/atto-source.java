@@ -10,7 +10,8 @@ The safety invariant is `active_guest_turns(process_id) <= 1`, **not**
 
 ## What this change enforces
 
-- VM ROOT user-code tasks share a bounded FIFO serial process executor.
+- VM ROOT user-code tasks, public function entry and source-module init
+  share a bounded FIFO serial process executor.
   Distinct ROOT tasks cannot execute at the same time. `await` and
   `cooperate` unwind the turn before another ROOT task is admitted.
 - ROOT can migrate across CONTROL carriers; CONTROL carriers are still
@@ -51,3 +52,14 @@ Runtime-only safepoint polling cannot suspend an arbitrary Java stack.
   execute guest continuations on producer/carrier-control threads.
 - Cancellation, stop, hot reload, process tree restarts and async generator
   migration have no bypass path.
+
+## Entrypoints and guest migration
+
+`OresEvalRootNode` routes INIT_ONLY, INVOKE_PUBLIC and default-run source
+initialization through `OresContext.runRootGuestCall`. It refuses
+cross-process synchronous guest calls to ROOT from actor or other scheduler
+turns. This avoids an otherwise unprotected host/polyglot export bypass.
+
+ROOT calls from external host entry points can synchronously wait for the
+return value; inside any logical process, suspension must use `await`
+continuations and message passing, never synchronous cross-process invocation.
