@@ -73,6 +73,13 @@ public final class MacroExpander {
         Map<String, Definition> definitions = new LinkedHashMap<>();
         List<Token> remaining = new ArrayList<>();
         int end = source.size() - 1;
+        // A premature EOF cannot hide trailing source from the AST checker.
+        for (int i = 0; i < end; i++) {
+            if (source.get(i).type() == EOF) {
+                throw fail(source.get(i), "unexpected EOF before the end of the token stream");
+            }
+        }
+        ArrayDeque<Token.Type> sourceGroups = new ArrayDeque<>();
         for (int i = 0; i < end;) {
             int start = i;
             Mode mode = Mode.AOT;
@@ -91,6 +98,9 @@ public final class MacroExpander {
                 i += 5;
             }
             if (named(source, i, "macro_rules") && at(source, i + 1, BANG)) {
+                if (!sourceGroups.isEmpty()) {
+                    throw fail(source.get(i), "macro definitions must appear at file scope");
+                }
                 Parsed parsed = parseDefinition(source, i, mode);
                 if (definitions.putIfAbsent(parsed.definition.name, parsed.definition) != null) {
                     throw fail(source.get(i), "duplicate macro definition: " + parsed.definition.name);
@@ -100,7 +110,15 @@ public final class MacroExpander {
                 }
                 i = parsed.next;
             } else {
-                remaining.add(source.get(start));
+                Token token = source.get(start);
+                if (opening(token.type())) {
+                    sourceGroups.push(closing(token.type()));
+                } else if (token.type() == RPAREN || token.type() == RBRACE || token.type() == RBRACKET) {
+                    if (!sourceGroups.isEmpty() && sourceGroups.peek() == token.type()) {
+                        sourceGroups.pop();
+                    }
+                }
+                remaining.add(token);
                 i = start + 1;
             }
         }
@@ -244,7 +262,19 @@ public final class MacroExpander {
                 for (int t = 0; t < definition.template.size(); t++) {
                     Token part = definition.template.get(t);
                     if (part.type() == DOLLAR) {
-                        substitution.addAll(captures.get(definition.template.get(++t).lexeme()));
+                        String captureName = definition.template.get(++t).lexeme();
+                        Parameter parameter = definition.params.stream()
+                                .filter(p -> p.name.equals(captureName))
+                                .findFirst().orElseThrow();
+                        List<Token> captured = captures.get(captureName);
+                        // Expression captures must remain one operand after substitution.
+                        if (parameter.kind.equals("expr")) {
+                            substitution.add(new Token(LPAREN, "(", token.line(), token.column()));
+                        }
+                        substitution.addAll(captured);
+                        if (parameter.kind.equals("expr")) {
+                            substitution.add(new Token(RPAREN, ")", token.line(), token.column()));
+                        }
                     } else {
                         substitution.add(new Token(part.type(), part.lexeme(), token.line(), token.column()));
                     }
@@ -309,18 +339,33 @@ public final class MacroExpander {
     private static String fingerprint(Mode mode, List<Parameter> params, List<Token> template) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update((mode.name() + "\n").getBytes(StandardCharsets.UTF_8));
+            hashField(digest, "ores-macro-v2");
+            hashField(digest, mode.name());
+            hashField(digest, Integer.toString(params.size()));
             for (Parameter p : params) {
-                digest.update((p.name + ":" + p.kind + "\n").getBytes(StandardCharsets.UTF_8));
+                hashField(digest, p.name);
+                hashField(digest, p.kind);
             }
+            hashField(digest, Integer.toString(template.size()));
             for (Token token : template) {
-                digest.update((token.type().name() + "\0" + token.lexeme() + "\0")
-                        .getBytes(StandardCharsets.UTF_8));
+                hashField(digest, token.type().name());
+                hashField(digest, token.lexeme());
             }
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    /** Length-delimit hash fields; token lexemes may contain NUL and newline. */
+    private static void hashField(MessageDigest digest, String field) {
+        byte[] bytes = field.getBytes(StandardCharsets.UTF_8);
+        int n = bytes.length;
+        digest.update((byte) (n >>> 24));
+        digest.update((byte) (n >>> 16));
+        digest.update((byte) (n >>> 8));
+        digest.update((byte) n);
+        digest.update(bytes);
     }
 
     private static Token need(List<Token> tokens, int index, Token.Type type, String error) {
