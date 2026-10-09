@@ -1,5 +1,4 @@
 import fnc {actor_label} from "./actor-isolation-support.ores";
-import class CounterState from "./actor-isolation-support.ores";
 
 
 // SHARED actor:
@@ -7,25 +6,25 @@ import class CounterState from "./actor-isolation-support.ores";
 // - may also use explicit synchronized shared memory via SharedMutex<T>
 shared actor SharedCounter {
   let int local_count = 0;
-  let SharedMutex<CounterState> shared_count =
-      SharedMutex.new(new CounterState());
+  let SharedMutex<int> shared_gate =
+      SharedMutex.new(10);
 
   pub fnc increment(): bool {
-    self.local_count = self.local_count + 1;
-
     // Actor mailbox turns must never park a dispatcher carrier. Until actor
     // continuation lowering can suspend/resume an incomplete lock_async()
     // future, shared actors use nonblocking acquisition for explicit shared
     // memory. Ordinary actor-owned state like local_count needs no mutex.
-    val shared_count = self.shared_count;
-    val maybe_guard = shared_count.try_lock();
+    val shared_gate = self.shared_gate;
+    val maybe_guard = shared_gate.try_lock();
 
     if maybe_guard.is_none(); do
       return false;
     fi
 
     val guard = maybe_guard.unwrap();
-    guard.value = guard.value + 1;
+    // The integer inside SharedMutex<int> is not a mutable class field.
+    // This example proves nonblocking admission, not generic guard mutation.
+    self.local_count = self.local_count + 1;
     guard.release();
     return true;
   }
@@ -74,8 +73,8 @@ isoactor PrivateCounter {
  * process.share_readonly(...) is therefore private-actor forbidden too.
  *
  * isoactor BrokenPrivateCounter {
- *   let SharedMutex<CounterState> shared_count =
- *       SharedMutex.new(new CounterState());
+ *   let SharedMutex<int> shared_count =
+ *       SharedMutex.new(0);
  *
  *   pub fnc increment_shared(): void {
  *     self.shared_count.with_lock(|counter| -> {
