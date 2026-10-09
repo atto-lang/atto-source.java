@@ -15,6 +15,33 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresSchedulerTest {
     @Test
+    void serialProcessCarrierLossFailsEveryPendingSchedulerFuture() throws Exception {
+        var admitted = new java.util.ArrayList<Runnable>();
+        AtomicInteger submissions = new AtomicInteger();
+        java.util.concurrent.Executor carriers = runnable -> {
+            if (submissions.incrementAndGet() > 1) {
+                throw new java.util.concurrent.RejectedExecutionException("carrier unavailable");
+            }
+            admitted.add(runnable);
+        };
+        var serial = new SerialProcessExecutor(carriers, 4);
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "rejected-carrier-test", 1, serial, Runnable::run)) {
+            OresFuture<Integer> fatal = scheduler.start(resume -> {
+                throw new LinkageError("first turn terminated carrier");
+            });
+            OresFuture<Integer> waiting = scheduler.start(resume -> OresScheduler.done(99));
+            assertEquals(1, admitted.size());
+            assertThrows(LinkageError.class, () -> admitted.removeFirst().run());
+            assertTrue(fatal.isDone());
+            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> waiting.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                    failed.getCause(), "accepted task must fail, not hang");
+        }
+    }
+
+    @Test
     void failingCloseHookStillRunsRemainingHooksAndSettlesAwaitingTasks()
             throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
