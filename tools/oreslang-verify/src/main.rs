@@ -109,6 +109,7 @@ fn run(args:&[String])->Result<(),String>{
    let mut files=vec![];
    for p in paths{visit(Path::new(&p),&mut files)?}
    files.sort();files.dedup();
+   if files.is_empty(){return Err("no Oreslang source files selected".into())}
    let mut issues=vec![];
    for p in files{
     let src=fs::read_to_string(&p).map_err(|e|format!("{}: {e}",p.display()))?;
