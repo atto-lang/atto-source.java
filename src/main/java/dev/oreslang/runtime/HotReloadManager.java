@@ -1126,7 +1126,7 @@ public final class HotReloadManager implements AutoCloseable {
                         // Do not force-cancel an apparently idle context:
                         // concurrent Graal teardown must fail visibly rather
                         // than destructively racing active VM carriers.
-                        context.close();
+                        dev.oreslang.OresLanguage.closeManagedContext(context);
                     } catch (RuntimeException | Error contextFailure) {
                         failure = contextFailure;
                     } finally {
