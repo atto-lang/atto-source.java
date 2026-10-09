@@ -1557,6 +1557,25 @@ public final class OresEvalRootNode extends RootNode {
                             SourceFlow.continuing(),
                             continuation);
                     return;
+                } catch (TailCallSignal tail) {
+                    // An apparently non-suspending compound statement may
+                    // contain a tail return from a nested conditional/loop.
+                    // Classic evaluation uses TailCallSignal to jump to the
+                    // next invocation. SourceTask must instead carry the
+                    // result as a SourceFlow, preserving async-backed I/O,
+                    // defers and the owning continuation rather than leaking
+                    // the internal signal into an OresFuture.
+                    completeSourceInvocation(
+                            task,
+                            tail.invocation,
+                            invocationDeclaresAsync(tail.invocation),
+                            (t, value, failure) -> finishBlock(
+                                    t, env, defers,
+                                    failure != null
+                                            ? SourceFlow.throwing(failure)
+                                            : SourceFlow.returning(value),
+                                    continuation));
+                    return;
                 } catch (RuntimeException | Error failure) {
                     finishBlock(
                             task,
