@@ -1874,6 +1874,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
+        private final ActorAddressBus addressBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
         private UUID joinSecret = UUID.randomUUID();
 
@@ -1895,6 +1896,7 @@ public final class ActorRuntime implements AutoCloseable {
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
+            this.addressBus = new ActorAddressBus(ActorRuntime.this, this);
             if (creator != null) members.add(creator);
         }
 
@@ -1923,6 +1925,13 @@ public final class ActorRuntime implements AutoCloseable {
             requireObserver("access ActorGroup events");
             requireOpen();
             return eventBus;
+        }
+
+        /** Named mailbox routing, orthogonal to ActorGroup event subscriptions. */
+        public ActorAddressBus addresses() {
+            requireObserver("access ActorGroup mailbox addresses");
+            requireOpen();
+            return addressBus;
         }
 
         /**
@@ -2132,7 +2141,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void leaveId(ActorId actorId) {
-            if (members.remove(actorId)) eventBus.removeActor(actorId);
+            if (members.remove(actorId)) {
+                addressBus.removeActor(actorId);
+                eventBus.removeActor(actorId);
+            }
         }
 
         private void actorTerminated(ActorId actorId) {
@@ -2161,6 +2173,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
             if (mailman != null) mailman.close();
+            addressBus.closeFromGroup();
             eventBus.closeFromGroup();
             members.clear();
             actorGroups.remove(id, this);
