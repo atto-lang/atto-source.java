@@ -132,7 +132,7 @@ public final class IncrementalCompiler {
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v3\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -224,7 +224,13 @@ public final class IncrementalCompiler {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    memberEntries.add(" iface-field " + field.name() + ":" + typeRef(field.type()) + "\n");
+                    String bindingRequirement = iface.moduleContract()
+                            ? (field.bindingKind() == null
+                                    ? "readable "
+                                    : field.bindingKind().name().toLowerCase(java.util.Locale.ROOT) + " ")
+                            : "";
+                    memberEntries.add(" iface-field " + bindingRequirement
+                            + field.name() + ":" + typeRef(field.type()) + "\n");
                 }
             }
             memberEntries.stream().sorted().forEach(abi::append);
