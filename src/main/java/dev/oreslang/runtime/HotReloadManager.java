@@ -94,7 +94,7 @@ public final class HotReloadManager implements AutoCloseable {
             // Do not let matching bytes/path attach unapproved adversarial code
             // to the process-wide immutable AST/code-image cache.
             CapabilityChecker.check(
-                    dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(sourceText),
+                    OresCompiler.parseAndTypeCheck(sourceText),
                     guestPolicy);
             return stage(name, digest(sourceText), sourceText, false,
                     initializeModuleOnly, activateImmediately);
