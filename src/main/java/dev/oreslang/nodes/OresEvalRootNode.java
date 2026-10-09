@@ -5557,6 +5557,13 @@ public final class OresEvalRootNode extends RootNode {
          * actor/namespace/capability can be smuggled into copied fields.
          * Cycles and opaque host types fail closed instead of sharing an alias.
          */
+        private static void requireDeepCopyCapacity(long children, int[] nodes) {
+            if (children < 0L || children > 100_000L - nodes[0]) {
+                throw new IllegalArgumentException(
+                        "rt copy graph exceeds safe depth/node budget");
+            }
+        }
+
         private Object deepCopyOwnedData(
                 Object value, IdentityHashMap<Object, Boolean> visiting,
                 int depth, int[] nodes) {
@@ -5593,6 +5600,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException("rt copy cannot clone actor state");
                     }
+                    requireDeepCopyCapacity(object.fields.size(), nodes);
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> field : object.fields.entrySet()) {
                         fields.put(field.getKey(),
@@ -5610,6 +5618,7 @@ public final class OresEvalRootNode extends RootNode {
                             deepCopyOwnedData(result.value(), visiting, depth + 1, nodes));
                 }
                 if (value instanceof Map<?, ?> map) {
+                    requireDeepCopyCapacity((long) map.size() * 2L, nodes);
                     LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<?, ?> field : map.entrySet()) {
                         Object k = deepCopyOwnedData(field.getKey(), visiting, depth + 1, nodes);
@@ -5621,6 +5630,7 @@ public final class OresEvalRootNode extends RootNode {
                             : copy;
                 }
                 if (value instanceof List<?> list) {
+                    requireDeepCopyCapacity(list.size(), nodes);
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) {
                         copy.add(deepCopyOwnedData(item, visiting, depth + 1, nodes));
@@ -5628,6 +5638,7 @@ public final class OresEvalRootNode extends RootNode {
                     return copy;
                 }
                 if (value instanceof java.util.Set<?> set) {
+                    requireDeepCopyCapacity(set.size(), nodes);
                     java.util.LinkedHashSet<Object> copy = new java.util.LinkedHashSet<>();
                     for (Object item : set) {
                         copy.add(deepCopyOwnedData(item, visiting, depth + 1, nodes));
@@ -5636,6 +5647,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (value.getClass().isArray()) {
                     int length = java.lang.reflect.Array.getLength(value);
+                    requireDeepCopyCapacity(length, nodes);
                     Object arrayCopy = java.lang.reflect.Array.newInstance(
                             value.getClass().getComponentType(), length);
                     for (int i = 0; i < length; i++) {
