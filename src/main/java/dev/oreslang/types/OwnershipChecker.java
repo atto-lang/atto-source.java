@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -37,6 +38,7 @@ public final class OwnershipChecker {
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
+    private final Set<String> importedNamespaceValues = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
@@ -54,6 +56,21 @@ public final class OwnershipChecker {
     }
 
     private void index(Ast.Program program) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.wildcard()) {
+                if (imported.namespace() != null
+                        && !imported.namespace().isBlank()) {
+                    importedNamespaceValues.add(imported.namespace());
+                }
+            } else if (imported.kind() == Ast.ImportKind.MODULE
+                    || imported.kind() == Ast.ImportKind.CLASS
+                    || imported.kind() == Ast.ImportKind.ACTOR
+                    || imported.kind() == Ast.ImportKind.ALL) {
+                for (String name : imported.names()) {
+                    importedNamespaceValues.add(ImportRules.localName(imported, name));
+                }
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
@@ -2952,6 +2969,7 @@ public final class OwnershipChecker {
         if (type.name().equals("ActorRef")
                 || type.name().equals("Actor")
                 || modules.contains(type.name())
+                || importedNamespaceValues.contains(type.name())
                 || (klass != null && klass.actorKind() != Ast.ActorKind.NONE)) {
             throw error(where + " cannot accept actor, ActorRef, or module namespace values as parameters");
         }
@@ -2980,7 +2998,9 @@ public final class OwnershipChecker {
             }
         } else if (expr instanceof Ast.NameExpr name) {
             VarState local = scope.lookup(name.name());
-            if (local == null && (modules.contains(name.name()) || classes.containsKey(name.name()))) {
+            if (local == null && (modules.contains(name.name())
+                    || classes.containsKey(name.name())
+                    || importedNamespaceValues.contains(name.name()))) {
                 throw error(where + " cannot pass module or class namespace '" + name.name()
                         + "'; use its static members");
             }
