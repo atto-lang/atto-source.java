@@ -15,6 +15,42 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresSchedulerTest {
     @Test
+    void closeHooksRunExactlyOnceWithConcurrentRegistration() throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        final int hooks = 400;
+        AtomicInteger[] counters = new AtomicInteger[hooks];
+        for (int i = 0; i < hooks; i++) counters[i] = new AtomicInteger();
+        CountDownLatch gate = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(9)) {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int thread = 0; thread < 8; thread++) {
+                int start = thread * (hooks / 8);
+                futures.add(pool.submit(() -> {
+                    gate.await();
+                    for (int i = start; i < start + hooks / 8; i++) {
+                        AtomicInteger count = counters[i];
+                        scheduler.onClose(count::incrementAndGet);
+                    }
+                    return null;
+                }));
+            }
+            futures.add(pool.submit(() -> {
+                gate.await();
+                scheduler.close();
+                return null;
+            }));
+            gate.countDown();
+            for (var future : futures) future.get(5, TimeUnit.SECONDS);
+            for (int i = 0; i < hooks; i++) {
+                assertEquals(1, counters[i].get(),
+                        "each close hook must run exactly once, including concurrent registrations");
+            }
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
     void serialProcessCarrierLossFailsEveryPendingSchedulerFuture() throws Exception {
         var admitted = new java.util.ArrayList<Runnable>();
         AtomicInteger submissions = new AtomicInteger();
