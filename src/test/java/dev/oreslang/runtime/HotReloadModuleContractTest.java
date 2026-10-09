@@ -477,4 +477,39 @@ final class HotReloadModuleContractTest {
             assertEquals(2, loader.liveGenerations());
         }
     }
+
+    @Test
+    void staleStagedCandidateCannotReplaceANewerGeneration() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String version = value -> """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return %s; }
+                    end
+                    """.formatted(value);
+
+            HotReloadManager.Generation original =
+                    loader.reloadModule("worker.ores", "Worker", version.apply(1), "WorkerApi");
+            HotReloadManager.Generation candidateA =
+                    loader.loadModule("worker.ores", "Worker", version.apply(2), "WorkerApi");
+            HotReloadManager.Generation candidateB =
+                    loader.loadModule("worker.ores", "Worker", version.apply(3), "WorkerApi");
+
+            loader.initializeModule(candidateA);
+            loader.activateModule(candidateA);
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> loader.initializeModule(candidateB));
+
+            assertEquals(candidateA, loader.active("worker.ores"));
+            assertEquals(true, candidateB.closed());
+            assertEquals(2, loader.liveGenerations(),
+                    "the stale candidate should be removed; original remains available for draining");
+            assertEquals(false, original.closed());
+        }
+    }
 }
