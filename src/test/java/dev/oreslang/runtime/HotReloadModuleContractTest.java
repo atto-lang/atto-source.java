@@ -29,7 +29,7 @@ final class HotReloadModuleContractTest {
                     "a staged candidate must not become active before initialization");
             assertEquals(false, generation.started());
 
-            generation.start();
+            loader.initializeModule(generation);
             loader.activateModule(generation);
             assertEquals(generation, loader.active("worker.ores"));
         }
@@ -467,7 +467,7 @@ final class HotReloadModuleContractTest {
                     loader.loadModule("./worker.ores", "Worker", v2, "WorkerApi");
 
             assertEquals(oldGeneration, loader.active("worker.ores"));
-            candidate.start();
+            loader.initializeModule(candidate);
             assertEquals(oldGeneration, loader.active("./worker.ores"),
                     "initialization alone must not publish the candidate");
 
