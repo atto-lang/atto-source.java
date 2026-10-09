@@ -60,6 +60,20 @@ class CooperativeBlockingIoTest {
         assertEquals("hello", Files.readString(file));
     }
 
+    @Test void firstClassBlockingNativeIoAliasFailsClosed() {
+        String source = """
+                pub routine main(): void {
+                  val readFile = fs.read_text_blocking;
+                  return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("direct-call-only"),
+                failure.getMessage());
+    }
+
     @Test void strictNativeIoRejectsBareCallsAndAdmitsCooperativeSuffixes() {
         String previous = System.getProperty("ores.compiler.strictNativeIo");
         System.setProperty("ores.compiler.strictNativeIo", "true");
