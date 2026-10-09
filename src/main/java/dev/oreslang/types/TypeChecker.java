@@ -2745,6 +2745,7 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
+                enforceNativeIoNaming(new Named("stdio", List.of()), member.member());
                 if (member.member().equals("print") || member.member().equals("println")
                         || member.member().equals("print_blocking") || member.member().equals("println_blocking"))
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -2753,6 +2754,7 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            enforceNativeIoNaming(sumReceiver, member.member());
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -4120,6 +4122,40 @@ public final class TypeChecker {
                             + "' is not a known actor class");
         }
         return actorClass;
+    }
+
+    /**
+     * Migration gate for the canonical source-visible native I/O contract.
+     * Set -Dores.compiler.strictNativeIo=true in compiler/CI invocation until
+     * the old bare APIs can be removed in a versioned breaking release.
+     * Dispatch classification is by resolved builtin receiver, not suffix alone:
+     * arbitrary user-defined `read_text` methods are not native host I/O.
+     */
+    private static void enforceNativeIoNaming(Type receiver, String method) {
+        if (!Boolean.getBoolean("ores.compiler.strictNativeIo")) return;
+        if (!(receiver instanceof Named named)) return;
+        String api = named.name();
+        boolean legacy = switch (api) {
+            case "fs", "File" -> java.util.Set.of(
+                    "read_text", "write_text", "write_text_atomic",
+                    "append_text", "list_dir", "is_dir", "is_symlink",
+                    "exists", "remove", "mkdir_all").contains(method);
+            case "http" -> java.util.Set.of("get_text", "post_text").contains(method);
+            case "network", "net" -> method.equals("connect");
+            case "TcpConnection" -> java.util.Set.of(
+                    "read_line", "write_text", "close").contains(method);
+            case "stdio" -> java.util.Set.of("print", "println").contains(method);
+            case "stdio.stdout" -> java.util.Set.of(
+                    "write", "println", "log", "logList").contains(method);
+            case "stdio.stdin" -> method.equals("read_line");
+            default -> false;
+        };
+        if (legacy) {
+            throw new IllegalArgumentException(
+                    "native I/O naming: " + api + "." + method
+                    + " is legacy; synchronous-looking native I/O requires the _blocking suffix "
+                    + "and cooperative continuation lowering");
+        }
     }
 
     private static Type builtinIoMember(Type receiver, String name) {
