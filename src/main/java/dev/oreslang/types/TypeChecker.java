@@ -891,6 +891,19 @@ public final class TypeChecker {
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && field.name().equals("concurrency")) {
+                if (field.bindingKind() != Ast.BindingKind.VAL
+                        || field.visibility() != Ast.Visibility.PRIVATE
+                        || field.type() == null
+                        || !field.type().name().equals("int")
+                        || !(field.initializer() instanceof Ast.LiteralExpr literal)
+                        || !(literal.value() instanceof Number number)
+                        || number.longValue() < 1 || number.longValue() > 1024
+                        || number.doubleValue() != number.longValue()) {
+                    throw new IllegalArgumentException(
+                            "actor concurrency must be immutable, literal int in 1..1024");
+                }
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
