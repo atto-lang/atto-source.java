@@ -252,6 +252,18 @@ final class MacroExpanderTest {
                 && t.lexeme().equals("42")).count());
     }
     @Test
+    void aotFingerprintDistinguishesMalformedUnicodeCodeUnits() {
+        String prefix = "macro_rules! unicode { ($v:expr) => { \"";
+        String suffix = "\" }; }";
+        String initialSource = prefix + (char) 0xD800 + suffix;
+        String modifiedSource = prefix + (char) 0xD801 + suffix;
+        MacroExpander.Snapshot previous =
+                MacroExpander.expand(new Lexer(initialSource).scan()).snapshot();
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(new Lexer(modifiedSource).scan(), previous));
+    }
+
+    @Test
     void scalarAndStringArgumentsRetainLexemeValues() {
         String source = """
                 macro_rules! identity { ($value:expr) => { $value }; }
