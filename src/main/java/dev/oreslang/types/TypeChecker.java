@@ -48,6 +48,8 @@ public final class TypeChecker {
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
     /** Lexical compile-time type aliases local to the block currently being checked. */
     private Env currentTypeScope;
+    /** Names declared by named inference, including aliases not yet initialized. */
+    private final Set<String> inferredTypeNames = new HashSet<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -1299,6 +1301,14 @@ public final class TypeChecker {
         Env previousTypeScope = currentTypeScope;
         currentTypeScope = env;
         try {
+            // Reserve names before checking any initializer, so a use before the
+            // declaration cannot silently resolve as an unrelated nominal type.
+            for (Ast.Stmt stmt : body) {
+                if (stmt instanceof Ast.BindingStmt binding && binding.inferredTypeName() != null) {
+                    inferredTypeNames.add(binding.inferredTypeName());
+                    env.reserveInferredType(binding.inferredTypeName());
+                }
+            }
             for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
         } finally {
             currentTypeScope = previousTypeScope;
@@ -6921,6 +6931,10 @@ public final class TypeChecker {
             }
             return scopedType;
         }
+        if (inferredTypeNames.contains(ref.name())) {
+            throw new IllegalArgumentException(
+                    "inferred type alias '" + ref.name() + "' is out of scope or used before initialization");
+        }
 
         rejectUnimportedTypeDependency(ref.name());
 
@@ -7440,8 +7454,19 @@ public final class TypeChecker {
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
+        private final Set<String> reservedInferredNames = new HashSet<>();
+        private void reserveInferredType(String name) {
+            if (hasReservedInferredType(name) || lookupInferredType(name) != null
+                    || !reservedInferredNames.add(name)) {
+                throw new IllegalArgumentException("duplicate or shadowed inferred type '" + name + "'");
+            }
+        }
+        private boolean hasReservedInferredType(String name) {
+            return reservedInferredNames.contains(name)
+                    || parent != null && parent.hasReservedInferredType(name);
+        }
         private void defineInferredType(String name, Type type) {
-            if (lookupInferredType(name) != null
+            if (!reservedInferredNames.contains(name)
                     || inferredTypes.putIfAbsent(name, type) != null) {
                 throw new IllegalArgumentException("duplicate or shadowed inferred type '" + name + "'");
             }
