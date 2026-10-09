@@ -172,7 +172,10 @@ final class HotReloadModuleContractTest {
                     end
 
                     define module Worker conforms WorkerApi as
-                      pub val int broken = 1 / 0;
+                      pub routine init(): void {
+                        val int broken = 1 / 0;
+                        return;
+                      }
                       pub fnc run(): int { return 2; }
                     end
                     """;
@@ -414,7 +417,10 @@ final class HotReloadModuleContractTest {
                       fnc run(): int;
                     end
                     define module Broken conforms BrokenApi as
-                      pub val int broken = 1 / 0;
+                      pub routine init(): void {
+                        val int broken = 1 / 0;
+                        return;
+                      }
                       pub fnc run(): int { return 1; }
                     end
                     """;
