@@ -9,6 +9,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -18,6 +19,69 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(30)
 final class ActorNativeCarrierLeaseTest {
+
+    @Test
+    void foreignSupervisorStopCannotReclaimActorOwnedStateDuringActiveNativeTurn()
+            throws Exception {
+        for (ActorRuntime.ActorKind kind : ActorRuntime.ActorKind.values()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            try (SharedCodeImageStore store = new SharedCodeImageStore();
+                 ActorRuntime runtime = new ActorRuntime(
+                         IsolatePolicy.developer(),
+                         new ActorRuntime.DispatcherConfig(2, 2, 2, 128))) {
+                var image = store.publish("active-stop-" + kind + ".ores",
+                        Parser.parse("pub routine main(): void { return; }"));
+                ActorRuntime.ActorCodeExecutor bridge = new ActorRuntime.ActorCodeExecutor() {
+                    @Override public SharedCodeImageStore.CodeImage codeImage() {
+                        return image;
+                    }
+                    @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                            String type, ActorRuntime.ActorContext<Object> context) {
+                        assertTrue(ActorRuntime.currentThreadOwnsActorNativeLease());
+                        return context.self()::id;
+                    }
+                    @Override public void receiveActor(
+                            String type, ActorRuntime.ActorOwnedGuestState state,
+                            ActorRuntime.ActorInboxMail<Object> mail,
+                            ActorRuntime.ActorContext<Object> context) {
+                        try {
+                            assertTrue(ActorRuntime.currentThreadOwnsActorNativeLease());
+                            Object initial = runtime.currentActorModuleState(
+                                    "pkg/private.ores", "Counter", image.generation(),
+                                    java.util.ArrayList::new);
+                            entered.countDown();
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                            assertTrue(ActorRuntime.currentThreadOwnsActorNativeLease(),
+                                    "supervisor stop cannot steal the native actor lease");
+                            assertSame(mail, context.currentMail().orElseThrow(),
+                                    "foreign stop must not clear active mail during actor code");
+                            assertSame(initial, runtime.currentActorModuleState(
+                                    "pkg/private.ores", "Counter", image.generation(),
+                                    java.util.ArrayList::new),
+                                    "actor-owned mutable memory cannot be retired while running");
+                        } catch (Throwable error) {
+                            failure.set(error);
+                        }
+                    }
+                };
+                var actor = runtime.spawnCodeActor(kind, bridge, "Worker");
+                try {
+                    actor.ready().get(5, TimeUnit.SECONDS);
+                    actor.send("run");
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    assertFalse(ActorRuntime.currentThreadOwnsActorNativeLease());
+                    actor.stop();  // Foreign CONTROL/supervisor shutdown.
+                    release.countDown();
+                    assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                    assertNull(failure.get(), String.valueOf(failure.get()));
+                } finally {
+                    release.countDown();
+                }
+            }
+        }
+    }
 
     @Test
     void fiveSuspendedMessagesShareOneExclusiveNativeLeaseForAllActorKinds()
