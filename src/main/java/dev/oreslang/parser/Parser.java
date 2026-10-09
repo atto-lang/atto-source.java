@@ -1084,7 +1084,9 @@ public final class Parser {
      */
     private Ast.TypeRef identityReturnType(Ast.TypeRef declared, List<Ast.Param> parameters, boolean hasReceiver) {
         if (!declared.arguments().isEmpty() || declared.inferArguments()) return declared;
-        if (declared.name().equals("this") && hasReceiver) {
+        if (declared.name().equals("this")) {
+            if (!hasReceiver) throw error(previous(),
+                    "identity return ': this' requires a non-static class instance method");
             return Ast.TypeRef.identicalTo("this", Ast.TypeRef.simple("self"));
         }
         for (Ast.Param param : parameters) {
