@@ -174,6 +174,7 @@ public final class HotReloadManager implements AutoCloseable {
             String moduleName,
             String sourceText,
             String contractName) {
+        validateAdmissionInputs(codeUnitId, sourceText);
         codeUnitId = normalizeCodeUnitId(codeUnitId);
         Generation previous = activeByCodeUnit.get(codeUnitId);
         Generation previousGlobalActive = active.get();
