@@ -212,6 +212,65 @@ final class PointerlessFncOwnershipTest {
                 """)));
     }
 
+    @Test
+    void rtCopyCreatesIndependentMutableArrayStorage() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  val Array<int> original = new Array<int>();
+                  original.add(5);
+                  val Array<int> cloned = rt copy original;
+                  cloned.add(9);
+                  stdio.stdout.write(original.size);
+                  stdio.stdout.write(cloned.size);
+                  return;
+                }
+                """);
+        assertEquals("12", output);
+    }
+
+    @Test
+    void rtCopyCreatesIndependentClassFields() throws Exception {
+        String output = run("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                pub routine main(): void {
+                  val Box original = new Box();
+                  val Box cloned = rt copy original;
+                  cloned.value = 9;
+                  stdio.stdout.write(original.value);
+                  stdio.stdout.write(cloned.value);
+                  return;
+                }
+                """);
+        assertEquals("79", output);
+    }
+
+    @Test
+    void rtCopyRejectsUnsafeRuntimeCapability() {
+        IllegalArgumentException bad = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc bad(): void {
+                      val leaked = rt copy SharedMutex.new(1);
+                      return;
+                    }
+                    """)));
+        assertTrue(bad.getMessage().contains("rt copy"), bad.getMessage());
+    }
+
+    @Test
+    void rtShareMutableArrayStillFailsClosed() {
+        IllegalArgumentException bad = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc bad(): void {
+                      val Array<int> a = new Array<int>();
+                      val leaked = rt share a;
+                      return;
+                    }
+                    """)));
+        assertTrue(bad.getMessage().contains("rt share"), bad.getMessage());
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
