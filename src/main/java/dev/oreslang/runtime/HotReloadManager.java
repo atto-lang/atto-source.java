@@ -88,6 +88,7 @@ public final class HotReloadManager implements AutoCloseable {
             boolean initializeModuleOnly,
             boolean activateImmediately) {
         validateAdmissionInputs(name, sourceText);
+        ensureGenerationCapacity();
         name = normalizeCodeUnitId(name);
         boolean shared = canShare(name, sourceText);
         if (!shared) {
@@ -123,6 +124,7 @@ public final class HotReloadManager implements AutoCloseable {
             String sourceText,
             String contractName) {
         validateAdmissionInputs(codeUnitId, sourceText);
+        ensureGenerationCapacity();
         requireNonBlank(moduleName, "moduleName");
         requireNonBlank(contractName, "contractName");
 
@@ -354,6 +356,7 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
+        ensureGenerationCapacity();
         String codeUnitId = normalizeCodeUnitId(unit.unitId());
         boolean shared = canShare(codeUnitId, unit.sourceText());
 
@@ -382,6 +385,15 @@ public final class HotReloadManager implements AutoCloseable {
             return normalized;
         } catch (java.nio.file.InvalidPathException invalidPath) {
             throw new IllegalArgumentException("invalid codeUnitId", invalidPath);
+        }
+    }
+
+    private void ensureGenerationCapacity() {
+        if (guestPolicy.adversarial()
+                && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
+            throw new IllegalStateException(
+                    "adversarial hot-load live generation limit exceeded: "
+                            + MAX_ADVERSARIAL_LIVE_GENERATIONS);
         }
     }
 
@@ -441,12 +453,7 @@ public final class HotReloadManager implements AutoCloseable {
             boolean shareCodeImage,
             boolean initializeModuleOnly,
             boolean activateImmediately) {
-        if (guestPolicy.adversarial()
-                && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
-            throw new IllegalStateException(
-                    "adversarial hot-load live generation limit exceeded: "
-                            + MAX_ADVERSARIAL_LIVE_GENERATIONS);
-        }
+        ensureGenerationCapacity();
 
         long id = sequence.incrementAndGet();
         Context context =
