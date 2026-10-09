@@ -225,7 +225,13 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
-        List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> contracts = List.of();
+        if (match(CONFORMS)) {
+            // Accept both 'conforms RouteContract' and 'conforms to RouteContract'.
+            // 'to' is not a global keyword and remains valid elsewhere.
+            if (check(IDENT) && peek().lexeme().equals("to")) advance();
+            contracts = parseTypeRefList();
+        }
         // Canonical module syntax is "define module Name as ... end".
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
