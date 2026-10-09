@@ -6666,13 +6666,24 @@ public final class ActorRuntime implements AutoCloseable {
             })) {
                 // Drain all committed user-message envelopes, including after close.
             }
-            suspendedSourceMessages.clear();
-            sourceMessages.clear();
-            for (DeferredMailRelease pending : sourceMessageReleases.values()) {
-                pending.finish();
+            synchronized (lifecycleLock) {
+                // Cancellation may arrive from a supervisor/CONTROL carrier
+                // while a native actor turn is still executing. Revoke new
+                // admission and drain queued envelopes above, but DO NOT
+                // mutate or free the active actor's message state/leases from
+                // that foreign thread. The last TurnExecutor return invokes
+                // finalizeStopLocked() and completes this release.
+                if (activeTurns != 0 || carrierActive || guestTurnOwner.get() != null) {
+                    return;
+                }
+                suspendedSourceMessages.clear();
+                sourceMessages.clear();
+                for (DeferredMailRelease pending : sourceMessageReleases.values()) {
+                    pending.finish();
+                }
+                sourceMessageReleases.clear();
+                activeMail = null;
             }
-            sourceMessageReleases.clear();
-            activeMail = null;
         }
 
         private void fail(Throwable failure) {
