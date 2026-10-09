@@ -28,6 +28,11 @@ final class HotReloadModuleContractTest {
             assertEquals(null, loader.active("worker.ores"),
                     "a staged candidate must not become active before initialization");
             assertEquals(false, generation.started());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    generation::start,
+                    "module candidates must not use the legacy main-executing start path");
+            assertEquals(false, generation.started());
 
             loader.initializeModule(generation);
             loader.activateModule(generation);
@@ -510,6 +515,28 @@ final class HotReloadModuleContractTest {
             assertEquals(2, loader.liveGenerations(),
                     "the stale candidate should be removed; original remains available for draining");
             assertEquals(false, original.closed());
+        }
+    }
+
+    @Test
+    void failedLegacyStartRetiresClosedGenerationAndClearsActiveSlot() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String source = """
+                    pub routine main(): void {
+                      val int failure = 1 / 0;
+                      return;
+                    }
+                    """;
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RuntimeException.class,
+                    () -> loader.loadAndStart("broken.ores", source));
+
+            assertEquals(0, loader.liveGenerations(),
+                    "a failed start must not leak a closed generation into the registry");
+            assertEquals(null, loader.active("broken.ores"));
+            assertEquals(null, loader.active());
         }
     }
 }
