@@ -65,18 +65,22 @@ A basic transactional replacement path is also available:
 reloadModule(codeUnitId, moduleName, source, contract)
 ```
 
-The candidate is staged and initialized before the previous generation is
-retired. Module startup uses the runtime's init-only entry path: it links and
-initializes the named module but does **not** invoke the source program's
-`main()`. The source must contain only the requested named module (plus any
+The candidate is staged and initialized before it becomes the active generation.
+Module startup uses the runtime's init-only entry path: it links and initializes
+the named module but does **not** invoke the source program's `main()`. The source must contain only the requested named module (plus any
 contract declarations in the synthetic root module), so unrelated named modules
 cannot be initialized as a side effect.
 
 If candidate initialization fails, the previous generation remains active.
 Cleanup failures are recorded as suppressed failures and cannot prevent
-restoration of the previous active-generation mapping. This rollback is about
-the active-generation mapping and runtime resources; it cannot undo external
-side effects that module initialization may already have caused.
+restoration of the previous active-generation mapping, including the manager's
+single-unit convenience pointer when another code unit was most recently active.
+After a successful switch, the previous generation remains open for actors or
+requests pinned to it; the supervisor must call `retire(oldGeneration.id())`
+after those users have drained. This avoids tearing down an old generation
+while it may still own live actors. Rollback restores runtime selection/resources;
+it cannot undo external side effects that module initialization may already have
+caused.
 
 ## Deliberate v0 limitations
 
@@ -105,4 +109,6 @@ mailbox/supervision relationships, and safe state migration rules rather than
 simply swapping arbitrary executable memory.
 
 The current draft therefore provides the module-level loading and contract gate
-without pretending that actor state migration is already solved.
+without pretending that actor state migration is already solved. Code-unit IDs
+are normalized before they are used as generation keys so path aliases such as
+`./worker.ores` and `worker.ores` cannot create separate active slots.
