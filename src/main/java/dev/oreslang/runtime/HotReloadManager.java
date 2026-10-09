@@ -228,6 +228,7 @@ public final class HotReloadManager implements AutoCloseable {
         if (generation.closed()) {
             throw new IllegalStateException("cannot initialize a closed generation");
         }
+        requireUnchangedActivationBase(generation);
         try {
             generation.startModule();
             return generation;
@@ -259,9 +260,24 @@ public final class HotReloadManager implements AutoCloseable {
         if (!generation.started()) {
             throw new IllegalStateException("module generation must initialize successfully before activation");
         }
+        requireUnchangedActivationBase(generation);
         activeByCodeUnit.put(generation.codeUnitId(), generation);
         active.set(generation);
         return generation;
+    }
+
+    private void requireUnchangedActivationBase(Generation generation) {
+        Generation current = activeByCodeUnit.get(generation.codeUnitId());
+        if (current != generation.expectedPreviousActive) {
+            throw new IllegalStateException(
+                    "stale module candidate for '" + generation.codeUnitId()
+                            + "': the active generation changed after this candidate was staged");
+        }
+        if (current != null && current.closed()) {
+            throw new IllegalStateException(
+                    "active generation for '" + generation.codeUnitId()
+                            + "' is closed; retire it before activating a replacement");
+        }
     }
 
     private static void requireModuleContract(
@@ -427,6 +443,10 @@ public final class HotReloadManager implements AutoCloseable {
                         .buildLiteral();
             }
 
+            Generation expectedPreviousActive =
+                    initializeModuleOnly && !activateImmediately
+                            ? activeByCodeUnit.get(codeUnitId)
+                            : null;
             Generation generation = new Generation(
                     id,
                     codeUnitId,
@@ -436,7 +456,8 @@ public final class HotReloadManager implements AutoCloseable {
                     codeImage,
                     executionProfile,
                     shareCodeImage,
-                    initializeModuleOnly);
+                    initializeModuleOnly,
+                    expectedPreviousActive);
             generations.put(id, generation);
             if (activateImmediately) {
                 activeByCodeUnit.put(codeUnitId, generation);
@@ -539,6 +560,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final boolean sharedCodeImage;
         private final boolean initializeModuleOnly;
+        private final Generation expectedPreviousActive;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -551,7 +573,8 @@ public final class HotReloadManager implements AutoCloseable {
                 SharedCodeRegistry.Lease codeImage,
                 ExecutionProfile executionProfile,
                 boolean sharedCodeImage,
-                boolean initializeModuleOnly) {
+                boolean initializeModuleOnly,
+                Generation expectedPreviousActive) {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
@@ -561,6 +584,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.executionProfile = executionProfile;
             this.sharedCodeImage = sharedCodeImage;
             this.initializeModuleOnly = initializeModuleOnly;
+            this.expectedPreviousActive = expectedPreviousActive;
         }
 
         public long id() { return id; }
