@@ -50,6 +50,8 @@ public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy supervisorPolicy;
     private final IsolatePolicy guestPolicy;
     private final ExecutionProfile executionProfile;
+    // Unforgeable manager-local identity, never derived from guest-controlled paths.
+    private final Object sharingAuthority = new Object();
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
@@ -659,7 +661,7 @@ public final class HotReloadManager implements AutoCloseable {
     private boolean canShare(String codeUnitId, String sourceText) {
         return !guestPolicy.adversarial()
                 || SharedCodeRegistry.process()
-                        .approvedForAdversarialSharing(codeUnitId, sourceText);
+                        .approvedForAdversarialSharing(sharingAuthority, codeUnitId, sourceText);
     }
 
     private void validateAdmissionInputs(String codeUnitId, String sourceText) {
@@ -685,24 +687,26 @@ public final class HotReloadManager implements AutoCloseable {
      * Supervisor-only exact grant. Approval is bound to code-unit identity and
      * SHA-256 and is rejected unless the code also passes the untrusted policy.
      */
-    public void approveGuestCodeSharing(String codeUnitId, String sourceText) {
+    public synchronized void approveGuestCodeSharing(String codeUnitId, String sourceText) {
+        ensureManagerOpen();
         if (!guestPolicy.adversarial()) {
             throw new IllegalStateException(
                     "guest code-sharing approval is only required for adversarial guests");
         }
         validateAdmissionInputs(codeUnitId, sourceText);
         SharedCodeRegistry.process().approveForAdversarialSharing(
-                supervisorPolicy, normalizeCodeUnitId(codeUnitId), sourceText);
+                supervisorPolicy, sharingAuthority, normalizeCodeUnitId(codeUnitId), sourceText);
     }
 
-    public void revokeGuestCodeSharing(String codeUnitId, String sourceText) {
+    public synchronized void revokeGuestCodeSharing(String codeUnitId, String sourceText) {
+        ensureManagerOpen();
         if (!guestPolicy.adversarial()) {
             throw new IllegalStateException(
                     "guest code-sharing revocation is only required for adversarial guests");
         }
         validateAdmissionInputs(codeUnitId, sourceText);
         SharedCodeRegistry.process().revokeForAdversarialSharing(
-                supervisorPolicy, normalizeCodeUnitId(codeUnitId), sourceText);
+                supervisorPolicy, sharingAuthority, normalizeCodeUnitId(codeUnitId), sourceText);
     }
 
     private Generation stage(
@@ -809,6 +813,9 @@ public final class HotReloadManager implements AutoCloseable {
         Generation candidate;
         synchronized (this) {
             ensureManagerOpen();
+            // Enforce raw adversarial input bounds before path normalization can
+            // collapse a long attacker-supplied identity to a shorter string.
+            validateAdmissionInputs(name, sourceText);
             String codeUnitId = normalizeCodeUnitId(name);
             previous = activeByCodeUnit.get(codeUnitId);
             candidate = loadInternal(
@@ -843,15 +850,25 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /** Last selected active generation, retained for the single-unit compatibility API. */
-    public synchronized Generation active() { return active.get(); }
+    public synchronized Generation active() {
+        Generation current = active.get();
+        return current == null || current.retiring.get() || current.closed() ? null : current;
+    }
 
     /** Active generation for one independently compiled code unit. */
     public synchronized Generation active(String codeUnitId) {
-        return activeByCodeUnit.get(normalizeCodeUnitId(codeUnitId));
+        Generation current = activeByCodeUnit.get(normalizeCodeUnitId(codeUnitId));
+        return current == null || current.retiring.get() || current.closed() ? null : current;
     }
 
     public synchronized Map<String, Generation> activeGenerations() {
-        return Map.copyOf(activeByCodeUnit);
+        Map<String, Generation> live = new LinkedHashMap<>();
+        activeByCodeUnit.forEach((id, generation) -> {
+            if (!generation.retiring.get() && !generation.closed()) {
+                live.put(id, generation);
+            }
+        });
+        return Map.copyOf(live);
     }
 
     /**
@@ -881,6 +898,9 @@ public final class HotReloadManager implements AutoCloseable {
         synchronized (this) {
             if (managerClosed) return;
             managerClosed = true;
+            // Revoke while holding this monitor; no concurrent grant on this
+            // manager can race after finalization and retain a stale approval.
+            SharedCodeRegistry.process().revokeAllForAuthority(sharingAuthority);
             closing = List.copyOf(generations.values());
             closing.forEach(generation -> generation.retiring.set(true));
             generations.clear();
