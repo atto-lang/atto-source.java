@@ -244,6 +244,35 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void generatedSelfAndSuperCannotImplicitlyCaptureActorState() {
+        for (String forbidden : List.of("self", "super")) {
+            String source = "macro_rules! unsafe { ($v:expr) => { "
+                    + forbidden + ".state + $v }; }";
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()));
+            assertTrue(ex.getMessage().contains("expression macro"), ex.getMessage());
+        }
+    }
+
+    @Test
+    void generatedEndAndIfKeywordsCannotEscapeLexicalExpressions() {
+        for (String forbidden : List.of("end", "fi", "if", "else", "return", "let")) {
+            String source = "macro_rules! escape { ($v:expr) => { "
+                    + forbidden + " $v }; }";
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()));
+            assertTrue(ex.getMessage().contains("expression macro"), ex.getMessage());
+        }
+    }
+
+    @Test
+    void generatedAssignmentIsNotAcceptedAsAnExpressionMacro() {
+        String source = "macro_rules! assign { ($v:ident) => { $v = 42 }; }";
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(new Lexer(source).scan()));
+    }
+
+    @Test
     void rejectsPrematureEofTokensAndDoesNotHideSuffix() {
         List<Token> tokens = List.of(
                 new Token(Token.Type.IDENT, "first", 1, 1),
