@@ -332,4 +332,62 @@ final class NamedInferredTypeTest {
                 }
                 """);
     }
+
+    @Test
+    void namedTupleKeepsPositionalFieldTypesIncludingNestedTuples() {
+        accepted("""
+                fnc read(): bool {
+                  const T values = infer<T> tuple ("first", 9, true, "last");
+                  return values[2];
+                }
+                """);
+        accepted("""
+                fnc read(): string {
+                  const T values = infer<T> tuple ("first", 9, true, "last");
+                  return values[3];
+                }
+                """);
+        accepted("""
+                fnc read(): int {
+                  const T values = infer<T> tuple ("title", tuple (false, 44));
+                  return values[1][1];
+                }
+                """);
+    }
+
+    @Test
+    void duplicateStructFieldsCannotBeHiddenByInference() {
+        rejected("""
+                fnc bad(): void {
+                  const T item = infer<T> struct { id: "first", id: "second" };
+                  return;
+                }
+                """, "duplicate struct field");
+    }
+
+    @Test
+    void sourceTypeAliasesCannotBeShadowedByInferredNames() {
+        rejected("""
+                type T = int;
+                fnc bad(): void {
+                  const T item = infer<T> struct { id: "value" };
+                  return;
+                }
+                """, "conflicts with an existing type");
+    }
+
+    @Test
+    void siblingBlocksCannotSeeEachOthersInferredType() {
+        rejected("""
+                fnc bad(): void {
+                  block {
+                    const T first = infer<T> struct { id: "inside" };
+                  }
+                  block {
+                    const T second = infer struct { id: "outside" };
+                  }
+                  return;
+                }
+                """, "out of scope");
+    }
 }
