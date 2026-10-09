@@ -1,4 +1,4 @@
-use oreslang_verify::{lint::lint,model::Bounds,model_explore::explore};
+use oreslang_verify::{lint::lint_checked,model::Bounds,model_explore::explore};
 use std::{env,fs,path::Path,process::ExitCode};
 fn json_quote(s:&str)->String{
  let mut out=String::from("\"");
@@ -101,7 +101,7 @@ fn run(args:&[String])->Result<(),String>{
    let mut issues=vec![];
    for p in files{
     let src=fs::read_to_string(&p).map_err(|e|format!("{}: {e}",p.display()))?;
-    issues.extend(lint(&src,&p.to_string_lossy(),pedantic));
+    issues.extend(lint_checked(&src,&p.to_string_lossy(),pedantic).map_err(|e|format!("{}: {e}",p.display()))?);
    }
    if json{
     let parts:Vec<String>=issues.iter().map(|d|format!(
