@@ -23,7 +23,13 @@ jobs:
           cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 2 --messages 2 --workers 2 --capacity 1
           cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 1 --messages 3 --workers 2 --capacity 2
           cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- select-model --arms 3
+      - name: Userland analyzer SARIF output
+        run: |
+          printf 'fnc f(){ loop { defer cleanup(); } }' > audit.ores
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- lint --format sarif audit.ores > results.sarif
+          grep '"version":"2.1.0"' results.sarif
       - name: Check trace and typed IR fixtures
         run: |
           cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- trace tools/oreslang-verify/fixtures/actor-ingress-example.json
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- trace-core tools/oreslang-verify/fixtures/core-trace-v2-example.json
           cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- ir tools/oreslang-verify/fixtures/closed-match-ir-example.json --strict
