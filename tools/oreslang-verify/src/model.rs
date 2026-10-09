@@ -10,16 +10,18 @@ pub fn invariant(s:&State,cap:usize)->Result<(),String>{
  let n=s.alive.len();
  if s.mail.len()!=n||s.waiting.len()!=n||s.ready.len()!=n{return Err("invalid dimensions".into())}
  let mut leases=vec![false;n];
- for a in s.workers.iter().flatten(){if *a>=n{return Err("invalid actor".into())}if leases[*a]{return Err("duplicate execution lease".into())}leases[*a]=true;}
+ for a in s.workers.iter().flatten(){if *a>=n{return Err("invalid actor".into())}
+  if leases[*a]{return Err("duplicate execution lease".into())}leases[*a]=true;}
  let mut in_mail=vec![false;s.status.len()];
- for a in 0..n{
-  if s.waiting[a] && !s.ready[a] && leases[a] {
+ for (a,&has_lease) in leases.iter().enumerate(){
+  if s.waiting[a] && !s.ready[a] && has_lease {
    return Err("suspended actor holds a carrier before I/O completion".into());
   }
   if s.mail[a].len()>cap{return Err("mailbox capacity exceeded".into())}
   if !s.alive[a]&&(!s.mail[a].is_empty()||s.waiting[a]||s.ready[a]){return Err("work after termination".into())}
   if s.ready[a]&&!s.waiting[a]{return Err("orphan continuation".into())}
-  for &m in &s.mail[a]{if m>=in_mail.len(){return Err("invalid message".into())}if in_mail[m]{return Err("duplicate queued message".into())}in_mail[m]=true;}
+  for &m in &s.mail[a]{if m>=in_mail.len(){return Err("invalid message".into())}
+   if in_mail[m]{return Err("duplicate queued message".into())}in_mail[m]=true;}
  }
  for (m,st) in s.status.iter().enumerate(){if in_mail[m]!=(*st==Status::Queued){return Err("mailbox/status inconsistency".into())}}
  Ok(())
