@@ -6,12 +6,18 @@ as `v`**. It is not an ordinary nominal `T` return and does not imply that
 the object was mutated.
 
 ```oreslang
-pub fnc decorate(T v): v {
-  return v;             // valid
+pub fnc decorate(T mut v): v {
+  v.foo = "bar";        // valid: mutate referent
+  return v;             // valid: exact original reference
 }
 
 pub fnc replace(T v): v {
   return new T();       // compile error: identity return mismatch
+}
+
+pub fnc rebind(T mut v): v {
+  v = new T();          // compile error: identity return rebind
+  return v;
 }
 
 define class Builder as
@@ -25,7 +31,9 @@ end
 **not** make the exact-instance promise of `: this`.
 
 Immutable local aliases and calls to statically identified, already-checked
-identity-returning functions can preserve identity transitively. An unknown
+identity-returning functions can preserve identity transitively.
+Mutable parameters may update fields but cannot rebind the original value.
+Overrides must retain an ancestor's exact-identity guarantee. An unknown
 callable or a nominally compatible replacement cannot manufacture proof.
 Contract checking is performed before executable admission, alongside type
 checking and ownership checking. Type compatibility, mutable capabilities,
