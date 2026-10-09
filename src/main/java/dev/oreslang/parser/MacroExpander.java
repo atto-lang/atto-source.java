@@ -79,6 +79,7 @@ public final class MacroExpander {
             }
         }
         ArrayDeque<Token.Type> sourceGroups = new ArrayDeque<>();
+        boolean seenSourceDeclaration = false;
         for (int i = 0; i < end;) {
             int start = i;
             Mode mode = Mode.AOT;
@@ -97,8 +98,8 @@ public final class MacroExpander {
                 i += 5;
             }
             if (named(source, i, "macro_rules") && at(source, i + 1, BANG)) {
-                if (!sourceGroups.isEmpty()) {
-                    throw fail(source.get(i), "macro definitions must appear at file scope");
+                if (!sourceGroups.isEmpty() || seenSourceDeclaration) {
+                    throw fail(source.get(i), "macro definitions must appear in the file prelude");
                 }
                 Parsed parsed = parseDefinition(source, i, mode);
                 if (definitions.putIfAbsent(parsed.definition.name, parsed.definition) != null) {
@@ -110,6 +111,15 @@ public final class MacroExpander {
                 i = parsed.next;
             } else {
                 Token token = source.get(start);
+                // This first version has no AST symbol identity for module/actor-local
+                // macros: declarations belong before all runtime/type declarations.
+                // Import selectors may contain "fnc", "class", or "actor".
+                if (sourceGroups.isEmpty()
+                        && (token.type() == DEFINE
+                            || (List.of(FNC, ROUTINE, CLASS, ACTOR, ISOACTOR).contains(token.type())
+                                && !(start > 0 && source.get(start - 1).type() == IMPORT)))) {
+                    seenSourceDeclaration = true;
+                }
                 if (opening(token.type())) {
                     sourceGroups.push(closing(token.type()));
                 } else if (token.type() == RPAREN || token.type() == RBRACE || token.type() == RBRACKET) {
