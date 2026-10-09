@@ -152,3 +152,15 @@ fn fixture()->Vec<Value>{
    event("terminate","alpha"),event("terminate","beta")];
  assert!(run(events,true).is_ok());
 }
+
+#[test]fn core_v2_json_schema_matches_monitor_event_vocabulary(){
+ let doc:serde_json::Value=serde_json::from_str(include_str!("../schema/core-trace-v2.schema.json")).unwrap();
+ assert_eq!(doc["properties"]["schema_version"]["const"],"2.0.0");
+ assert_eq!(doc["properties"]["capacity"]["minimum"],1);
+ assert_eq!(doc["properties"]["capacity"]["maximum"],65536);
+ let kinds:std::collections::BTreeSet<_>=doc["properties"]["events"]["items"]["oneOf"].as_array().unwrap()
+   .iter().map(|v|v["properties"]["kind"]["const"].as_str().unwrap()).collect();
+ let expected:std::collections::BTreeSet<_>=["spawn","admit","send","acquire","receive","release",
+    "suspend","io_complete","resume","discard","terminate"].into_iter().collect();
+ assert_eq!(kinds,expected);
+}
