@@ -24,7 +24,7 @@ pub fn transitions(s:&State,cap:usize)->Vec<(String,State)>{
   match s.workers[w]{
    None=>{
     for a in 0..s.alive.len(){
-     if s.alive[a]&&!s.workers.contains(&Some(a))&&(!s.mail[a].is_empty()||s.ready[a]){
+     if s.alive[a]&&!s.workers.contains(&Some(a))&&(s.ready[a]||(!s.waiting[a]&&!s.mail[a].is_empty())){
       let mut n=s.clone();n.workers[w]=Some(a);
       out.push((format!("acquire({w},{a})"),n));
      }
@@ -37,10 +37,10 @@ pub fn transitions(s:&State,cap:usize)->Vec<(String,State)>{
     if s.ready[a]{
      let mut n=s.clone();n.ready[a]=false;n.waiting[a]=false;
      out.push((format!("resume({w},{a})"),n));
-    }else if let Some(&m)=s.mail[a].first(){
+    }else if !s.waiting[a] { if let Some(&m)=s.mail[a].first(){
      let mut n=s.clone();n.mail[a].remove(0);n.status[m]=Status::Handled;
      out.push((format!("receive({w},{a},{m})"),n));
-    }
+    }}
     if !s.waiting[a]{
      let mut n=s.clone();n.waiting[a]=true;n.workers[w]=None;
      out.push((format!("await({w},{a})"),n));
