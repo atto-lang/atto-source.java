@@ -564,4 +564,25 @@ final class HotReloadModuleContractTest {
             assertEquals(1, loader.liveGenerations());
         }
     }
+
+    @Test
+    void closingGenerationDirectlyRemovesItsActiveSlot() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            HotReloadManager.Generation generation = loader.loadAndStart(
+                    "ordinary.ores",
+                    """
+                    pub routine main(): void { return; }
+                    """);
+            assertEquals(generation, loader.active("ordinary.ores"));
+
+            generation.close();
+            generation.close();
+
+            assertEquals(true, generation.closed());
+            assertEquals(null, loader.active("ordinary.ores"));
+            assertEquals(null, loader.active());
+            assertEquals(0, loader.liveGenerations());
+        }
+    }
 }
