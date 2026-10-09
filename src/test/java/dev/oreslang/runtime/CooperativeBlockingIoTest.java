@@ -83,6 +83,8 @@ class CooperativeBlockingIoTest {
                     "File.is_dir(\"foo\")",
                     "http.get_text(\"http://localhost/\")",
                     "stdio.println(\"hello\")",
+                    "stdio.stdout.log(\"hello\")",
+                    "stdio.stdout.logList([\"hello\"])",
                     "network.connect(\"localhost\", 80)"
             }) {
                 String program = "pub routine main(): void { " + bare + "; return; }";
