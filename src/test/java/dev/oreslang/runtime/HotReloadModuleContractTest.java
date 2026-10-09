@@ -482,7 +482,7 @@ final class HotReloadModuleContractTest {
     void staleStagedCandidateCannotReplaceANewerGeneration() {
         try (HotReloadManager loader =
                      new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
-            String version = value -> """
+            java.util.function.Function<Integer, String> version = value -> """
                     pub define contract WorkerApi as
                       fnc run(): int;
                     end
