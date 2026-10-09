@@ -701,6 +701,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.readonly) {
+                throw new SecurityException(
+                        "readonly snapshot cannot invoke methods; pure field reads only");
+            }
             return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
         }
 
@@ -4123,6 +4127,9 @@ public final class OresEvalRootNode extends RootNode {
                     return module.owner().assignModuleField(module.module(), member.member(), value);
                 }
                 if (receiver instanceof OresObject object) {
+                    if (object.readonly) {
+                        throw new SecurityException("cannot mutate readonly rt share object");
+                    }
                     OwnedField targetField =
                             object.owner.findField(
                                     object.klass,
@@ -5548,12 +5555,94 @@ public final class OresEvalRootNode extends RootNode {
                 case "borrow", "take" -> value;
                 // Sharing mutable objects is still forbidden until the type
                 // system carries a deep immutable Shared<T> view.
-                case "share" -> value;
+                case "share" -> deepReadonlySnapshot(
+                        deepCopyOwnedData(value, new IdentityHashMap<>(), 0,
+                                new int[]{0}), new IdentityHashMap<>(), 0);
                 case "copy" -> deepCopyOwnedData(value, new IdentityHashMap<>(), 0,
                         new int[]{0});
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
             };
+        }
+
+        /**
+         * Snapshot a fully detached owned graph into a deeply immutable view.
+         * The source has already passed rt copy's graph/depth/capability checks.
+         * Collections are immutable by construction, class method invocation
+         * is rejected, and nested fields cannot yield writable references.
+         */
+        private Object deepReadonlySnapshot(
+                Object value, IdentityHashMap<Object, Boolean> visited, int depth) {
+            if (depth > 128) throw new IllegalArgumentException("rt share depth limit");
+            if (value == null || value instanceof String || value instanceof Boolean
+                    || value instanceof Character || value instanceof Byte
+                    || value instanceof Short || value instanceof Integer
+                    || value instanceof Long || value instanceof Float
+                    || value instanceof Double || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof Complex || value instanceof OptionUnwrapError) {
+                return value;
+            }
+            if (visited.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("rt share cyclic graph rejected");
+            }
+            try {
+                if (value instanceof OresObject obj) {
+                    if (obj.klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new SecurityException("rt share cannot publish actor state");
+                    }
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> f : obj.fields.entrySet()) {
+                        fields.put(f.getKey(), deepReadonlySnapshot(f.getValue(), visited, depth + 1));
+                    }
+                    return new OresObject(obj.owner, obj.klass,
+                            java.util.Collections.unmodifiableMap(fields), true);
+                }
+                if (value instanceof OptionValue option) {
+                    return option.present()
+                            ? new OptionValue(true, deepReadonlySnapshot(option.value(), visited, depth + 1))
+                            : option;
+                }
+                if (value instanceof ResultValue result) {
+                    return new ResultValue(result.ok(),
+                            deepReadonlySnapshot(result.value(), visited, depth + 1));
+                }
+                if (value instanceof Map<?, ?> map) {
+                    LinkedHashMap<Object, Object> fields = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> f : map.entrySet()) {
+                        fields.put(deepReadonlySnapshot(f.getKey(), visited, depth + 1),
+                                deepReadonlySnapshot(f.getValue(), visited, depth + 1));
+                    }
+                    return java.util.Collections.unmodifiableMap(fields);
+                }
+                if (value instanceof List<?> list) {
+                    ArrayList<Object> values = new ArrayList<>(list.size());
+                    for (Object item : list) {
+                        values.add(deepReadonlySnapshot(item, visited, depth + 1));
+                    }
+                    return java.util.Collections.unmodifiableList(values);
+                }
+                if (value instanceof Set<?> set) {
+                    LinkedHashSet<Object> values = new LinkedHashSet<>();
+                    for (Object item : set) {
+                        values.add(deepReadonlySnapshot(item, visited, depth + 1));
+                    }
+                    return java.util.Collections.unmodifiableSet(values);
+                }
+                if (value.getClass().isArray()) {
+                    int len = java.lang.reflect.Array.getLength(value);
+                    ArrayList<Object> values = new ArrayList<>(len);
+                    for (int i = 0; i < len; i++) {
+                        values.add(deepReadonlySnapshot(
+                                java.lang.reflect.Array.get(value, i), visited, depth + 1));
+                    }
+                    return java.util.Collections.unmodifiableList(values);
+                }
+                throw new SecurityException("rt share refuses opaque executable/host state "
+                        + value.getClass().getName());
+            } finally {
+                visited.remove(value);
+            }
         }
 
         /**
@@ -8822,10 +8911,16 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        private final boolean readonly;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
+            this(owner, klass, fields, false);
+        }
+        private OresObject(Evaluator owner, Ast.ClassDecl klass,
+                Map<String,Object> fields, boolean readonly) {
             this.owner = owner;
             this.klass = klass;
             this.fields = fields;
+            this.readonly = readonly;
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public String toString(){
