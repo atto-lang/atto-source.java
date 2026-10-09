@@ -390,4 +390,64 @@ final class NamedInferredTypeTest {
                 }
                 """, "out of scope");
     }
+
+    @Test
+    void negativeAndExcessiveTupleIndexesAreRejected() {
+        rejected("""
+                fnc bad(): int {
+                  const T pair = infer<T> tuple ("foo", 5);
+                  return pair[-1];
+                }
+                """, "outside arity");
+        rejected("""
+                fnc bad(): int {
+                  const T pair = infer<T> tuple ("foo", 5);
+                  return pair[999];
+                }
+                """, "outside arity");
+    }
+
+    @Test
+    void inferredTypeAliasesDoNotAcceptGenericArguments() {
+        rejected("""
+                fnc bad(): void {
+                  const T item = infer<T> struct { id: "acct" };
+                  const T<int> wrong = item;
+                  return;
+                }
+                """, "does not accept generic arguments");
+    }
+
+    @Test
+    void inferredReadonlyNestedStructCannotBeModifiedThroughAlias() {
+        rejected("""
+                fnc bad(): void {
+                  const T item = infer<T> struct {
+                    nested: infer struct { id: "first" }
+                  };
+                  const T copy = item;
+                  copy.nested.id = "changed";
+                  return;
+                }
+                """, "readonly");
+    }
+
+    @Test
+    void inferredStructFieldPermutationsRetainFieldTypeAssociations() {
+        String[] keys = { "id", "active", "count" };
+        String[] values = { "\"acct_42\"", "true", "5" };
+        for (int first = 0; first < keys.length; first++) {
+            for (int second = 0; second < keys.length; second++) {
+                if (first == second) continue;
+                int last = 3 - first - second;
+                String source = "fnc read(): int {"
+                        + " const T row = infer<T> struct { "
+                        + keys[first] + ": " + values[first] + ", "
+                        + keys[second] + ": " + values[second] + ", "
+                        + keys[last] + ": " + values[last] + " }; "
+                        + "return row.count; }";
+                assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), source);
+            }
+        }
+    }
 }
