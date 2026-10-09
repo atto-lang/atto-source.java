@@ -1,91 +1,48 @@
-# Oreslang formal concurrency checking and source analyzer (experimental)
+# Oreslang concurrency formal checking and analyzer (Rust prototype)
 
-This folder is an initial, executable **bounded abstract-model checker** plus a
-**lexical userland linter**. It is intentionally NOT described as a verified
-compiler, a verified implementation, a universal deadlock detector, or a proof
-of JVM/OS actor isolation.
+All executable verification and lint implementation is in the Rust crate
+`tools/oreslang-verify/`. No Python dependency or Python source is needed.
 
 ## Run
 
-```sh
-python3 -m unittest discover -s tools/tests -v
-python3 tools/formal/check_actor_model.py --actors 2 --messages 2 --workers 2 --capacity 1
-python3 tools/oreslang_lint.py --format json examples/
-python3 tools/oreslang_lint.py --pedantic examples/
+```bash
+cargo test --manifest-path tools/oreslang-verify/Cargo.toml --all-targets
+cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 2 --messages 2 --workers 2 --capacity 1
+cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- lint --format json examples/
+cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- lint --pedantic examples/
 ```
 
-The formal tool explores *every reachable abstract state* at a finite model size
-until fixpoint. If `--max-states` is exhausted, it fails rather than reporting
-success. Counterexamples include predecessor action traces. The checked
-invariants are exclusive actor leases, message uniqueness and accounting,
-bounded ordinary mail, continuation consistency, and termination cleanup. The
-model permits arbitrary interleavings of sends, I/O completions, actor ends,
-worker acquisition/release, receives and continuation resumes. It models
-continuation **priority** but not actual wall-clock scheduling fairness,
-multi-frame nested awaits, independent continuation/control capacity, select
-registration/arm cancellation, or unsafe host code.
+The Rust checker enumerates all reachable states **within explicitly finite bounds**,
+and fails rather than declaring success on reaching the configured state limit.
+Checks include actor lease exclusivity, mailbox bounds, message uniqueness and
+bookkeeping, continuation status and termination cleanup. A counterexample
+reports the transition path. This is **not yet** a proof that the Java/LLVM
+implementations refine this model, nor a liveness/fairness proof.
 
-The selected two-actor/two-message/two-worker/capacity-one configuration
-exhaustively reaches 949 states and 4,364 transitions on the current prototype.
-This is a *bounded model result*, not a theorem about unbounded populations or
-an assertion that the Java runtime refines the model.
+The Rust userland linter tokenizes Oreslang excluding comments and string
+literals. It currently reports: ORES101 loop-declared defer, ORES102 await in
+apparently synchronous function; pedantic-only ORES103 select without a
+syntactic timeout/default and ORES104 match without a syntactic wildcard.
+Warnings are advisory, not a typed exhaustive analysis or security gate.
+Missing catch/recover can be intentional and must be checked using effect
+information before it can be called an actual defect.
 
-## Source-lint findings
+## Next integration and proof obligations
 
-| Code | Default | Interpretation |
-| --- | --- | --- |
-| ORES101 | warning | `defer` inside a loop, review cleanup registration/lifetime |
-| ORES102 | warning | `await` apparently inside a non-async function |
-| ORES103 | opt-in info | `select` lacks syntactic default/timeout; blocking may be intentional |
-| ORES104 | opt-in info | `match` is not syntactically demonstrated exhaustive |
+1. Generate TypeSpec/JSON-schema contracts for actor lease, mailbox, select
+   registration/winner/cancel, continuation wake, close, restart and hot-load
+   generation events. Check **real** Java and LLVM traces against the Rust
+   model with an explicit refinement mapping.
+2. Model independent continuation/control/user queues and bounded select
+   registration, cancellation, notification and lost-wakeup freedom.
+3. Add reviewable TLA+/TLC specifications with explicit fairness assumptions
+   for stronger temporal properties; Rust remains the executable tooling.
+4. Feed typed AST/CFG, ownership, type, and effect data into Rust static
+   analysis: exception recovery, resource closure, await suspension,
+   lock/channel deadlocks, exhaustiveness and unreachable pattern arms.
+5. Add SARIF, mutation tests, actual runtime trace fixtures and cross-backend
+   exact-head verification; do not merge based solely on model checks.
 
-Comments and string literals are excluded by lexical tokenization. Warning
-rules are advisory; `--strict` opts into a failing exit code. They must not be
-used as a security gate or described as sound/exhaustive static analysis.
-In particular, a missing `catch`/`recover` is **not** automatically a bug if
-an effect is handled by a typed result, a caller, or a deliberate policy.
-A `defer` in a loop might be legal and intentional depending on scope
-semantics. As the language syntax evolves, the lexer is replaceable.
-
-## Required follow-up: soundness, refinement and runtime integration
-
-1. **Identify actual semantic transitions** in Java/LLVM runtimes. Define a
-   versioned TypeSpec/JSON-Schema event protocol for actor lease, mail admission,
-   delivery, continuation wake, select arm registration/winner/loser cancellation,
-   close/end, resource finalization, supervision/restart and hot-load generations.
-   Reuse the existing `contracts/v1/semantics/traces/` validator where possible.
-   Emit trace data from real runtime boundaries, not only mock schedulers.
-2. **Refinement mapping:** project observed runtime events onto abstract state,
-   reject illegal transitions with the shortest actionable counterexample;
-   include initial state and generation IDs. Reconcile omitted internal steps as
-   stuttering and record the exact artifact/source/tree SHA tested.
-3. **TLA+/TLC or Apalache:** maintain reviewed, version-pinned executable
-   specifications for user mailbox + independent continuation quota, select
-   atomicity and lost-wakeup freedom, cancellation, suspend/resume, lease
-   exclusivity, supervisor restarts, generation-fenced hot-loading, shared-cell
-   synchronization, and actor-group teardown. Express fairness assumptions
-   explicitly before making any liveness claims.
-4. **Compiler-typed analyzer:** replace lexical rules with a typed AST/CFG +
-   effect graph, interprocedural summaries and fixed-point abstract interpretation.
-   Track may-throw/may-fail, cancellation, blocking, ownership/borrows, actor
-   affinity, resource lifetime and protocol-state transitions across `await`,
-   `try/catch/finally`, `recover`, `defer`, channels and `select`.
-   Require recovery only where there is a genuinely unhandled effect. Emit
-   stable diagnostics with code locations and SARIF/JSON outputs.
-5. **Pattern proofs:** decide exhaustiveness only from a closed discriminated
-   union/enum/tuple type and guards, including unreachable and overlapping arms.
-   Open/dynamic types must be conservatively reported as unproven, not as
-   exhaustively checked. For deadlock claims, distinguish local cycle proofs from
-   whole-program/environment assumptions.
-6. **Regression proof harness:** positive/negative fixtures per rule, seeded
-   mutation tests that intentionally violate an invariant, runtime trace
-   projection tests, randomized schedule testing, and cross-backend conformance
-   on the same TypeSpec-generated contracts.
-
-## Review/merge gate
-
-Do not treat a successful abstract-model run as a runtime proof. Gate merge on
-executed Python tests, separately executed GraalVM JDK 25 tests if compiler code
-is touched, and a reviewed account of soundness boundaries. Source-org Actions
-that fail before a runner starts are **not** failed tests; verify an exact Git
-tree in a funded test org when necessary without sharing private credentials.
+Source Actions attempts with zero executed steps do not prove a defect. When
+needed, mirror exact Git blobs and subtree into a funded test organization's
+temporary branch without sharing private repository tokens.
