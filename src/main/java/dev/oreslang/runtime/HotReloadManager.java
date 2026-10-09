@@ -44,6 +44,7 @@ public final class HotReloadManager implements AutoCloseable {
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
+    private volatile boolean managerClosed;
 
     public HotReloadManager(
             IsolatePolicy supervisorPolicy,
@@ -87,6 +88,7 @@ public final class HotReloadManager implements AutoCloseable {
             String sourceText,
             boolean initializeModuleOnly,
             boolean activateImmediately) {
+        requireOpen();
         validateAdmissionInputs(name, sourceText);
         name = normalizeCodeUnitId(name);
         boolean shared = canShare(name, sourceText);
@@ -122,6 +124,7 @@ public final class HotReloadManager implements AutoCloseable {
             String moduleName,
             String sourceText,
             String contractName) {
+        requireOpen();
         validateAdmissionInputs(codeUnitId, sourceText);
         requireNonBlank(moduleName, "moduleName");
         requireNonBlank(contractName, "contractName");
@@ -217,6 +220,7 @@ public final class HotReloadManager implements AutoCloseable {
      * Staging and initialization are intentionally separate from publication.
      */
     public synchronized Generation activateModule(Generation generation) {
+        requireOpen();
         java.util.Objects.requireNonNull(generation, "generation");
         if (generations.get(generation.id()) != generation) {
             throw new IllegalArgumentException("generation is not owned by this hot-reload manager");
@@ -272,6 +276,7 @@ public final class HotReloadManager implements AutoCloseable {
      * only when this destination is allowed to join the shared image.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
+        requireOpen();
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
         String codeUnitId = normalizeCodeUnitId(unit.unitId());
@@ -335,6 +340,7 @@ public final class HotReloadManager implements AutoCloseable {
      * SHA-256 and is rejected unless the code also passes the untrusted policy.
      */
     public void approveGuestCodeSharing(String codeUnitId, String sourceText) {
+        requireOpen();
         if (!guestPolicy.adversarial()) {
             throw new IllegalStateException(
                     "guest code-sharing approval is only required for adversarial guests");
@@ -345,6 +351,7 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public void revokeGuestCodeSharing(String codeUnitId, String sourceText) {
+        requireOpen();
         if (!guestPolicy.adversarial()) {
             throw new IllegalStateException(
                     "guest code-sharing revocation is only required for adversarial guests");
@@ -433,21 +440,41 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
-        Generation generation = load(name, sourceText);
-        generation.start();
-        return generation;
+        requireOpen();
+        Generation candidate = loadInternal(name, sourceText, false, false);
+        try {
+            candidate.start();
+        } catch (RuntimeException | Error failure) {
+            try {
+                retire(candidate.id());
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+        activeByCodeUnit.put(candidate.codeUnitId(), candidate);
+        active.set(candidate);
+        return candidate;
     }
 
     /** Last selected active generation, retained for the single-unit compatibility API. */
-    public synchronized Generation active() { return active.get(); }
+    public synchronized Generation active() {
+        Generation current = active.get();
+        return current != null && current.closed() ? null : current;
+    }
 
     /** Active generation for one independently compiled code unit. */
     public synchronized Generation active(String codeUnitId) {
-        return activeByCodeUnit.get(normalizeCodeUnitId(codeUnitId));
+        Generation current = activeByCodeUnit.get(normalizeCodeUnitId(codeUnitId));
+        return current != null && current.closed() ? null : current;
     }
 
     public synchronized Map<String, Generation> activeGenerations() {
-        return Map.copyOf(activeByCodeUnit);
+        Map<String, Generation> live = new LinkedHashMap<>();
+        activeByCodeUnit.forEach((id, generation) -> {
+            if (!generation.closed()) live.put(id, generation);
+        });
+        return Map.copyOf(live);
     }
 
     /** Explicit retirement permits old actors/requests to drain before teardown. */
@@ -464,6 +491,8 @@ public final class HotReloadManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        if (managerClosed) return;
+        managerClosed = true;
         RuntimeException runtimeFailure = null;
         Error fatalFailure = null;
         try {
@@ -488,6 +517,10 @@ public final class HotReloadManager implements AutoCloseable {
             throw fatalFailure;
         }
         if (runtimeFailure != null) throw runtimeFailure;
+    }
+
+    private void requireOpen() {
+        if (managerClosed) throw new IllegalStateException("hot-reload manager is closed");
     }
 
     private static String digest(String text) {
