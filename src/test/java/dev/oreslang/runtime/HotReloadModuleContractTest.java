@@ -433,4 +433,46 @@ final class HotReloadModuleContractTest {
             assertEquals(0, loader.liveGenerations());
         }
     }
+
+    @Test
+    void failedGenericLoadAndStartDoesNotReplaceWorkingGeneration() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var stable = loader.loadAndStart("stable.ores", "pub val int answer = 1;");
+            assertEquals(stable, loader.active("stable.ores"));
+
+            assertThrows(RuntimeException.class, () ->
+                    loader.loadAndStart("stable.ores", "pub val int answer = 1 / 0;"));
+
+            assertEquals(stable, loader.active("stable.ores"));
+            assertEquals(stable, loader.active());
+            assertEquals(false, stable.closed());
+            assertEquals(1, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    void adversarialSourceLimitIsCheckedBeforeModuleParserRuns() {
+        try (HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var error = assertThrows(IllegalArgumentException.class, () ->
+                    loader.loadModule("oversized.ores", "Worker",
+                            "x".repeat(1_048_577), "WorkerApi"));
+            assertEquals(true, error.getMessage().contains("maximum character count"));
+            assertEquals(0, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    void closedManagerCannotBeReused() {
+        HotReloadManager loader =
+                new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit());
+        loader.close();
+        loader.close();
+        assertEquals("hot-reload manager is closed",
+                assertThrows(IllegalStateException.class, () ->
+                        loader.load("worker.ores", "pub val int answer = 1;")).getMessage());
+        assertThrows(IllegalStateException.class, () ->
+                loader.loadModule("worker.ores", "Worker", "bad input", "WorkerApi"));
+    }
 }
