@@ -36,8 +36,8 @@ class CooperativeBlockingIoTest {
     @Test void blockingIoReturnsValuesInOrdinarySynchronousRoutine() throws Exception {
         Path dir = Files.createDirectories(root.resolve("data"));
         Path file = dir.resolve("hello.txt");
-        String path = file.toString().replace("\\", "\\\\");
-        String folder = dir.toString().replace("\\", "\\\\");
+        String path = file.toString().replace("\", "\\\");
+        String folder = dir.toString().replace("\", "\\\");
         String program = """
             pub routine main(): void {
               fs.write_text_atomic_blocking("%s", "hello");
@@ -60,6 +60,39 @@ class CooperativeBlockingIoTest {
         assertEquals("hello", Files.readString(file));
     }
 
+    @Test void strictNativeIoRejectsBareCallsAndAdmitsCooperativeSuffixes() {
+        String previous = System.getProperty("ores.compiler.strictNativeIo");
+        System.setProperty("ores.compiler.strictNativeIo", "true");
+        try {
+            for (String bare : new String[] {
+                    "fs.read_text(\"foo\")",
+                    "File.is_dir(\"foo\")",
+                    "http.get_text(\"http://localhost/\")",
+                    "stdio.println(\"hello\")",
+                    "network.connect(\"localhost\", 80)"
+            }) {
+                String program = "pub routine main(): void { " + bare + "; return; }";
+                IllegalArgumentException rejected = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> OresCompiler.parseAndTypeCheck(program),
+                        "strict native I/O name must reject " + bare);
+                assertTrue(rejected.getMessage().contains("_blocking"),
+                        rejected.getMessage());
+            }
+            OresCompiler.parseAndTypeCheck("""
+                    pub routine main(): void {
+                      fs.write_text_blocking("target", "hello");
+                      val String text = fs.read_text_blocking("target");
+                      stdio.println_blocking(text);
+                      return;
+                    }
+                    """);
+        } finally {
+            if (previous == null) System.clearProperty("ores.compiler.strictNativeIo");
+            else System.setProperty("ores.compiler.strictNativeIo", previous);
+        }
+    }
+
     @Test void explicitDenyAllSurvivesEmbeddingArgumentRoundTrip() {
         IsolatePolicy capabilityRich = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.FILESYSTEM_READ,
@@ -79,7 +112,7 @@ class CooperativeBlockingIoTest {
     }
 
     @Test void blockingIOMaintainsDeniedCapabilities() throws Exception {
-        String file = root.resolve("denied.txt").toString().replace("\\", "\\\\");
+        String file = root.resolve("denied.txt").toString().replace("\", "\\\");
         String source = """
             pub routine main(): void {
               fs.write_text_blocking("%s", "forbidden");
