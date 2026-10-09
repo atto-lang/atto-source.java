@@ -151,4 +151,29 @@ final class NativeCliIoTest {
                         new ByteArrayOutputStream(), new ByteArrayOutputStream()));
         assertFalse(Files.exists(outside.resolve("write.ores")));
     }
+    @Test
+    void metadataCannotEscapeReadScopeThroughSymlinkedParent() throws Exception {
+        Path root = Files.createTempDirectory("ores-cli-metadata-").toRealPath();
+        Path outside = Files.createTempDirectory("ores-cli-meta-outside-").toRealPath();
+        Files.writeString(outside.resolve("secret.txt"), "hidden");
+        Path escape = root.resolve("escape");
+        Files.createSymbolicLink(escape, outside);
+        Path sourceFile = root.resolve("program.ores");
+        Files.writeString(sourceFile, """
+            pub routine main(): void {
+              stdio.println(fs.is_dir("%s"));
+              return;
+            }
+            """.formatted(escape.resolve("secret.txt")));
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
+        assertThrows(RuntimeException.class, () ->
+                LinkedProgramRunner.run(sourceFile, policy, permissions,
+                        PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(), Set.of(),
+                        System.getenv(), new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+    }
+
 }
