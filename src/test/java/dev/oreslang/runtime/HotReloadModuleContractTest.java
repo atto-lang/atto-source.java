@@ -65,9 +65,18 @@ final class HotReloadModuleContractTest {
                   fnc run(): int;
                 end
 
+                pub define contract B as
+                  fnc run(): int;
+                end
+
                 define module Worker conforms A as
                   pub fnc run(): int { return 1; }
                 end
+                """,
+                "consumer.ores",
+                """
+                import * as worker from "./worker.ores";
+                pub routine main(): void { return; }
                 """);
 
         compiler.compile(first);
@@ -75,6 +84,10 @@ final class HotReloadModuleContractTest {
         var changed = java.util.Map.of(
                 "worker.ores",
                 """
+                pub define contract A as
+                  fnc run(): int;
+                end
+
                 pub define contract B as
                   fnc run(): int;
                 end
@@ -82,10 +95,17 @@ final class HotReloadModuleContractTest {
                 define module Worker conforms B as
                   pub fnc run(): int { return 1; }
                 end
+                """,
+                "consumer.ores",
+                """
+                import * as worker from "./worker.ores";
+                pub routine main(): void { return; }
                 """);
 
         var result = compiler.compile(changed);
         assertEquals(true, result.rebuilt("worker.ores"));
+        assertEquals(true, result.rebuilt("consumer.ores"),
+                "a declared-conformance change must invalidate importers");
     }
 
     @Test
@@ -215,5 +235,106 @@ final class HotReloadModuleContractTest {
                     failure.getMessage().contains("exactly one named module"));
             assertEquals(0, loader.liveGenerations());
         }
+    }
+
+    @Test
+    void contractKindAndFieldBindingRequirementParticipateInAbi() {
+        dev.oreslang.compiler.IncrementalCompiler compiler =
+                new dev.oreslang.compiler.IncrementalCompiler();
+
+        var first = java.util.Map.of(
+                "api.ores",
+                """
+                pub define contract Api as
+                  value: String;
+                end
+                """,
+                "consumer.ores",
+                """
+                import * as api from "./api.ores";
+                pub routine main(): void { return; }
+                """);
+        compiler.compile(first);
+
+        var explicitBinding = java.util.Map.of(
+                "api.ores",
+                """
+                pub define contract Api as
+                  const value: String;
+                end
+                """,
+                "consumer.ores",
+                """
+                import * as api from "./api.ores";
+                pub routine main(): void { return; }
+                """);
+        var bindingResult = compiler.compile(explicitBinding);
+        assertEquals(true, bindingResult.rebuilt("consumer.ores"),
+                "changing a binding requirement must invalidate importers");
+
+        var changedKind = java.util.Map.of(
+                "api.ores",
+                """
+                pub define interface Api as
+                  value: String;
+                end
+                """,
+                "consumer.ores",
+                """
+                import * as api from "./api.ores";
+                pub routine main(): void { return; }
+                """);
+        var kindResult = compiler.compile(changedKind);
+        assertEquals(true, kindResult.rebuilt("consumer.ores"),
+                "changing contract/interface identity must invalidate importers");
+    }
+
+    @Test
+    void unqualifiedContractFieldsAcceptAnyReadableExportedBinding() {
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() ->
+                dev.oreslang.types.TypeChecker.check(
+                        dev.oreslang.parser.Parser.parse("""
+                        define contract Readable as
+                          value: String;
+                        end
+
+                        define module Mutable conforms Readable as
+                          pub let String value = "mutable";
+                        end
+
+                        define module Stable conforms Readable as
+                          pub val String value = "stable";
+                        end
+
+                        define module Constant conforms Readable as
+                          pub const String value = "constant";
+                        end
+                        """)));
+    }
+
+    @Test
+    void explicitContractFieldBindingKindRemainsExact() {
+        dev.oreslang.types.TypeChecker.check(dev.oreslang.parser.Parser.parse("""
+                define contract MutableApi as
+                  let value: String;
+                end
+
+                define module Good conforms MutableApi as
+                  pub let String value = "good";
+                end
+                """));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(dev.oreslang.parser.Parser.parse("""
+                        define contract StableApi as
+                          val value: String;
+                        end
+
+                        define module Broken conforms StableApi as
+                          pub let String value = "broken";
+                        end
+                        """)));
+        org.junit.jupiter.api.Assertions.assertTrue(failure.getMessage().contains("binding kind"));
     }
 }
