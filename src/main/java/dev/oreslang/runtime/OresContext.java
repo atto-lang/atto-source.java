@@ -12,6 +12,7 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -397,16 +398,16 @@ public final class OresContext implements AutoCloseable {
     }
 
     private void executeAsyncTurn(Runnable turn) {
-        // The current interpreter executes an async callable as one virtual-
-        // thread task. Holding the adversarial actor serialization lock across
-        // an await could deadlock a nested async task, so strict/adversarial
-        // profiles fail closed until compiler continuation lowering can release
-        // the guest turn at each await suspension point.
-        if (isolatePolicy.adversarial()) {
-            throw new SecurityException(
-                    "async callable execution in adversarial contexts requires continuation lowering");
-        }
-        executeGuestTurn(turn, false);
+        Objects.requireNonNull(turn, "turn");
+        // Legacy GeneratorRuntime produces guest code on a virtual thread and
+        // parks its Java stack while waiting for the consumer. A ROOT lane lock
+        // held through that wait deadlocks; running outside the lane violates
+        // the one-stack-per-process invariant. Until source generators are
+        // continuation-lowered, reject this bridge in ALL profiles.
+        // Native/runtime I/O completion threads remain unaffected.
+        throw new SecurityException(
+                "legacy async/generator guest execution is not single-flight; "
+                        + "compiler continuation lowering is required");
     }
 
     private void executeGuestTurn(Runnable turn, boolean serialize) {
