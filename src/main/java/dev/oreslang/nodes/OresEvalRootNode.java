@@ -6790,12 +6790,15 @@ public final class OresEvalRootNode extends RootNode {
             Env env = new Env(null, false, declaringClass(fn));
             bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
             try {
-                executeBlock(fn.body(), env);
+                executeBlock(fn.body(), env, fn.returnType().isIdentityReturn());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
             } catch (ReturnSignal signal) {
-                return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name());
+                return enforceIdentityReturn(
+                        fn.returnType(), fn.parameters(), null, args,
+                        shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()),
+                        "static function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a static function boundary", signal);
             }
