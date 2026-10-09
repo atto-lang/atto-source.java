@@ -753,7 +753,10 @@ public final class Parser {
                         "interface-field annotations are not represented by the current AST and must not be silently discarded");
             }
 
-            Ast.BindingKind fieldBindingKind = Ast.BindingKind.VAL;
+            // An unqualified module-contract field requires a readable
+            // exported field of the requested type; explicit const/val/let
+            // strengthens the contract to that exact binding kind.
+            Ast.BindingKind fieldBindingKind = moduleContract ? null : Ast.BindingKind.VAL;
             if (moduleContract && isBindingKind(peek().type())) fieldBindingKind = parseBindingKind();
 
             if (check(IDENT) && checkNext(COLON)) {
