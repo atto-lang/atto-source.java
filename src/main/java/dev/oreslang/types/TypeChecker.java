@@ -101,7 +101,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env", "flags2env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
@@ -1690,7 +1690,8 @@ public final class TypeChecker {
                     || name.name().equals("network")
                     || name.name().equals("net")
                     || name.name().equals("http")
-                    || name.name().equals("env")) {
+                    || name.name().equals("env")
+                    || name.name().equals("flags2env")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
@@ -4181,9 +4182,14 @@ public final class TypeChecker {
         Type server = new Named("HttpServer", List.of());
         Type voidFuture = new Named("Future", List.of(Primitive.VOID));
         return switch (named.name()) {
+            case "flags2env" -> switch (name) {
+                case "parse_file" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
+                default -> null;
+            };
             case "http" -> switch (name) {
                 case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
-                case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
+                case "listen", "listen_blocking" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
+                case "listen_async" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), new Named("Future", List.of(server)));
                 case "claim" -> new Function(List.of(Primitive.STRING), exchange);
                 default -> null;
             };
