@@ -5497,6 +5497,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                if (name.name().equals("flags2env")) return new Flags2EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -6224,6 +6225,12 @@ public final class OresEvalRootNode extends RootNode {
                                 "http.post_text_async", () -> http.postText(values));
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
+                };
+            }
+            if (receiver instanceof Flags2EnvFacade f2e) {
+                return switch (name) {
+                    case "parse_file" -> (Invokable) args -> f2e.parseFile(args);
+                    default -> throw new IllegalArgumentException("unknown flags2env member " + name);
                 };
             }
             if (receiver instanceof EnvFacade environment) {
@@ -8812,6 +8819,20 @@ public final class OresEvalRootNode extends RootNode {
                     context,
                     requireString(args.get(0), "http.post_text url"),
                     requireString(args.get(1), "http.post_text body"));
+        }
+    }
+
+    /** Permission-scoped facade, fixed JNI library (not arbitrary dlopen). */
+    private record Flags2EnvFacade(OresContext context) {
+        private Object parseFile(List<Object> args) {
+            requireTwo(args, "flags2env.parse_file");
+            String config = requireString(args.get(0), "flags2env config path");
+            String argv = requireString(args.get(1), "flags2env argv JSON");
+            context.requirePermission(dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                    config, "flags2env.parse_file config");
+            context.requirePermission(dev.oreslang.runtime.RuntimePermissions.Permission.FFI,
+                    "flags2env", "flags2env.parse_file native");
+            return dev.oreslang.runtime.Flags2EnvNative.parseFile(config, argv);
         }
     }
 
