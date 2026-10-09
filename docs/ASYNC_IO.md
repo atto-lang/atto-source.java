@@ -3,7 +3,16 @@
 The async APIs return native Oreslang `Future<T>` values. `await` suspends the
 source continuation and releases its actor/root execution carrier. Completion
 resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility.
+Existing synchronous APIs remain available for compatibility, but bare
+synchronous I/O names are **legacy**: canonical source-visible native Oreslang
+blocking I/O operations **must** end in `_blocking`, while async I/O operations
+**may** end in `_async`. The current Java/Graal builtins do not yet enforce
+this rule. See the [shared native I/O naming contract](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/docs/NATIVE_IO_NAMING.md).
+
+This migration must add canonical blocking entry points, migrate callers,
+check method/alias paths and test actual blocking/async behavior and capability
+denials before removing compatibility names. The suffix alone is not evidence
+that an implementation does not block the actor scheduler.
 
 | API | Awaited result |
 | --- | --- |
