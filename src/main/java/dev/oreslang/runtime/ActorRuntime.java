@@ -5695,6 +5695,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
+        private final AtomicReference<Thread> guestTurnOwner = new AtomicReference<>();
         private boolean carrierActive;
         /**
          * Set when the currently executing actor envelope enqueues a source
@@ -5870,6 +5871,11 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor single-writer execution lease violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
                 }
+                Thread carrier = Thread.currentThread();
+                if (!guestTurnOwner.compareAndSet(null, carrier)) {
+                    throw new IllegalStateException(
+                            "two carriers attempted actor guest execution for " + ref.id());
+                }
                 activeTurns = 1;
                 return true;
             }
@@ -5920,6 +5926,10 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor execution lease accounting violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
+                }
+                if (!guestTurnOwner.compareAndSet(Thread.currentThread(), null)) {
+                    throw new IllegalStateException(
+                            "actor guest turn returned on a foreign carrier for " + ref.id());
                 }
                 activeTurns = 0;
                 if (stopped.get()) finalizeStopLocked();
