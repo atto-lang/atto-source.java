@@ -1,9 +1,11 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -120,7 +122,10 @@ public final class HotReloadManager implements AutoCloseable {
         requireNonBlank(moduleName, "moduleName");
         requireNonBlank(contractName, "contractName");
 
-        Ast.Program checked = OresCompiler.parseAndTypeCheck(sourceText);
+        // Inspect the annotation-expanded declaration graph before admission,
+        // but leave full type/capability checking to loadInternal so a candidate
+        // is not type-checked twice on the normal path.
+        Ast.Program checked = AnnotationExpander.expand(Parser.parse(sourceText));
         requireModuleContract(checked, moduleName, contractName);
 
         // This first loader version has no source-graph linker. Accepting imports
