@@ -1932,6 +1932,8 @@ public final class TypeChecker {
                 directNativeIoCalls.add(member);
             if (isBuiltinStdoutCall(call, "log", env)
                     || isBuiltinStdoutCall(call, "log_blocking", env)) {
+                if (isBuiltinStdoutCall(call, "log", env))
+                    enforceNativeIoNaming(new Named("stdio.stdout", List.of()), "log");
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -1946,6 +1948,8 @@ public final class TypeChecker {
             }
             if (isBuiltinStdoutCall(call, "logList", env)
                     || isBuiltinStdoutCall(call, "logList_blocking", env)) {
+                if (isBuiltinStdoutCall(call, "logList", env))
+                    enforceNativeIoNaming(new Named("stdio.stdout", List.of()), "logList");
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
                 }
