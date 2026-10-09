@@ -30,6 +30,8 @@ final class ActorMailboxExecutionBoundaryTest {
             List<OresFuture<Integer>> completions = new ArrayList<>();
             for (int i = 0; i < 16; i++) completions.add(new OresFuture<>());
             Runnable enter = () -> {
+                assertTrue(ActorRuntime.currentThreadOwnsActorNativeLease(),
+                        kind + " actor work must be protected by its native carrier lease");
                 threads.add(Thread.currentThread());
                 maximum.accumulateAndGet(active.incrementAndGet(), Math::max);
             };
@@ -88,7 +90,11 @@ final class ActorMailboxExecutionBoundaryTest {
                     actor.send("register");
                     assertTrue(registered.await(2, TimeUnit.SECONDS));
                     var tasks = new ArrayList<java.util.concurrent.Future<?>>();
-                    for (var future : completions) tasks.add(producers.submit(() -> future.completeFromRuntime(1)));
+                    for (var future : completions) tasks.add(producers.submit(() -> {
+                        assertFalse(ActorRuntime.currentThreadOwnsActorNativeLease(),
+                                "foreign completion workers must only enqueue actor continuations");
+                        future.completeFromRuntime(1);
+                    }));
                     for (var task : tasks) task.get(2, TimeUnit.SECONDS);
                     for (int i = 0; i < 8; i++) actor.send("message");
                     assertEquals(0, callbacks.get(), "completion producers cannot invoke the actor");
