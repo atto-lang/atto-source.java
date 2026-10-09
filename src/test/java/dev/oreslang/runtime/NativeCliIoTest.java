@@ -57,11 +57,11 @@ final class NativeCliIoTest {
                 .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
         String source = """
             pub routine main(): void {
-              val names = fs.list_dir("%s");
+              val names = fs.list_dir_blocking("%s");
               stdio.println(names.get(0));
               stdio.println(names.get(1));
-              stdio.println(fs.is_dir("%s"));
-              stdio.println(fs.is_symlink("%s"));
+              stdio.println(fs.is_dir_blocking("%s"));
+              stdio.println(fs.is_symlink_blocking("%s"));
               return;
             }
             """.formatted(root.toString().replace("\\", "\\\\"),
@@ -79,7 +79,7 @@ final class NativeCliIoTest {
         assertTrue(logged.contains("true"));
         String rejected = """
             pub routine main(): void {
-              val children = fs.list_dir("%s");
+              val children = fs.list_dir_blocking("%s");
               return;
             }
             """.formatted(link.toString().replace("\\", "\\\\"));
@@ -108,8 +108,8 @@ final class NativeCliIoTest {
         Path output = root.resolve("program.ores");
         String program = """
             pub routine main(): void {
-              fs.write_text_atomic("%s", "first");
-              fs.write_text_atomic("%s", "second");
+              fs.write_text_atomic_blocking("%s", "first");
+              fs.write_text_atomic_blocking("%s", "second");
               return;
             }
             """.formatted(target, target);
@@ -128,7 +128,7 @@ final class NativeCliIoTest {
         Files.createSymbolicLink(symlink, outside.resolve("outside-link.ores"));
         Files.writeString(output, """
             pub routine main(): void {
-              fs.write_text_atomic("%s", "forbidden");
+              fs.write_text_atomic_blocking("%s", "forbidden");
               return;
             }
             """.formatted(symlink));
@@ -141,7 +141,7 @@ final class NativeCliIoTest {
         Files.createSymbolicLink(ancestor, outside);
         Files.writeString(output, """
             pub routine main(): void {
-              fs.write_text_atomic("%s", "forbidden");
+              fs.write_text_atomic_blocking("%s", "forbidden");
               return;
             }
             """.formatted(ancestor.resolve("write.ores")));
@@ -161,7 +161,7 @@ final class NativeCliIoTest {
         Path sourceFile = root.resolve("program.ores");
         Files.writeString(sourceFile, """
             pub routine main(): void {
-              stdio.println(fs.is_dir("%s"));
+              stdio.println(fs.is_dir_blocking("%s"));
               return;
             }
             """.formatted(escape.resolve("secret.txt")));
