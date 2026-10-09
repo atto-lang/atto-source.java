@@ -458,6 +458,7 @@ public final class HotReloadManager implements AutoCloseable {
                             ? activeByCodeUnit.get(codeUnitId)
                             : null;
             Generation generation = new Generation(
+                    this,
                     id,
                     codeUnitId,
                     sourceDigest,
@@ -561,6 +562,7 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public static final class Generation implements AutoCloseable {
+        private final HotReloadManager owner;
         private final long id;
         private final String codeUnitId;
         private final String sha256;
@@ -575,6 +577,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final AtomicBoolean closed = new AtomicBoolean();
 
         private Generation(
+                HotReloadManager owner,
                 long id,
                 String codeUnitId,
                 String sha256,
@@ -585,6 +588,7 @@ public final class HotReloadManager implements AutoCloseable {
                 boolean sharedCodeImage,
                 boolean initializeModuleOnly,
                 Generation expectedPreviousActive) {
+            this.owner = java.util.Objects.requireNonNull(owner, "owner");
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
@@ -608,12 +612,28 @@ public final class HotReloadManager implements AutoCloseable {
         public boolean closed() { return closed.get(); }
 
         /** Starts a legacy code-unit generation exactly once. */
-        public synchronized Value start() {
-            if (initializeModuleOnly) {
-                throw new IllegalStateException(
-                        "module generations must be initialized through HotReloadManager.initializeModule");
+        public Value start() {
+            try {
+                synchronized (this) {
+                    if (initializeModuleOnly) {
+                        throw new IllegalStateException(
+                                "module generations must be initialized through HotReloadManager.initializeModule");
+                    }
+                    return startExecution();
+                }
+            } catch (RuntimeException | Error failure) {
+                // startExecution closes a failed context. Retire it only after
+                // leaving this generation's monitor to avoid lock inversion
+                // with manager.close()/retire(), which enter from the manager.
+                if (started.get() && closed.get()) {
+                    try {
+                        owner.retire(id);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
+                throw failure;
             }
-            return startExecution();
         }
 
         private synchronized Value startModule() {
