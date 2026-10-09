@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class PolyglotClientContractAdmissionTest {
     private static final String VALID_DECLARATION = """
-            define interface ClientContract
+            pub define interface ClientContract
               fnc get_status(Unknown request_id) => Unknown;
               fnc get_items(Unknown page, Unknown page_size) => Unknown;
             end
