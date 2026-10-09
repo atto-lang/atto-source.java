@@ -13,3 +13,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo test --manifest-path tools/oreslang-verify/Cargo.toml --all-targets
       - run: cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 2 --messages 2 --workers 2 --capacity 1
+      - run: cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- select-model --arms 3
