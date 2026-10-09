@@ -4,6 +4,7 @@ import java.util.Objects;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,6 +44,12 @@ public final class OresVM implements AutoCloseable {
     /** Mutable module cells scoped to a supervisor's serialized guest lane. */
     private final ConcurrentMap<OresScheduler, Map<SupervisorModuleKey, Object>>
             supervisorModuleStates = new ConcurrentHashMap<>();
+    private volatile Consumer<Object> supervisorExitHook = ignored -> { };
+
+    /** Install GC/resource-domain retirement after the context initializes. */
+    public void setSupervisorExitHook(Consumer<Object> hook) {
+        supervisorExitHook = Objects.requireNonNull(hook);
+    }
     private record SupervisorModuleKey(String codeUnitId, String moduleName, long generation) { }
     private final AtomicLong nextSupervisorId = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -212,6 +219,7 @@ public final class OresVM implements AutoCloseable {
                 processTimers.closeScope(supervisor);
                 // Drop the entire mutable state graph at process retirement.
                 supervisorModuleStates.remove(supervisor);
+                supervisorExitHook.accept(supervisor);
             });
         } catch (RuntimeException | Error failed) {
             supervisor.close();
