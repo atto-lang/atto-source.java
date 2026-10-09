@@ -27,6 +27,8 @@ public final class CorePerf {
     public static final int HTTP_TIMER_SCHEDULE = 13;
     public static final int ACTOR_SPAWN = 14;
     public static final int HTTP_EXECUTOR_QUEUE = 15;
+    public static final int STDIO_WRITE = 16;
+    public static final int HTTP_LIFETIME = 17;
 
     private static final String[] NAMES = {
         "unused", "vm.control.startup", "actor.pools.startup",
@@ -34,7 +36,8 @@ public final class CorePerf {
         "http.dispatch", "actor.ready", "http.claim",
         "http.io.queue", "http.io.work",
         "async.io.queue", "async.io.work",
-        "http.timer.schedule", "actor.spawn", "http.executor.queue"
+        "http.timer.schedule", "actor.spawn", "http.executor.queue",
+        "stdio.write", "http.lifetime"
     };
     private static final String[] DEBUG_NAMES = {
         "unused", "actor.pools.created", "http.listener.ready",

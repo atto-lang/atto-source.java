@@ -307,6 +307,9 @@ public final class NativeHttp implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
+                if (CorePerf.enabled()) {
+                    CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
+                }
                 synchronized (server) { server.pending.removeIf(exchange -> exchange.state == this); }
                 server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
                 completion.completeFromRuntime((long) responseStatus);

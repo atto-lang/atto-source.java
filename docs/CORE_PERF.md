@@ -60,6 +60,19 @@ adds a wrapper only when diagnostics are enabled.
 A first-request delay not accounted for by phases should be investigated with
 JFR (thread start, scheduling and JIT compilation) before adding a prewarm.
 
+`stdio.write` measures the single-argument standard-library stdout print/flush
+or println call, after converting its already-evaluated argument to text. It
+does not include guest JSON construction, integer encoding, or variadic
+`stdout.log`. `http.lifetime` measures admission through transport closure and
+actor finalization, captured exactly once when the active exchange releases
+its admission permit, before completing its observation future. Both phases
+use fixed names and numeric samples; they retain no payload or correlation ID.
+
+These boundaries help distinguish slow guest telemetry construction from the
+actual console write and the request's transport/actor lifetime. The lifetime
+can overlap every request phase. Userland request spans can end later, after
+the supervisor resumes and exports them.
+
 ## Analyze
 
 ```sh
