@@ -450,4 +450,33 @@ final class NamedInferredTypeTest {
             }
         }
     }
+
+    @Test
+    void twoIndependentNamedInferredTypesExecuteInSameScope() {
+        String source = """
+                pub fnc main(): void {
+                  const Account account = infer<Account> struct {
+                    count: 7, id: "acct_42", active: true
+                  };
+                  const Pair pair = infer<Pair> tuple ("first", 17, "last");
+                  const Account copied = account;
+                  stdio.println(copied.id);
+                  stdio.println(copied.count);
+                  stdio.println(pair[0]);
+                  stdio.println(pair[1]);
+                  stdio.println(pair[2]);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(output).build()) {
+                context.eval(Source.newBuilder(OresLanguage.ID, source, "inference-runtime.ores")
+                        .mimeType(OresLanguage.MIME_TYPE).build());
+            }
+        });
+        String[] lines = output.toString(StandardCharsets.UTF_8).trim().split("\\R");
+        assertArrayEquals(new String[] { "acct_42", "7", "first", "17", "last" }, lines);
+    }
 }
