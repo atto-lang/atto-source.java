@@ -241,8 +241,8 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
+        validateAdmissionInputs(unit.unitId(), unit.sourceText());
         String codeUnitId = normalizeCodeUnitId(unit.unitId());
-        validateAdmissionInputs(codeUnitId, unit.sourceText());
         boolean shared = canShare(codeUnitId, unit.sourceText());
 
         if (shared) {
