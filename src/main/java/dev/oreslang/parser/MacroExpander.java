@@ -1,6 +1,5 @@
 package dev.oreslang.parser;
 
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
@@ -339,7 +338,7 @@ public final class MacroExpander {
     private static String fingerprint(Mode mode, List<Parameter> params, List<Token> template) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            hashField(digest, "ores-macro-v2");
+            hashField(digest, "ores-macro-v3");
             hashField(digest, mode.name());
             hashField(digest, Integer.toString(params.size()));
             for (Parameter p : params) {
@@ -359,13 +358,17 @@ public final class MacroExpander {
 
     /** Length-delimit hash fields; token lexemes may contain NUL and newline. */
     private static void hashField(MessageDigest digest, String field) {
-        byte[] bytes = field.getBytes(StandardCharsets.UTF_8);
-        int n = bytes.length;
+        // Hash exact UTF-16 units, avoiding collisions from malformed surrogate replacement.
+        int n = field.length();
         digest.update((byte) (n >>> 24));
         digest.update((byte) (n >>> 16));
         digest.update((byte) (n >>> 8));
         digest.update((byte) n);
-        digest.update(bytes);
+        for (int i = 0; i < n; i++) {
+            char codeUnit = field.charAt(i);
+            digest.update((byte) (codeUnit >>> 8));
+            digest.update((byte) codeUnit);
+        }
     }
 
     private static Token need(List<Token> tokens, int index, Token.Type type, String error) {
