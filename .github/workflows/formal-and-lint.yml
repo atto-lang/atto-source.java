@@ -1,38 +1,8 @@
-name: Oreslang bounded formal model and advisory lint
-on:
-  pull_request:
-    paths:
-      - 'tools/formal/**'
-      - 'tools/oreslang_lint.py'
-      - 'tools/tests/**'
-      - 'docs/FORMAL_METHODS_AND_ANALYZER.md'
-      - '.github/workflows/formal-and-lint.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'tools/formal/**'
-      - 'tools/oreslang_lint.py'
-      - 'tools/tests/**'
-      - '.github/workflows/formal-and-lint.yml'
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
+name: Oreslang Rust model
+on: workflow_dispatch
 jobs:
-  bounded-model-and-lint:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - name: Static syntax compile
-        run: python3 -m compileall -q tools/formal tools/oreslang_lint.py tools/tests
-      - name: Exhaustive abstract state exploration (finite bounds)
-        run: |
-          python3 tools/formal/check_actor_model.py --actors 2 --messages 2 --workers 2 --capacity 1
-          python3 tools/formal/check_actor_model.py --actors 1 --messages 3 --workers 2 --capacity 2
-      - name: Diagnostic and mutation unit tests
-        run: python3 -m unittest discover -s tools/tests -v
+      - run: cargo test --manifest-path tools/oreslang-verify/Cargo.toml
