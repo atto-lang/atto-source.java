@@ -8020,6 +8020,30 @@ public final class OresEvalRootNode extends RootNode {
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        /** Enforce object identity after return shaping, including host-call paths. */
+        private Object enforceIdentityReturn(
+                Ast.TypeRef type, List<Ast.Param> parameters, Object receiver,
+                List<?> arguments, Object result, String label) {
+            if (!type.isIdentityReturn()) return result;
+            String origin = type.identityParameter();
+            Object original = receiver;
+            if (!origin.equals("this")) {
+                int position = -1;
+                for (int i = 0; i < parameters.size(); i++) {
+                    if (parameters.get(i).name().equals(origin)) { position = i; break; }
+                }
+                if (position < 0 || position >= arguments.size()) {
+                    throw new IllegalStateException("unbound identity return '" + origin + "' in " + label);
+                }
+                original = arguments.get(position);
+            }
+            if (result != original) {
+                throw new IllegalStateException(
+                        "identity return violated in " + label + ": result is not original '" + origin + "'");
+            }
+            return result;
+        }
+
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
