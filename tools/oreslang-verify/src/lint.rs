@@ -1,7 +1,7 @@
 use crate::lexer::{tokens_checked,Token};
 #[derive(Clone,Debug)]
 pub struct Diagnostic{pub path:String,pub line:usize,pub column:usize,pub code:&'static str,pub severity:&'static str,pub message:&'static str}
-#[derive(Clone,Copy)]struct Scope{loop_body:bool,async_context:Option<bool>}
+#[derive(Clone,Copy)]struct Scope{loop_body:bool,async_context:Option<bool>,function_boundary:bool}
 fn header(ts:&[Token],open:usize)->Vec<&str>{
  let mut start=open;let mut depth=0usize;
  while start>0{
@@ -50,10 +50,10 @@ pub fn lint_checked(src:&str,path:&str,pedantic:bool)->Result<Vec<Diagnostic>,St
     if pedantic&&h.contains(&"match")&&!body(&ts,i).contains(&"_"){
      add("ORES104","info","match exhaustiveness requires typed checking");
     }
-    scopes.push(Scope{loop_body,async_context});
+    scopes.push(Scope{loop_body,async_context,function_boundary:func});
    }
    "}"=>{scopes.pop();}
-   "defer"=>{if scopes.iter().any(|s|s.loop_body){
+   "defer"=>{if scopes.iter().rev().take_while(|s|!s.function_boundary).any(|s|s.loop_body){
     add("ORES101","warning","defer is inside a loop; review cleanup lifetime");
    }}
    "await" if scopes.last().and_then(|s|s.async_context)==Some(false)=>{
