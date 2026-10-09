@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.nodes.OresEvalRootNode;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -74,6 +75,13 @@ public final class HotReloadManager implements AutoCloseable {
      * Validates and stages a new generation without executing its entrypoint.
      */
     public synchronized Generation load(String name, String sourceText) {
+        return loadInternal(name, sourceText, false);
+    }
+
+    private Generation loadInternal(
+            String name,
+            String sourceText,
+            boolean initializeModuleOnly) {
         validateAdmissionInputs(name, sourceText);
         boolean shared = canShare(name, sourceText);
         if (!shared) {
@@ -82,13 +90,13 @@ public final class HotReloadManager implements AutoCloseable {
             CapabilityChecker.check(
                     dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(sourceText),
                     guestPolicy);
-            return stage(name, digest(sourceText), sourceText, false);
+            return stage(name, digest(sourceText), sourceText, false, initializeModuleOnly);
         }
 
         try (SharedCodeRegistry.Lease image =
                      SharedCodeRegistry.process().acquire(name, sourceText)) {
             CapabilityChecker.check(image.checkedProgram(), guestPolicy);
-            return stage(name, image.sha256(), sourceText, true);
+            return stage(name, image.sha256(), sourceText, true, initializeModuleOnly);
         }
     }
 
@@ -106,11 +114,32 @@ public final class HotReloadManager implements AutoCloseable {
             String moduleName,
             String sourceText,
             String contractName) {
-        java.util.Objects.requireNonNull(moduleName, "moduleName");
-        java.util.Objects.requireNonNull(contractName, "contractName");
+        validateAdmissionInputs(codeUnitId, sourceText);
+        requireNonBlank(moduleName, "moduleName");
+        requireNonBlank(contractName, "contractName");
+
         Ast.Program checked = OresCompiler.parseAndTypeCheck(sourceText);
         requireModuleContract(checked, moduleName, contractName);
-        return load(codeUnitId, sourceText);
+
+        // This first loader version has no source-graph linker. Accepting imports
+        // here would type-check opaque imports but initialize with no linked
+        // dependency graph, so reject them rather than load a partial program.
+        if (!checked.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "hot-loaded modules with imports require linked-code-unit loading, which is not enabled yet");
+        }
+
+        // Do not initialize unrelated named modules as a side effect of loading
+        // one module. Module contracts may live in the synthetic root module.
+        List<Ast.ModuleDecl> namedModules = checked.modules().stream()
+                .filter(candidate -> !candidate.name().equals(dev.oreslang.parser.Parser.ROOT_MODULE))
+                .toList();
+        if (namedModules.size() != 1 || !namedModules.getFirst().name().equals(moduleName)) {
+            throw new IllegalArgumentException(
+                    "hot-loaded source must contain exactly one named module: '" + moduleName + "'");
+        }
+
+        return loadInternal(codeUnitId, sourceText, true);
     }
 
     /**
@@ -128,10 +157,21 @@ public final class HotReloadManager implements AutoCloseable {
         try {
             candidate.start();
         } catch (RuntimeException | Error failure) {
-            retire(candidate.id());
-            if (previous != null && !previous.closed()) {
-                activeByCodeUnit.put(codeUnitId, previous);
-                active.set(previous);
+            // Cleanup must never prevent restoration. A failing Context.close()
+            // is secondary to the startup error and must not strand the manager
+            // on a failed candidate.
+            try {
+                retire(candidate.id());
+            } catch (RuntimeException | Error cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            } finally {
+                if (previous != null && !previous.closed()) {
+                    activeByCodeUnit.put(codeUnitId, previous);
+                    active.set(previous);
+                } else {
+                    activeByCodeUnit.remove(codeUnitId);
+                    active.set(null);
+                }
             }
             throw failure;
         }
@@ -151,12 +191,25 @@ public final class HotReloadManager implements AutoCloseable {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "hot-loaded module '" + moduleName + "' was not found"));
 
-        boolean conforms = module.contracts().stream()
-                .anyMatch(ref -> ref.name().equals(contractName));
-        if (!conforms) {
+        Ast.TypeRef matched = module.contracts().stream()
+                .filter(ref -> ref.name().equals(contractName))
+                .findFirst()
+                .orElse(null);
+        if (matched == null) {
             throw new IllegalArgumentException(
                     "hot-loaded module '" + moduleName
                             + "' must declare 'conforms " + contractName + "'");
+        }
+        if (matched.inferArguments() || !matched.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "generic module contracts are not supported by the name-only hot-load API: "
+                            + contractName);
+        }
+    }
+
+    private static void requireNonBlank(String value, String parameter) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(parameter + " cannot be blank");
         }
     }
 
@@ -178,7 +231,7 @@ public final class HotReloadManager implements AutoCloseable {
                     dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(unit.sourceText()),
                     guestPolicy);
         }
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), shared);
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), shared, false);
     }
 
     private boolean canShare(String codeUnitId, String sourceText) {
@@ -232,7 +285,8 @@ public final class HotReloadManager implements AutoCloseable {
             String codeUnitId,
             String sourceDigest,
             String sourceText,
-            boolean shareCodeImage) {
+            boolean shareCodeImage,
+            boolean initializeModuleOnly) {
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
             throw new IllegalStateException(
@@ -278,7 +332,8 @@ public final class HotReloadManager implements AutoCloseable {
                     source,
                     codeImage,
                     executionProfile,
-                    shareCodeImage);
+                    shareCodeImage,
+                    initializeModuleOnly);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
@@ -302,7 +357,7 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /** Last generation staged, retained for compatibility with the single-unit API. */
-    public Generation active() { return active.get(); }
+    public synchronized Generation active() { return active.get(); }
 
     /** Active generation for one independently compiled code unit. */
     public synchronized Generation active(String codeUnitId) {
@@ -352,6 +407,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final SharedCodeRegistry.Lease codeImage;
         private final ExecutionProfile executionProfile;
         private final boolean sharedCodeImage;
+        private final boolean initializeModuleOnly;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -363,7 +419,8 @@ public final class HotReloadManager implements AutoCloseable {
                 Source source,
                 SharedCodeRegistry.Lease codeImage,
                 ExecutionProfile executionProfile,
-                boolean sharedCodeImage) {
+                boolean sharedCodeImage,
+                boolean initializeModuleOnly) {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
@@ -372,6 +429,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.codeImage = codeImage;
             this.executionProfile = executionProfile;
             this.sharedCodeImage = sharedCodeImage;
+            this.initializeModuleOnly = initializeModuleOnly;
         }
 
         public long id() { return id; }
@@ -391,9 +449,19 @@ public final class HotReloadManager implements AutoCloseable {
                 throw new IllegalStateException("generation already started");
             }
             try {
+                if (initializeModuleOnly) {
+                    // parse(...).execute(command) enters the Oreslang root with
+                    // its supervisor-only init command: link + initialize the
+                    // module source without invoking the program's main().
+                    return context.parse(source).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                }
                 return context.eval(source);
-            } catch (RuntimeException failure) {
-                close();
+            } catch (RuntimeException | Error failure) {
+                try {
+                    close();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
                 throw failure;
             }
         }
