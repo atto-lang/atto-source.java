@@ -1057,7 +1057,12 @@ public final class ActorRuntime implements AutoCloseable {
     public record ActorOutput<M>(
             ActorId actorId,
             long sequence,
-            M value) {
+            M value,
+            Optional<Long> messageSequence) {
+        /** Source-compatible constructor for non-message actor output. */
+        public ActorOutput(ActorId actorId, long sequence, M value) {
+            this(actorId, sequence, value, Optional.empty());
+        }
         public ActorOutput {
             Objects.requireNonNull(actorId, "actorId");
             if (sequence < 0) {
@@ -1067,6 +1072,10 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(
                     value,
                     "actor output values cannot be null; use Option<T>");
+            messageSequence = messageSequence == null ? Optional.empty() : messageSequence;
+            messageSequence.ifPresent(n -> {
+                if (n < 0) throw new IllegalArgumentException("negative message sequence");
+            });
         }
     }
 
@@ -1434,7 +1443,9 @@ public final class ActorRuntime implements AutoCloseable {
                         new ActorOutput<>(
                                 cell.ref.id(),
                                 sequence,
-                                prepared),
+                                prepared,
+                                cell.activeMail == null ? Optional.empty()
+                                        : Optional.of(cell.activeMail.sequence())),
                         () -> cell.releaseOutput(bytes));
                 if (!cell.outputChannel.tryWrite(envelope)) {
                     throw new IllegalStateException(
@@ -1479,6 +1490,20 @@ public final class ActorRuntime implements AutoCloseable {
                 cell.activeMail = (ActorInboxMail) previous;
             }
         });
+    }
+
+    /**
+     * Emit a message-specific output. Correlation is actor ID plus per-actor
+     * mailbox sequence; the envelope is data, never a shared mutable pointer.
+     */
+    public void emitForCurrentActorMail(ActorInboxMail<?> mail, Object value) {
+        requireCallerRuntimeAffinity("send actor mail output");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.activeMail != mail
+                || cell.sourceMessages.get(mail.sequence()) != mail) {
+            throw new SecurityException("m.send() requires an active owning mail continuation");
+        }
+        emitCurrentActorOutput(value);
     }
 
     /** Configure admission capacity, never actor execution parallelism. */
