@@ -771,4 +771,33 @@ final class HotReloadModuleContractTest {
     }
 
 
+
+    @Test
+    void managerShutdownClosesStagedModulesAndRejectsFurtherLoads() {
+        HotReloadManager loader =
+                new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit());
+        String source = """
+                pub define contract WorkerApi as
+                  fnc run(): int;
+                end
+                define module Worker conforms WorkerApi as
+                  pub fnc run(): int { return 1; }
+                end
+                """;
+        HotReloadManager.Generation candidate =
+                loader.loadModule("worker.ores", "Worker", source, "WorkerApi");
+
+        loader.close();
+        loader.close();
+
+        assertEquals(true, candidate.closed());
+        assertEquals(0, loader.liveGenerations());
+        assertEquals(null, loader.active("worker.ores"));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> loader.loadModule("worker.ores", "Worker", source, "WorkerApi"));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> loader.activateModule(candidate));
+    }
 }
