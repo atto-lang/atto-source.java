@@ -79,15 +79,12 @@ pub fn check(input:&str)->Result<Summary,Violation>{
     for (i,e) in trace.events.iter().enumerate(){
         if e.seq!=i as u64{return Err(fail(i,"noncontiguous sequence"))}
         fields(e,i)?;
-        match e.kind.as_str(){
-            "spawn"=>{
-                if live.contains(&e.actor)||retired.contains(&e.actor){
-                    return Err(fail(i,"duplicate actor spawn"))
-                }
-                live.insert(e.actor.clone());
-                continue
+        if e.kind=="spawn" {
+            if live.contains(&e.actor)||retired.contains(&e.actor){
+                return Err(fail(i,"duplicate actor spawn"))
             }
-            _=>{}
+            live.insert(e.actor.clone());
+            continue;
         }
         if !live.contains(&e.actor){return Err(fail(i,"event from unknown/terminated actor"))}
         match e.kind.as_str(){
