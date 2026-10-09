@@ -53,6 +53,12 @@ fn run(args:&[String])->Result<(),String>{
    println!("BOUNDED MODEL PASS: {} states, {} transitions (actors={}, messages={}, workers={}, capacity={})",
     r.states,r.edges,b.actors,b.messages,b.workers,b.capacity);
   }
+  "trace-core"=>{
+   if args.len()!=3{return Err("usage: oreslang-verify trace-core CORE_TRACE.json".into())}
+   let input=fs::read_to_string(&args[2]).map_err(|e|e.to_string())?;
+   let r=oreslang_verify::core_trace::check(&input).map_err(|e|e.to_string())?;
+   println!("CORE TRACE OK: {} events, {} actors, {} messages",r.events,r.actors,r.messages);
+  }
   "trace"=>{
    if args.len()!=3{return Err("usage: oreslang-verify trace TRACE.json".into())}
    let input=fs::read_to_string(&args[2]).map_err(|e|e.to_string())?;
