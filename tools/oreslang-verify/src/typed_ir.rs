@@ -72,6 +72,12 @@ fn valid_graph(fun:&Function)->Result<(HashMap<u32,&Node>,HashSet<u32>),String>{
         if node.borrowed_mut_across_suspend && !["await","select","readch","writech","yield"].contains(&node.op.as_str()){
             return Err(format!("{}: suspension borrow fact on non-suspending node {}",fun.name,node.id))
         }
+        if node.successors.iter().collect::<HashSet<_>>().len()!=node.successors.len(){
+            return Err(format!("{}: duplicate CFG successor at {}",fun.name,node.id))
+        }
+        if node.select_has_cancellation&&node.op!="select"{
+            return Err(format!("{}: select cancellation fact on non-select node {}",fun.name,node.id))
+        }
         if node.successors.iter().any(|id|!by_id.contains_key(id)){
             return Err(format!("{}: dangling successor at {}",fun.name,node.id))
         }
