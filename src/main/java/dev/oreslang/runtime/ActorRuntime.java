@@ -2487,7 +2487,12 @@ public final class ActorRuntime implements AutoCloseable {
                                         sender,
                                         group.id,
                                         sequence,
-                                        (Out) frozen.value()),
+                                        (Out) frozen.value(),
+                                        currentActor.get() != null
+                                                && currentActor.get().ref.id().equals(sender)
+                                                && currentActor.get().activeMail != null
+                                                        ? Optional.of(currentActor.get().activeMail.sequence())
+                                                        : Optional.empty()),
                                 frozen.reservation());
 
                 if (!outbox.tryWrite(envelope)) {
