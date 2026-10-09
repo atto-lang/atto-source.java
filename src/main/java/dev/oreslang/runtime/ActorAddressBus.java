@@ -43,7 +43,7 @@ public final class ActorAddressBus {
 
     private final ActorRuntime runtime;
     private final ActorRuntime.ActorGroup group;
-    /** All registry structures are guarded by lock, never held across mailbox admission. */
+    /** Registry monitor also fences membership revocation against mailbox admission. */
     private final Object lock = new Object();
     private final Map<String, Address> addresses = new HashMap<>();
     private final Map<ActorRuntime.ActorId, Integer> actorAddressCounts = new HashMap<>();
@@ -154,8 +154,10 @@ public final class ActorAddressBus {
             if (requireAddress(address).subscribers.get(target.id()) != target) {
                 throw new IllegalStateException("mailbox address membership changed");
             }
+            // Serialize membership revocation with transport admission. This
+            // prevents a leave from completing between validation and send.
+            dispatch(target, message);
         }
-        dispatch(target, message);
         return Optional.of(target.id());
     }
 
@@ -184,7 +186,14 @@ public final class ActorAddressBus {
                 break;
             }
             try {
-                dispatch(target, message);
+                synchronized (lock) {
+                    requireOpen();
+                    if (requireAddress(address).subscribers.get(target.id()) != target) {
+                        rejected++;
+                        continue;
+                    }
+                    dispatch(target, message);
+                }
                 admitted++;
             } catch (IllegalStateException rejection) {
                 // Includes terminated target and bounded mailbox admission.
