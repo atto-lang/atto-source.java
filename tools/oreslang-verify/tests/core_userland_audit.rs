@@ -127,3 +127,28 @@ fn fixture()->Vec<Value>{
     v["functions"][0]["nodes"][0]["select_has_cancellation"]=json!(true);
     assert!(typed_ir::analyze(&v.to_string()).unwrap_err().contains("non-select"));
 }
+
+
+#[test]fn mailbox_capacity_is_a_checked_core_invariant(){
+ let events=vec![event("spawn","alpha"),
+   json!({"kind":"admit","actor":"alpha","message_id":"m1"}),
+   json!({"kind":"admit","actor":"alpha","message_id":"m2"}),
+   json!({"kind":"admit","actor":"alpha","message_id":"m3"})];
+ assert!(run(events,false).unwrap_err().reason.contains("mailbox capacity"));
+ let bad=json!({"schema_version":"2.0.0","capacity":0,"complete":true,"events":[]});
+ assert!(core_trace::check(&bad.to_string()).unwrap_err().reason.contains("capacity"));
+}
+#[test]fn guest_send_requires_execution_lease(){
+ let events=vec![event("spawn","alpha"),event("spawn","beta"),
+   json!({"kind":"send","actor":"alpha","target":"beta","message_id":"m1"})];
+ assert!(run(events,false).unwrap_err().reason.contains("active guest execution lease"));
+ let events=vec![event("spawn","alpha"),event("spawn","beta"),
+   json!({"kind":"admit","actor":"alpha","message_id":"work"}),
+   json!({"kind":"acquire","actor":"alpha","worker":"w"}),
+   json!({"kind":"send","actor":"alpha","target":"beta","message_id":"m1"}),
+   json!({"kind":"receive","actor":"alpha","message_id":"work"}),
+   json!({"kind":"release","actor":"alpha","worker":"w"}),
+   json!({"kind":"discard","actor":"beta","message_id":"m1"}),
+   event("terminate","alpha"),event("terminate","beta")];
+ assert!(run(events,true).is_ok());
+}
