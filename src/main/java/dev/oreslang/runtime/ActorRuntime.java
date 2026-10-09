@@ -1517,7 +1517,8 @@ public final class ActorRuntime implements AutoCloseable {
             cell.activeMail = (ActorInboxMail) mail;
             try {
                 // Do not resurrect a handler once its completion token ended.
-                if (mail != null && !cell.sourceMessages.containsKey(mail.sequence())) {
+                if (mail != null && cell.codeExecutor != null
+                        && !cell.sourceMessages.containsKey(mail.sequence())) {
                     // Explicit m.done() ends this handler. Discard subsequent
                     // queued continuations without failing its owning actor.
                     return OresScheduler.done(null);
