@@ -11,8 +11,7 @@ this rule. See the [shared native I/O naming contract](https://github.com/ores-t
 
 This migration must add canonical blocking entry points, migrate callers,
 check method/alias paths and test actual blocking/async behavior and capability
-denials before removing compatibility names. The suffix alone is not evidence
-that an implementation does not block the actor scheduler.
+denials before removing compatibility names. The `_blocking` suffix means synchronous *source-level* return semantics, not OS-thread blocking. Its implementation **must** submit native I/O through an async I/O engine, suspend and later resume the guest continuation on the owning scheduler, and immediately free the actor carrier. Bare synchronous Java I/O methods must not be renamed without implementing this lowering.
 
 | API | Awaited result |
 | --- | --- |
@@ -89,7 +88,7 @@ EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 
-## Blocking I/O naming migration (not yet implemented)
+## Async-backed `_blocking` I/O migration (not yet implemented)
 
 Existing API names below describe the **currently implemented** Java/Graal
 behavior and are not canonical names under the new language rule. Required
@@ -105,7 +104,7 @@ Do not switch the documentation to claim those replacement functions work
 until the builtin resolver, compiler conformance tests and dependent CLI
 programs have been migrated. Migration must check qualified methods and
 aliases, explicit capability gating, diagnostics for legacy bare calls,
-and two-actor scheduling tests proving async calls do not block a carrier.
+and two-actor **single-carrier** tests proving `_blocking` calls do not occupy the carrier, plus the existing explicit-`await` async tests. `_blocking` returns `T` directly in source; `*_async` returns `Future<T>`. Neither may use host `join()`/`get()` on the actor carrier.
 
 ## Synchronous directory operations (Oreslang stack CLI)
 
