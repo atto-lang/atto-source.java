@@ -3040,13 +3040,13 @@ public final class TypeChecker {
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
-                if (indexed.index() instanceof Ast.LiteralExpr literal
-                        && literal.value() instanceof Long position) {
-                    if (position < 0 || position >= tuple.elements().size()) {
+                Long constant = constantTupleIndex(indexed.index());
+                if (constant != null) {
+                    if (constant < 0 || constant >= tuple.elements().size()) {
                         throw new IllegalArgumentException(
-                                "tuple index " + position + " outside arity " + tuple.elements().size());
+                                "tuple index " + constant + " outside arity " + tuple.elements().size());
                     }
-                    return tuple.elements().get(position.intValue());
+                    return tuple.elements().get(constant.intValue());
                 }
                 return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
             }
@@ -5324,6 +5324,20 @@ public final class TypeChecker {
         // Match the newer iterator prototype: for-await also admits synchronous
         // iterables, but execution still crosses the runtime-owned Future boundary.
         return iterableElementType(iterable);
+    }
+
+    /** Folds trivial signed integer literals without performing guest arithmetic. */
+    private Long constantTupleIndex(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long index) return index;
+        if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long index) {
+            if (index == Long.MIN_VALUE) return null;
+            return -index;
+        }
+        return null;
     }
 
     private Type widenCollectionElement(Type type) {
