@@ -58,6 +58,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<Ast.MemberExpr> directNativeIoCalls = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Unlike private-member access, declaration origin must survive nlex.
@@ -1927,6 +1928,8 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr member)
+                directNativeIoCalls.add(member);
             if (isBuiltinStdoutCall(call, "log", env)
                     || isBuiltinStdoutCall(call, "log_blocking", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -2746,6 +2749,7 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 enforceNativeIoNaming(new Named("stdio", List.of()), member.member());
+                rejectFirstClassNativeBlockingIo(member, new Named("stdio", List.of()));
                 if (member.member().equals("print") || member.member().equals("println")
                         || member.member().equals("print_blocking") || member.member().equals("println_blocking"))
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -2755,6 +2759,7 @@ public final class TypeChecker {
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
             enforceNativeIoNaming(sumReceiver, member.member());
+            rejectFirstClassNativeBlockingIo(member, sumReceiver);
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -4131,6 +4136,29 @@ public final class TypeChecker {
      * Dispatch classification is by resolved builtin receiver, not suffix alone:
      * arbitrary user-defined `read_text` methods are not native host I/O.
      */
+    /**
+     * Native _blocking functions are currently lowered at direct call sites.
+     * Extracting a first-class function value would otherwise lose the implicit
+     * suspension point and expose Future<T> as T. Reject until a typed effect
+     * carrying callable wrapper is implemented across every backend.
+     */
+    private void rejectFirstClassNativeBlockingIo(Ast.MemberExpr member, Type receiver) {
+        if (!member.member().endsWith("_blocking")
+                || directNativeIoCalls.contains(member)
+                || !(receiver instanceof Named named)) return;
+        boolean nativeIoReceiver = switch (named.name()) {
+            case "fs", "File", "http", "network", "net", "TcpConnection",
+                 "stdio", "stdio.stdout", "stdio.stdin" -> true;
+            default -> false;
+        };
+        if (nativeIoReceiver) {
+            throw new IllegalArgumentException(
+                    "native _blocking I/O is direct-call-only until first-class "
+                    + "continuation effects are supported: "
+                    + named.name() + "." + member.member());
+        }
+    }
+
     private static void enforceNativeIoNaming(Type receiver, String method) {
         if (!Boolean.getBoolean("ores.compiler.strictNativeIo")) return;
         if (!(receiver instanceof Named named)) return;
