@@ -1395,9 +1395,18 @@ public final class TypeChecker {
             if (namedInference) {
                 String name = binding.inferredTypeName();
                 if (generics.contains(name)
-                        || Set.of("int", "uint", "float", "decimal", "complex", "bool", "boolean",
-                                "string", "String", "void", "null", "self", "Tuple", "Array",
-                                "List", "Option", "Result", "Future", "ActorId", "ActorKind").contains(name)
+                        || Set.of(
+                                "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                                "int", "uint", "bigint", "f32", "f64", "float", "decimal",
+                                "complex64", "complex128", "complex", "bool", "Bool",
+                                "boolean", "string", "String", "void", "null", "self",
+                                "Tuple", "Array", "List", "Vector", "Slice",
+                                "FixedArray", "FixedList", "DynamicStruct", "Option",
+                                "Result", "Future", "ActorId", "ActorKind",
+                                "ActorMail", "ActorOutput", "ActorOutputStream",
+                                "MutexGuard", "Mutex", "SharedMutex", "Channel",
+                                "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
+                                "IteratorResult", "Fnc", "Function").contains(name)
                         || findClass(name) != null || findInterface(name) != null
                         || findTypeAlias(name) != null || modules.containsKey(name)) {
                     throw new IllegalArgumentException(
