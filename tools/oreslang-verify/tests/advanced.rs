@@ -16,7 +16,7 @@ fn codes(ir:&str)->Vec<&'static str>{
 }
 #[test]fn typed_match_exact_exhaustiveness(){assert!(codes(BASE).is_empty())}
 #[test]fn typed_match_missing_case(){
- let json=BASE.replace(r#"{"variants":["None"]}"#,r#"{"variants":[]}"#);
+ let json=BASE.replace(r#",{"variants":["None"]}"#,r#""#);
  assert_eq!(codes(&json),vec!["ORES218"]);
 }
 #[test]fn typed_match_guard_does_not_prove_coverage(){
