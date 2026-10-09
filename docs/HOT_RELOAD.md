@@ -49,15 +49,23 @@ loadModule(codeUnitId, moduleName, source, contract)
 The loader:
 
 1. validates code-unit/source admission limits before parsing;
-2. parses and type-checks the candidate, including normal structural conformance;
-3. verifies that the requested module explicitly declares `conforms contract`;
-4. stages a fresh generation without executing guest code.
+2. inspects the annotation-expanded declarations and verifies the requested module explicitly declares `conforms contract`;
+3. fails closed for imports, unrelated named modules, executable root-scope declarations, and generic requested contracts;
+4. performs the normal full type/capability admission;
+5. stages a fresh generation without executing guest code or changing the active-generation mapping.
+
+For manual activation, use `initializeModule(candidate)` and then
+`activateModule(candidate)`. Module candidates cannot be started through the
+legacy `Generation.start()` method; the manager-owned initializer ensures failed
+candidates are retired and do not leak generation slots or code-image leases.
 
 For now, the runtime loader fails closed if the source contains imports, if it
 contains more than one named module, or if the requested contract is generic.
-This API accepts a contract name, not a generic contract instantiation. Cross-file
-contracts and dependencies require a linked-code-unit loading API and are not
-silently treated as available.
+This API accepts a contract name, not a generic contract instantiation. The
+incremental compiler supports direct exported named cross-file contract conformance
+with linker-supplied type metadata, but the runtime hot-loader does not yet accept
+a source graph. Cross-file contracts and dependencies are rejected by this
+runtime API rather than silently treated as available.
 
 A basic transactional replacement path is also available:
 
