@@ -149,6 +149,23 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
+    /**
+     * Host-side proof hook. A native carrier owns an actor's execution only
+     * from successfully admitted beginTurn() through endTurn(), including
+     * actor startup, mailbox callbacks, resumptions and guest final cleanup.
+     * Awaiting/suspended handlers retain message identity, NOT a native lock.
+     */
+    static boolean currentThreadOwnsActorNativeLease() {
+        ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
+        if (context == null) return false;
+        ActorCell<?> cell = context.runtime().currentActor.get();
+        return cell != null && cell.ref.ownedBy(context.runtime())
+                && context.actorId().equals(cell.ref.id())
+                && context.kind() == cell.kind
+                && cell.guestTurnOwner.get() == Thread.currentThread()
+                && cell.activeTurns == 1;
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
