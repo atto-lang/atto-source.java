@@ -6679,6 +6679,9 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "actor_id" -> output.actorId();
                     case "sequence" -> output.sequence();
+                    case "message_sequence" -> output.messageSequence().isPresent()
+                            ? new OptionValue(true, output.messageSequence().orElseThrow())
+                            : new OptionValue(false, null);
                     case "value" -> output.value();
                     default -> throw new IllegalArgumentException(
                             "unknown ActorOutput member " + name);
@@ -6686,6 +6689,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ActorRuntime.ActorInboxMail<?> mail) {
                 return switch (name) {
+                    case "message_id" -> mail.recipient().toString() + ":" + mail.sequence();
+                    case "send" -> (Invokable) args -> {
+                        if (args.size() > 1) {
+                            throw new IllegalArgumentException("m.send takes zero or one output value");
+                        }
+                        context.actors().emitForCurrentActorMail(
+                                mail, args.isEmpty() ? mail.value() : args.getFirst());
+                        return null;
+                    };
+                    case "done" -> (Invokable) args -> {
+                        if (!args.isEmpty()) {
+                            throw new IllegalArgumentException("m.done takes no arguments");
+                        }
+                        context.actors().finishCurrentActorMail(mail);
+                        return null;
+                    };
                     case "value" -> mail.value();
                     case "recipient" -> mail.recipient();
                     case "sender" -> mail.sender().isPresent()
