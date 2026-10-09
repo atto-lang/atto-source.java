@@ -148,7 +148,7 @@ pub fn analyze(text:&str)->Result<Vec<Finding>,String>{
                     domain.clone()
                 }else{
                     let set:BTreeSet<_>=arm.variants.iter().cloned().collect();
-                    if set.len()!=arm.variants.len()||!set.is_subset(&domain){
+                    if set.is_empty()||set.len()!=arm.variants.len()||!set.is_subset(&domain){
                         return Err(format!("{}: invalid match-arm variant",fun.name))
                     }
                     set
