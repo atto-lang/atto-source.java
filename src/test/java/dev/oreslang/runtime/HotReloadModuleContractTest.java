@@ -701,7 +701,7 @@ final class HotReloadModuleContractTest {
                     () -> loader.reloadModule("worker.ores", "Worker", v2, "WorkerApi"));
 
             assertEquals(original, loader.active("worker.ores"));
-            assertEquals("stable", original.invokePublic("Worker.name").asString());
+            assertEquals(1, original.invokePublic("Worker.run").asInt());
             assertEquals(false, original.closed());
         }
     }
