@@ -14,3 +14,7 @@ jobs:
       - run: cargo test --manifest-path tools/oreslang-verify/Cargo.toml --all-targets
       - run: cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 2 --messages 2 --workers 2 --capacity 1
       - run: cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- select-model --arms 3
+      - name: Verify actor trace JSON
+        run: cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- trace tools/oreslang-verify/fixtures/actor-ingress-example.json
+      - name: Verify structured typed IR
+        run: cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- ir tools/oreslang-verify/fixtures/closed-match-ir-example.json --strict
