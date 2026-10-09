@@ -4393,7 +4393,7 @@ public final class OresEvalRootNode extends RootNode {
                 // A trap boundary must survive tail-call lowering. Treat it as a
                 // tail barrier so a callee failure cannot escape by replacing
                 // this function's dynamic boundary.
-                executeBlock(fn.body(), env, fn.trapped());
+                executeBlock(fn.body(), env, fn.trapped() || fn.returnType().isIdentityReturn());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
