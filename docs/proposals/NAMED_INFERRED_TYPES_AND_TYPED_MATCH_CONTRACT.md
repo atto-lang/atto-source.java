@@ -1,6 +1,6 @@
 # Named inferred types and typed match input/output (design contract)
 
-**Status:** proposed specification and admission matrix; **not implemented on `main`**. No examples in this file should be treated as passing compiler/runtime tests. This contract must be integrated with the open expression-match / arm-local-return work (#296 and #404), not implemented as an incompatible competing match AST.
+**Status:** partially implemented on draft PR #495; **not implemented on `main`**. The parser/AST/type checker now contain an initial implementation of lexical `infer<T> struct` and `infer<T> tuple`, plus tests and a tuple constant-index typing fix. These code changes are **not yet test-verified**: source GitHub Actions jobs failed before runner allocation. `match<Input,Output>`, tuple structural type-pattern matching, and the user-facing `type T = struct {...};` parser remain unimplemented and depend on integrating expression matches from drafts #296 and #404. Do not advertise the full examples as executable.
 
 ## 1. Surface syntax and exact inferred type
 
@@ -54,7 +54,7 @@ The named compile-time type is:
 type T = Tuple[string, int];
 ```
 
-The **tuple is not a struct**. Preserve exact tuple arity and positional element types. `Tuple[int]` is the existing canonical tuple-type notation; the user-requested `Tuple(int)` may be admitted as type-position sugar only after ambiguity checks and parser/runtime parity. Do not quietly reinterpret a runtime call expression as a type. An unparenthesized `tuple (...)` remains explicit value construction; `infer<T>` marks type naming, not a second runtime tuple kind.
+The **tuple is not a struct**. Preserve exact tuple arity and positional element types. `Tuple[int]` is the current collection-type notation. The user-requested `Tuple(int)` **must also be accepted in type position** by the completed feature and canonicalized to `Tuple[int]`; it is not a runtime constructor or a function call. Keep type-position parsing separate from expression-position `Tuple(...)`/`tuple (...)`, and reject any ambiguity instead of interpreting a function call as a type. Do not quietly reinterpret a runtime call expression as a type. An unparenthesized `tuple (...)` remains explicit value construction; `infer<T>` marks type naming, not a second runtime tuple kind.
 
 `on structural (string, int) a` is a proposed tuple **type-shape** pattern (not a tuple-of-two-value-patterns). Matching must test tuple kind, exact arity, and each slot type; bind `a` to the same readonly typed tuple; `a[1]` retains `int`. Extra slots do not match (unlike width-compatible record contracts). Preserve actor and ownership boundaries. If the parser cannot unambiguously distinguish the tuple type pattern, introduce dedicated `TupleTypePattern` AST nodes instead of coercing value patterns.
 
@@ -66,11 +66,11 @@ Two type parameters are ordered `match<Input, Output> subject over ... end`:
 - `Output` constrains the **result of every reachable arm**. A value-producing match has a result of exactly this declared type. Every completing arm must produce an assignable value, subject to exhaustiveness, control-flow, ownership, borrow, and capability checks.
 - `match<Output>` retains the previously proposed **single-parameter result-only** form, to avoid reversing the contract from `TYPEOF_AND_TYPED_MATCH.md`.
 - In value-producing `match` the `return value;` inside each arm returns **from the match**, not from the enclosing function, following draft #404. Use `return match<Input,Output> ... end;` to return from the function, or bind the match expression to a value.
-- Bare `match ... over` is not a side-effect statement on the value-producing expression branch. Use `do match` for side effects, not a fake `void` output type. Do not merge an interim statement-only version that silently gives arm `return` a different target.
+- Untyped bare `match ... over` remains value-producing and must be consumed as specified by #404. To admit the originally requested **standalone** `match<Input,Output> subject over ... end` examples, explicitly typed two-argument matches MAY appear as expression-statements: calculate the result according to `Output`, discard it, and emit an unused-result diagnostic. `return` inside arms still targets the match, never the enclosing function. Prefer binding the result or `return match<...> ... end;` for production code. Use `do match` for intentionally effect-only code; do not use `match<void>`. This is an explicit extension to #404, which currently rejects bare match statements; implement it deliberately, not by retaining the legacy statement-return semantics.
 
 `Input` and `Output` are ordinary compile-time types, including inferred local aliases; neither is necessarily a *generic type variable*. Both require independent type resolution and lexical visibility. Do not reify erased generic types for runtime matching.
 
-Canonical `on structural { ... } a` checks a **structural view** of a struct; it does not change the inferred `struct` type. Overlap, wildcard, and dead-arm proofs should use the input type and guard constraints. A fallback that becomes provably unreachable for a fully known exact inferred shape may be reported as redundant (warning or documented existing dead-arm rule); it must never be executed spuriously.
+Canonical `on structural { ... } a` checks a **structural view** of a struct; it does not change the inferred `struct` type. Overlap, wildcard, and dead-arm proofs should use the input type and guard constraints. A final wildcard fallback following a provably total structural pattern for the exact inferred `T` is **accepted with an optional redundancy warning** so the requested examples remain valid. A genuinely shadowed non-wildcard arm remains a hard error, as do overlapping patterns that invalidate established ordered-match rules. Never execute the fallback spuriously.
 
 ## 4. Implementation sequence
 
@@ -88,4 +88,31 @@ Canonical `on structural { ... } a` checks a **structural view** of a struct; it
 
 **Fuzz/property checks:** generating closed structs of distinct field permutations must preserve name-to-field associations; generated tuples must preserve exact arity/slot ordering; generated matches must typecheck only where both input and output contracts hold; no alias should affect runtime tree/object layout or create actor-shared mutable memory.
 
-**Current status:** contract only; implementation and green JVM/native CI evidence pending.
+**Current status:** initial parser/AST/type-checker implementation and JUnit source are pushed in draft #495. No green JVM/native CI evidence exists for this head; source jobs have `steps=[]`. Value-producing typed matches, structural tuple type-patterns, normalized `type T = struct` surface parsing, and full cross-backend verification remain pending.
+
+## 6. Audit and hardening notes (2026-10-08)
+
+### Explicit distinction: implemented / specified
+
+- **Pushed but not yet green:** the parser restricts `infer<T>` to direct immutable `const T name = ...` bindings with `struct` or `tuple` literal initializers. The AST stores `inferredTypeName` on the binding only, avoiding runtime type-variable objects. The type checker binds the inferred `Record` or `Tuple` type in a lexical namespace after the initializer passes type analysis. String-literal slots widen to `string`. Type aliases are resolved only in that block and descendant lexical scopes; mutable declarations, duplicate names, generic collisions, and several built-in/global-name conflicts are rejected.
+- **Pushed but not yet green:** exact constant-index tuple selection yields its own element type and rejects positive out-of-bounds literal indices. Dynamic indices still require a safe joined type. Negative unary-literal and arithmetic constant-expression bounds proofs need separate tests.
+- **Specified, not built:** compiling `type T = struct { ... };` directly as a source-level type alias; input/output typed match expressions; tuple type-shape patterns; type-position `Tuple(int)` sugar; accepted/redundant wildcard fallback; JIT/native runtime lowering.
+- **Observed source CI:** GitHub Actions failed before test steps were allocated. This is neither a passing test nor a proven compilation error. Verify the exact source tree in a funded test org with a complete mirrored tree and then run both JDK 25 Maven and GraalVM/backend checks.
+
+### Mandatory fail-closed invariants
+
+1. No name binding until the full literal initializer type is known; no half-initialized alias, forward capture, or recursive self-reference through `T`.
+2. The type name exists in the type namespace only; evaluating `T` as an expression must fail. Alias equality is transparent, but `Record.readOnly`, field types, and transitive borrow/actor sendability restrictions must never weaken.
+3. Do not infer type names from arbitrary expressions or dynamic/reflection host objects. Reject spoofed runtime type metadata, opaque foreign values, and erased generic matches instead of pretending `T` is reifiable.
+4. An inferred type name must not collide with lexical generic parameters, local aliases (including parent scopes), nominal types, imported aliases, or built-ins. Check imported qualified namespaces before promotion from draft.
+5. Tuple patterns are distinct from tuple value/destructuring patterns. Preserve exact length, positional slot types, and immutable views. Structural record matching may be width-compatible; tuple matching must not be width-compatible.
+6. Match scrutinee evaluates exactly once; inferred type parameters are compile-time checks, **not casts** or mechanisms for laundering actor ownership. Each completed arm returns an `Output`-assignable value; missing returns and improperly escaping borrows are hard errors.
+7. Typed standalone matches never turn `return` into a function-level return or silently skip output type-checking. Empty or void results must follow explicit `do match` semantics.
+8. The compiler must not emit a runtime class or special heap object for type aliases. Static type-erasure must preserve guest value ABI and actor-isolation boundaries.
+
+### Additional admission cases
+
+- Positive: `match<T,Tuple(int)>` and `match<T,Tuple[int]>` agree in **type position**; named tuple strings widen from singleton literals while constant index `a[1]` remains `int`.
+- Positive: the user's standalone two-argument typed match parses, typechecks, and runs with unused-result warning; `return match<T,U> ... end;` returns to the containing function.
+- Negative: attempted runtime expression `T`, generic `T` shadowing, alias escape outside lexical scope, double evaluation of match scrutinee, deliberately unreachable non-wildcard arms, missing arm results, unsafe ownership capture, and runtime `Tuple(int)` type-position confusion.
+- Property check: random records with permuted declaration order retain field names/types; tuple indices and type argument arity preserve exact ordering; no program changes heap allocation/actor identity just because a type alias is named.
