@@ -5564,9 +5564,14 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("rt copy graph exceeds safe depth/node budget");
             }
             if (value == null || value instanceof String || value instanceof Boolean
-                    || value instanceof Number || value instanceof Character
-                    || value instanceof Complex || value instanceof OptionUnwrapError) {
-                return value; // Immutable scalar.
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof Character || value instanceof Complex
+                    || value instanceof OptionUnwrapError) {
+                return value; // Proven immutable scalar; Number itself is NOT safe.
             }
             if (value instanceof ActorRuntime.ActorRef<?>
                     || value instanceof ActorRuntime.Shared<?>
