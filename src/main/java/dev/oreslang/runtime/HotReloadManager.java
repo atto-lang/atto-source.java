@@ -243,8 +243,8 @@ public final class HotReloadManager implements AutoCloseable {
             if (!generation.initializeModuleOnly) {
                 throw new IllegalArgumentException("generation was not loaded through loadModule");
             }
-            if (generation.closed()) {
-                throw new IllegalStateException("cannot initialize a closed generation");
+            if (generation.retiring.get() || generation.closed()) {
+                throw new IllegalStateException("cannot initialize a retiring/closed generation");
             }
             if (activeByCodeUnit.get(generation.codeUnitId()) == generation) {
                 if (!generation.started() || generation.initializing.get()) {
@@ -310,8 +310,8 @@ public final class HotReloadManager implements AutoCloseable {
             if (!generation.initializeModuleOnly) {
                 throw new IllegalArgumentException("only a module-loaded generation can be activated as a module");
             }
-            if (generation.closed()) {
-                throw new IllegalStateException("cannot activate a closed generation");
+            if (generation.retiring.get() || generation.closed()) {
+                throw new IllegalStateException("cannot activate a retiring/closed generation");
             }
             if (generation.initializing.get()) {
                 throw new IllegalStateException("cannot activate a module while initialization is in progress");
@@ -387,9 +387,9 @@ public final class HotReloadManager implements AutoCloseable {
             String contractName,
             ModuleContractSurface contractSurface) {
         if (current == null) return;
-        if (current.closed()) {
+        if (current.closed() || current.retiring.get()) {
             throw new IllegalStateException(
-                    "active generation for '" + current.codeUnitId() + "' is closed; retire it before replacement");
+                    "active generation for '" + current.codeUnitId() + "' is closing/closed; retire it before replacement");
         }
         if (current.initializeModuleOnly != initializeModuleOnly) {
             throw new IllegalStateException(
@@ -827,6 +827,7 @@ public final class HotReloadManager implements AutoCloseable {
         synchronized (this) {
             generation = generations.remove(generationId);
             if (generation != null) {
+                generation.retiring.set(true);
                 active.compareAndSet(generation, null);
                 activeByCodeUnit.remove(generation.codeUnitId(), generation);
             }
@@ -843,6 +844,7 @@ public final class HotReloadManager implements AutoCloseable {
             if (managerClosed) return;
             managerClosed = true;
             closing = List.copyOf(generations.values());
+            closing.forEach(generation -> generation.retiring.set(true));
             generations.clear();
             activeByCodeUnit.clear();
             active.set(null);
@@ -902,6 +904,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final long expectedPreviousActiveId;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean initializing = new AtomicBoolean();
+        private final AtomicBoolean retiring = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
         private Generation(
@@ -954,7 +957,9 @@ public final class HotReloadManager implements AutoCloseable {
                         throw new IllegalStateException(
                                 "module generations must be initialized through HotReloadManager.initializeModule");
                     }
-                    if (closed.get()) throw new IllegalStateException("generation is closed");
+                    if (retiring.get() || closed.get()) {
+                        throw new IllegalStateException("generation is retiring/closed");
+                    }
                     if (started.get()) throw new IllegalStateException("generation already started");
                     startAttempted = true;
                     return startExecution();
@@ -982,7 +987,7 @@ public final class HotReloadManager implements AutoCloseable {
         public synchronized Value invokePublic(String functionName, Object... arguments) {
             requireNonBlank(functionName, "functionName");
             java.util.Objects.requireNonNull(arguments, "arguments");
-            if (closed.get()) throw new IllegalStateException("generation is closed");
+            if (retiring.get() || closed.get()) throw new IllegalStateException("generation is retiring/closed");
             if (!started.get()) {
                 throw new IllegalStateException("generation must be initialized before public invocation");
             }
@@ -1025,7 +1030,9 @@ public final class HotReloadManager implements AutoCloseable {
         }
 
         private Value startExecution() {
-            if (closed.get()) throw new IllegalStateException("generation is closed");
+            if (retiring.get() || closed.get()) {
+                throw new IllegalStateException("generation is retiring/closed");
+            }
             if (!started.compareAndSet(false, true)) {
                 throw new IllegalStateException("generation already started");
             }
@@ -1048,6 +1055,9 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
+            // Reject new invocations immediately, even if close must wait for an
+            // already-running generation call to leave the synchronized section.
+            retiring.set(true);
             boolean transitioned = false;
             Throwable failure = null;
             synchronized (this) {
