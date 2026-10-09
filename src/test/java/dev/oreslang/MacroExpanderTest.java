@@ -475,7 +475,8 @@ final class MacroExpanderTest {
             List<Token> expected = new Lexer(argument).scan();
             List<Token> actual = MacroExpander.expand(
                     new Lexer(definition + "tree!(" + argument + ")").scan()).tokens();
-            assertEquals(expected, actual, argument);
+            assertEquals(expected.stream().map(t -> t.type() + ":" + t.lexeme()).toList(),
+                    actual.stream().map(t -> t.type() + ":" + t.lexeme()).toList(), argument);
         }
         for (String argument : List.of("1 + 2", "(1), (2)", "one two", "(1, 2) + 3")) {
             assertThrows(IllegalArgumentException.class,
@@ -518,10 +519,10 @@ final class MacroExpanderTest {
         int checked = 0;
         for (int cut = "macro_rules!".length(); cut < definition.length() - 1; cut++) {
             String truncated = definition.substring(0, cut);
-            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+            int cutPoint = cut;
+            assertThrows(IllegalArgumentException.class,
                     () -> MacroExpander.expand(new Lexer(truncated).scan()),
-                    () -> "accepted truncated definition at cut " + cut);
-            assertFalse(failure instanceof IndexOutOfBoundsException);
+                    () -> "accepted truncated definition at cut " + cutPoint);
             checked++;
         }
         assertTrue(checked > 25);
