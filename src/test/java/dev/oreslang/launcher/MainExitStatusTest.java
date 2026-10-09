@@ -32,6 +32,11 @@ final class MainExitStatusTest {
     @Test void integerMainReturnsFailureCode() throws Exception {
         assertEquals(1, exit("pub routine main(): int { return 1; }"));
         assertEquals(42, exit("pub routine main(): int { return 42; }"));
+        assertEquals(255, exit("pub routine main(): int { return 255; }"));
+    }
+
+    @Test void asynchronousIntegerMainYieldsExitStatus() throws Exception {
+        assertEquals(8, exit("pub async routine main(): int { return 8; }"));
     }
 
     @Test void explicitProcessExitYieldsHostStatus() throws Exception {
@@ -42,9 +47,18 @@ final class MainExitStatusTest {
         assertEquals(2, exit("pub routine main(): void { process.exit(2); }"));
     }
 
+    @Test void explicitProcessExitInsideAsyncMainIsNotProcessGlobal() throws Exception {
+        assertEquals(13, exit("pub async routine main(): void { std.process.exit(13); }"));
+    }
+
     @Test void tooLargeIntegerExitFailsClosed() throws Exception {
         assertThrows(IllegalArgumentException.class,
             () -> exit("pub routine main(): int { return 256; }"));
+    }
+
+    @Test void outOfRangeExplicitProcessExitIsRejected() throws Exception {
+        assertThrows(RuntimeException.class,
+            () -> exit("pub routine main(): void { std.process.exit(256); }"));
     }
 
     @Test void unsupportedMainReturnTypeIsStaticError() throws Exception {
@@ -55,7 +69,7 @@ final class MainExitStatusTest {
     @Test void untrustedIsolateCannotForceProcessTermination() throws Exception {
         Path path = temp.resolve("untrusted.ores");
         Files.writeString(path, "pub routine main(): void { std.process.exit(3); }");
-        assertThrows(SecurityException.class, () ->
+        assertThrows(RuntimeException.class, () ->
             LinkedProgramRunner.runWithExitStatus(path,
                     IsolatePolicy.developer().withoutCapabilities(
                             IsolatePolicy.Capability.PROCESS_EXIT),
