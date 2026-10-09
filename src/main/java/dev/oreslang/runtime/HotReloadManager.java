@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -83,6 +84,7 @@ public final class HotReloadManager implements AutoCloseable {
             String sourceText,
             boolean initializeModuleOnly) {
         validateAdmissionInputs(name, sourceText);
+        name = normalizeCodeUnitId(name);
         boolean shared = canShare(name, sourceText);
         if (!shared) {
             // Do not let matching bytes/path attach unapproved adversarial code
@@ -139,6 +141,16 @@ public final class HotReloadManager implements AutoCloseable {
                     "hot-loaded source must contain exactly one named module: '" + moduleName + "'");
         }
 
+        Ast.ModuleDecl rootModule = checked.modules().stream()
+                .filter(candidate -> candidate.name().equals(dev.oreslang.parser.Parser.ROOT_MODULE))
+                .findFirst()
+                .orElse(null);
+        if (rootModule != null && rootModule.declarations().stream().anyMatch(declaration ->
+                !(declaration instanceof Ast.InterfaceDecl iface && iface.moduleContract()))) {
+            throw new IllegalArgumentException(
+                    "hot-loaded source root scope may contain only module contract declarations");
+        }
+
         return loadInternal(codeUnitId, sourceText, true);
     }
 
@@ -152,6 +164,7 @@ public final class HotReloadManager implements AutoCloseable {
             String moduleName,
             String sourceText,
             String contractName) {
+        codeUnitId = normalizeCodeUnitId(codeUnitId);
         Generation previous = activeByCodeUnit.get(codeUnitId);
         Generation candidate = loadModule(codeUnitId, moduleName, sourceText, contractName);
         try {
@@ -219,8 +232,9 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
-        validateAdmissionInputs(unit.unitId(), unit.sourceText());
-        boolean shared = canShare(unit.unitId(), unit.sourceText());
+        String codeUnitId = normalizeCodeUnitId(unit.unitId());
+        validateAdmissionInputs(codeUnitId, unit.sourceText());
+        boolean shared = canShare(codeUnitId, unit.sourceText());
 
         if (shared) {
             CapabilityChecker.check(unit.program(), guestPolicy);
@@ -231,7 +245,23 @@ public final class HotReloadManager implements AutoCloseable {
                     dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(unit.sourceText()),
                     guestPolicy);
         }
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), shared, false);
+        return stage(codeUnitId, unit.sourceDigest(), unit.sourceText(), shared, false);
+    }
+
+    private static String normalizeCodeUnitId(String codeUnitId) {
+        if (codeUnitId == null || codeUnitId.isBlank()) {
+            throw new IllegalArgumentException("codeUnitId cannot be blank");
+        }
+        try {
+            String normalized = java.nio.file.Path.of(codeUnitId.replace('\\', '/'))
+                    .normalize().toString().replace('\\', '/');
+            if (normalized.isBlank() || normalized.equals(".")) {
+                throw new IllegalArgumentException("codeUnitId must identify a code unit");
+            }
+            return normalized;
+        } catch (java.nio.file.InvalidPathException invalidPath) {
+            throw new IllegalArgumentException("invalid codeUnitId", invalidPath);
+        }
     }
 
     private boolean canShare(String codeUnitId, String sourceText) {
@@ -268,8 +298,9 @@ public final class HotReloadManager implements AutoCloseable {
             throw new IllegalStateException(
                     "guest code-sharing approval is only required for adversarial guests");
         }
+        validateAdmissionInputs(codeUnitId, sourceText);
         SharedCodeRegistry.process().approveForAdversarialSharing(
-                supervisorPolicy, codeUnitId, sourceText);
+                supervisorPolicy, normalizeCodeUnitId(codeUnitId), sourceText);
     }
 
     public void revokeGuestCodeSharing(String codeUnitId, String sourceText) {
@@ -277,8 +308,9 @@ public final class HotReloadManager implements AutoCloseable {
             throw new IllegalStateException(
                     "guest code-sharing revocation is only required for adversarial guests");
         }
+        validateAdmissionInputs(codeUnitId, sourceText);
         SharedCodeRegistry.process().revokeForAdversarialSharing(
-                supervisorPolicy, codeUnitId, sourceText);
+                supervisorPolicy, normalizeCodeUnitId(codeUnitId), sourceText);
     }
 
     private Generation stage(
@@ -341,10 +373,16 @@ public final class HotReloadManager implements AutoCloseable {
         } catch (RuntimeException | Error failure) {
             try {
                 context.close(true);
-            } catch (RuntimeException closeFailure) {
+            } catch (RuntimeException | Error closeFailure) {
                 failure.addSuppressed(closeFailure);
             } finally {
-                if (codeImage != null) codeImage.close();
+                if (codeImage != null) {
+                    try {
+                        codeImage.close();
+                    } catch (RuntimeException | Error leaseFailure) {
+                        failure.addSuppressed(leaseFailure);
+                    }
+                }
             }
             throw failure;
         }
@@ -361,7 +399,7 @@ public final class HotReloadManager implements AutoCloseable {
 
     /** Active generation for one independently compiled code unit. */
     public synchronized Generation active(String codeUnitId) {
-        return activeByCodeUnit.get(codeUnitId);
+        return activeByCodeUnit.get(normalizeCodeUnitId(codeUnitId));
     }
 
     public synchronized Map<String, Generation> activeGenerations() {
