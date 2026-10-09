@@ -62,11 +62,10 @@ public final class SharedCodeRegistry {
         supervisorPolicy.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
                 "approve adversarial shared code");
-        Set<Key> approvals = adversarialShareAllowlist.computeIfAbsent(
-                authority, ignored -> new HashSet<>());
+        Set<Key> approvals = adversarialShareAllowlist.get(authority);
         Key key = new Key(codeUnitId, digest(sourceText));
-        if (approvals.contains(key)) return;
-        if (approvals.size() >= MAX_APPROVALS_PER_AUTHORITY) {
+        if (approvals != null && approvals.contains(key)) return;
+        if (approvals != null && approvals.size() >= MAX_APPROVALS_PER_AUTHORITY) {
             throw new IllegalStateException(
                     "adversarial shared-code approval limit exceeded: "
                             + MAX_APPROVALS_PER_AUTHORITY);
@@ -74,7 +73,10 @@ public final class SharedCodeRegistry {
         CapabilityChecker.check(
                 OresCompiler.parseAndTypeCheck(sourceText),
                 IsolatePolicy.untrustedActor());
-        approvals.add(key);
+        // Do not retain an authority token when admission fails.
+        adversarialShareAllowlist
+                .computeIfAbsent(authority, ignored -> new HashSet<>())
+                .add(key);
     }
 
     synchronized void revokeForAdversarialSharing(
