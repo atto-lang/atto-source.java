@@ -798,10 +798,48 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
+    /**
+     * Starts a legacy code unit without exposing an unstarted candidate.
+     * Source execution happens outside the manager monitor, and a concurrent
+     * replacement invalidates the candidate rather than overwriting a winner.
+     * This publishes runtime selection atomically; it cannot undo guest I/O.
+     */
     public Generation loadAndStart(String name, String sourceText) {
-        Generation generation = load(name, sourceText);
-        generation.start();
-        return generation;
+        Generation previous;
+        Generation candidate;
+        synchronized (this) {
+            ensureManagerOpen();
+            String codeUnitId = normalizeCodeUnitId(name);
+            previous = activeByCodeUnit.get(codeUnitId);
+            candidate = loadInternal(
+                    codeUnitId, sourceText, false, false, null, null, null);
+        }
+
+        try {
+            candidate.start();
+            synchronized (this) {
+                ensureManagerOpen();
+                if (generations.get(candidate.id()) != candidate
+                        || candidate.retiring.get() || candidate.closed()) {
+                    throw new IllegalStateException("generic startup candidate is no longer live");
+                }
+                if (activeByCodeUnit.get(candidate.codeUnitId()) != previous) {
+                    throw new IllegalStateException(
+                            "stale generic startup candidate for '" + candidate.codeUnitId()
+                                    + "': active generation changed during initialization");
+                }
+                activeByCodeUnit.put(candidate.codeUnitId(), candidate);
+                active.set(candidate);
+            }
+            return candidate;
+        } catch (RuntimeException | Error failure) {
+            try {
+                retire(candidate.id());
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
     /** Last selected active generation, retained for the single-unit compatibility API. */
