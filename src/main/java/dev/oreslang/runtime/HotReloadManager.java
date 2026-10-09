@@ -450,6 +450,18 @@ public final class HotReloadManager implements AutoCloseable {
         return new ModuleContractSurface(digest(abi.toString()), callableKeys);
     }
 
+    private static String contractOwnerModuleName(
+            Ast.Program program,
+            Ast.InterfaceDecl contract) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration == contract) return module.name();
+            }
+        }
+        throw new IllegalArgumentException(
+                "module contract '" + contract.name() + "' has no declaration owner");
+    }
+
     private static Ast.InterfaceDecl findModuleContractDeclaration(
             Ast.Program program,
             String contractName) {
@@ -487,6 +499,7 @@ public final class HotReloadManager implements AutoCloseable {
         visiting.add(identity);
 
         abi.append("contract ").append(contract.visibility()).append(' ')
+                .append("declared-in ").append(contractOwnerModuleName(program, contract)).append(' ')
                 .append(contract.name()).append('<')
                 .append(String.join(",", contract.genericParameters()))
                 .append("> extends ");
@@ -921,9 +934,33 @@ public final class HotReloadManager implements AutoCloseable {
             if (!started.get()) {
                 throw new IllegalStateException("generation must be initialized before public invocation");
             }
+
+            String resolvedName = functionName;
+            if (initializeModuleOnly) {
+                // Contract-gated module generations expose only callables
+                // declared by their checked contract set. Do not let the host
+                // bypass the declared API by asking for an extra public helper.
+                String prefix = moduleName + ".";
+                String memberName = functionName.startsWith(prefix)
+                        ? functionName.substring(prefix.length())
+                        : functionName;
+                if (memberName.isBlank() || memberName.contains(".")) {
+                    throw new IllegalArgumentException(
+                            "module generation '" + moduleName
+                                    + "' can invoke only its own contract-declared callables");
+                }
+                String callableKey = memberName + "#" + arguments.length;
+                if (contractSurface == null || !contractSurface.callableKeys().contains(callableKey)) {
+                    throw new IllegalArgumentException(
+                            "callable '" + memberName + "' with arity " + arguments.length
+                                    + " is not declared by module '" + moduleName + "' contracts");
+                }
+                resolvedName = prefix + memberName;
+            }
+
             Object[] commandArguments = new Object[arguments.length + 2];
             commandArguments[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
-            commandArguments[1] = functionName;
+            commandArguments[1] = resolvedName;
             System.arraycopy(arguments, 0, commandArguments, 2, arguments.length);
             return parsedProgram().execute(commandArguments);
         }
