@@ -110,7 +110,7 @@ pub fn tokens_checked(src: &str) -> Result<Vec<Token>, String> {
             }
             continue;
         }
-        if c == '"' || c == '\'' || c == '\u0060' {
+        if c == '"' || c == '\'' || c == '\u{0060}' {
             let start = (line, col);
             let mut closed = false;
             step(&cs, &mut i, &mut line, &mut col);
