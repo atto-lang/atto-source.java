@@ -24,7 +24,7 @@ fn visit(path:&Path,files:&mut Vec<std::path::PathBuf>)->Result<(),String>{
  Ok(())
 }
 fn run(args:&[String])->Result<(),String>{
- if args.len()<2{return Err("usage: oreslang-verify model [--actors N --messages N --workers N --capacity N --max-states N] | lint [--format json|text] [--pedantic] [--strict] PATH...".into())}
+ if args.len()<2{return Err("usage: oreslang-verify model [--actors N --messages N --workers N --capacity N --max-states N] | trace TRACE.json | select-model [--arms N] | ir PROGRAM.json [--strict] | lint [--format json|text] [--pedantic] [--strict] PATH...".into())}
  match args[1].as_str(){
   "model"=>{
    let mut b=Bounds::default();let mut i=2;
@@ -41,6 +41,42 @@ fn run(args:&[String])->Result<(),String>{
    let r=explore(b).map_err(|e|e.to_string())?;
    println!("BOUNDED MODEL PASS: {} states, {} transitions (actors={}, messages={}, workers={}, capacity={})",
     r.states,r.edges,b.actors,b.messages,b.workers,b.capacity);
+  }
+  "trace"=>{
+   if args.len()!=3{return Err("usage: oreslang-verify trace TRACE.json".into())}
+   let input=fs::read_to_string(&args[2]).map_err(|e|e.to_string())?;
+   let r=oreslang_verify::trace::check(&input).map_err(|e|e.to_string())?;
+   println!("TRACE OK: {} events, {} actors, {} messages ({} received)",r.events,r.actors,r.messages_sent,r.messages_received);
+  }
+  "select-model"=>{
+   let mut arms=3u8;let mut limit=100_000usize;let mut i=2;
+   while i<args.len(){
+    let flag=&args[i];let value=args.get(i+1).ok_or("missing model option value")?
+      .parse::<usize>().map_err(|_|format!("invalid integer for {flag}"))?;
+    match flag.as_str(){
+      "--arms"=>arms=u8::try_from(value).map_err(|_|"arms exceed supported range")?,
+      "--max-states"=>limit=value,
+      _=>return Err(format!("unknown select-model flag: {flag}")),
+    }
+    i+=2;
+   }
+   let r=oreslang_verify::select_model::explore(arms,limit)?;
+   println!("SELECT MODEL PASS: {} reachable states, {} transitions, {} arms",r.states,r.transitions,arms);
+  }
+  "ir"=>{
+   let path=args.get(2).ok_or("usage: oreslang-verify ir PROGRAM.json [--strict]")?;
+   if args.len()>4||(args.len()==4&&args[3]!="--strict"){
+    return Err("usage: oreslang-verify ir PROGRAM.json [--strict]".into())
+   }
+   let input=fs::read_to_string(path).map_err(|e|e.to_string())?;
+   let findings=oreslang_verify::typed_ir::analyze(&input)?;
+   for f in &findings{
+    println!("{}:{}:{}: {} [{}] {}",path,f.line,f.column,f.code,f.function,f.message);
+   }
+   println!("typed IR: {} diagnostic(s)",findings.len());
+   if args.len()==4&&!findings.is_empty(){
+    return Err("strict typed-IR analysis has findings".into())
+   }
   }
   "lint"=>{
    let mut pedantic=false;let mut strict=false;let mut json=false;let mut paths=vec![];
