@@ -5984,6 +5984,26 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
+                    case "print_blocking" -> (Invokable) args -> {
+                        requireOne(args, "stdio.print_blocking");
+                        String value = String.valueOf(args.getFirst());
+                        return context.nativeIo().submitCapability(context, IsolatePolicy.Capability.STDOUT,
+                                "stdio.print_blocking", () -> {
+                                    context.output().print(value);
+                                    context.output().flush();
+                                    return null;
+                                });
+                    };
+                    case "println_blocking" -> (Invokable) args -> {
+                        requireOne(args, "stdio.println_blocking");
+                        String value = String.valueOf(args.getFirst());
+                        return context.nativeIo().submitCapability(context, IsolatePolicy.Capability.STDOUT,
+                                "stdio.println_blocking", () -> {
+                                    context.output().println(value);
+                                    context.output().flush();
+                                    return null;
+                                });
+                    };
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
                     case "stdout" -> new StdoutFacade(stdio.context());
@@ -5993,6 +6013,44 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdoutFacade stdout) {
                 return switch (name) {
+                    case "write_blocking" -> (Invokable) args -> {
+                        requireOne(args, "stdio.stdout.write_blocking");
+                        String value = String.valueOf(args.getFirst());
+                        return context.nativeIo().submitCapability(context, IsolatePolicy.Capability.STDOUT,
+                                "stdio.stdout.write_blocking", () -> {
+                                    context.output().print(value);
+                                    context.output().flush();
+                                    return null;
+                                });
+                    };
+                    case "println_blocking" -> (Invokable) args -> {
+                        requireOne(args, "stdio.stdout.println_blocking");
+                        String value = String.valueOf(args.getFirst());
+                        return context.nativeIo().submitCapability(context, IsolatePolicy.Capability.STDOUT,
+                                "stdio.stdout.println_blocking", () -> {
+                                    context.output().println(value);
+                                    context.output().flush();
+                                    return null;
+                                });
+                    };
+                    case "log_blocking", "logList_blocking" -> (Invokable) args -> {
+                        List<Object> values;
+                        if (name.equals("logList_blocking")) {
+                            requireOne(args, "stdio.stdout.logList_blocking");
+                            values = expandArgumentSequence(args.getFirst(), "stdio.stdout.logList_blocking");
+                        } else {
+                            values = args;
+                        }
+                        StringBuilder line = new StringBuilder();
+                        for (Object value : values) line.append(String.valueOf(value));
+                        String rendered = line.toString();
+                        return context.nativeIo().submitCapability(context, IsolatePolicy.Capability.STDOUT,
+                                "stdio.stdout." + name, () -> {
+                                    context.output().println(rendered);
+                                    context.output().flush();
+                                    return null;
+                                });
+                    };
                     case "write" -> (Invokable) stdout::write;
                     case "println" -> (Invokable) stdout::println;
                     case "log" -> (Invokable) stdout::log;
@@ -6002,6 +6060,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdinFacade stdin) {
                 return switch (name) {
+                    case "read_line_blocking" -> (Invokable) args -> {
+                        requireZero(args, "stdio.stdin.read_line_blocking");
+                        return context.nativeIo().submitCapability(context, IsolatePolicy.Capability.STDIN,
+                                "stdio.stdin.read_line_blocking", () -> stdin.readLine(List.of()));
+                    };
                     case "read_line" -> (Invokable) stdin::readLine;
                     default -> throw new IllegalArgumentException("unknown stdin member " + name);
                 };
