@@ -259,6 +259,9 @@ public final class ActorRuntime implements AutoCloseable {
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
 
     private static final String CARRIER_BACKEND_PROPERTY = "ores.runtime.carriers";
+    // Pool managers are created at VM startup; native per-lane carriers
+    // are not allocated until the first actor of that kind is scheduled.
+
 
     public record DispatcherConfig(
             int privateParallelism,
@@ -437,6 +440,40 @@ public final class ActorRuntime implements AutoCloseable {
         this.privateDispatcher = privatePool;
         this.sharedDispatcher = sharedPool;
         this.untrustedDispatcher = untrustedPool;
+    }
+
+    /** One physical carrier in each actor class, opt-in via --warm. */
+    public void warmActorPools() {
+        if (closed.get()) throw new RejectedExecutionException("actor runtime is closed");
+        for (ExecutorService pool : List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
+            if (pool instanceof ActorAffinityDispatcher lanes) {
+                lanes.warmOne();
+            } else if (pool instanceof ThreadPoolExecutor javaPool) {
+                javaPool.prestartCoreThread();
+            } else if (pool instanceof NativeCarrierExecutor) {
+                // Non-affinity native carriers are already created by backend
+                // construction. Default lane affinity avoids eager allocation.
+            }
+        }
+    }
+
+    /** Lazily instantiated actor lanes by class, excluding CONTROL and ROOT. */
+    public Map<ActorKind, Integer> instantiatedActorLanes() {
+        return Map.of(
+                ActorKind.PRIVATE, instantiatedLanes(privateDispatcher),
+                ActorKind.SHARED, instantiatedLanes(sharedDispatcher),
+                ActorKind.UNTRUSTED, instantiatedLanes(untrustedDispatcher));
+    }
+
+    private static int instantiatedLanes(ExecutorService pool) {
+        if (pool instanceof ActorAffinityDispatcher lanes) {
+            return lanes.instantiatedLaneCount();
+        }
+        if (pool instanceof ThreadPoolExecutor javaPool) {
+            return javaPool.getPoolSize();
+        }
+        if (pool instanceof NativeCarrierExecutor) return 1;
+        return 0;
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
