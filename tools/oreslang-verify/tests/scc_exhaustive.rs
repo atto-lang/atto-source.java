@@ -33,9 +33,9 @@ fn all_three_node_directed_graphs_match_independent_reachability_oracle(){
     // self loops, disconnected SCCs and unreachable cycles.
     for mask in 0u16..512 {
         let mut graph=vec![vec![];3];
-        for i in 0..3 {
+        for (i, neighbors) in graph.iter_mut().enumerate().take(3) {
             for j in 0..3 {
-                if mask & (1 << (i*3+j)) != 0 {graph[i].push(j);}
+                if mask & (1 << (i*3+j)) != 0 {neighbors.push(j);}
             }
         }
         let findings=typed_ir::analyze(&as_ir(&graph)).expect("valid test graph");
