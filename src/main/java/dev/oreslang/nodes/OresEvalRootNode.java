@@ -4398,9 +4398,9 @@ public final class OresEvalRootNode extends RootNode {
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
             } catch (ReturnSignal signal) {
-                return shapeReturnedValue(
-                        fn.returnType(),
-                        signal.value,
+                return enforceIdentityReturn(
+                        fn.returnType(), fn.parameters(), null, args,
+                        shapeReturnedValue(fn.returnType(), signal.value, "function " + fn.name()),
                         "function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
