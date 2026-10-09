@@ -146,3 +146,37 @@ JSON, and CLI symlink/size failures. The CI workflow now requires Cargo tests,
 strict Clippy, bounded model exploration, trace and typed-IR fixtures. A
 successful model run remains only a bounded **abstract-state** result; no
 production runtime refinement or liveness proof is claimed.
+
+## Core verification and userland CLI hardening
+
+The bounded actor model rejects termination with a live carrier lease.
+External shutdown is modeled only after quiescence; in-flight cancellation
+and production runtime trace refinement remain open obligations.
+
+```bash
+cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- trace-core tools/oreslang-verify/fixtures/core-trace-v2-example.json
+cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- lint --format sarif --pedantic examples/
+cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- lint --format json examples/
+```
+
+The proposed core-trace v2 input requires schema_version=2.0.0, complete,
+capacity (1–65536), and zero-indexed contiguous events. The Rust monitor
+checks actor and carrier exclusivity, FIFO delivery, bounded mailboxes,
+send authorization by an active guest lease, await/ready/resume ordering,
+duplicate I/O completion, termination, and cleanup. Events: spawn, admit,
+send, acquire, receive, release, suspend, io_complete, resume, discard,
+terminate. Event-specific worker, target and message_id fields are checked.
+This is a proposed trace contract, NOT evidence that JVM/LLVM backends emit
+or reliably source these events. A trusted trace exporter and independent
+mailbox capacity attestation are necessary before production proof claims.
+
+The lint command now outputs SARIF 2.1.0 in addition to JSON/text and
+refuses explicit non-.ores files and empty source scans. Nested functions
+do not inherit surrounding loop-defer warnings. Typed IR now checks
+duplicate control-flow edges and misplaced select cancellation facts; the
+JSON Schema includes select/readch/writech/yield operation vocabulary.
+Neither the lexical linter nor hand-authored typed IR proves source safety.
+
+The funded Actions mirror validates exact Git blob hashes, Cargo unit and
+integration tests, Clippy with -D warnings, model exploration, both trace
+formats, typed-IR fixtures, malformed source rejection, and SARIF output.
