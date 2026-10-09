@@ -25,6 +25,9 @@ fn visit_inner(path:&Path,files:&mut Vec<std::path::PathBuf>,depth:usize)->Resul
    }
   }
  }else if meta.is_file(){
+  if path.extension().is_none_or(|x|x!="ores"){
+   return Err(format!("lint requires an .ores source file: {}",path.display()))
+  }
   if meta.len()>4*1024*1024{return Err(format!("Oreslang source exceeds 4 MiB: {}",path.display()))}
   if files.len()>=20_000{return Err("Oreslang lint file limit (20000) exceeded".into())}
   files.push(path.to_path_buf());
@@ -35,7 +38,7 @@ fn visit(path:&Path,files:&mut Vec<std::path::PathBuf>)->Result<(),String>{
  visit_inner(path,files,0)
 }
 fn run(args:&[String])->Result<(),String>{
- if args.len()<2{return Err("usage: oreslang-verify model [--actors N --messages N --workers N --capacity N --max-states N] | trace TRACE.json | select-model [--arms N] | ir PROGRAM.json [--strict] | lint [--format json|text] [--pedantic] [--strict] PATH...".into())}
+ if args.len()<2{return Err("usage: oreslang-verify model [--actors N --messages N --workers N --capacity N --max-states N] | trace TRACE.json | select-model [--arms N] | ir PROGRAM.json [--strict] | lint [--format json|text|sarif] [--pedantic] [--strict] PATH...".into())}
  match args[1].as_str(){
   "model"=>{
    let mut b=Bounds::default();let mut i=2;
@@ -96,14 +99,14 @@ fn run(args:&[String])->Result<(),String>{
    }
   }
   "lint"=>{
-   let mut pedantic=false;let mut strict=false;let mut json=false;let mut paths=vec![];
+   let mut pedantic=false;let mut strict=false;let mut format="text";let mut paths=vec![];
    let mut i=2;
    while i<args.len(){
     match args[i].as_str(){
      "--pedantic"=>pedantic=true,"--strict"=>strict=true,
      "--format"=>{
       let v=args.get(i+1).ok_or("missing --format value")?;
-      match v.as_str(){"json"=>json=true,"text"=>json=false,_=>return Err("format must be json or text".into())}
+      match v.as_str(){"json"|"text"|"sarif"=>format=v,_=>return Err("format must be json, text or sarif".into())}
       i+=1;
      }
      arg if arg.starts_with('-')=>return Err(format!("unknown flag: {arg}")),
@@ -121,7 +124,21 @@ fn run(args:&[String])->Result<(),String>{
     let src=fs::read_to_string(&p).map_err(|e|format!("{}: {e}",p.display()))?;
     issues.extend(lint_checked(&src,&p.to_string_lossy(),pedantic).map_err(|e|format!("{}: {e}",p.display()))?);
    }
-   if json{
+   if format=="sarif"{
+    use serde_json::json;
+    let results:Vec<_>=issues.iter().map(|d|json!({
+      "ruleId":d.code,
+      "level":match d.severity{"error"=>"error","warning"=>"warning",_=>"note"},
+      "message":{"text":d.message},
+      "locations":[{"physicalLocation":{
+         "artifactLocation":{"uri":d.path.replace('\\',"/")},
+         "region":{"startLine":d.line,"startColumn":d.column}
+      }}]
+    })).collect();
+    let sarif=json!({"$schema":"https://json.schemastore.org/sarif-2.1.0.json",
+       "version":"2.1.0","runs":[{"tool":{"driver":{"name":"oreslang-verify"}},"results":results}]});
+    println!("{sarif}");
+   }else if format=="json"{
     let parts:Vec<String>=issues.iter().map(|d|format!(
      "{{\"path\":{},\"line\":{},\"column\":{},\"code\":{},\"severity\":{},\"message\":{}}}",
      json_quote(&d.path),d.line,d.column,json_quote(d.code),json_quote(d.severity),json_quote(d.message))).collect();
