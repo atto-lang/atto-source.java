@@ -447,6 +447,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresObject object = new OresObject(this, klass, fields);
 
+            // Concurrency is immutable actor admission metadata, not a
+            // runtime-adjustable field. It does not increase guest parallelism.
+            int concurrencyLimit = 1;
+            for (Ast.FieldDecl field : classFields) {
+                if (!field.name().equals("concurrency")) continue;
+                if (field.initializer() instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof Number number
+                        && number.longValue() >= 1 && number.longValue() <= 1024) {
+                    concurrencyLimit = Math.toIntExact(number.longValue());
+                } else {
+                    throw new IllegalStateException(
+                            "actor concurrency must be a statically valid integer literal");
+                }
+            }
+            context.actors().configureCurrentActorConcurrency(concurrencyLimit);
+
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
             // context and before ready is allowed to settle.
