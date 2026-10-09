@@ -53,6 +53,11 @@ The loader:
 3. verifies that the requested module explicitly declares `conforms contract`;
 4. stages a fresh generation without executing guest code.
 
+`loadModule(...)` remains the lower-level staging API: for compatibility it
+publishes a staged, **unstarted** generation. Do not use it to upgrade an active
+module. Use `reloadModule(...)`, which keeps the candidate private until the
+initialization succeeds, even if runtime code enters a re-entrant lookup.
+
 For now, the runtime loader fails closed if the source contains imports, if it
 contains more than one named module, or if the requested contract is generic.
 This API accepts a contract name, not a generic contract instantiation. Cross-file
@@ -70,6 +75,9 @@ Module startup uses the runtime's init-only entry path: it links and initializes
 the named module but does **not** invoke the source program's `main()`. The source must contain only the requested named module (plus any
 contract declarations in the synthetic root module), so unrelated named modules
 cannot be initialized as a side effect.
+
+The generic `loadAndStart(...)` now has the same private-candidate publication
+gate and preserves the previous active selection on startup failure.
 
 If candidate initialization fails, the previous generation remains active.
 Cleanup failures are recorded as suppressed failures and cannot prevent
@@ -89,6 +97,8 @@ This draft does **not** claim:
 - automatic migration of arbitrary module state;
 - migration of actor-owned state;
 - compatibility proofs between old and new state schemas;
+- backward-compatibility guarantees for existing consumers when a contract's
+  shape changes despite retaining the same name;
 - arbitrary live closure migration;
 - distributed/process-crossing hot code replacement;
 - sharing mutable module/runtime state between generations.
@@ -112,3 +122,13 @@ The current draft therefore provides the module-level loading and contract gate
 without pretending that actor state migration is already solved. Code-unit IDs
 are normalized before they are used as generation keys so path aliases such as
 `./worker.ores` and `worker.ores` cannot create separate active slots.
+
+## Required pre-merge verification
+
+Run on the exact branch HEAD, using GraalVM 25.3.4.1 and JDK 21:
+`mvn -Dtest=HotReloadModuleContractTest,IncrementalFunctorStaticTest,SharedCodeRegistryTest test`.
+Then run the complete `mvn verify` suite and the JVM/native polyglot-isolate jobs.
+
+Check startup failures, direct old-generation handles, re-entrant activation,
+per-tenant capability isolation and draining before promoting this beyond draft.
+A passing compiler check is not proof of sandbox isolation or rollback of I/O.
