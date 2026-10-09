@@ -89,4 +89,66 @@ final class NativeCliIoTest {
                         ExecutionProfile.serverJit(), Set.of(), System.getenv(),
                         new ByteArrayOutputStream(), new ByteArrayOutputStream()));
     }
+
+    @Test
+    void parsesFullNativeStackCliSource() throws Exception {
+        String source = Files.readString(
+                Path.of("src/test/resources/oreslang/stack-cli-main.ores"));
+        assertTrue(source.contains("fnc api_leaf"));
+        assertTrue(source.contains("fnc walk"));
+        assertTrue(source.contains("fs.write_text_atomic"));
+        OresCompiler.parseAndTypeCheck(source);
+    }
+
+    @Test
+    void atomicGenerationReplacesFilesAndRejectsEscapePaths() throws Exception {
+        Path root = Files.createTempDirectory("ores-cli-atomic-").toRealPath();
+        Path outside = Files.createTempDirectory("ores-cli-outside-").toRealPath();
+        Path target = root.resolve("rpc.ores");
+        Path output = root.resolve("program.ores");
+        String program = """
+            pub routine main(): void {
+              fs.write_text_atomic("%s", "first");
+              fs.write_text_atomic("%s", "second");
+              return;
+            }
+            """.formatted(target, target);
+        Files.writeString(output, program);
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.WRITE, root.toString())
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_WRITE,
+                        IsolatePolicy.Capability.FILESYSTEM_READ);
+        LinkedProgramRunner.run(output, policy, permissions, PermissionCheckMode.RUNTIME,
+                ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals("second", Files.readString(target));
+        Path symlink = root.resolve("outside-link.ores");
+        Files.createSymbolicLink(symlink, outside.resolve("outside-link.ores"));
+        Files.writeString(output, """
+            pub routine main(): void {
+              fs.write_text_atomic("%s", "forbidden");
+              return;
+            }
+            """.formatted(symlink));
+        assertThrows(RuntimeException.class, () ->
+                LinkedProgramRunner.run(output, policy, permissions, PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertFalse(Files.exists(outside.resolve("outside-link.ores")));
+        Path ancestor = root.resolve("escape-dir");
+        Files.createSymbolicLink(ancestor, outside);
+        Files.writeString(output, """
+            pub routine main(): void {
+              fs.write_text_atomic("%s", "forbidden");
+              return;
+            }
+            """.formatted(ancestor.resolve("write.ores")));
+        assertThrows(RuntimeException.class, () ->
+                LinkedProgramRunner.run(output, policy, permissions, PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertFalse(Files.exists(outside.resolve("write.ores")));
+    }
 }
