@@ -48,7 +48,7 @@ final class OreslangSyntaxRuntimeTest {
                     }
                     """, "-1|6"),
             new Example("modules, routine and lexical closure", """
-                    namespace syntax.runtime;
+                    namespace syntax;
                     type IntFn = typeof fnc(int value) => int;
                     define module math
                       pub fnc add(int x, int y): int { return x + y; }
@@ -57,10 +57,10 @@ final class OreslangSyntaxRuntimeTest {
                       return |value| -> { return base + value; };
                     }
                     pub routine main(): void {
-                      val IntFn cb = makeAdder(10);
+                      val IntFn callback = makeAdder(10);
                       stdio.stdout.write(math.add(2, 3));
                       stdio.stdout.write("|");
-                      stdio.stdout.write(cb(7));
+                      stdio.stdout.write(callback(7));
                       return;
                     }
                     """, "5|17"),
