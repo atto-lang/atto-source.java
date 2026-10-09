@@ -14,6 +14,34 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class OresSchedulerTest {
+    @Test
+    void failingCloseHookStillRunsRemainingHooksAndSettlesAwaitingTasks()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> waiting = new OresFuture<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        OresFuture<Integer> task = scheduler.start(resume -> {
+            entered.countDown();
+            return OresScheduler.await(waiting);
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            AtomicInteger hooks = new AtomicInteger();
+            scheduler.onClose(() -> { throw new IllegalStateException("broken close hook"); });
+            scheduler.onClose(hooks::incrementAndGet);
+
+            IllegalStateException failure =
+                    assertThrows(IllegalStateException.class, scheduler::close);
+            assertEquals("broken close hook", failure.getMessage());
+            assertEquals(1, hooks.get(), "remaining close hook must execute");
+            assertTrue(task.isDone(), "waiting scheduler Future cannot remain unresolved");
+            assertEquals(0, waiting.pendingRuntimeWaiterCount(),
+                    "close must release registered await continuations");
+        } finally {
+            scheduler.close();
+        }
+    }
+
 
     @Test
     void rejectedGuestContextAdmissionSettlesTheOwningTask() throws Exception {
