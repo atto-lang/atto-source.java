@@ -65,12 +65,21 @@ final class PolyglotClientContractAdmissionTest {
                 """;
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(injected));
 
-        String wrongReturnSeparator = """
+        // The parser still admits ':' in a contract signature for historical
+        // compatibility. The code generator deliberately emits canonical '=>'.
+        String legacyColon = """
                 define contract ClientContract as
                   fnc get_status(String request_id): String;
                 end
                 """;
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(wrongReturnSeparator));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(legacyColon));
+
+        String missingReturnType = """
+                define contract ClientContract as
+                  fnc get_status(String request_id) => ;
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(missingReturnType));
     }
 
     @Test
