@@ -85,6 +85,19 @@ must contain only the requested named module (plus any contract declarations in
 the synthetic root module), so unrelated named modules cannot be initialized as
 a side effect.
 
+Before staging a replacement, the runtime fingerprints the full set of
+declared module contracts and their inherited surfaces, including declaring-module
+identity, callable signatures, and field binding requirements. An ordinary reload
+must preserve this contract-set ABI; redefining a same-named contract to a weaker
+or different shape, moving its declaration, or dropping an additional declared
+contract is rejected before activation. An explicit contract/state migration
+protocol is not implemented yet.
+
+The generation-scoped host API `generation.invokePublic(name, args...)` accepts
+only callable names/arities included by the module's contract set. The call stays
+bound to that exact generation, so an old generation can continue serving pinned
+callers during drain while new callers use the replacement.
+
 If candidate initialization fails, the previous generation remains active.
 Cleanup failures are recorded as suppressed failures and cannot prevent
 restoration of the previous active-generation mapping, including the manager's
