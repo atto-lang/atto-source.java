@@ -50,7 +50,8 @@ final class ActorCarrierIdentityCleanupTest {
                 throw new AssertionError(interrupted);
             } finally {
                 leakedToRejectedCarrier.set(
-                        ActorRuntime.inActorExecution()
+                        ActorRuntime.currentThreadOwnsActorNativeLease()
+                                || ActorRuntime.inActorExecution()
                                 || ActorRuntime.currentActorId().isPresent()
                                 || ActorRuntime.currentActorKind() != null
                                 || ActorRuntime.currentActorPolicy() != null
@@ -70,6 +71,8 @@ final class ActorCarrierIdentityCleanupTest {
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(), config, adversarialExecutor)) {
             var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                assertTrue(ActorRuntime.currentThreadOwnsActorNativeLease(),
+                        "only the admitted native owner may execute actor code");
                 insideOwnerTurn.countDown();
                 try {
                     assertTrue(letOwnerLeave.await(5, TimeUnit.SECONDS),
