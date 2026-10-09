@@ -643,21 +643,25 @@ public final class HotReloadManager implements AutoCloseable {
 
         /** Starts a legacy code-unit generation exactly once. */
         public Value start() {
+            boolean startAttempted = false;
             try {
                 synchronized (this) {
                     if (initializeModuleOnly) {
                         throw new IllegalStateException(
                                 "module generations must be initialized through HotReloadManager.initializeModule");
                     }
+                    if (closed.get()) throw new IllegalStateException("generation is closed");
+                    if (started.get()) throw new IllegalStateException("generation already started");
+                    startAttempted = true;
                     return startExecution();
                 }
             } catch (RuntimeException | Error failure) {
-                // startExecution closes a failed context. Retire it only after
-                // leaving this generation's monitor to avoid lock inversion
-                // with manager.close()/retire(), which enter from the manager.
-                if (started.get() && closed.get()) {
+                // Cleanup only a failed first execution, not a repeated-start
+                // misuse. The synchronized block has exited before close()
+                // retires this generation from its owner, avoiding lock inversion.
+                if (startAttempted) {
                     try {
-                        owner.retire(id);
+                        close();
                     } catch (RuntimeException | Error cleanupFailure) {
                         failure.addSuppressed(cleanupFailure);
                     }
@@ -678,33 +682,52 @@ public final class HotReloadManager implements AutoCloseable {
             if (!started.compareAndSet(false, true)) {
                 throw new IllegalStateException("generation already started");
             }
-            try {
-                if (initializeModuleOnly) {
-                    // parse(...).execute(command) enters the Oreslang root with
-                    // its supervisor-only init command: link + initialize the
-                    // module source without invoking the program's main().
-                    return context.parse(source).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
-                }
-                return context.eval(source);
-            } catch (RuntimeException | Error failure) {
-                try {
-                    close();
-                } catch (RuntimeException | Error cleanupFailure) {
-                    failure.addSuppressed(cleanupFailure);
-                }
-                throw failure;
+            if (initializeModuleOnly) {
+                // parse(...).execute(command) enters the Oreslang root with
+                // its supervisor-only init command: link + initialize the
+                // module source without invoking the program's main().
+                return context.parse(source).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
             }
+            return context.eval(source);
         }
 
         @Override
-        public synchronized void close() {
-            if (closed.compareAndSet(false, true)) {
-                try {
-                    context.close(true);
-                } finally {
-                    if (codeImage != null) codeImage.close();
+        public void close() {
+            boolean transitioned = false;
+            Throwable failure = null;
+            synchronized (this) {
+                if (closed.compareAndSet(false, true)) {
+                    transitioned = true;
+                    try {
+                        context.close(true);
+                    } catch (RuntimeException | Error contextFailure) {
+                        failure = contextFailure;
+                    } finally {
+                        if (codeImage != null) {
+                            try {
+                                codeImage.close();
+                            } catch (RuntimeException | Error leaseFailure) {
+                                if (failure == null) failure = leaseFailure;
+                                else failure.addSuppressed(leaseFailure);
+                            }
+                        }
+                    }
                 }
             }
+
+            // Publicly closing a Generation also removes its active slot and
+            // registry entry. Do this only after releasing the generation
+            // monitor: manager retirement acquires the manager monitor first.
+            if (transitioned) {
+                try {
+                    owner.retire(id);
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (failure == null) failure = cleanupFailure;
+                    else failure.addSuppressed(cleanupFailure);
+                }
+            }
+            if (failure instanceof Error error) throw error;
+            if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
         }
     }
 }
