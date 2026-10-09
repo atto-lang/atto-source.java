@@ -974,8 +974,12 @@ final class ParserTest {
 
 
     @Test
-    void actorInheritanceMustPreserveIsolationKind() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void actorInheritanceRequiresAnExplicitImportedTypeBoundary() {
+        // Actors are lexical isolation boundaries. Same-file inheritance is
+        // deliberately rejected even when parent and child isolation match;
+        // the dependency must be imported from another code unit.
+        IllegalArgumentException sameFile = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                 }
 
@@ -985,6 +989,7 @@ final class ParserTest {
                   }
                 }
                 """)));
+        assertTrue(sameFile.getMessage().contains("same-file type 'Parent'"));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 isoactor Parent {
