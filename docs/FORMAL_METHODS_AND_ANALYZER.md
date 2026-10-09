@@ -46,3 +46,64 @@ information before it can be called an actual defect.
 Source Actions attempts with zero executed steps do not prove a defect. When
 needed, mirror exact Git blobs and subtree into a funded test organization's
 temporary branch without sharing private repository tokens.
+
+## Second increment: Rust runtime trace and typed IR
+
+`cargo run -- trace path/to/actor-trace-v1.json` validates the repository's
+existing `contracts/v1/semantics/traces/trace.schema.json` event vocabulary
+for real `spawn`, `admit`, `send`, `receive`, exclusive-resource
+acquire/release and `terminate` events. It checks schema version, sequence
+continuity, actor liveness, uniqueness/ownership, and completed-trace closure.
+The monitor does **not** create or trust any runtime trace; only authentic
+runtime instrumentation can provide implementation evidence. This Rust reader
+does not claim to replace full JSON Schema Draft 2020-12 validation.
+
+`cargo run -- select-model --arms 3` exhaustively enumerates a second,
+explicitly bounded abstract model for select-arm registration, offering a
+winner, close, cancellation, deregistration of losing arms, and at-most-once
+notification. The abstract transition `offer_commit` is assumed atomic. It
+must be refined against the actual JVM/LLVM select implementation before this
+can justify claims about production lost-wakeup or double-delivery behavior.
+
+`cargo run -- ir typed-program.json [--strict]` analyzes **versioned,
+compiler-supplied** CFG facts using `schema_version=0.1.0`. The importer
+validates IDs/edges, reachability, closed finite pattern domains, guards, and
+unreachable/overlapping match arms. It flags a defer on a reachable graph
+cycle, mutable borrow live across a suspension, unhandled may-throw effects,
+blocking operations on an untrusted actor, and select operations without
+losing-arm cancellation. These are conditional on a correct, trusted
+compiler-generated export: accepting a hand-written JSON file does **not**
+prove the corresponding source correct.
+
+Typed IR data contract:
+```json
+{
+  "schema_version": "0.1.0",
+  "path": "main.ores",
+  "functions": [{
+    "name": "main",
+    "actor_kind": "untrusted",
+    "allows_error": false,
+    "entry": 0,
+    "nodes": [
+      {"id":0,"line":1,"column":1,"op":"entry","successors":[1]},
+      {"id":1,"line":2,"column":1,"op":"await","successors":[2],
+       "borrowed_mut_across_suspend": false},
+      {"id":2,"line":3,"column":1,"op":"return","successors":[]}
+    ],
+    "matches": [{
+      "line":2,"column":1,
+      "closed_variants":["Some","None"],
+      "arms":[{"variants":["Some"]},{"variants":["None"]}]
+    }]
+  }]
+}
+```
+
+Important: there is **not yet** a verified compiler-owned export producing
+this IR from `OresCompiler.analyze`. Until that bridge is implemented and
+tested on real programs, keep the existing lexical `lint` for userland files
+and treat `ir` as a separately tested analyzer protocol. The v1 actor trace
+contract does not yet carry the detailed lease, continuation, select arm, and
+generation events needed for full runtime refinement; a distinct versioned
+extension and backend instrumentation are required.
