@@ -264,4 +264,72 @@ final class NamedInferredTypeTest {
         assertTrue(text.contains("acct_42"), text);
         assertTrue(text.contains("5"), text);
     }
+
+    @Test
+    void separateFunctionsCanInferTheSameLexicalName() {
+        accepted("""
+                fnc first(): string {
+                  const T item = infer<T> struct { id: "alpha" };
+                  return item.id;
+                }
+                fnc second(): int {
+                  const T item = infer<T> tuple ("beta", 2);
+                  return item[1];
+                }
+                """);
+    }
+
+    @Test
+    void missingFieldAndWrongTypeDoNotSatisfyInferredAlias() {
+        rejected("""
+                fnc bad(): void {
+                  const T first = infer<T> struct { id: "acct", active: true };
+                  const T wrong = infer struct { id: "missing-active" };
+                  return;
+                }
+                """, "initializer for");
+        rejected("""
+                fnc bad(): void {
+                  const T first = infer<T> struct { id: "acct", active: true };
+                  const T wrong = infer struct { id: "acct", active: 42 };
+                  return;
+                }
+                """, "initializer for");
+    }
+
+    @Test
+    void tupleArityAndSlotOrderMustMatch() {
+        rejected("""
+                fnc bad(): void {
+                  const T pair = infer<T> tuple ("foo", 5);
+                  const T wrong = tuple ("foo", 5, true);
+                  return;
+                }
+                """, "initializer for");
+        rejected("""
+                fnc bad(): void {
+                  const T pair = infer<T> tuple ("foo", 5);
+                  const T wrong = tuple (5, "foo");
+                  return;
+                }
+                """, "initializer for");
+    }
+
+    @Test
+    void reusedInferredStringFieldsAndTupleSlotsWidenLiterals() {
+        accepted("""
+                fnc read(): string {
+                  const T account = infer<T> struct { id: "original" };
+                  const T other = infer struct { id: "different" };
+                  return other.id;
+                }
+                """);
+        accepted("""
+                fnc read(): string {
+                  const T pair = infer<T> tuple ("original", 5);
+                  const T other = tuple ("different", 5);
+                  return other[0];
+                }
+                """);
+    }
 }
