@@ -59,6 +59,13 @@ For manual activation, use `initializeModule(candidate)` and then
 legacy `Generation.start()` method; the manager-owned initializer ensures failed
 candidates are retired and do not leak generation slots or code-image leases.
 
+After initialization, the host may invoke an exported function through
+`generation.invokePublic("Worker.run", args...)`. Invocation is bound to that
+exact generation, not looked up again through the current active slot. That lets
+in-flight work finish against an old implementation while new work selects the
+new active generation. Invocation before initialization, or after retirement/
+close, is rejected.
+
 This API accepts a contract name, not a generic contract instantiation. The
 incremental compiler supports direct exported named cross-file contract conformance
 with linker-supplied type metadata, but the runtime hot-loader does not yet accept
