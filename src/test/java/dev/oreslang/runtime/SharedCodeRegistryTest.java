@@ -125,7 +125,7 @@ final class SharedCodeRegistryTest {
 
         assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", root));
         registry.approveForAdversarialSharing(supervisor, authority, "root.ores", root);
-        assertTrue(registry.approvedForAdversarialSharing("root.ores", root));
+        assertTrue(registry.approvedForAdversarialSharing(authority, "root.ores", root));
 
         assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", changed),
                 "approval is bound to the exact content hash");
@@ -135,7 +135,7 @@ final class SharedCodeRegistryTest {
                 "approval is also bound to the code-unit identity");
 
         registry.revokeForAdversarialSharing(supervisor, authority, "root.ores", root);
-        assertFalse(registry.approvedForAdversarialSharing("root.ores", root));
+        assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", root));
 
         assertThrows(SecurityException.class, () ->
                 registry.approveForAdversarialSharing(
