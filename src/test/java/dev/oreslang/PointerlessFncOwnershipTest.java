@@ -259,16 +259,38 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
-    void rtShareMutableArrayStillFailsClosed() {
+    void rtShareFreezesNestedOwnedArraysAndPreservesSourceOwnership() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  val Array<int> nested = new Array<int>();
+                  nested.add(5);
+                  val Array<Array<int>> source = new Array<Array<int>>();
+                  source.add(nested);
+                  val frozen = rt share source;
+                  nested.add(6);
+                  source.add(nested);
+                  stdio.stdout.write(frozen.size);
+                  stdio.stdout.write(frozen[0].size);
+                  stdio.stdout.write(source.size);
+                  return;
+                }
+                """);
+        assertEquals("112", output);
+    }
+
+    @Test
+    void rtShareReadonlyArraysRejectNestedMutation() {
         IllegalArgumentException bad = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     fnc bad(): void {
-                      val Array<int> a = new Array<int>();
-                      val leaked = rt share a;
+                      val Array<Array<int>> source = new Array<Array<int>>();
+                      val frozen = rt share source;
+                      frozen[0].add(2);
                       return;
                     }
                     """)));
-        assertTrue(bad.getMessage().contains("rt share"), bad.getMessage());
+        assertTrue(bad.getMessage().toLowerCase().contains("readonly"),
+                bad.getMessage());
     }
 
     @Test
