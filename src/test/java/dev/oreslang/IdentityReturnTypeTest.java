@@ -186,7 +186,7 @@ final class IdentityReturnTypeTest {
                 """);
     }
 
-    @Test void mutableDecoratorPreservesRuntimeReferenceIdentity() throws Exception {
+    @Test void mutableDecoratorReturnsUpdatedOriginalOwnership() throws Exception {
         String program = """
                 define class T as
                   pub let string foo = "old";
@@ -200,8 +200,8 @@ final class IdentityReturnTypeTest {
                 pub fnc main(): void {
                   val T original = new T();
                   val T result = decorate(original);
-                  stdio.println(original is result);
-                  stdio.println(original.foo);
+                  // original was moved into decorate, so only result is usable.
+                  stdio.println(result.foo);
                   return;
                 }
                 """;
@@ -215,7 +215,7 @@ final class IdentityReturnTypeTest {
                 .build()) {
             context.eval(source);
         }
-        assertEquals("true\nbar\n", output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+        assertEquals("bar\n", output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
     @Test void shadowedAliasDoesNotProveIdentity() {
