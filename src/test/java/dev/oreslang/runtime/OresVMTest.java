@@ -123,8 +123,7 @@ final class OresVMTest {
             }
 
             // This is a separate logical control/mailman domain, not ROOT.
-            assertEquals(42, vm.executeControl(() -> {}).thenApply(v -> 42)
-                    .get(5, TimeUnit.SECONDS));
+            vm.executeControl(() -> {}).get(5, TimeUnit.SECONDS);
             release.countDown();
             assertEquals(1, first.get(5, TimeUnit.SECONDS));
             for (var future : rest) {

@@ -48,16 +48,31 @@ final class SerialProcessExecutor implements Executor {
     }
 
     private void drain() {
-        for (;;) {
-            Runnable next;
+        try {
+            for (;;) {
+                Runnable next;
+                synchronized (ready) {
+                    next = ready.pollFirst();
+                    if (next == null) return;
+                }
+                next.run();
+            }
+        } finally {
+            // A fatal carrier failure must not leave an accepted queue orphaned.
+            // New admissions cannot start another drain until this handoff.
             synchronized (ready) {
-                next = ready.pollFirst();
-                if (next == null) {
-                    draining = false;
-                    return;
+                draining = false;
+                if (!ready.isEmpty()) {
+                    draining = true;
+                    try {
+                        carriers.execute(this::drain);
+                    } catch (RuntimeException | Error rejected) {
+                        draining = false;
+                        // The owning scheduler closes/cancels outstanding tasks
+                        // on runtime shutdown; do not execute guest code inline.
+                    }
                 }
             }
-            next.run();
         }
     }
 }
