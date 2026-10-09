@@ -79,14 +79,17 @@ public final class HotReloadManager implements AutoCloseable {
      * Validates and stages a new generation without executing its entrypoint.
      */
     public synchronized Generation load(String name, String sourceText) {
-        return loadInternal(name, sourceText, false, true);
+        return loadInternal(name, sourceText, false, true, null, null, null);
     }
 
     private Generation loadInternal(
             String name,
             String sourceText,
             boolean initializeModuleOnly,
-            boolean activateImmediately) {
+            boolean activateImmediately,
+            String moduleName,
+            String contractName,
+            String moduleContractDigest) {
         validateAdmissionInputs(name, sourceText);
         ensureGenerationCapacity();
         name = normalizeCodeUnitId(name);
@@ -98,14 +101,16 @@ public final class HotReloadManager implements AutoCloseable {
                     OresCompiler.parseAndTypeCheck(sourceText),
                     guestPolicy);
             return stage(name, digest(sourceText), sourceText, false,
-                    initializeModuleOnly, activateImmediately);
+                    initializeModuleOnly, activateImmediately,
+                    moduleName, contractName, moduleContractDigest);
         }
 
         try (SharedCodeRegistry.Lease image =
                      SharedCodeRegistry.process().acquire(name, sourceText)) {
             CapabilityChecker.check(image.checkedProgram(), guestPolicy);
             return stage(name, image.sha256(), sourceText, true,
-                    initializeModuleOnly, activateImmediately);
+                    initializeModuleOnly, activateImmediately,
+                    moduleName, contractName, moduleContractDigest);
         }
     }
 
@@ -162,7 +167,15 @@ public final class HotReloadManager implements AutoCloseable {
                     "hot-loaded source root scope may contain only module contract declarations");
         }
 
-        return loadInternal(codeUnitId, sourceText, true, false);
+        String moduleContractDigest = moduleContractSetDigest(checked, moduleName);
+        return loadInternal(
+                codeUnitId,
+                sourceText,
+                true,
+                false,
+                moduleName,
+                contractName,
+                moduleContractDigest);
     }
 
     /**
@@ -369,7 +382,9 @@ public final class HotReloadManager implements AutoCloseable {
                     dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(unit.sourceText()),
                     guestPolicy);
         }
-        return stage(codeUnitId, unit.sourceDigest(), unit.sourceText(), shared, false, true);
+        return stage(
+                codeUnitId, unit.sourceDigest(), unit.sourceText(), shared,
+                false, true, null, null, null);
     }
 
     private static String normalizeCodeUnitId(String codeUnitId) {
@@ -452,7 +467,10 @@ public final class HotReloadManager implements AutoCloseable {
             String sourceText,
             boolean shareCodeImage,
             boolean initializeModuleOnly,
-            boolean activateImmediately) {
+            boolean activateImmediately,
+            String moduleName,
+            String contractName,
+            String moduleContractDigest) {
         ensureGenerationCapacity();
 
         long id = sequence.incrementAndGet();
@@ -502,7 +520,10 @@ public final class HotReloadManager implements AutoCloseable {
                     executionProfile,
                     shareCodeImage,
                     initializeModuleOnly,
-                    expectedPreviousActiveId);
+                    expectedPreviousActiveId,
+                    moduleName,
+                    contractName,
+                    moduleContractDigest);
             generations.put(id, generation);
             if (activateImmediately) {
                 activeByCodeUnit.put(codeUnitId, generation);
