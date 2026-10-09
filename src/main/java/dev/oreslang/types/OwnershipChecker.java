@@ -39,6 +39,8 @@ public final class OwnershipChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> importedNamespaceValues = new HashSet<>();
+    private final Set<String> importedActorTypes = new HashSet<>();
+    private final Set<String> importedModuleTypes = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
@@ -67,7 +69,10 @@ public final class OwnershipChecker {
                     || imported.kind() == Ast.ImportKind.ACTOR
                     || imported.kind() == Ast.ImportKind.ALL) {
                 for (String name : imported.names()) {
-                    importedNamespaceValues.add(ImportRules.localName(imported, name));
+                    String localName = ImportRules.localName(imported, name);
+                    importedNamespaceValues.add(localName);
+                    if (imported.kind() == Ast.ImportKind.ACTOR) importedActorTypes.add(localName);
+                    if (imported.kind() == Ast.ImportKind.MODULE) importedModuleTypes.add(localName);
                 }
             }
         }
@@ -718,7 +723,15 @@ public final class OwnershipChecker {
                         ValueKind.MOVE_ONLY,
                         null);
             }
-            if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
+            if (state == null) {
+                if (consuming && (modules.contains(name.name())
+                        || classes.containsKey(name.name())
+                        || importedNamespaceValues.contains(name.name()))) {
+                    throw error("module, class and actor namespaces are not values; "
+                            + "call their static members instead of moving '" + name.name() + "'");
+                }
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+            } // function and ambient symbols are separately resolved
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
             if (consuming && isActorConfinedBorrow(state)) {
@@ -2969,7 +2982,8 @@ public final class OwnershipChecker {
         if (type.name().equals("ActorRef")
                 || type.name().equals("Actor")
                 || modules.contains(type.name())
-                || importedNamespaceValues.contains(type.name())
+                || importedModuleTypes.contains(type.name())
+                || importedActorTypes.contains(type.name())
                 || (klass != null && klass.actorKind() != Ast.ActorKind.NONE)) {
             throw error(where + " cannot accept actor, ActorRef, or module namespace values as parameters");
         }
