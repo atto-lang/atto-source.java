@@ -13,6 +13,9 @@ pub fn invariant(s:&State,cap:usize)->Result<(),String>{
  for a in s.workers.iter().flatten(){if *a>=n{return Err("invalid actor".into())}if leases[*a]{return Err("duplicate execution lease".into())}leases[*a]=true;}
  let mut in_mail=vec![false;s.status.len()];
  for a in 0..n{
+  if s.waiting[a] && !s.ready[a] && leases[a] {
+   return Err("suspended actor holds a carrier before I/O completion".into());
+  }
   if s.mail[a].len()>cap{return Err("mailbox capacity exceeded".into())}
   if !s.alive[a]&&(!s.mail[a].is_empty()||s.waiting[a]||s.ready[a]){return Err("work after termination".into())}
   if s.ready[a]&&!s.waiting[a]{return Err("orphan continuation".into())}
