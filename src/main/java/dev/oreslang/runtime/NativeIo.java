@@ -82,8 +82,20 @@ public final class NativeIo {
         // symlink to its target and incorrectly reject detecting unsafe links.
         // Resolve/check the parent instead; ancestor escapes still fail.
         Path canonicalParent = realPath(parent);
-        context.requirePermission(RuntimePermissions.Permission.READ, canonicalParent.toString(), operation);
-        return canonicalParent.resolve(lexical.getFileName());
+        Path target = canonicalParent.resolve(lexical.getFileName());
+        try {
+            context.requirePermission(RuntimePermissions.Permission.READ,
+                    canonicalParent.toString(), operation);
+        } catch (SecurityException parentDenied) {
+            // A caller may have an exact READ grant for the root directory,
+            // without a grant on /tmp or the parent of that root. Allow
+            // metadata on that exact ordinary entry but never dereference an
+            // ungranted terminal symlink.
+            if (Files.isSymbolicLink(target)) throw parentDenied;
+            context.requirePermission(RuntimePermissions.Permission.READ,
+                    target.toString(), operation);
+        }
+        return target;
     }
 
     public static boolean isSymlink(OresContext context, String rawPath) {
