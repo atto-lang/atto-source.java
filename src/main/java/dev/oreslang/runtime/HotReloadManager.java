@@ -179,7 +179,7 @@ public final class HotReloadManager implements AutoCloseable {
         Generation previousGlobalActive = active.get();
         Generation candidate = loadModule(codeUnitId, moduleName, sourceText, contractName);
         try {
-            candidate.start();
+            initializeModule(candidate);
             activateModule(candidate);
         } catch (RuntimeException | Error failure) {
             // Cleanup must never prevent restoration. A failing Context.close()
@@ -210,6 +210,35 @@ public final class HotReloadManager implements AutoCloseable {
         // but stays in the generation registry until the supervisor confirms
         // that all old-generation users have drained and calls retire(id).
         return candidate;
+    }
+
+    /**
+     * Initializes a staged module candidate without publishing it. Failed
+     * candidates are retired automatically so failed contexts and code-image
+     * leases do not count against the live-generation budget.
+     */
+    public synchronized Generation initializeModule(Generation generation) {
+        java.util.Objects.requireNonNull(generation, "generation");
+        if (generations.get(generation.id()) != generation) {
+            throw new IllegalArgumentException("generation is not owned by this hot-reload manager");
+        }
+        if (!generation.initializeModuleOnly) {
+            throw new IllegalArgumentException("generation was not loaded through loadModule");
+        }
+        if (generation.closed()) {
+            throw new IllegalStateException("cannot initialize a closed generation");
+        }
+        try {
+            generation.startModule();
+            return generation;
+        } catch (RuntimeException | Error failure) {
+            try {
+                retire(generation.id());
+            } catch (RuntimeException | Error cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
     /**
@@ -544,8 +573,23 @@ public final class HotReloadManager implements AutoCloseable {
         public boolean started() { return started.get(); }
         public boolean closed() { return closed.get(); }
 
-        /** Starts the staged generation exactly once. */
+        /** Starts a legacy code-unit generation exactly once. */
         public synchronized Value start() {
+            if (initializeModuleOnly) {
+                throw new IllegalStateException(
+                        "module generations must be initialized through HotReloadManager.initializeModule");
+            }
+            return startExecution();
+        }
+
+        private synchronized Value startModule() {
+            if (!initializeModuleOnly) {
+                throw new IllegalStateException("generation was not loaded through loadModule");
+            }
+            return startExecution();
+        }
+
+        private Value startExecution() {
             if (closed.get()) throw new IllegalStateException("generation is closed");
             if (!started.compareAndSet(false, true)) {
                 throw new IllegalStateException("generation already started");
