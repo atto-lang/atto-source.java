@@ -769,4 +769,181 @@ final class HotReloadModuleContractTest {
                     () -> generation.invokePublic("Worker.debug"));
         }
     }
+
+    @Test
+    void sameNamedContractCannotBeWeakenedDuringReload() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String v1 = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            String v2 = """
+                    pub define contract WorkerApi as
+                      fnc run(int value): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(int value): int { return value + 1; }
+                    end
+                    """;
+            HotReloadManager.Generation original =
+                    loader.reloadModule("worker.ores", "Worker", v1, "WorkerApi");
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> loader.reloadModule("worker.ores", "Worker", v2, "WorkerApi"));
+
+            assertEquals(original, loader.active("worker.ores"));
+            assertEquals(1, original.invokePublic("Worker.run").asInt());
+            assertEquals(false, original.closed());
+            assertEquals(1, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    void reloadCannotDropAnAdditionalDeclaredModuleContract() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String v1 = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    pub define contract HealthApi as
+                      fnc health(): int;
+                    end
+                    define module Worker conforms WorkerApi, HealthApi as
+                      pub fnc run(): int { return 1; }
+                      pub fnc health(): int { return 100; }
+                    end
+                    """;
+            String v2 = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    pub define contract HealthApi as
+                      fnc health(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 2; }
+                      pub fnc health(): int { return 200; }
+                    end
+                    """;
+            HotReloadManager.Generation original =
+                    loader.reloadModule("worker.ores", "Worker", v1, "WorkerApi");
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> loader.reloadModule("worker.ores", "Worker", v2, "WorkerApi"));
+
+            assertEquals(original, loader.active("worker.ores"));
+            assertEquals(1, original.invokePublic("Worker.run").asInt());
+            assertEquals(100, original.invokePublic("Worker.health").asInt());
+            assertEquals(1, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    void reloadCannotWeakenAnExplicitContractFieldBindingRequirement() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String v1 = """
+                    pub define contract WorkerApi as
+                      const name: String;
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub const String name = "stable";
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            String v2 = """
+                    pub define contract WorkerApi as
+                      name: String;
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub let String name = "mutable";
+                      pub fnc run(): int { return 2; }
+                    end
+                    """;
+            HotReloadManager.Generation original =
+                    loader.reloadModule("worker.ores", "Worker", v1, "WorkerApi");
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> loader.reloadModule("worker.ores", "Worker", v2, "WorkerApi"));
+
+            assertEquals(original, loader.active("worker.ores"));
+            assertEquals(1, original.invokePublic("Worker.run").asInt());
+            assertEquals(false, original.closed());
+        }
+    }
+
+    @Test
+    void inheritedContractChangesInvalidateModuleHotReload() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String v1 = """
+                    pub define contract BaseApi as
+                      fnc base(): int;
+                    end
+                    pub define contract WorkerApi extends BaseApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc base(): int { return 10; }
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            String v2 = """
+                    pub define contract BaseApi as
+                      fnc base(int value): int;
+                    end
+                    pub define contract WorkerApi extends BaseApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc base(int value): int { return value; }
+                      pub fnc run(): int { return 2; }
+                    end
+                    """;
+            HotReloadManager.Generation original =
+                    loader.reloadModule("worker.ores", "Worker", v1, "WorkerApi");
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> loader.reloadModule("worker.ores", "Worker", v2, "WorkerApi"));
+
+            assertEquals(original, loader.active("worker.ores"));
+            assertEquals(1, original.invokePublic("Worker.run").asInt());
+            assertEquals(10, original.invokePublic("Worker.base").asInt());
+        }
+    }
+
+    @Test
+    void moduleGenerationCannotInvokePublicCallablesOutsideItsContractSet() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String source = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                      pub fnc debug(): int { return 999; }
+                    end
+                    """;
+            HotReloadManager.Generation generation =
+                    loader.reloadModule("worker.ores", "Worker", source, "WorkerApi");
+
+            assertEquals(1, generation.invokePublic("Worker.run").asInt());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> generation.invokePublic("Worker.debug"));
+        }
+    }
 }
