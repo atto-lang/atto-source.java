@@ -117,6 +117,71 @@ class CorePerfTest {
         assertTrue(bytes.toString(StandardCharsets.UTF_8).contains("\"recorded\":1,\"reserved\":1"));
     }
 
+    @Test void invalidDebugEventNeverConsumesColdCaptureCapacity() {
+        var recorder = new CorePerf.Recorder(1);
+        assertThrows(IllegalArgumentException.class, () -> recorder.recordEvent(-1, 0L));
+        assertThrows(IllegalArgumentException.class, () -> recorder.recordEvent(999, 0L));
+        recorder.recordEvent(CoreDebug.HTTP_LISTENER_READY, Long.MIN_VALUE);
+        var bytes = new ByteArrayOutputStream();
+        recorder.dumpDebug(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("\"value\":" + Long.MIN_VALUE));
+        assertTrue(output.contains("\"recorded\":1,\"reserved\":1"));
+    }
+
+    @Test void emptyAndInvalidCapacityDoNotFakeRecordedEvents() {
+        assertThrows(IllegalArgumentException.class, () -> new CorePerf.Recorder(0));
+        assertThrows(IllegalArgumentException.class, () -> new CorePerf.Recorder(-1));
+        var recorder = new CorePerf.Recorder(1);
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertEquals(0, output.lines().filter(line -> line.contains("\"kind\":\"phase\"")).count());
+        assertTrue(output.contains("\"recorded\":0,\"reserved\":0,\"saturated\":false"));
+    }
+
+    @Test void concurrentDumpNeverExportsPartiallyPublishedSamples() throws Exception {
+        var recorder = new CorePerf.Recorder(256);
+        var gate = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(5)) {
+            var writers = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int i = 0; i < 4; i++) {
+                writers.add(executor.submit(() -> {
+                    gate.await();
+                    for (int j = 0; j < 64; j++) {
+                        long start = System.nanoTime();
+                        recorder.record(CorePerf.ASYNC_IO_WORK, start, start + 9L);
+                    }
+                    return null;
+                }));
+            }
+            var dumper = executor.submit(() -> {
+                gate.await();
+                for (int i = 0; i < 100; i++) {
+                    var bytes = new ByteArrayOutputStream();
+                    recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+                    String snapshot = bytes.toString(StandardCharsets.UTF_8);
+                    long phases = snapshot.lines().filter(line -> line.contains("\"kind\":\"phase\"")).count();
+                    String summary = snapshot.lines().filter(line -> line.contains("\"kind\":\"end\""))
+                            .findFirst().orElseThrow();
+                    assertTrue(summary.contains("\"recorded\":" + phases + ","));
+                    assertTrue(snapshot.lines().filter(line -> line.contains("\"kind\":\"phase\""))
+                            .allMatch(line -> line.contains("\"duration_ns\":9")
+                                    && line.contains("\"thread_id\":")
+                                    && line.contains("\"phase\":\"async.io.work\"")));
+                }
+                return null;
+            });
+            gate.countDown();
+            for (var writer : writers) writer.get(10, TimeUnit.SECONDS);
+            dumper.get(10, TimeUnit.SECONDS);
+        }
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("\"recorded\":256,\"reserved\":256,\"saturated\":true"));
+    }
+
     @Test void invalidSamplesFailClosed() {
         var recorder = new CorePerf.Recorder(1);
         assertThrows(IllegalArgumentException.class, () -> recorder.record(0, 1L, 2L));
