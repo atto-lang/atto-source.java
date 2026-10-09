@@ -123,7 +123,7 @@ final class NamedInferredTypeTest {
         rejected("""
                 fnc bad(): void {
                   const T first = infer<T> struct { id: "x" };
-                  {
+                  block {
                     const T second = infer<T> struct { id: "y" };
                   }
                   return;
@@ -191,7 +191,7 @@ final class NamedInferredTypeTest {
     void aliasCannotBeUsedAfterDefiningBlockEnds() {
         rejected("""
                 fnc bad(): void {
-                  {
+                  block {
                     const T internal = infer<T> struct { id: "private" };
                   }
                   const T escaped = infer struct { id: "leak" };
@@ -205,7 +205,7 @@ final class NamedInferredTypeTest {
         accepted("""
                 fnc read(): string {
                   const T account = infer<T> struct { id: "acct_42" };
-                  {
+                  block {
                     const T moved = account;
                     return moved.id;
                   }
