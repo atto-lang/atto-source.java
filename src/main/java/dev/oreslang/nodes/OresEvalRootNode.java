@@ -7501,6 +7501,12 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
+            // Integer operands must not silently produce Infinity/NaN on zero
+            // division. This is observable during module field initialization:
+            // failed candidate startup must abort before generation activation.
+            if (op == '/' && isIntegral(a) && isIntegral(b) && b.longValue() == 0L) {
+                throw new ArithmeticException("integer division by zero");
+            }
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
