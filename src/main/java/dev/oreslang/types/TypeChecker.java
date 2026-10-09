@@ -2743,7 +2743,9 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
-                if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("print") || member.member().equals("println")
+                        || member.member().equals("print_blocking") || member.member().equals("println_blocking"))
+                    return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
@@ -2881,7 +2883,9 @@ public final class TypeChecker {
 
             receiver = receiverDispatchType(unwrapMutexGuard(deref(receiver)));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
-                if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
+                if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")
+                        || member.member().equals("write_blocking") || member.member().equals("println_blocking")
+                        || member.member().equals("logList_blocking")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
                 if (member.member().equals("log")) {
@@ -2891,7 +2895,7 @@ public final class TypeChecker {
             }
             if (receiver instanceof Named named
                     && named.name().equals("stdio.stdin")
-                    && member.member().equals("read_line")) {
+                    && (member.member().equals("read_line") || member.member().equals("read_line_blocking"))) {
                 return new Function(List.of(), Primitive.STRING);
             }
             if (member.receiver() instanceof Ast.NameExpr name
@@ -4122,12 +4126,13 @@ public final class TypeChecker {
             Type string = Primitive.STRING;
             Type booleanType = Primitive.BOOL;
             switch (name) {
-                case "list_dir": return new Function(List.of(string), new ListType(string));
-                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
-                case "read_text": return new Function(List.of(string), string);
-                case "write_text", "write_text_atomic", "append_text":
+                case "list_dir", "list_dir_blocking": return new Function(List.of(string), new ListType(string));
+                case "is_dir", "is_symlink", "exists", "is_dir_blocking", "is_symlink_blocking", "exists_blocking": return new Function(List.of(string), booleanType);
+                case "read_text", "read_text_blocking": return new Function(List.of(string), string);
+                case "write_text", "write_text_atomic", "append_text",
+                     "write_text_blocking", "write_text_atomic_blocking", "append_text_blocking":
                     return new Function(List.of(string, string), Primitive.VOID);
-                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
+                case "remove", "mkdir_all", "remove_blocking", "mkdir_all_blocking": return new Function(List.of(string), Primitive.VOID);
                 default: break;
             }
         }
@@ -4152,21 +4157,28 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
+                if (name.equals("connect_blocking"))
+                    return new Function(List.of(Primitive.STRING, Primitive.INT), new Named("TcpConnection", List.of()));
                 if (!name.equals("connect_async")) return null;
                 result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "TcpConnection" -> {
                 switch (name) {
                     case "read_line_async" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
+                    case "read_line_blocking" -> { return new Function(List.of(), new Named("Option", List.of(Primitive.STRING))); }
                     case "write_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "write_text_blocking" -> { return new Function(List.of(Primitive.STRING), Primitive.VOID); }
                     case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    case "close_blocking" -> { return new Function(List.of(), Primitive.VOID); }
                     default -> { return null; }
                 }
             }
             case "http" -> {
                 switch (name) {
                     case "get_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
+                    case "get_text_blocking" -> { return new Function(List.of(Primitive.STRING), Primitive.STRING); }
                     case "post_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "post_text_blocking" -> { return new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING); }
                     default -> { return null; }
                 }
             }
