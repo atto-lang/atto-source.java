@@ -62,3 +62,24 @@ generators, timer lifecycle and all guest entrypoints.
 Before claiming 100% coverage, add per-process state ownership/capability
 typing, generator lowering, source-timer syntax/typed await, and hot-reload
 generation tracing. Keep PR draft until CI executes and conformance passes.
+
+
+## Lazy carriers and --warm
+
+Cold startup creates one CONTROL and one guest-process carrier. Actor pool managers
+have no native worker threads until actor scheduling actually starts.
+The --warm CLI flag is per-OresContext: it warms exactly lane zero of PRIVATE,
+SHARED and UNTRUSTED pools, yielding a five-carrier warm baseline for the
+ordinary affinity-lane backend. JVM/GC/Truffle and timer threads are extra.
+Configured lane parallelism remains available as demand increases.
+
+Each actor's core execution gate combines its scheduled flag, activeTurns
+accounting and an atomic guestTurnOwner carrier CAS. Mutable message data is
+frozen/copied before delivery, and opaque host objects are rejected. Immutable
+Shared<T> snapshots retain their final value through runtime retirement.
+Normal userland actor code needs no mutex for actor-owned state; cross-actor
+writable objects still need core-mediated serialization or synchronization.
+
+The non-affinity native backend is a different deployment configuration and
+may instantiate its full native pool when first used. Five describes a warm
+baseline, not an OS process-wide fixed thread count or concurrency ceiling.
