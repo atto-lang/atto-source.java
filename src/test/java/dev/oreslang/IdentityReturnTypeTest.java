@@ -114,7 +114,7 @@ final class IdentityReturnTypeTest {
         accepts("""
                 define module m
                   define class T as
-                    pub val string foo = "old";
+                    pub let string foo = "old";
                   end
                   pub fnc decorate(T mut v): v {
                     v.foo = "bar";
@@ -189,7 +189,7 @@ final class IdentityReturnTypeTest {
     @Test void mutableDecoratorPreservesRuntimeReferenceIdentity() throws Exception {
         String program = """
                 define class T as
-                  pub val string foo = "old";
+                  pub let string foo = "old";
                 end
 
                 pub fnc decorate(T mut v): v {
