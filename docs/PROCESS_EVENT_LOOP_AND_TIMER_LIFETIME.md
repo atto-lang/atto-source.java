@@ -62,3 +62,16 @@ Full correctness additionally requires concrete runtime trace refinement,
 fairness/liveness arguments, and elimination of legacy guest execution
 bypasses (\`AsyncRuntime\` and generators, host interop), plus integration
 of supervisor-owned mailboxes and process-level timer lifecycle hooks.
+
+## Admission and duplicate one-shot reads
+
+Once a supervisor receives a stop request, it must fence new user turns
+immediately. A cooperative turn can finish its current synchronous stack
+until the next exit/suspension/cancellation safepoint; suspension must then
+exit rather than park a newly-cancelled continuation.
+
+A one-shot timer readiness item is consumable once. Attempting another
+`readch` on its closed one-shot channel should report channel closure
+(or a typed terminal result), **not** wait forever. The abstract model
+rejects an unsupported second pending wait; the library contract still
+needs to define the exact source-level terminal result.

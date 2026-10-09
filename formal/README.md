@@ -81,3 +81,21 @@ The next models should cover:
 - Structured actor failure propagation/restart policy beyond the already-modeled cancellation tree.
 
 For unbounded properties we should add a second tier using an external prover/model checker once its toolchain is pinned reproducibly; this bounded executable layer remains useful as the fast CI gate.
+
+## Single-flight ROOT / supervisor execution model (Rust)
+
+`formal/process-turns/src/lib.rs` exhaustively enumerates a bounded
+ROOT+daddy event-loop state machine, with nested stack frames, guest-turn
+admission, await/continuation handoff, one-shot timer callbacks,
+explicit timer selection, stop/cancellation fencing, and main-return
+cancellation. It proves the **abstract** single-flight invariant, checks
+that independent processes may run concurrently, and exercises a deliberately
+incorrect inline-timer callback as a counterexample oracle.
+
+```sh
+cargo test --manifest-path formal/process-turns/Cargo.toml -- --nocapture
+```
+
+This proof does **not** establish a full Java/Truffle implementation theorem.
+Concrete trace refinement and closure of all host/async/generator and process
+ownership bypasses remain mandatory before claiming a 100% guarantee.
