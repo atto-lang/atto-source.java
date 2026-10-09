@@ -30,7 +30,7 @@
         "id": {"type": "integer", "minimum": 0},
         "line": {"type": "integer", "minimum": 1},
         "column": {"type": "integer", "minimum": 1},
-        "op": {"enum": ["entry", "exit", "await", "select", "call", "defer", "return", "throw", "branch", "other"]},
+        "op": {"enum": ["entry", "exit", "await", "select", "readch", "writech", "yield", "call", "defer", "return", "throw", "branch", "other"]},
         "successors": {"type": "array", "items": {"type": "integer", "minimum": 0}},
         "may_throw": {"type": "boolean"}, "handles_error": {"type": "boolean"},
         "borrowed_mut_across_suspend": {"type": "boolean"},
