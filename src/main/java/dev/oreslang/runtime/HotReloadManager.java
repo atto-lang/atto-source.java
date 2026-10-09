@@ -166,6 +166,7 @@ public final class HotReloadManager implements AutoCloseable {
             String contractName) {
         codeUnitId = normalizeCodeUnitId(codeUnitId);
         Generation previous = activeByCodeUnit.get(codeUnitId);
+        Generation previousGlobalActive = active.get();
         Generation candidate = loadModule(codeUnitId, moduleName, sourceText, contractName);
         try {
             candidate.start();
@@ -183,8 +184,14 @@ public final class HotReloadManager implements AutoCloseable {
                     active.set(previous);
                 } else {
                     activeByCodeUnit.remove(codeUnitId);
-                    active.set(null);
                 }
+                // The single-unit convenience pointer may have referred to an
+                // entirely different code unit before this attempted upgrade.
+                // Restore that exact pointer, not merely this code unit's prior
+                // generation.
+                active.set(previousGlobalActive != null && !previousGlobalActive.closed()
+                        ? previousGlobalActive
+                        : null);
             }
             throw failure;
         }
@@ -420,10 +427,30 @@ public final class HotReloadManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        for (Generation generation : generations.values()) generation.close();
-        generations.clear();
-        activeByCodeUnit.clear();
-        active.set(null);
+        RuntimeException runtimeFailure = null;
+        Error fatalFailure = null;
+        try {
+            for (Generation generation : List.copyOf(generations.values())) {
+                try {
+                    generation.close();
+                } catch (RuntimeException failure) {
+                    if (runtimeFailure == null) runtimeFailure = failure;
+                    else runtimeFailure.addSuppressed(failure);
+                } catch (Error failure) {
+                    if (fatalFailure == null) fatalFailure = failure;
+                    else fatalFailure.addSuppressed(failure);
+                }
+            }
+        } finally {
+            generations.clear();
+            activeByCodeUnit.clear();
+            active.set(null);
+        }
+        if (fatalFailure != null) {
+            if (runtimeFailure != null) fatalFailure.addSuppressed(runtimeFailure);
+            throw fatalFailure;
+        }
+        if (runtimeFailure != null) throw runtimeFailure;
     }
 
     private static String digest(String text) {
@@ -481,7 +508,7 @@ public final class HotReloadManager implements AutoCloseable {
         public boolean closed() { return closed.get(); }
 
         /** Starts the staged generation exactly once. */
-        public Value start() {
+        public synchronized Value start() {
             if (closed.get()) throw new IllegalStateException("generation is closed");
             if (!started.compareAndSet(false, true)) {
                 throw new IllegalStateException("generation already started");
@@ -505,7 +532,7 @@ public final class HotReloadManager implements AutoCloseable {
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             if (closed.compareAndSet(false, true)) {
                 try {
                     context.close(true);
