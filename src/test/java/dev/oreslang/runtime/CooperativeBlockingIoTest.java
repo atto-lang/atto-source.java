@@ -60,6 +60,32 @@ class CooperativeBlockingIoTest {
         assertEquals("hello", Files.readString(file));
     }
 
+    @Test void nestedTailReturnAfterImplicitIoSuspendPreservesControlFlow() throws Exception {
+        Path file = root.resolve("branch.txt");
+        Files.writeString(file, "match");
+        String fileName = file.toString().replace("\\", "\\\\");
+        String source = """
+            fnc greeting(): String {
+              return "hello";
+            }
+            fnc choose(String path): String {
+              val String contents = fs.read_text_blocking(path);
+              if contents == "match"; then
+                return greeting();
+              fi
+              return "not found";
+            }
+            pub routine main(): void {
+              stdio.println_blocking(choose("%s"));
+              return;
+            }
+            """.formatted(fileName);
+        String actual = run(source, RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString()),
+                new ByteArrayOutputStream());
+        assertTrue(actual.contains("hello"), actual);
+    }
+
     @Test void firstClassBlockingNativeIoAliasFailsClosed() {
         String source = """
                 pub routine main(): void {
