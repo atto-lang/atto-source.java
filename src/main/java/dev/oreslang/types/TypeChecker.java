@@ -2843,6 +2843,7 @@ public final class TypeChecker {
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
                     case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
                     case "trim" -> new Function(List.of(), Primitive.STRING);
+                    case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
                     case "starts_with", "ends_with", "contains_literal" ->
                             new Function(List.of(Primitive.STRING), Primitive.BOOL);
                     default -> throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
