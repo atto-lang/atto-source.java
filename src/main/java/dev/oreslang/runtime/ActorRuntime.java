@@ -45,9 +45,10 @@ import java.util.function.UnaryOperator;
 /**
  * Host-side actor substrate used by the first interpreter.
  *
- * Oreslang follows the core Akka-style execution invariant: actors are
- * multiplexed over dispatcher threads, but one actor processes its mailbox
- * serially. Carrier-thread identity is never actor identity.
+ * Oreslang actors multiplex multiple independent in-flight message lifetimes
+ * over a single serialized guest-code lane. A suspended receive yields its
+ * lane while other admitted messages may advance. Carrier identity is never
+ * actor identity, and concurrency is not guest-code parallelism.
  *
  * PRIVATE and SHARED actors are deliberately bulkheaded onto different
  * dispatchers. Private actors also receive a confined logical memory slice;
@@ -5768,7 +5769,7 @@ public final class ActorRuntime implements AutoCloseable {
         /** Active message lifetimes are independent of the one guest execution lease. */
         private final Map<Long, ActorInboxMail<M>> sourceMessages = new LinkedHashMap<>();
         private int maxConcurrentMessages = 1;
-        private final Set<Long> suspendedSourceMessages = new HashSet<>();
+        private final Set<Long> suspendedSourceMessages = new LinkedHashSet<>();
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -5913,7 +5914,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean sourceTaskSuspendedMail(ActorInboxMail<?> mail) {
-            return suspendedSourceMessages.contains(mail.sequence());
+            synchronized (lifecycleLock) {
+                return suspendedSourceMessages.contains(mail.sequence());
+            }
         }
 
         private boolean hasQueuedWork() {
@@ -6434,10 +6437,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 // their slot until their completion continuation.
                             } finally {
                                 activeMail = null;
-                                if (codeExecutor != null && !sourceMessages.containsKey(mail.sequence())) {
-                                    // Explicit m.done() already released the slot.
-                                } else if (codeExecutor != null && !sourceTaskSuspendedMail(mail)) {
-                                    sourceMessages.remove(mail.sequence());
+                                if (codeExecutor != null && !sourceTaskSuspendedMail(mail)) {
+                                    synchronized (lifecycleLock) {
+                                        sourceMessages.remove(mail.sequence());
+                                    }
                                 }
                             }
                         }
