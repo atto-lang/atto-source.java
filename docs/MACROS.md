@@ -61,6 +61,12 @@ delimiters may be `()`, `{}` or `[]`. The implementation rejects:
 - unresolved macro names, malformed delimiters, duplicate definitions and
   wrong argument counts/kinds.
 
+Captured `expr` tokens are wrapped in parentheses so a macro cannot silently
+change operator precedence when an expression is substituted. Macro definitions
+within braced scopes are rejected; this pass does not yet understand every
+non-braced declaration/block scope. Premature EOF tokens are rejected to prevent
+hidden trailing input.
+
 These restrictions avoid claiming full hygienic identifier generation before
 the AST can represent symbols carrying unique macro-definition identities.
 They are *conservative*, not a substitute for full hygiene or type checking.
@@ -87,7 +93,12 @@ one lineage. Other clients calling raw `Parser.parse()` initiate fresh,
 independent compilation lineages; they must use the snapshot-aware API to
 enforce a reload boundary.
 
-The fingerprint includes mode, ordered captures and template token types/lexemes.
+The fingerprint includes mode, ordered captures and template token types/lexemes,
+length-framed and hashed as exact UTF-16 code units (including malformed Unicode),
+so different token streams cannot be collapsed by UTF-8 replacement encoding.
+The compiled-unit hot loader separately verifies that its supplied source digest
+matches its actual source text before staging. Adversarial hot loaders cap retained
+macro code-unit lineages at 256 to prevent unbounded accumulation across retirements.
 Macros are not runtime values: no actor may mutate a definition shared by another
 actor. This also avoids mixing tokens from two compiler generations.
 
@@ -120,3 +131,13 @@ currently implemented versus pending physical actor protections.
 - Add a proc-macro sandbox and expansion-source-map diagnostics.
 - Run full GraalVM CI including actor, ownership and hot-reload regressions,
   plus duplicate-evaluation and malformed input fuzzing.
+
+## Validation scope (audit hardening)
+
+The isolated GitHub CI carrier mirrors exact Git blobs for the parser/AST/macro
+subset and runs the actual `MacroExpanderTest` JUnit suite with Java 21. This
+proves only the isolated parser/macro behavior; it does not cover
+`IncrementalCompiler`, `HotReloadManager`, JVM/GraalVM Truffle execution,
+actor isolation, or native images. Full exact-head GraalVM validation remains
+a prerequisite to moving the PR out of draft. The source branch and test carrier
+must be compared again after every source change.
