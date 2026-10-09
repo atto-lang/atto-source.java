@@ -85,15 +85,44 @@ fn valid_graph(fun:&Function)->Result<(HashMap<u32,&Node>,HashSet<u32>),String>{
     Ok((by_id,seen))
 }
 fn cyclic_nodes(graph:&HashMap<u32,&Node>,reachable:&HashSet<u32>)->HashSet<u32>{
-    // Exact graph reachability for every node; determines SCC membership
-    // (a node participates in a cycle iff it can reach itself).
+    // Kosaraju strongly-connected components, O(vertices + edges), iterative to
+    // avoid stack overflow from attacker-supplied compiler IR.
+    let mut visited=HashSet::new();
+    let mut finish=Vec::new();
+    for &start in reachable {
+        let mut stack=vec![(start,false)];
+        while let Some((node,exit))=stack.pop(){
+            if exit { finish.push(node); continue }
+            if !visited.insert(node){continue}
+            stack.push((node,true));
+            for &next in &graph[&node].successors {
+                if reachable.contains(&next)&&!visited.contains(&next){
+                    stack.push((next,false));
+                }
+            }
+        }
+    }
+    let mut reverse=HashMap::<u32,Vec<u32>>::new();
+    for &node in reachable { reverse.entry(node).or_default(); }
+    for &node in reachable {
+        for &next in &graph[&node].successors {
+            if reachable.contains(&next){reverse.entry(next).or_default().push(node)}
+        }
+    }
+    let mut assigned=HashSet::new();
     let mut cyclic=HashSet::new();
-    for &start in reachable{
-        let mut visited=HashSet::new();
-        let mut todo:Vec<u32>=graph[&start].successors.clone();
-        while let Some(next)=todo.pop(){
-            if next==start{cyclic.insert(start);break}
-            if visited.insert(next){todo.extend(&graph[&next].successors)}
+    for start in finish.into_iter().rev(){
+        if !assigned.insert(start){continue}
+        let mut component=Vec::new();
+        let mut todo=vec![start];
+        while let Some(node)=todo.pop(){
+            component.push(node);
+            for &prev in &reverse[&node] {
+                if assigned.insert(prev){todo.push(prev)}
+            }
+        }
+        if component.len()>1 || graph[&component[0]].successors.contains(&component[0]){
+            cyclic.extend(component);
         }
     }
     cyclic
