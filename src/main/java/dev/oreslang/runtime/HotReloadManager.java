@@ -31,6 +31,7 @@ public final class HotReloadManager implements AutoCloseable {
     private static final int MAX_ADVERSARIAL_SOURCE_CHARS = 1_048_576;
     private static final int MAX_ADVERSARIAL_CODE_UNIT_ID_CHARS = 512;
     private static final int MAX_ADVERSARIAL_LIVE_GENERATIONS = 8;
+    private static final int MAX_ADVERSARIAL_MACRO_LINEAGES = 256;
 
     private final IsolatePolicy supervisorPolicy;
     private final IsolatePolicy guestPolicy;
@@ -95,6 +96,10 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
+        if (!digest(unit.sourceText()).equals(unit.sourceDigest())) {
+            throw new IllegalArgumentException(
+                    "compiled unit source digest does not match its staged source");
+        }
         Parser.MacroParseResult parsed = Parser.parseWithMacroSnapshot(
                 unit.sourceText(), macroSnapshotsByCodeUnit.get(unit.unitId()));
         // Admission must validate the actual staged source, not just a caller-supplied
@@ -114,6 +119,12 @@ public final class HotReloadManager implements AutoCloseable {
             throw new IllegalArgumentException("codeUnitId cannot be blank");
         }
         if (!guestPolicy.adversarial()) return;
+        // Persist AOT lineage across retirement without allowing unbounded IDs in hostile loads.
+        if (!macroSnapshotsByCodeUnit.containsKey(codeUnitId)
+                && macroSnapshotsByCodeUnit.size() >= MAX_ADVERSARIAL_MACRO_LINEAGES) {
+            throw new IllegalStateException("adversarial macro lineage limit exceeded: "
+                    + MAX_ADVERSARIAL_MACRO_LINEAGES);
+        }
         if (codeUnitId.length() > MAX_ADVERSARIAL_CODE_UNIT_ID_CHARS) {
             throw new IllegalArgumentException(
                     "adversarial hot-load codeUnitId exceeds maximum length "
