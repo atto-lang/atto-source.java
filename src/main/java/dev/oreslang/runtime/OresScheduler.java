@@ -98,6 +98,8 @@ public final class OresScheduler implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final ProcessTurnTrace turnTrace;
     private final CopyOnWriteArrayList<Runnable> closeHooks = new CopyOnWriteArrayList<>();
+    /** Atomically fences resource-hook registration against scheduler closure. */
+    private final Object closeRegistrationLock = new Object();
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -409,12 +411,12 @@ public final class OresScheduler implements AutoCloseable {
     /** Lifecycle registration for resources owned by this logical process. */
     void onClose(Runnable callback) {
         Objects.requireNonNull(callback, "callback");
-        if (closed.get()) {
-            callback.run();
-            return;
+        boolean executeNow;
+        synchronized (closeRegistrationLock) {
+            executeNow = closed.get();
+            if (!executeNow) closeHooks.add(callback);
         }
-        closeHooks.add(callback);
-        if (closed.get() && closeHooks.remove(callback)) callback.run();
+        if (executeNow) callback.run();
     }
 
     @Override
@@ -424,20 +426,24 @@ public final class OresScheduler implements AutoCloseable {
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
         }
-        if (!closed.compareAndSet(false, true)) return;
+        java.util.List<Runnable> hooksToClose;
+        synchronized (closeRegistrationLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            hooksToClose = java.util.List.copyOf(closeHooks);
+            closeHooks.clear();
+        }
 
         // Close hooks are untrusted host/runtime code. An exception from one
         // must never strand the other scopes, task Futures or carrier threads.
         // Re-throw the first failure only AFTER all shutdown actions were tried.
         Throwable shutdownFailure = null;
-        for (Runnable callback : closeHooks) {
+        for (Runnable callback : hooksToClose) {
             try {
                 callback.run();
             } catch (Throwable failure) {
                 shutdownFailure = accumulateShutdownFailure(shutdownFailure, failure);
             }
         }
-        closeHooks.clear();
 
         for (TaskRunner<?> task : Set.copyOf(tasks)) {
             try {
