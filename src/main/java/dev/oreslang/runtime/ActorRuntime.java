@@ -883,7 +883,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, new DeferredMailRelease(release),
+                    null, sender, sequence);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -902,6 +903,36 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             if (release != null) release.run();
+        }
+    }
+
+    /**
+     * A user mailbox payload retains its memory quota reservation after
+     * admission when its handler suspends. close() releases queued/synchronous
+     * messages; transfer() moves the lease into the in-flight map. Exactly one
+     * finish() releases it on done, task completion or actor retirement.
+     */
+    private static final class DeferredMailRelease implements Runnable {
+        private final Runnable delegate;
+        private final AtomicBoolean transferred = new AtomicBoolean();
+        private final AtomicBoolean finished = new AtomicBoolean();
+
+        private DeferredMailRelease(Runnable delegate) {
+            this.delegate = Objects.requireNonNull(delegate);
+        }
+
+        private void transfer() {
+            if (!transferred.compareAndSet(false, true)) {
+                throw new IllegalStateException("mail reservation already transferred");
+            }
+        }
+
+        private void finish() {
+            if (finished.compareAndSet(false, true)) delegate.run();
+        }
+
+        @Override public void run() {
+            if (!transferred.get()) finish();
         }
     }
 
@@ -1535,6 +1566,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.sourceMessages.remove(mail.sequence()) == null) {
                 throw new IllegalStateException("actor mail already completed: " + mail.sequence());
             }
+            cell.finishSourceMailReservation(mail.sequence());
         }
         cell.schedule();
     }
@@ -1655,6 +1687,7 @@ public final class ActorRuntime implements AutoCloseable {
                 synchronized (cell.lifecycleLock) {
                     cell.suspendedSourceMessages.remove(mail.sequence());
                     cell.sourceMessages.remove(mail.sequence());
+                    cell.finishSourceMailReservation(mail.sequence());
                     cell.lifecycleLock.notifyAll();
                 }
                 if (failure != null) {
@@ -1672,6 +1705,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!cell.stopped.get() && !cell.finalized) {
                         cell.suspendedSourceMessages.remove(mail.sequence());
                         cell.sourceMessages.remove(mail.sequence());
+                        cell.finishSourceMailReservation(mail.sequence());
                         cell.fail(new IllegalStateException(
                                 "actor source receive completion could not re-enter its continuation lane"));
                     }
@@ -5793,6 +5827,8 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorInboxMail<M> activeMail;
         /** Active message lifetimes are independent of the one guest execution lease. */
         private final Map<Long, ActorInboxMail<M>> sourceMessages = new LinkedHashMap<>();
+        private final Map<Long, DeferredMailRelease> sourceMessageReleases =
+                new LinkedHashMap<>();
         private int maxConcurrentMessages = 1;
         private final Set<Long> suspendedSourceMessages = new LinkedHashSet<>();
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
@@ -5936,6 +5972,11 @@ public final class ActorRuntime implements AutoCloseable {
                     queuedUserMessages--;
                 }
             }
+        }
+
+        private void finishSourceMailReservation(long sequence) {
+            DeferredMailRelease reserved = sourceMessageReleases.remove(sequence);
+            if (reserved != null) reserved.finish();
         }
 
         private boolean sourceTaskSuspendedMail(ActorInboxMail<?> mail) {
@@ -6434,6 +6475,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     if (sourceMessages.putIfAbsent(mail.sequence(), mail) != null) {
                                         throw new IllegalStateException("duplicate actor message sequence");
                                     }
+                                    DeferredMailRelease reservation =
+                                            (DeferredMailRelease) activeEnvelope.release();
+                                    reservation.transfer();
+                                    sourceMessageReleases.put(mail.sequence(), reservation);
                                 }
                             }
                             try {
@@ -6465,6 +6510,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 if (codeExecutor != null && !sourceTaskSuspendedMail(mail)) {
                                     synchronized (lifecycleLock) {
                                         sourceMessages.remove(mail.sequence());
+                                        finishSourceMailReservation(mail.sequence());
                                     }
                                 }
                             }
@@ -6545,6 +6591,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             suspendedSourceMessages.clear();
             sourceMessages.clear();
+            for (DeferredMailRelease pending : sourceMessageReleases.values()) {
+                pending.finish();
+            }
+            sourceMessageReleases.clear();
             activeMail = null;
         }
 
