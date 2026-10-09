@@ -4,6 +4,11 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -211,5 +216,38 @@ final class NamedInferredTypeTest {
                   }
                 }
                 """);
+    }
+
+    @Test
+    void inferredStructAndTupleRunWithoutRuntimeTypeObjects() {
+        String source = """
+                pub fnc main(): void {
+                  const T account = infer<T> struct {
+                    id: "acct_42",
+                    active: true
+                  };
+                  const T moved = account;
+                  stdio.println(moved.id);
+                  const U pair = infer<U> tuple ("foo", 5);
+                  stdio.println(pair[1]);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "named-inferred-types.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("acct_42"), text);
+        assertTrue(text.contains("5"), text);
     }
 }
