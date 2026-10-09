@@ -977,7 +977,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.NewExpr created) {
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
+                rejectNonFirstClassArgument(arg, scope, "constructor " + created.type().name());
                 ValueInfo info = checkExpr(arg, scope, true);
+                rejectActorOrNamespaceParameter(info.type, "constructor " + created.type().name());
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
                 }
@@ -1610,6 +1612,7 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        rejectActorOrNamespaceParameter(argument.type, callable + " argument " + position);
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
