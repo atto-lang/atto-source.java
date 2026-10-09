@@ -55,8 +55,11 @@ final class ActorAddressBusTest {
             second.send(0);
             assertTrue(joined.await(5, TimeUnit.SECONDS));
             assertEquals(Set.of(first.id(), second.id()), Set.copyOf(addresses.members("orders.created")));
-            assertEquals(first.id(), addresses.send("orders.created", 101).orElseThrow());
-            assertEquals(second.id(), addresses.send("orders.created", 102).orElseThrow());
+            // Joining occurs on independent actor carriers, so registration order
+            // need not match spawn order. Require round-robin coverage of both actors.
+            ActorRuntime.ActorId recipientA = addresses.send("orders.created", 101).orElseThrow();
+            ActorRuntime.ActorId recipientB = addresses.send("orders.created", 102).orElseThrow();
+            assertEquals(Set.of(first.id(), second.id()), Set.of(recipientA, recipientB));
             ActorAddressBus.BroadcastResult result = addresses.publish("orders.created", 103);
             assertEquals(new ActorAddressBus.BroadcastResult(2, 2, 0), result);
             assertTrue(delivered.await(5, TimeUnit.SECONDS));
