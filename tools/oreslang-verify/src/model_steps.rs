@@ -15,6 +15,9 @@ pub fn transitions(s:&State,cap:usize)->Vec<(String,State)>{
    let mut n=s.clone();n.ready[a]=true;
    out.push((format!("io_complete({a})"),n));
   }
+  // External shutdown is modeled only after the carrier releases its lease.
+  // Cancellation while guest code runs needs a separate quiescence protocol.
+  if s.workers.contains(&Some(a)){continue}
   let mut n=s.clone();n.alive[a]=false;
   for m in n.mail[a].drain(..){n.status[m]=Status::Discarded}
   n.waiting[a]=false;n.ready[a]=false;
