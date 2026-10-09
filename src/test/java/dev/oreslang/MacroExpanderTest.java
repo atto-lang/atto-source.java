@@ -190,6 +190,68 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void expressionFragmentsAreGroupedBeforeOperatorPrecedenceIsParsed() {
+        String source = """
+                macro_rules! multiply { ($x:expr) => { $x * 2 }; }
+                define module app as
+                  fnc run(): int { return multiply!(1 + 2); }
+                end
+                """;
+        List<Token> expanded = MacroExpander.expand(new Lexer(source).scan()).tokens();
+        String serialized = expanded.stream().map(Token::lexeme).reduce("", (a, b) -> a + " " + b);
+        assertTrue(serialized.contains("( 1 + 2 ) * 2"), serialized);
+        assertDoesNotThrow(() -> Parser.parse(source));
+    }
+
+    @Test
+    void rejectsLexicallyNestedMacroDefinitionsWithoutHidingCode() {
+        String source = """
+                define module app as
+                  fnc run(): int {
+                    macro_rules! inside { ($x:expr) => { $x }; }
+                    return inside!(1);
+                  }
+                end
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(source));
+        assertTrue(ex.getMessage().contains("file scope"), ex.getMessage());
+    }
+
+    @Test
+    void rejectsPrematureEofTokensAndDoesNotHideSuffix() {
+        List<Token> tokens = List.of(
+                new Token(Token.Type.IDENT, "first", 1, 1),
+                new Token(Token.Type.EOF, "", 1, 6),
+                new Token(Token.Type.IDENT, "hidden", 1, 7),
+                new Token(Token.Type.EOF, "", 1, 13));
+        assertThrows(IllegalArgumentException.class, () -> MacroExpander.expand(tokens));
+    }
+
+    @Test
+    void macroFingerprintsIgnoreFormattingButRejectSemanticChange() {
+        String one = "macro_rules! constant { ($x:expr) => { $x + 1 }; }";
+        String formatted = "macro_rules! constant {\n($x:expr)=>{$x + 1};\n}";
+        String changed = "macro_rules! constant { ($x:expr) => { $x + 2 }; }";
+        MacroExpander.Snapshot initial = MacroExpander.expand(new Lexer(one).scan()).snapshot();
+        assertEquals(initial, MacroExpander.expand(new Lexer(formatted).scan(), initial).snapshot());
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(new Lexer(changed).scan(), initial));
+    }
+
+    @Test
+    void doesNotExecuteOrDuplicateArgumentsNotReferencedByTemplate() {
+        String source = """
+                macro_rules! first { ($a:expr, $b:expr) => { $a }; }
+                define module app as
+                  fnc run(): int { return first!(42, 1 + 2); }
+                end
+                """;
+        List<Token> expanded = MacroExpander.expand(new Lexer(source).scan()).tokens();
+        assertEquals(1, expanded.stream().filter(t -> t.type() == Token.Type.INT
+                && t.lexeme().equals("42")).count());
+    }
+    @Test
     void scalarAndStringArgumentsRetainLexemeValues() {
         String source = """
                 macro_rules! identity { ($value:expr) => { $value }; }
