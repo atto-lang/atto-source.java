@@ -98,6 +98,9 @@ public final class RuntimePermissions {
         for (String arg : args) {
             if (!arg.startsWith(ARG_PREFIX) || arg.startsWith("--ores-permission-check=")) continue;
             sawPermissionArgument = true;
+            // Even a deny-all policy has zero grant rules. Preserve its explicit
+            // presence or fromCapabilities() would silently grant broad I/O.
+            if (arg.equals(ARG_PREFIX + "explicit=true")) continue;
             String remainder = arg.substring(ARG_PREFIX.length());
             int equals = remainder.indexOf('=');
             if (equals <= 0) {
@@ -129,6 +132,9 @@ public final class RuntimePermissions {
 
     public String[] applicationArguments() {
         ArrayList<String> arguments = new ArrayList<>();
+        // Distinguish an explicitly empty (deny-all) permission policy from
+        // the legacy embedding API that omitted a permission policy entirely.
+        arguments.add(ARG_PREFIX + "explicit=true");
         for (Permission permission : Permission.values()) {
             Rule rule = rules.get(permission);
             if (rule == null) continue;
