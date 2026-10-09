@@ -337,4 +337,100 @@ final class HotReloadModuleContractTest {
                         """)));
         org.junit.jupiter.api.Assertions.assertTrue(failure.getMessage().contains("binding kind"));
     }
+
+    @Test
+    void successfulReloadKeepsPreviousGenerationAliveUntilExplicitRetirement() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String v1 = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            String v2 = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 2; }
+                    end
+                    """;
+
+            HotReloadManager.Generation oldGeneration =
+                    loader.reloadModule("worker.ores", "Worker", v1, "WorkerApi");
+            HotReloadManager.Generation newGeneration =
+                    loader.reloadModule("worker.ores", "Worker", v2, "WorkerApi");
+
+            assertEquals(newGeneration, loader.active("worker.ores"));
+            assertEquals(false, oldGeneration.closed(),
+                    "old-generation actors/requests may still be draining");
+            assertEquals(2, loader.liveGenerations());
+
+            loader.retire(oldGeneration.id());
+            assertEquals(true, oldGeneration.closed());
+            assertEquals(1, loader.liveGenerations());
+            assertEquals(newGeneration, loader.active("worker.ores"));
+        }
+    }
+
+    @Test
+    void failedReloadOfAnotherCodeUnitRestoresGlobalActivePointer() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String stable = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            HotReloadManager.Generation stableGeneration =
+                    loader.reloadModule("stable.ores", "Worker", stable, "WorkerApi");
+
+            String broken = """
+                    pub define contract BrokenApi as
+                      fnc run(): int;
+                    end
+                    define module Broken conforms BrokenApi as
+                      pub val int broken = 1 / 0;
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RuntimeException.class,
+                    () -> loader.reloadModule("broken.ores", "Broken", broken, "BrokenApi"));
+
+            assertEquals(stableGeneration, loader.active());
+            assertEquals(stableGeneration, loader.active("stable.ores"));
+            assertEquals(null, loader.active("broken.ores"));
+            assertEquals(1, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    void rootScopeRejectsExecutableDeclarationsDuringModuleHotLoad() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String source = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    pub val int unrelated = 1 / 0;
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> loader.loadModule("worker.ores", "Worker", source, "WorkerApi"));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    failure.getMessage().contains("root scope may contain only module contract declarations"));
+            assertEquals(0, loader.liveGenerations());
+        }
+    }
 }
