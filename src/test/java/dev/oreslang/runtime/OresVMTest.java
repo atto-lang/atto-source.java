@@ -178,4 +178,57 @@ final class OresVMTest {
             assertEquals(1, child.get(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void siblingSupervisorsInSameVmHaveIndependentSingleFlightLanes()
+            throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run)) {
+            OresScheduler daddyA = vm.createSupervisorScheduler("daddy-A");
+            OresScheduler daddyB = vm.createSupervisorScheduler("daddy-B");
+            assertEquals(2, vm.supervisorCount());
+            assertNotEquals(daddyA.name(), daddyB.name());
+            var bothEntered = new java.util.concurrent.CountDownLatch(2);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var daddyAActive = new java.util.concurrent.atomic.AtomicInteger();
+            var daddyAMax = new java.util.concurrent.atomic.AtomicInteger();
+
+            OresFuture<Integer> aFirst = daddyA.startSync(() -> {
+                int now = daddyAActive.incrementAndGet();
+                daddyAMax.accumulateAndGet(now, Math::max);
+                bothEntered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("daddy A gate timed out");
+                    }
+                    return 10;
+                } finally {
+                    daddyAActive.decrementAndGet();
+                }
+            });
+            OresFuture<Integer> aSecond = daddyA.startSync(() -> {
+                int now = daddyAActive.incrementAndGet();
+                daddyAMax.accumulateAndGet(now, Math::max);
+                try { return 20; }
+                finally { daddyAActive.decrementAndGet(); }
+            });
+            OresFuture<Integer> b = daddyB.startSync(() -> {
+                bothEntered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("daddy B gate timed out");
+                }
+                return 30;
+            });
+            try {
+                assertTrue(bothEntered.await(5, TimeUnit.SECONDS),
+                        "sibling supervisors must not share one global lane");
+            } finally {
+                release.countDown();
+            }
+            assertEquals(10, aFirst.get(5, TimeUnit.SECONDS));
+            assertEquals(20, aSecond.get(5, TimeUnit.SECONDS));
+            assertEquals(30, b.get(5, TimeUnit.SECONDS));
+            assertEquals(1, daddyAMax.get(),
+                    "two tasks owned by daddy A cannot overlap");
+        }
+    }
 }

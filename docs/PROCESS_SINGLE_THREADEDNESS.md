@@ -15,6 +15,9 @@ The safety invariant is `active_guest_turns(process_id) <= 1`, **not**
   `cooperate` unwind the turn before another ROOT task is admitted.
 - ROOT can migrate across CONTROL carriers; CONTROL carriers are still
   prestarted and parallel, even though ROOT has scheduler parallelism 1.
+- `OresVM.createSupervisorScheduler(name)` creates another independent
+  single-flight scheduler/identity in the same VM. A daddy process can thus
+  run concurrently with sibling daddies; each serializes its own tasks.
 - ActorGroup mailmen use a *separate* CONTROL scheduler. Each GroupMailmanState
   already has its own single-execution lease across suspend/resume.
   Strict/adversarial contexts retain their required caller-thread admission
@@ -30,9 +33,10 @@ The next stage must continuation-lower those bodies, or fail closed when they
 target process-owned state. A lock held across a blocking await is not a
 correct workaround: it can deadlock its own producer.
 
-The existing ROOT scope is one VM. To represent two daddy supervisors
-*inside the same VM*, give each a separate logical process id, mailbox and
-serial executor; never share a global mutex for the full supervision tree.
+Creating distinct supervisor scheduler lanes in one VM is now supported.
+However, a future supervisor language construct still needs to bind each
+daddy's mailbox, lifecycle and owned state to the right scheduler/identity,
+rather than treating a scheduler constructor alone as full process isolation.
 
 Trusted ROOT/supervisor code remains cooperative, Node.js-like: a tight
 synchronous loop can monopolize *its process*. Untrusted child actors need

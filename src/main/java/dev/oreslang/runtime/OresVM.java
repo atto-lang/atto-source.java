@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
@@ -29,6 +32,10 @@ public final class OresVM implements AutoCloseable {
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
     private final OresScheduler controlScheduler;
+    private final Executor processAdmission;
+    private final OresScheduler.TurnExecutor guestTurnAdmission;
+    private final Set<OresScheduler> supervisorSchedulers = ConcurrentHashMap.newKeySet();
+    private final AtomicLong nextSupervisorId = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -52,14 +59,14 @@ public final class OresVM implements AutoCloseable {
                 factory,
                 new ThreadPoolExecutor.AbortPolicy());
 
+        this.processAdmission = rootAdmission == null ? controlExecutor : rootAdmission;
+        this.guestTurnAdmission = turnExecutor;
         // The ROOT process serializes user code, not the CONTROL carrier pool.
         // It can migrate carriers between non-overlapping source turns.
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
                 1,
-                new SerialProcessExecutor(
-                        rootAdmission == null ? controlExecutor : rootAdmission,
-                        DEFAULT_QUEUE_CAPACITY),
+                new SerialProcessExecutor(processAdmission, DEFAULT_QUEUE_CAPACITY),
                 turnExecutor);
         // ActorGroup mailmen have individual execution leases and can run in
         // parallel with ROOT and with mailmen from other groups.
@@ -151,6 +158,33 @@ public final class OresVM implements AutoCloseable {
     }
 
     /**
+     * Create an independent supervisor (daddy) process in this VM.
+     * The scheduler has its own single-flight guest lane and identity.
+     * Caller must keep supervisor-owned mutable state isolated from siblings;
+     * mailbox/process ownership checking is a separate language boundary.
+     */
+    public synchronized OresScheduler createSupervisorScheduler(String name) {
+        Objects.requireNonNull(name, "name");
+        if (!name.matches("[A-Za-z0-9._-]{1,64}")) {
+            throw new IllegalArgumentException("invalid supervisor process name");
+        }
+        if (!started() || closed.get()) {
+            throw new RejectedExecutionException("VM closed before supervisor creation");
+        }
+        OresScheduler supervisor = OresScheduler.runtimeOwned(
+                "ores-supervisor-" + name + "-" + nextSupervisorId.incrementAndGet(),
+                1,
+                new SerialProcessExecutor(processAdmission, DEFAULT_QUEUE_CAPACITY),
+                guestTurnAdmission);
+        supervisorSchedulers.add(supervisor);
+        return supervisor;
+    }
+
+    public int supervisorCount() {
+        return supervisorSchedulers.size();
+    }
+
+    /**
      * Admit runtime CONTROL work through the already-owned root scheduler.
      *
      * Mailmen and other control services share the VM root/CONTROL admission
@@ -182,6 +216,12 @@ public final class OresVM implements AutoCloseable {
             rootScheduler.close();
         } finally {
             try {
+                for (OresScheduler supervisor : supervisorSchedulers) {
+                    supervisor.close();
+                }
+                supervisorSchedulers.clear();
+            } finally {
+            try {
                 controlScheduler.close();
             } finally {
                 controlExecutor.shutdownNow();
@@ -196,6 +236,7 @@ public final class OresVM implements AutoCloseable {
                             "interrupted while closing Oreslang CONTROL scheduler",
                             interrupted);
                 }
+            }
             }
         }
     }
