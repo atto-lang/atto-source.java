@@ -15,7 +15,7 @@ impl std::fmt::Display for Error{
 impl std::error::Error for Error{}
 fn trace(nodes:&[(State,Option<(usize,String)>)],mut i:usize)->Vec<String>{
  let mut path=vec![];
- while let Some((parent,event))=&nodes[i].1{path.push(event.clone());i=*parent}
+ while let Some((parent,event))=&nodes[i].1{path.push(event.clone());i = *parent}
  path.reverse();path
 }
 pub fn explore(b:Bounds)->Result<Report,Error>{
