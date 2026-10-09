@@ -1,6 +1,9 @@
 //! Checks the existing actor trace v1.0 JSON contract against a deterministic
 //! protocol monitor. A passing trace is evidence only for the *recorded* events.
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+fn non_null_optional<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(d).map(Some)
+}
 use std::collections::{HashMap,HashSet};
 #[derive(Deserialize,Debug)]
 #[serde(deny_unknown_fields)]
@@ -15,8 +18,11 @@ pub struct Event{
     pub seq:u64,
     pub kind:String,
     pub actor:String,
+    #[serde(default, deserialize_with = "non_null_optional")]
     pub target:Option<String>,
+    #[serde(default, deserialize_with = "non_null_optional")]
     pub message_id:Option<String>,
+    #[serde(default, deserialize_with = "non_null_optional")]
     pub resource:Option<String>,
 }
 #[derive(Debug,PartialEq,Eq)]
@@ -61,6 +67,7 @@ fn fields(event:&Event,index:usize)->Result<(),Violation>{
     Ok(())
 }
 pub fn check(input:&str)->Result<Summary,Violation>{
+    if input.len()>16*1024*1024{return Err(fail(0,"trace exceeds 16 MiB input budget"))}
     let trace:Trace=serde_json::from_str(input).map_err(|e|fail(0,format!("invalid trace JSON: {e}")))?;
     if trace.schema_version!="1.0.0"{return Err(fail(0,"unsupported trace schema version"))}
     if trace.events.len()>100_000{return Err(fail(0,"trace event budget exceeded"))}
