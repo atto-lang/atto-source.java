@@ -75,3 +75,12 @@ A one-shot timer readiness item is consumable once. Attempting another
 (or a typed terminal result), **not** wait forever. The abstract model
 rejects an unsupported second pending wait; the library contract still
 needs to define the exact source-level terminal result.
+
+## Concrete refinement tests
+
+`RootEventLoopRefinementTest` uses `OresFuture` as a simulated timer
+notification and checks that a callback can execute on ROOT while an unrelated
+`main` continuation is awaiting, without overlapping guest stacks or running
+on the timer producer thread. It also checks ROOT close vs late timer wakeup.
+This is a runtime integration test, not a claim that source `timer` syntax
+has already been implemented.
