@@ -175,4 +175,41 @@ final class NamedInferredTypeTest {
                 }
                 """, "requires at least one element");
     }
+
+    @Test
+    void laterBindingCannotBeUsedAsAForwardType() {
+        rejected("""
+                fnc bad(): void {
+                  const T tooEarly = infer struct { id: "before" };
+                  const T declared = infer<T> struct { id: "after" };
+                  return;
+                }
+                """, "before initialization");
+    }
+
+    @Test
+    void aliasCannotBeUsedAfterDefiningBlockEnds() {
+        rejected("""
+                fnc bad(): void {
+                  {
+                    const T internal = infer<T> struct { id: "private" };
+                  }
+                  const T escaped = infer struct { id: "leak" };
+                  return;
+                }
+                """, "out of scope");
+    }
+
+    @Test
+    void aliasIsVisibleToNestedLexicalBlocks() {
+        accepted("""
+                fnc read(): string {
+                  const T account = infer<T> struct { id: "acct_42" };
+                  {
+                    const T moved = account;
+                    return moved.id;
+                  }
+                }
+                """);
+    }
 }
