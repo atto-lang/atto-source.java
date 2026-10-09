@@ -477,4 +477,45 @@ final class HotReloadModuleContractTest {
             assertEquals(2, loader.liveGenerations());
         }
     }
+
+    @Test
+    void failedGenericLoadAndStartPreservesActiveGeneration() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var old = loader.loadAndStart("stable.ores", "pub val int answer = 1;");
+            assertThrows(RuntimeException.class, () ->
+                    loader.loadAndStart("stable.ores", "pub val int answer = 1 / 0;"));
+            assertEquals(old, loader.active("stable.ores"));
+            assertEquals(old, loader.active());
+            assertEquals(false, old.closed());
+            assertEquals(1, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    void closedManagerRejectsNewStagesAndActivation() {
+        HotReloadManager loader =
+                new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit());
+        loader.close();
+        loader.close();
+        assertEquals("hot-reload manager is closed",
+                assertThrows(IllegalStateException.class, () ->
+                        loader.load("worker.ores", "pub val int answer = 1;")).getMessage());
+        assertThrows(IllegalStateException.class, () ->
+                loader.loadModule("worker.ores", "Worker", "invalid", "WorkerApi"));
+    }
+
+    @Test
+    void closedGenerationIsNeverReportedAsActive() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var loaded = loader.load("worker.ores", "pub val int answer = 1;");
+            loaded.close();
+            assertEquals(null, loader.active());
+            assertEquals(null, loader.active("worker.ores"));
+            assertEquals(true, loader.activeGenerations().isEmpty());
+            loader.retire(loaded.id());
+            assertEquals(0, loader.liveGenerations());
+        }
+    }
 }
