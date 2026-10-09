@@ -20,7 +20,7 @@ fn body(ts:&[Token],open:usize)->Vec<&str>{
   if t.value=="}"{depth-=1;if depth==0{break}}
   result.push(t.value.as_str());
  }
- Ok(result)
+ result
 }
 
 pub fn lint(src:&str,path:&str,pedantic:bool)->Vec<Diagnostic>{
@@ -62,5 +62,5 @@ pub fn lint_checked(src:&str,path:&str,pedantic:bool)->Result<Vec<Diagnostic>,St
    _=>{}
   }
  }
- result
+ Ok(result)
 }
