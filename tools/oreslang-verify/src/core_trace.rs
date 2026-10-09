@@ -9,6 +9,7 @@ use std::collections::{HashMap,HashSet,VecDeque};
 struct Trace {
     schema_version:String,
     complete:bool,
+    capacity:usize,
     events:Vec<Event>,
 }
 #[derive(Debug,Deserialize)]
@@ -60,6 +61,7 @@ pub fn check(input:&str)->Result<Report,Violation>{
     let t:Trace=serde_json::from_str(input)
         .map_err(|_|fail(0,"invalid core trace JSON"))?;
     if t.schema_version!="2.0.0" {return Err(fail(0,"unsupported core trace schema"))}
+    if t.capacity==0||t.capacity>65_536{return Err(fail(0,"invalid mailbox capacity"))}
     if t.events.len()>100_000 {return Err(fail(0,"core trace event budget exceeded"))}
     let mut actors=HashMap::<String,Actor>::new();
     let mut workers=HashMap::<String,String>::new();
@@ -90,6 +92,9 @@ pub fn check(input:&str)->Result<Report,Violation>{
         if !active{return Err(fail(i,"event from unknown or terminated actor"))}
         match e.kind.as_str(){
             "admit"|"send"=>{
+                if e.kind=="send"&&actors.get(&e.actor).is_none_or(|a|a.carrier.is_none()||a.waiting){
+                    return Err(fail(i,"send without active guest execution lease"))
+                }
                 let target=if e.kind=="admit"{e.actor.as_str()}
                     else{required(&e.target,i,"send missing target")?};
                 if !actors.get(target).is_some_and(|a|a.live){
@@ -97,6 +102,9 @@ pub fn check(input:&str)->Result<Report,Violation>{
                 }
                 let id=required(&e.message_id,i,"message ID missing")?;
                 if messages.contains_key(id){return Err(fail(i,"duplicate message ID"))}
+                if actors.get(target).is_some_and(|a|a.mail.len()>=t.capacity){
+                    return Err(fail(i,"mailbox capacity exceeded"))
+                }
                 messages.insert(id.to_string(),target.to_string());
                 actors.get_mut(target).expect("live").mail.push_back(id.to_string());
             }
@@ -167,11 +175,9 @@ pub fn check(input:&str)->Result<Report,Violation>{
             _=>unreachable!("event kinds validated"),
         }
     }
-    if t.complete{
-        if actors.values().any(|a|a.live||a.carrier.is_some()||!a.mail.is_empty())
-            ||!workers.is_empty(){
-            return Err(fail(t.events.len(),"complete core trace retains live work"))
-        }
+    if t.complete&&(actors.values().any(|a|a.live||a.carrier.is_some()||!a.mail.is_empty())
+            ||!workers.is_empty()){
+        return Err(fail(t.events.len(),"complete core trace retains live work"))
     }
     Ok(Report{events:t.events.len(),actors:actors.len(),messages:messages.len()})
 }
