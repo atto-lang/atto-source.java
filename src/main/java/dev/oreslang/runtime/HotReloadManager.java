@@ -278,7 +278,8 @@ public final class HotReloadManager implements AutoCloseable {
 
     private void requireUnchangedActivationBase(Generation generation) {
         Generation current = activeByCodeUnit.get(generation.codeUnitId());
-        if (current != generation.expectedPreviousActive) {
+        long currentId = current == null ? 0L : current.id();
+        if (currentId != generation.expectedPreviousActiveId) {
             throw new IllegalStateException(
                     "stale module candidate for '" + generation.codeUnitId()
                             + "': the active generation changed after this candidate was staged");
@@ -457,6 +458,8 @@ public final class HotReloadManager implements AutoCloseable {
                     initializeModuleOnly && !activateImmediately
                             ? activeByCodeUnit.get(codeUnitId)
                             : null;
+            long expectedPreviousActiveId =
+                    expectedPreviousActive == null ? 0L : expectedPreviousActive.id();
             Generation generation = new Generation(
                     this,
                     id,
@@ -468,7 +471,7 @@ public final class HotReloadManager implements AutoCloseable {
                     executionProfile,
                     shareCodeImage,
                     initializeModuleOnly,
-                    expectedPreviousActive);
+                    expectedPreviousActiveId);
             generations.put(id, generation);
             if (activateImmediately) {
                 activeByCodeUnit.put(codeUnitId, generation);
@@ -572,7 +575,10 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final boolean sharedCodeImage;
         private final boolean initializeModuleOnly;
-        private final Generation expectedPreviousActive;
+        // Store only a generation ID, not a Generation reference: an active
+        // upgraded generation must not keep every retired predecessor/context
+        // alive through a chain of expectedPreviousActive pointers.
+        private final long expectedPreviousActiveId;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -587,7 +593,7 @@ public final class HotReloadManager implements AutoCloseable {
                 ExecutionProfile executionProfile,
                 boolean sharedCodeImage,
                 boolean initializeModuleOnly,
-                Generation expectedPreviousActive) {
+                long expectedPreviousActiveId) {
             this.owner = java.util.Objects.requireNonNull(owner, "owner");
             this.id = id;
             this.codeUnitId = codeUnitId;
@@ -598,7 +604,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.executionProfile = executionProfile;
             this.sharedCodeImage = sharedCodeImage;
             this.initializeModuleOnly = initializeModuleOnly;
-            this.expectedPreviousActive = expectedPreviousActive;
+            this.expectedPreviousActiveId = expectedPreviousActiveId;
         }
 
         public long id() { return id; }
