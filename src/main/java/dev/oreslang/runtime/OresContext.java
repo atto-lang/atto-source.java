@@ -317,6 +317,9 @@ public final class OresContext implements AutoCloseable {
                 if (pc == 1) {
                     if (resume.failure() != null) {
                         Throwable failure = OresFuture.unwrap(resume.failure());
+                        if (failure instanceof ProcessExitSignal exit) {
+                            return OresScheduler.done(exit.exitStatus());
+                        }
                         if (failure instanceof Exception checked) throw checked;
                         if (failure instanceof Error error) throw error;
                         throw new RuntimeException(failure);

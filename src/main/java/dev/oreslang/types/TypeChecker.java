@@ -101,7 +101,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
@@ -540,6 +540,11 @@ public final class TypeChecker {
         // : AsyncIterator<int>). The body always checks yields against the
         // element type and calls expose exactly one iterator wrapper.
         Type declaredReturn = resolve(fn.returnType(), generics, null);
+        if (fn.name().equals("main") && fn.parameters().isEmpty()
+                && declaredReturn != Primitive.VOID && declaredReturn != Primitive.INT) {
+            throw new IllegalArgumentException(
+                    "program entrypoint main() must return void or int, not " + declaredReturn);
+        }
         Type returns = fn.generator()
                 ? generatorYieldType(fn.async(), declaredReturn)
                 : declaredReturn;
@@ -1683,6 +1688,7 @@ public final class TypeChecker {
                 return local.type();
             }
             if (name.name().equals("stdio")
+                    || name.name().equals("std")
                     || name.name().equals("process")
                     || name.name().equals("actor")
                     || name.name().equals("fs")
@@ -2731,6 +2737,19 @@ public final class TypeChecker {
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
+            }
+            if (member.receiver() instanceof Ast.NameExpr stdName && stdName.name().equals("std")
+                    && env.lookup("std") == null && member.member().equals("process")) {
+                return new Named("process", List.of());
+            }
+            if (member.member().equals("exit")
+                    && ((member.receiver() instanceof Ast.NameExpr processName
+                             && processName.name().equals("process") && env.lookup("process") == null)
+                        || (member.receiver() instanceof Ast.MemberExpr namespace
+                             && namespace.member().equals("process")
+                             && namespace.receiver() instanceof Ast.NameExpr root
+                             && root.name().equals("std") && env.lookup("std") == null))) {
+                return new Function(List.of(Primitive.INT), Primitive.VOID);
             }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
