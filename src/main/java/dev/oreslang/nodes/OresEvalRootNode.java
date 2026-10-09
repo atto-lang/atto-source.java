@@ -4473,12 +4473,15 @@ public final class OresEvalRootNode extends RootNode {
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
             try {
-                executeBlock(method.body(), env);
+                executeBlock(method.body(), env, method.returnType().isIdentityReturn());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
             } catch (ReturnSignal signal) {
-                return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
+                return enforceIdentityReturn(
+                        method.returnType(), method.parameters(), receiver, args,
+                        shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()),
+                        "method " + method.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a method boundary", signal);
             } catch (RuntimeException failure) {
