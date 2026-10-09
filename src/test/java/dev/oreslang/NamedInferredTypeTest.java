@@ -151,6 +151,20 @@ final class NamedInferredTypeTest {
                   return;
                 }
                 """, "conflicts with an existing type");
+
+        rejected("""
+                fnc bad(): void {
+                  const Iterator value = infer<Iterator> struct { id: "x" };
+                  return;
+                }
+                """, "conflicts with an existing type");
+
+        rejected("""
+                fnc bad(): void {
+                  const MutexGuard value = infer<MutexGuard> tuple (1, 2);
+                  return;
+                }
+                """, "conflicts with an existing type");
     }
 
     @Test
