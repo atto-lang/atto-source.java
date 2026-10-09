@@ -1,6 +1,6 @@
 package dev.oreslang.runtime;
 
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
@@ -25,7 +25,7 @@ final class HotReloadConcurrentPublicationTest {
                 """.formatted(value);
     }
 
-    @Test
+    @RepeatedTest(12)
     @Timeout(35)
     void concurrentModuleReplacementsCannotPublishStaleCandidates() throws Exception {
         try (HotReloadManager loader = new HotReloadManager(
@@ -70,7 +70,7 @@ final class HotReloadConcurrentPublicationTest {
         }
     }
 
-    @Test
+    @RepeatedTest(20)
     @Timeout(35)
     void concurrentGenericStartsKeepOnlySuccessfulGenerations() throws Exception {
         try (HotReloadManager loader = new HotReloadManager(
