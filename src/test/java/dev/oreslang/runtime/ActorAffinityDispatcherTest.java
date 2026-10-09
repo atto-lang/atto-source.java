@@ -87,4 +87,60 @@ final class ActorAffinityDispatcherTest {
         }
     }
 
+
+    @Test
+    void lazyLanesConstructOnlyWhenUsedAndWarmOnlyFirstLane() throws Exception {
+        AtomicInteger created = new AtomicInteger();
+        try (var dispatcher = new ActorAffinityDispatcher(4, 32, new int[0], index -> {
+            created.incrementAndGet();
+            return Executors.newSingleThreadExecutor();
+        })) {
+            assertEquals(0, created.get());
+            assertEquals(0, dispatcher.instantiatedLaneCount());
+            dispatcher.warmOne();
+            dispatcher.warmOne();
+            assertEquals(1, created.get(), "warmup must be idempotent and single-lane");
+            assertEquals(1, dispatcher.instantiatedLaneCount());
+
+            CountDownLatch onSecondLane = new CountDownLatch(1);
+            dispatcher.executeOnLane(1, onSecondLane::countDown);
+            assertTrue(onSecondLane.await(2, TimeUnit.SECONDS));
+            assertEquals(2, created.get());
+            assertEquals(2, dispatcher.instantiatedLaneCount());
+        }
+    }
+
+    @Test
+    void closedLazyLanesNeverCreateAnotherExecutor() {
+        AtomicInteger created = new AtomicInteger();
+        var lanes = new ActorAffinityDispatcher(8, 8, new int[0], index -> {
+            created.incrementAndGet();
+            return Executors.newSingleThreadExecutor();
+        });
+        lanes.shutdownNow();
+        assertEquals(0, created.get());
+        assertTrue(lanes.isTerminated());
+        assertThrows(RejectedExecutionException.class, lanes::warmOne);
+        assertThrows(RejectedExecutionException.class,
+                () -> lanes.executeOnLane(0, () -> {}));
+        assertEquals(0, created.get());
+    }
+
+    @Test
+    void coldActorRuntimeDoesNotInstantiateAnyActorClassLane() throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 16, 128))) {
+            assertEquals(0, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.PRIVATE));
+            assertEquals(0, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.SHARED));
+            assertEquals(0, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.UNTRUSTED));
+            runtime.warmActorPools();
+            assertEquals(1, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.PRIVATE));
+            assertEquals(1, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.SHARED));
+            assertEquals(1, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.UNTRUSTED));
+            runtime.warmActorPools();
+            assertEquals(1, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.PRIVATE));
+            assertEquals(1, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.SHARED));
+            assertEquals(1, runtime.instantiatedActorLanes().get(ActorRuntime.ActorKind.UNTRUSTED));
+        }
+    }
 }

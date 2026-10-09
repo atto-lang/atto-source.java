@@ -316,8 +316,11 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class Shared<T> {
         private final AtomicBoolean sharedClosed = new AtomicBoolean();
-        private T value;
-        private long reservedBytes;
+        // Value is frozen at publication and must never be rewritten by
+        // another thread, including during shutdown. Readers that entered
+        // before close may still finish using their immutable snapshot.
+        private final T value;
+        private final long reservedBytes;
 
         private Shared(T value, long reservedBytes) {
             this.value = value;
@@ -336,10 +339,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void closeFromRuntime() {
             if (!sharedClosed.compareAndSet(false, true)) return;
-            long bytes = reservedBytes;
-            reservedBytes = 0L;
-            value = null;
-            releaseSharedRuntimeBytes(bytes);
+            releaseSharedRuntimeBytes(reservedBytes);
             sharedValues.remove(this);
         }
     }
