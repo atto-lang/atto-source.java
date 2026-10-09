@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -315,6 +316,127 @@ final class MacroExpanderTest {
                 MacroExpander.expand(new Lexer(initialSource).scan()).snapshot();
         assertThrows(IllegalArgumentException.class,
                 () -> MacroExpander.expand(new Lexer(modifiedSource).scan(), previous));
+    }
+
+
+    @Test
+    void fuzzNestedExpressionCapturesRemainGroupedAndParseable() {
+        // Reproducible property test: varying operands, nesting, and whitespace.
+        Random random = new Random(0x4F5245534C414E47L);
+        String definition = "macro_rules! combine { ($left:expr, $right:expr) => { $left + $right }; }\n";
+        for (int iteration = 0; iteration < 160; iteration++) {
+            int a = random.nextInt(1000);
+            int b = random.nextInt(1000);
+            int c = random.nextInt(1000);
+            int d = random.nextInt(1000);
+            // Create balanced extra group levels without changing the expression.
+            int depth = random.nextInt(6);
+            String left = "(".repeat(depth) + "(" + a + " + " + b + ")" + ")".repeat(depth);
+            String right = "(" + c + " * " + d + ")";
+            String source = definition + "define module app as\n"
+                    + "  fnc run(): int { return combine!(" + left + ", " + right + "); }\n"
+                    + "end\n";
+            List<Token> expanded = MacroExpander.expand(new Lexer(source).scan()).tokens();
+            assertEquals(Token.Type.EOF, expanded.getLast().type(), "iteration=" + iteration);
+            assertTrue(expanded.stream().noneMatch(token -> token.type() == Token.Type.DOLLAR
+                    || token.lexeme().equals("combine")), "iteration=" + iteration);
+            int caseNumber = iteration;
+            assertDoesNotThrow(() -> Parser.parse(source), () -> "iteration=" + caseNumber);
+        }
+    }
+
+    @Test
+    void fuzzMismatchedMacroDelimitersFailClosed() {
+        Random random = new Random(0xD311B17EL);
+        char[] open = {'(', '[', '{'};
+        char[] close = {')', ']', '}'};
+        for (int iteration = 0; iteration < 180; iteration++) {
+            int depth = 1 + random.nextInt(24);
+            int[] levels = new int[depth];
+            StringBuilder argument = new StringBuilder();
+            for (int level = 0; level < depth; level++) {
+                levels[level] = random.nextInt(open.length);
+                argument.append(open[levels[level]]);
+            }
+            argument.append("7");
+            int innermost = levels[depth - 1];
+            argument.append(close[(innermost + 1 + random.nextInt(2)) % close.length]);
+            for (int level = depth - 2; level >= 0; level--) {
+                argument.append(close[levels[level]]);
+            }
+            String source = """
+                    macro_rules! identity { ($value:tt) => { $value }; }
+                    define module app as
+                      fnc run(): int { return identity!(%s); }
+                    end
+                    """.formatted(argument);
+            int caseNumber = iteration;
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()),
+                    () -> "mismatched delimiters unexpectedly accepted: iteration=" + caseNumber);
+            assertTrue(failure.getMessage().contains("macro"),
+                    () -> "iteration=" + caseNumber + " unexpected failure: " + failure);
+        }
+    }
+
+    @Test
+    void fuzzAotAndJitGenerationFingerprintsAndFormatting() {
+        Random random = new Random(0xA07C0DEF00DL);
+        for (int iteration = 0; iteration < 120; iteration++) {
+            int value = random.nextInt(1_000_000);
+            String aot = "@expand(aot)\nmacro_rules! shift { ($v:expr) => { $v + "
+                    + value + " }; }\n";
+            String formatted = "@expand(aot) /* formatting noise */ \n"
+                    + "macro_rules! shift { ( $v : expr ) => { $v  +  "
+                    + value + " }; }\n";
+            String changed = aot.replace("+ " + value, "+ " + (value + 1));
+            MacroExpander.Snapshot initial = MacroExpander.expand(new Lexer(aot).scan()).snapshot();
+            assertEquals(initial, MacroExpander.expand(new Lexer(formatted).scan(), initial).snapshot(),
+                    "iteration=" + iteration);
+            int caseNumber = iteration;
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(changed).scan(), initial),
+                    () -> "AOT edit was allowed: iteration=" + caseNumber);
+
+            String jit = aot.replace("@expand(aot)", "@expand(jit)");
+            String jitChanged = changed.replace("@expand(aot)", "@expand(jit)");
+            MacroExpander.Snapshot jitInitial = MacroExpander.expand(new Lexer(jit).scan()).snapshot();
+            MacroExpander.Snapshot jitUpdated =
+                    MacroExpander.expand(new Lexer(jitChanged).scan(), jitInitial).snapshot();
+            assertNotEquals(jitInitial, jitUpdated, "iteration=" + iteration);
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(aot).scan(), jitInitial),
+                    () -> "mode switch was allowed: iteration=" + caseNumber);
+        }
+    }
+
+    @Test
+    void fuzzQuotedPayloadsCannotInjectMacroSyntax() {
+        Random random = new Random(0x5EED5AFE1234L);
+        String[] fragments = {
+                "a", "9", " ", "!", "(", ")", "{", "}", "[", "]", ",", ":",
+                ";", "$", "@", "macro_rules!", "identity!(42)", "\\n", "\\t",
+                "\\\"", "\\\\", "\u03A9", "\u2603"
+        };
+        String definition = "macro_rules! identity { ($value:expr) => { $value }; }\n";
+        for (int iteration = 0; iteration < 160; iteration++) {
+            StringBuilder quotedContents = new StringBuilder();
+            for (int part = 0, parts = random.nextInt(25); part < parts; part++) {
+                quotedContents.append(fragments[random.nextInt(fragments.length)]);
+            }
+            String quoted = "\"" + quotedContents + "\"";
+            String expected = new Lexer(quoted).scan().getFirst().lexeme();
+            String source = definition + "define module app as\n"
+                    + "  fnc run(): String { return identity!(" + quoted + "); }\n"
+                    + "end\n";
+            List<Token> expanded = MacroExpander.expand(new Lexer(source).scan()).tokens();
+            List<Token> strings = expanded.stream()
+                    .filter(token -> token.type() == Token.Type.STRING).toList();
+            assertEquals(1, strings.size(), "iteration=" + iteration);
+            assertEquals(expected, strings.getFirst().lexeme(), "iteration=" + iteration);
+            int caseNumber = iteration;
+            assertDoesNotThrow(() -> Parser.parse(source), () -> "iteration=" + caseNumber);
+        }
     }
 
     @Test
