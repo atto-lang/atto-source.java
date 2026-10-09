@@ -364,25 +364,37 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
-            boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
-            SCHEDULER_CARRIER.set(Boolean.TRUE);
-            try {
-                turnExecutor.execute(() -> runBound(turn));
-            } catch (RuntimeException | Error failure) {
-                // Context admission can fail before runTurn starts. Settle the
-                // owning task instead of leaving the host waiting forever.
-                admissionFailure.accept(failure);
-                if (failure instanceof VirtualMachineError fatal) throw fatal;
-                if (failure instanceof ThreadDeath fatal) throw fatal;
-                if (failure instanceof LinkageError fatal) throw fatal;
-            } finally {
-                if (priorCarrier) {
-                    SCHEDULER_CARRIER.set(Boolean.TRUE);
-                } else {
-                    SCHEDULER_CARRIER.remove();
+        executor.execute(new SerialProcessExecutor.RejectionAwareTurn() {
+            @Override public void run() {
+                boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
+                SCHEDULER_CARRIER.set(Boolean.TRUE);
+                try {
+                    turnExecutor.execute(() -> runBound(turn));
+                } catch (RuntimeException | Error failure) {
+                    // Context admission can fail before runTurn starts. Settle
+                    // the owning task instead of leaving a Future unresolved.
+                    admissionFailure.accept(failure);
+                    if (failure instanceof VirtualMachineError fatal) throw fatal;
+                    if (failure instanceof ThreadDeath fatal) throw fatal;
+                    if (failure instanceof LinkageError fatal) throw fatal;
+                } finally {
+                    if (priorCarrier) {
+                        SCHEDULER_CARRIER.set(Boolean.TRUE);
+                    } else {
+                        SCHEDULER_CARRIER.remove();
+                    }
+                    afterTurn.run();
                 }
-                afterTurn.run();
+            }
+
+            @Override public void reject(Throwable failure) {
+                // No guest execution: settle the task and publish a terminal
+                // outcome for a turn that could not obtain another carrier.
+                try {
+                    admissionFailure.accept(failure);
+                } finally {
+                    afterTurn.run();
+                }
             }
         });
     }
