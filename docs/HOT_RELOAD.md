@@ -147,3 +147,32 @@ generations outside the manager lock, and rejects later load/activation requests
 Module initialization also runs outside the manager lock; concurrent replacement
 candidates are checked again at publication so a stale candidate cannot overwrite
 a winning generation.
+
+## Cross-tenant sharing authorization and adversarial admission
+
+Immutable code-image reuse **does not imply cross-tenant approval**. A
+`HotReloadManager` owns an opaque authority identity independent of the guest
+code-unit path, source digest, or `IsolatePolicy` value. An adversarial manager
+may use the process-wide immutable code image only after **that same manager**
+explicitly approves that exact code-unit ID and source digest. A grant or revoke
+on manager A must not affect manager B even if they use byte-identical source,
+the same code-unit path, and equal supervisor policies.
+
+Approvals are bounded to 64 distinct code units/versions per manager, require
+ordinary untrusted capability admission, and are revoked when the manager
+closes. Existing image leases remain pinned until their generations retire;
+revoking an approval prevents *future acquisitions* and does not invalidate
+an already running generation. Approval does not confer extra guest capabilities.
+
+For adversarial generic `loadAndStart`, limits are enforced on the **raw**
+code-unit path before normalization, so path segments that normalize away cannot
+bypass the maximum input-size check.
+
+The `active()`, `active(codeUnitId)`, and `activeGenerations()` APIs do
+not return generations already marked retiring or closed. Callers must still
+coordinate shutdown/draining of in-flight operations; an active lookup is not a
+long-lived lease that pins a generation.
+
+Security acceptance requires targeted tenant-isolation, quotas, close/revoke
+and rollback tests, plus an actual native Graal isolate run. Maven tests on
+a normal JVM do **not** establish hostile-tenant containment.
