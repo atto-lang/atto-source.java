@@ -91,3 +91,35 @@ read permission. These metadata operations are not a race-free openat-style
 directory handle and are not sufficient for processing hostile mutable trees.
 The language also exposes `String.split_literal`, `trim`, `starts_with`,
 `ends_with`, and `contains_literal` for source-level code generators.
+
+## Audited Oreslang Stack CLI source-generation primitives
+
+`fs.write_text_atomic(path, value)` uses a temporary UTF-8 file adjacent to
+the destination and an atomic move/replace. It requires write permission on
+both the lexical path and canonical parent target, refuses an existing symlink
+destination, and does not fall back to a non-atomic move. Atomic replacement
+is **one file at a time**, not a transaction over all RPC/Lambda outputs.
+
+Metadata operations `fs.is_dir` and `fs.is_symlink` resolve and authorize
+the parent before inspecting a child entry without following its terminal
+symbolic link. They can inspect an exactly granted project root even when
+its parent directory is not granted; symlinked ancestors cannot extend the
+granted read scope. `fs.list_dir` returns immediate names in sorted order,
+rejects symlink inputs, and caps enumeration at 20,000 names.
+
+All path-based checks remain subject to time-of-check/time-of-use races when
+a different process can concurrently change directory entries. This API is
+not a directory-handle sandbox for actively hostile mutable trees. Use it
+for locally trusted project source generation; a production hostile-tenant
+builder must add race-free directory capabilities and multi-file transaction
+admission.
+
+**Validation:** The private mirror of the Java/Graal reference runtime
+executed the `NativeCliIoTest` suite (5 passing tests) including the complete
+`oreslang-stack-cli/src/main.ores` source, symlink escape denial and atomic
+write operations:
+https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619591
+
+The downstream generator additionally passed its full real-runtime command
+integration:
+https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619670
