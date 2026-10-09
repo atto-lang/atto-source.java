@@ -212,6 +212,155 @@ final class PointerlessFncOwnershipTest {
                 """)));
     }
 
+
+    @Test
+    void structuralCallsReadBorrowImplicitlyAndReleaseAtReturn() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let String value = "start";
+                end
+                fnc inspect(structural Box v): String { return v.value; }
+                fnc pair(structural Box a, structural Box b): void { return; }
+                fnc ok(): void {
+                  let mut Box box = new Box();
+                  inspect(box);
+                  inspect(rt borrow box);
+                  pair(box, box);
+                  box.value = "after";
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void structuralParameterCannotMutateView() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let String value = "start";
+                        end
+                        fnc bad(structural Box v): void {
+                          v.value = "changed";
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("read-only"), error.getMessage());
+    }
+
+    @Test
+    void structuralCallRejectsExplicitTake() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let String value = "start";
+                        end
+                        fnc inspect(structural Box v): void { return; }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          inspect(rt take box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("structural view"), error.getMessage());
+    }
+
+    @Test
+    void structuralCallRejectsMutableBorrow() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let String value = "start";
+                        end
+                        fnc inspect(structural Box v): void { return; }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          inspect(rt borrow mut box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("structural view"), error.getMessage());
+    }
+
+    @Test
+    void structuralReadLoanBlocksLaterMutableArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let String value = "start";
+                        end
+                        fnc overlap(structural Box a, borrow mut Box b): void { return; }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          overlap(box, rt borrow mut box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error.getMessage());
+    }
+
+    @Test
+    void structuralReadLoanBlocksLaterOwnershipMove() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let String value = "start";
+                        end
+                        fnc overlap(structural Box a, Box b): void { return; }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          overlap(box, box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error.getMessage());
+    }
+
+    @Test
+    void explicitBorrowReadLoanBlocksLaterMutableArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let String value = "start";
+                        end
+                        fnc overlap(borrow Box a, borrow mut Box b): void { return; }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          overlap(rt borrow box, rt borrow mut box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error.getMessage());
+    }
+
+    @Test
+    void ownedParameterCannotConsumeBorrowedView() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let String value = "start";
+                end
+                fnc consume(Box b): void { return; }
+                fnc bad(): void {
+                  let mut Box box = new Box();
+                  consume(rt borrow box);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void inferredStructCannotBeMutablyBorrowed() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          const z = infer struct{x: "whatever"};
+                          val reference = rt borrow mut z;
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("readonly")
+                        || error.getMessage().toLowerCase().contains("immutable"), error.getMessage());
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")

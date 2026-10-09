@@ -1118,6 +1118,15 @@ field/method must exist with a compatible type/signature.
 read-only borrowed views: they cannot be `mut`, survive async suspension, cross an
 actor mailbox boundary, or turn an actor reference into an ordinary object.
 
+A direct `inspect(value)` call to a `structural T` parameter temporarily
+read-borrows `value` instead of moving it. `inspect(rt borrow value)` is
+equivalent. A structural call rejects `rt take value` (ownership transfer)
+and `rt borrow mut value` (unnecessary mutable authority). Call-scoped loans
+last through evaluation of all arguments, preventing a later argument from
+moving or mutably borrowing the same owner; they end after the call.
+Ordinary owned `T` parameters remain by-value and move non-`Copy` values;
+use `borrow T` or `borrow mut T` when borrowing is part of the API contract.
+
 Interfaces may inherit from other interfaces and support literal-string marker fields:
 
 ```ores
