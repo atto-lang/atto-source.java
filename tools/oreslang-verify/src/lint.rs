@@ -56,9 +56,9 @@ pub fn lint_checked(src:&str,path:&str,pedantic:bool)->Result<Vec<Diagnostic>,St
    "defer"=>{if scopes.iter().any(|s|s.loop_body){
     add("ORES101","warning","defer is inside a loop; review cleanup lifetime");
    }}
-   "await"=>{if scopes.last().and_then(|s|s.async_context)==Some(false){
+   "await" if scopes.last().and_then(|s|s.async_context)==Some(false)=>{
     add("ORES102","warning","await appears inside a non-async function");
-   }}
+   }
    _=>{}
   }
  }
