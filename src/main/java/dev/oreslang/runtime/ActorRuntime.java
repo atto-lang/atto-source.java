@@ -1586,7 +1586,8 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor concurrency must be in 1.." + ceiling + " for " + cell.kind);
         }
         synchronized (cell.lifecycleLock) {
-            if (cell.activeMail != null || !cell.sourceMessages.isEmpty()) {
+            if (cell.activeMail != null || cell.userMailStarted
+                    || !cell.sourceMessages.isEmpty()) {
                 throw new IllegalStateException("actor concurrency is fixed before first mail");
             }
             cell.maxConcurrentMessages = maxInFlight;
@@ -5886,6 +5887,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Map<Long, DeferredMailRelease> sourceMessageReleases =
                 new LinkedHashMap<>();
         private int maxConcurrentMessages = 1;
+        /** Once any user mail starts, concurrency is permanently immutable. */
+        private boolean userMailStarted;
         private int continuationBurst;
         private final Set<Long> suspendedSourceMessages = new LinkedHashSet<>();
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
@@ -6527,6 +6530,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (envelope != null) {
                             continuationBurst = envelope.isContinuation()
                                     ? Math.min(8, continuationBurst + 1) : 0;
+                            if (!envelope.isContinuation()) userMailStarted = true;
                         }
                     }
                     if (envelope == null) break;
