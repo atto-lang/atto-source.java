@@ -59,13 +59,19 @@ fn valid_graph(fun:&Function)->Result<(HashMap<u32,&Node>,HashSet<u32>),String>{
         if by_id.insert(node.id,node).is_some(){
             return Err(format!("{}: duplicate CFG node {}",fun.name,node.id))
         }
-        if !["entry","exit","await","select","call","defer","return","throw","branch","other"]
+        if !["entry","exit","await","select","readch","writech","yield","call","defer","return","throw","branch","other"]
             .contains(&node.op.as_str()){
             return Err(format!("{}: unsupported operation {}",fun.name,node.op))
         }
     }
     if !by_id.contains_key(&fun.entry){return Err(format!("{}: missing entry node",fun.name))}
     for node in &fun.nodes{
+        if ["return","throw","exit"].contains(&node.op.as_str())&&!node.successors.is_empty(){
+            return Err(format!("{}: terminal CFG node {} has successors",fun.name,node.id))
+        }
+        if node.borrowed_mut_across_suspend && !["await","select","readch","writech","yield"].contains(&node.op.as_str()){
+            return Err(format!("{}: suspension borrow fact on non-suspending node {}",fun.name,node.id))
+        }
         if node.successors.iter().any(|id|!by_id.contains_key(id)){
             return Err(format!("{}: dangling successor at {}",fun.name,node.id))
         }
@@ -93,6 +99,7 @@ fn cyclic_nodes(graph:&HashMap<u32,&Node>,reachable:&HashSet<u32>)->HashSet<u32>
     cyclic
 }
 pub fn analyze(text:&str)->Result<Vec<Finding>,String>{
+    if text.len()>16*1024*1024{return Err("typed IR size exceeds 16 MiB limit".into())}
     let program:Program=serde_json::from_str(text).map_err(|e|format!("bad typed IR: {e}"))?;
     if program.schema_version!="0.1.0"{return Err("unsupported typed IR schema version".into())}
     if program.path.is_empty()||program.functions.len()>10000{
@@ -115,11 +122,11 @@ pub fn analyze(text:&str)->Result<Vec<Finding>,String>{
                 out.push(finding("ORES212",fun,node.line,node.column,
                     "defer is registered on a reachable cycle; confirm per-iteration cleanup semantics"));
             }
-            if node.op=="await"&&node.borrowed_mut_across_suspend{
+            if ["await","select","readch","writech","yield"].contains(&node.op.as_str())&&node.borrowed_mut_across_suspend{
                 out.push(finding("ORES213",fun,node.line,node.column,
                     "mutable borrow is live across suspension"));
             }
-            if node.op=="call"&&node.may_throw&&!node.handles_error&&!fun.allows_error{
+            if node.may_throw&&!node.handles_error&&!fun.allows_error{
                 out.push(finding("ORES214",fun,node.line,node.column,
                     "possible unhandled throwing call in non-throwing function"));
             }
