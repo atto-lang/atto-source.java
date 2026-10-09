@@ -63,9 +63,12 @@ delimiters may be `()`, `{}` or `[]`. The implementation rejects:
 
 Captured `expr` tokens are wrapped in parentheses so a macro cannot silently
 change operator precedence when an expression is substituted. Macro definitions
-within braced scopes are rejected; this pass does not yet understand every
-non-braced declaration/block scope. Premature EOF tokens are rejected to prevent
-hidden trailing input.
+are limited to the file prelude before the first function/type/actor declaration,
+including modules using non-braced `define ... as ... end` syntax. Imports may
+precede macro definitions. The template validator rejects injected `self`/`super`,
+assignment, declarations, statements and control-flow delimiters that could
+escape an expression or implicitly capture an actor receiver. Premature EOF
+tokens are rejected to prevent hidden trailing input.
 
 These restrictions avoid claiming full hygienic identifier generation before
 the AST can represent symbols carrying unique macro-definition identities.
