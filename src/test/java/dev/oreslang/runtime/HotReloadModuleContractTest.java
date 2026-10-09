@@ -30,6 +30,9 @@ final class HotReloadModuleContractTest {
             assertEquals(false, generation.started());
             org.junit.jupiter.api.Assertions.assertThrows(
                     IllegalStateException.class,
+                    () -> generation.invokePublic("Worker.run"));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
                     generation::start,
                     "module candidates must not use the legacy main-executing start path");
             assertEquals(false, generation.started());
@@ -142,6 +145,7 @@ final class HotReloadModuleContractTest {
 
             assertEquals(generation, loader.active("worker.ores"));
             assertEquals(true, generation.started());
+            assertEquals(1, generation.invokePublic("Worker.run").asInt());
             assertEquals(1, loader.liveGenerations());
         }
     }
@@ -376,6 +380,9 @@ final class HotReloadModuleContractTest {
                     loader.reloadModule("worker.ores", "Worker", v2, "WorkerApi");
 
             assertEquals(newGeneration, loader.active("worker.ores"));
+            assertEquals(1, oldGeneration.invokePublic("Worker.run").asInt(),
+                    "callers pinned to the old generation can finish against its implementation");
+            assertEquals(2, newGeneration.invokePublic("Worker.run").asInt());
             assertEquals(false, oldGeneration.closed(),
                     "old-generation actors/requests may still be draining");
             assertEquals(2, loader.liveGenerations());
