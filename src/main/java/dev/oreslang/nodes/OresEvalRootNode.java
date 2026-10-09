@@ -1038,7 +1038,9 @@ public final class OresEvalRootNode extends RootNode {
                         function != null
                                 ? "function " + function.name()
                                 : "method " + method.name();
-                return shapeReturnedValue(returnType, value, label);
+                return enforceIdentityReturn(returnType,
+                        function != null ? function.parameters() : method.parameters(),
+                        receiver, arguments, shapeReturnedValue(returnType, value, label), label);
             }
         }
 
