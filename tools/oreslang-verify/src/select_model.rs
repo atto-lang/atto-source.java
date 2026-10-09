@@ -65,8 +65,8 @@ pub fn explore(arms:u8,limit:usize)->Result<SelectReport,String>{
  while let Some(i)=pending.pop_front(){
   if let Err(msg)=invariant(&nodes[i].0,arms){
    let mut actions=vec![];let mut at=i;
-   while let Some((prev,ref action))=nodes[at].1{
-    actions.push(action.clone());at=prev;
+   while let Some((prev,action))=&nodes[at].1{
+    actions.push(action.clone());at=*prev;
    }
    actions.reverse();
    return Err(format!("{msg}; counterexample: {}",actions.join(" -> ")))
