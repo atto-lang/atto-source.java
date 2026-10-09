@@ -156,8 +156,9 @@ public final class HotReloadManager implements AutoCloseable {
 
     /**
      * Basic transactional hot replacement for one code unit. The candidate is
-     * fully loaded and started before the previous generation is retired. If
-     * startup fails, the previous generation remains active.
+     * fully initialized before it becomes active. If startup fails, the previous
+     * generation remains active. A replaced generation remains open for callers
+     * pinned to it; the supervisor retires it explicitly after draining users.
      */
     public synchronized Generation reloadModule(
             String codeUnitId,
@@ -195,9 +196,10 @@ public final class HotReloadManager implements AutoCloseable {
             }
             throw failure;
         }
-        if (previous != null && previous != candidate) {
-            retire(previous.id());
-        }
+        // Do not close the previous context here: actors/requests may still
+        // be pinned to its generation. It is no longer active for new work,
+        // but stays in the generation registry until the supervisor confirms
+        // that all old-generation users have drained and calls retire(id).
         return candidate;
     }
 
