@@ -28,11 +28,12 @@ The safety invariant is `active_guest_turns(process_id) <= 1`, **not**
 
 ## Not yet a complete 100% guest-language guarantee
 
-Some legacy `AsyncRuntime` / `GeneratorRuntime` compatibility producer
-paths still run guest bodies on virtual threads and can bypass the ROOT lane.
-The next stage must continuation-lower those bodies, or fail closed when they
-target process-owned state. A lock held across a blocking await is not a
-correct workaround: it can deadlock its own producer.
+Legacy `AsyncRuntime` / `GeneratorRuntime` virtual-thread producer paths
+still exist, but unadmitted guest evaluation now rejects at
+`OresEvalRootNode.executeRaw` rather than silently bypassing the ROOT lane.
+Full generator and legacy async functionality requires continuation lowering
+back onto the owning scheduler. No lock may be held across a blocking await:
+that could deadlock the producing process.
 
 Creating distinct supervisor scheduler lanes in one VM is now supported.
 However, a future supervisor language construct still needs to bind each
@@ -63,3 +64,26 @@ turns. This avoids an otherwise unprotected host/polyglot export bypass.
 ROOT calls from external host entry points can synchronously wait for the
 return value; inside any logical process, suspension must use `await`
 continuations and message passing, never synchronous cross-process invocation.
+
+## Fatal carrier and shutdown hardening
+
+- A serial process queue never executes a rejected guest task on its
+  producer thread. If a fatal active turn exits and the carrier executor
+  then rejects the replacement drain, accepted rejection-aware guest turns
+  are settled exceptionally so their Futures cannot hang indefinitely.
+  Ordinary caller-provided bare Runnables do not currently have a general
+  rejection callback; the OresScheduler bridge uses rejection-aware tasks.
+- A failing close hook cannot skip the other close hooks, pending task
+  cancellation or owned-carrier shutdown. Failures are aggregated and
+  reported after best-effort teardown.
+- Close-hook registration and shutdown snapshot use a common lock.
+  A hook registered while close races either joins the snapshot or executes
+  immediately afterward, exactly once; hooks are runtime teardown callbacks
+  and must never re-enter guest code outside an admitted process turn.
+- Code actor `concurrency` is frozen permanently when its first user
+  message starts. The configured limit governs unfinished message lifetimes,
+  **not** the number of simultaneous native guest turns.
+
+Focused tests: `OresSchedulerTest`, `SerialProcessExecutorTest`,
+`ActorMailboxExecutionBoundaryTest`. These tests must be executed at an
+exact Git commit before any production-strength concurrency claim.
