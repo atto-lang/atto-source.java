@@ -229,6 +229,27 @@ public final class HotReloadManager implements AutoCloseable {
         if (generation.closed()) {
             throw new IllegalStateException("cannot initialize a closed generation");
         }
+        // Repeated supervisor calls must never retire a generation that is
+        // already active. Return active generations idempotently.
+        if (activeByCodeUnit.get(generation.codeUnitId()) == generation) {
+            if (!generation.started()) {
+                throw new IllegalStateException("active module generation is not initialized");
+            }
+            return generation;
+        }
+        if (generation.started()) {
+            try {
+                requireUnchangedActivationBase(generation);
+                return generation;
+            } catch (RuntimeException | Error failure) {
+                try {
+                    retire(generation.id());
+                } catch (RuntimeException | Error cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+                throw failure;
+            }
+        }
         try {
             requireUnchangedActivationBase(generation);
             generation.startModule();
@@ -260,6 +281,9 @@ public final class HotReloadManager implements AutoCloseable {
         }
         if (!generation.started()) {
             throw new IllegalStateException("module generation must initialize successfully before activation");
+        }
+        if (activeByCodeUnit.get(generation.codeUnitId()) == generation) {
+            return generation;
         }
         try {
             requireUnchangedActivationBase(generation);
