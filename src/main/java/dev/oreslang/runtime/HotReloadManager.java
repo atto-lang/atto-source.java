@@ -12,10 +12,14 @@ import org.graalvm.polyglot.Value;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -328,6 +332,41 @@ public final class HotReloadManager implements AutoCloseable {
                     "active generation for '" + generation.codeUnitId()
                             + "' is closed; retire it before activating a replacement");
         }
+        ensureReplacementCompatibility(
+                current,
+                generation.initializeModuleOnly,
+                generation.moduleName,
+                generation.contractName,
+                generation.moduleContractDigest);
+    }
+
+    private static void ensureReplacementCompatibility(
+            Generation current,
+            boolean initializeModuleOnly,
+            String moduleName,
+            String contractName,
+            String moduleContractDigest) {
+        if (current == null) return;
+        if (current.initializeModuleOnly != initializeModuleOnly) {
+            throw new IllegalStateException(
+                    "code unit '" + current.codeUnitId()
+                            + "' cannot switch between contract-gated module loading and generic code loading");
+        }
+        if (!initializeModuleOnly) return;
+        if (!java.util.Objects.equals(current.moduleName, moduleName)) {
+            throw new IllegalStateException(
+                    "hot-loaded module identity changed for code unit '" + current.codeUnitId() + "'");
+        }
+        if (!java.util.Objects.equals(current.contractName, contractName)) {
+            throw new IllegalStateException(
+                    "hot-loaded module contract changed for code unit '" + current.codeUnitId()
+                            + "'; explicit migration is required");
+        }
+        if (!java.util.Objects.equals(current.moduleContractDigest, moduleContractDigest)) {
+            throw new IllegalStateException(
+                    "module contract ABI changed for code unit '" + current.codeUnitId()
+                            + "'; an ordinary hot reload must preserve the complete declared contract set");
+        }
     }
 
     private static void requireModuleContract(
@@ -354,6 +393,148 @@ public final class HotReloadManager implements AutoCloseable {
                     "generic module contracts are not supported by the name-only hot-load API: "
                             + contractName);
         }
+    }
+
+    /**
+     * Fingerprints the complete declared module-contract set, including the
+     * recursively inherited contract surfaces. A hot reload cannot redefine
+     * a same-named contract to a weaker signature or drop another declared
+     * contract and still pass simply by supplying the same contract name.
+     */
+    private static String moduleContractSetDigest(Ast.Program program, String moduleName) {
+        Ast.ModuleDecl module = program.modules().stream()
+                .filter(candidate -> candidate.name().equals(moduleName))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "hot-loaded module '" + moduleName + "' was not found"));
+
+        List<Ast.TypeRef> contractRefs = module.contracts().stream()
+                .sorted(java.util.Comparator.comparing(HotReloadManager::contractTypeText))
+                .toList();
+        if (contractRefs.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "hot-loaded module '" + moduleName + "' must conform to at least one module contract");
+        }
+
+        StringBuilder abi = new StringBuilder("ores-module-contract-set-v1\n");
+        abi.append("module ").append(moduleName).append('\n');
+        Set<String> seenNames = new HashSet<>();
+        for (Ast.TypeRef ref : contractRefs) {
+            if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "generic module-contract instantiations are not supported by runtime hot loading: "
+                                + contractTypeText(ref));
+            }
+            if (!seenNames.add(ref.name())) {
+                throw new IllegalArgumentException(
+                        "module '" + moduleName + "' repeats contract '" + ref.name() + "'");
+            }
+            abi.append("conforms ").append(contractTypeText(ref)).append('\n');
+        }
+
+        Set<String> visiting = new LinkedHashSet<>();
+        Set<String> visited = new HashSet<>();
+        for (Ast.TypeRef ref : contractRefs) {
+            Ast.InterfaceDecl contract = findModuleContractDeclaration(program, ref.name());
+            appendContractClosure(program, contract, abi, visiting, visited);
+        }
+        return digest(abi.toString());
+    }
+
+    private static Ast.InterfaceDecl findModuleContractDeclaration(
+            Ast.Program program,
+            String contractName) {
+        List<Ast.InterfaceDecl> matches = new ArrayList<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.InterfaceDecl iface
+                        && iface.moduleContract()
+                        && iface.name().equals(contractName)) {
+                    matches.add(iface);
+                }
+            }
+        }
+        if (matches.size() != 1) {
+            throw new IllegalArgumentException(
+                    "module contract '" + contractName + "' must resolve to exactly one declaration "
+                            + "(found " + matches.size() + ")");
+        }
+        return matches.getFirst();
+    }
+
+    private static void appendContractClosure(
+            Ast.Program program,
+            Ast.InterfaceDecl contract,
+            StringBuilder abi,
+            Set<String> visiting,
+            Set<String> visited) {
+        String identity = contract.name();
+        if (visiting.contains(identity)) {
+            throw new IllegalArgumentException(
+                    "module contract inheritance cycle involving '" + identity + "'");
+        }
+        if (!visited.add(identity)) return;
+        visiting.add(identity);
+
+        abi.append("contract ").append(contract.visibility()).append(' ')
+                .append(contract.name()).append('<')
+                .append(String.join(",", contract.genericParameters()))
+                .append("> extends ");
+        contract.parents().stream()
+                .map(HotReloadManager::contractTypeText)
+                .sorted()
+                .forEach(parent -> abi.append(parent).append(','));
+        abi.append('\n');
+
+        List<String> memberAbi = new ArrayList<>();
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceFunctionDecl function) {
+                StringBuilder signature = new StringBuilder("fn ")
+                        .append(function.structural() ? "structural " : "")
+                        .append(function.name()).append('<')
+                        .append(String.join(",", function.genericParameters()))
+                        .append(">(");
+                for (Ast.Param parameter : function.parameters()) {
+                    signature.append(parameter.structural() ? "structural " : "")
+                            .append(contractTypeText(parameter.type()));
+                    if (parameter.mutable()) signature.append(" mut");
+                    signature.append(',');
+                }
+                signature.append(")=>").append(contractTypeText(function.returnType()));
+                memberAbi.add(signature.toString());
+            } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                String binding = field.bindingKind() == null
+                        ? "readable"
+                        : field.bindingKind().name().toLowerCase(java.util.Locale.ROOT);
+                memberAbi.add("field " + binding + " " + field.name()
+                        + ":" + contractTypeText(field.type()));
+            }
+        }
+        memberAbi.stream().sorted().forEach(member -> abi.append(member).append('\n'));
+
+        List<Ast.TypeRef> parents = contract.parents().stream()
+                .sorted(java.util.Comparator.comparing(HotReloadManager::contractTypeText))
+                .toList();
+        for (Ast.TypeRef parentRef : parents) {
+            Ast.InterfaceDecl parent = findModuleContractDeclaration(program, parentRef.name());
+            appendContractClosure(program, parent, abi, visiting, visited);
+        }
+        visiting.remove(identity);
+    }
+
+    private static String contractTypeText(Ast.TypeRef ref) {
+        if (ref == null) return "<inferred>";
+        if (ref.isStringLiteral()) return "'" + ref.stringLiteralValue() + "'";
+        StringBuilder type = new StringBuilder(ref.name());
+        if (ref.inferArguments()) return type.append("<>").toString();
+        if (!ref.arguments().isEmpty()) {
+            type.append('<');
+            for (Ast.TypeRef argument : ref.arguments()) {
+                type.append(contractTypeText(argument)).append(',');
+            }
+            type.append('>');
+        }
+        return type.toString();
     }
 
     private static void requireNonBlank(String value, String parameter) {
@@ -472,6 +653,12 @@ public final class HotReloadManager implements AutoCloseable {
             String contractName,
             String moduleContractDigest) {
         ensureGenerationCapacity();
+        ensureReplacementCompatibility(
+                activeByCodeUnit.get(codeUnitId),
+                initializeModuleOnly,
+                moduleName,
+                contractName,
+                moduleContractDigest);
 
         long id = sequence.incrementAndGet();
         Context context =
@@ -631,6 +818,9 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final boolean sharedCodeImage;
         private final boolean initializeModuleOnly;
+        private final String moduleName;
+        private final String contractName;
+        private final String moduleContractDigest;
         // Store only a generation ID, not a Generation reference: an active
         // upgraded generation must not keep every retired predecessor/context
         // alive through a chain of expectedPreviousActive pointers.
@@ -649,7 +839,10 @@ public final class HotReloadManager implements AutoCloseable {
                 ExecutionProfile executionProfile,
                 boolean sharedCodeImage,
                 boolean initializeModuleOnly,
-                long expectedPreviousActiveId) {
+                long expectedPreviousActiveId,
+                String moduleName,
+                String contractName,
+                String moduleContractDigest) {
             this.owner = java.util.Objects.requireNonNull(owner, "owner");
             this.id = id;
             this.codeUnitId = codeUnitId;
@@ -661,6 +854,9 @@ public final class HotReloadManager implements AutoCloseable {
             this.sharedCodeImage = sharedCodeImage;
             this.initializeModuleOnly = initializeModuleOnly;
             this.expectedPreviousActiveId = expectedPreviousActiveId;
+            this.moduleName = moduleName;
+            this.contractName = contractName;
+            this.moduleContractDigest = moduleContractDigest;
         }
 
         public long id() { return id; }
