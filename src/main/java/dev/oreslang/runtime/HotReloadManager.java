@@ -54,6 +54,9 @@ public final class HotReloadManager implements AutoCloseable {
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
+    // Guarded by this manager's monitor. Close is terminal: no later load or
+    // activation may repopulate the maps after shutdown has detached generations.
+    private boolean managerClosed;
 
     public HotReloadManager(
             IsolatePolicy supervisorPolicy,
@@ -89,6 +92,7 @@ public final class HotReloadManager implements AutoCloseable {
      * Validates and stages a new generation without executing its entrypoint.
      */
     public synchronized Generation load(String name, String sourceText) {
+        ensureManagerOpen();
         return loadInternal(name, sourceText, false, true, null, null, null);
     }
 
@@ -100,6 +104,7 @@ public final class HotReloadManager implements AutoCloseable {
             String moduleName,
             String contractName,
             ModuleContractSurface contractSurface) {
+        ensureManagerOpen();
         validateAdmissionInputs(name, sourceText);
         ensureGenerationCapacity();
         name = normalizeCodeUnitId(name);
@@ -138,6 +143,7 @@ public final class HotReloadManager implements AutoCloseable {
             String moduleName,
             String sourceText,
             String contractName) {
+        ensureManagerOpen();
         validateAdmissionInputs(codeUnitId, sourceText);
         ensureGenerationCapacity();
         requireNonBlank(moduleName, "moduleName");
@@ -194,48 +200,29 @@ public final class HotReloadManager implements AutoCloseable {
      * generation remains active. A replaced generation remains open for callers
      * pinned to it; the supervisor retires it explicitly after draining users.
      */
-    public synchronized Generation reloadModule(
+    public Generation reloadModule(
             String codeUnitId,
             String moduleName,
             String sourceText,
             String contractName) {
         validateAdmissionInputs(codeUnitId, sourceText);
-        codeUnitId = normalizeCodeUnitId(codeUnitId);
-        Generation previous = activeByCodeUnit.get(codeUnitId);
-        Generation previousGlobalActive = active.get();
-        Generation candidate = loadModule(codeUnitId, moduleName, sourceText, contractName);
+        Generation candidate = loadModule(
+                normalizeCodeUnitId(codeUnitId), moduleName, sourceText, contractName);
         try {
+            // Never run guest module initialization while holding the manager
+            // monitor. Candidate publication is the final, short synchronized
+            // step and stale concurrent upgrades fail without disturbing the winner.
             initializeModule(candidate);
             activateModule(candidate);
+            return candidate;
         } catch (RuntimeException | Error failure) {
-            // Cleanup must never prevent restoration. A failing Context.close()
-            // is secondary to the startup error and must not strand the manager
-            // on a failed candidate.
             try {
                 retire(candidate.id());
             } catch (RuntimeException | Error cleanupFailure) {
                 failure.addSuppressed(cleanupFailure);
-            } finally {
-                if (previous != null && !previous.closed()) {
-                    activeByCodeUnit.put(codeUnitId, previous);
-                } else {
-                    activeByCodeUnit.remove(codeUnitId);
-                }
-                // The single-unit convenience pointer may have referred to an
-                // entirely different code unit before this attempted upgrade.
-                // Restore that exact pointer, not merely this code unit's prior
-                // generation.
-                active.set(previousGlobalActive != null && !previousGlobalActive.closed()
-                        ? previousGlobalActive
-                        : null);
             }
             throw failure;
         }
-        // Do not close the previous context here: actors/requests may still
-        // be pinned to its generation. It is no longer active for new work,
-        // but stays in the generation registry until the supervisor confirms
-        // that all old-generation users have drained and calls retire(id).
-        return candidate;
     }
 
     /**
@@ -243,49 +230,68 @@ public final class HotReloadManager implements AutoCloseable {
      * candidates are retired automatically so failed contexts and code-image
      * leases do not count against the live-generation budget.
      */
-    public synchronized Generation initializeModule(Generation generation) {
+    public Generation initializeModule(Generation generation) {
         java.util.Objects.requireNonNull(generation, "generation");
-        if (generations.get(generation.id()) != generation) {
-            throw new IllegalArgumentException("generation is not owned by this hot-reload manager");
-        }
-        if (!generation.initializeModuleOnly) {
-            throw new IllegalArgumentException("generation was not loaded through loadModule");
-        }
-        if (generation.closed()) {
-            throw new IllegalStateException("cannot initialize a closed generation");
-        }
-        // Repeated supervisor calls must never retire a generation that is
-        // already active. Return active generations idempotently.
-        if (activeByCodeUnit.get(generation.codeUnitId()) == generation) {
-            if (!generation.started()) {
-                throw new IllegalStateException("active module generation is not initialized");
+        Throwable admissionFailure = null;
+        boolean mustInitialize = false;
+
+        synchronized (this) {
+            ensureManagerOpen();
+            if (generations.get(generation.id()) != generation) {
+                throw new IllegalArgumentException("generation is not owned by this hot-reload manager");
             }
-            return generation;
-        }
-        if (generation.started()) {
-            try {
-                requireUnchangedActivationBase(generation);
-                return generation;
-            } catch (RuntimeException | Error failure) {
-                try {
-                    retire(generation.id());
-                } catch (RuntimeException | Error cleanupFailure) {
-                    failure.addSuppressed(cleanupFailure);
+            if (!generation.initializeModuleOnly) {
+                throw new IllegalArgumentException("generation was not loaded through loadModule");
+            }
+            if (generation.closed()) {
+                throw new IllegalStateException("cannot initialize a closed generation");
+            }
+            if (activeByCodeUnit.get(generation.codeUnitId()) == generation) {
+                if (!generation.started() || generation.initializing.get()) {
+                    throw new IllegalStateException("active module generation is not fully initialized");
                 }
-                throw failure;
+                return generation;
+            }
+            if (generation.initializing.get()) {
+                throw new IllegalStateException("module generation initialization is already in progress");
+            }
+            if (generation.started()) {
+                try {
+                    requireUnchangedActivationBase(generation);
+                } catch (RuntimeException | Error failure) {
+                    admissionFailure = failure;
+                }
+            } else if (generation.initializing.compareAndSet(false, true)) {
+                mustInitialize = true;
+                try {
+                    requireUnchangedActivationBase(generation);
+                } catch (RuntimeException | Error failure) {
+                    generation.initializing.set(false);
+                    mustInitialize = false;
+                    admissionFailure = failure;
+                }
+            } else {
+                throw new IllegalStateException("module generation initialization is already in progress");
             }
         }
+
+        if (admissionFailure != null) {
+            retireAfterFailure(generation.id(), admissionFailure);
+            rethrow(admissionFailure);
+        }
+        if (!mustInitialize) return generation;
+
         try {
-            requireUnchangedActivationBase(generation);
+            // Guest code executes outside the manager monitor. In particular,
+            // callbacks cannot deadlock by calling supervisor/runtime methods
+            // while this module's initializer is running.
             generation.startModule();
             return generation;
         } catch (RuntimeException | Error failure) {
-            try {
-                retire(generation.id());
-            } catch (RuntimeException | Error cleanupFailure) {
-                failure.addSuppressed(cleanupFailure);
-            }
+            retireAfterFailure(generation.id(), failure);
             throw failure;
+        } finally {
+            generation.initializing.set(false);
         }
     }
 
@@ -293,36 +299,64 @@ public final class HotReloadManager implements AutoCloseable {
      * Publishes a successfully initialized module generation as active.
      * Staging and initialization are intentionally separate from publication.
      */
-    public synchronized Generation activateModule(Generation generation) {
+    public Generation activateModule(Generation generation) {
         java.util.Objects.requireNonNull(generation, "generation");
-        if (generations.get(generation.id()) != generation) {
-            throw new IllegalArgumentException("generation is not owned by this hot-reload manager");
-        }
-        if (!generation.initializeModuleOnly) {
-            throw new IllegalArgumentException("only a module-loaded generation can be activated as a module");
-        }
-        if (generation.closed()) {
-            throw new IllegalStateException("cannot activate a closed generation");
-        }
-        if (!generation.started()) {
-            throw new IllegalStateException("module generation must initialize successfully before activation");
-        }
-        if (activeByCodeUnit.get(generation.codeUnitId()) == generation) {
-            return generation;
-        }
-        try {
-            requireUnchangedActivationBase(generation);
-        } catch (RuntimeException | Error failure) {
-            try {
-                retire(generation.id());
-            } catch (RuntimeException | Error cleanupFailure) {
-                failure.addSuppressed(cleanupFailure);
+        Throwable activationFailure = null;
+        synchronized (this) {
+            ensureManagerOpen();
+            if (generations.get(generation.id()) != generation) {
+                throw new IllegalArgumentException("generation is not owned by this hot-reload manager");
             }
-            throw failure;
+            if (!generation.initializeModuleOnly) {
+                throw new IllegalArgumentException("only a module-loaded generation can be activated as a module");
+            }
+            if (generation.closed()) {
+                throw new IllegalStateException("cannot activate a closed generation");
+            }
+            if (generation.initializing.get()) {
+                throw new IllegalStateException("cannot activate a module while initialization is in progress");
+            }
+            if (!generation.started()) {
+                throw new IllegalStateException("module generation must initialize successfully before activation");
+            }
+            if (activeByCodeUnit.get(generation.codeUnitId()) == generation) {
+                return generation;
+            }
+            try {
+                requireUnchangedActivationBase(generation);
+            } catch (RuntimeException | Error failure) {
+                activationFailure = failure;
+            }
+            if (activationFailure == null) {
+                // Linearization point: all compatibility checks and publication
+                // happen under the same monitor.
+                activeByCodeUnit.put(generation.codeUnitId(), generation);
+                active.set(generation);
+                return generation;
+            }
         }
-        activeByCodeUnit.put(generation.codeUnitId(), generation);
-        active.set(generation);
-        return generation;
+
+        retireAfterFailure(generation.id(), activationFailure);
+        rethrow(activationFailure);
+        throw new AssertionError("unreachable");
+    }
+
+    private void ensureManagerOpen() {
+        if (managerClosed) throw new IllegalStateException("hot-reload manager is closed");
+    }
+
+    private void retireAfterFailure(long generationId, Throwable failure) {
+        try {
+            retire(generationId);
+        } catch (RuntimeException | Error cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    private static void rethrow(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException(failure);
     }
 
     private void requireUnchangedActivationBase(Generation generation) {
@@ -353,6 +387,10 @@ public final class HotReloadManager implements AutoCloseable {
             String contractName,
             ModuleContractSurface contractSurface) {
         if (current == null) return;
+        if (current.closed()) {
+            throw new IllegalStateException(
+                    "active generation for '" + current.codeUnitId() + "' is closed; retire it before replacement");
+        }
         if (current.initializeModuleOnly != initializeModuleOnly) {
             throw new IllegalStateException(
                     "code unit '" + current.codeUnitId()
@@ -572,6 +610,7 @@ public final class HotReloadManager implements AutoCloseable {
      * only when this destination is allowed to join the shared image.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
+        ensureManagerOpen();
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
         ensureGenerationCapacity();
@@ -759,7 +798,7 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
-    public synchronized Generation loadAndStart(String name, String sourceText) {
+    public Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
         generation.start();
         return generation;
@@ -777,38 +816,50 @@ public final class HotReloadManager implements AutoCloseable {
         return Map.copyOf(activeByCodeUnit);
     }
 
-    /** Explicit retirement permits old actors/requests to drain before teardown. */
-    public synchronized void retire(long generationId) {
-        Generation generation = generations.remove(generationId);
-        if (generation != null) {
-            active.compareAndSet(generation, null);
-            activeByCodeUnit.remove(generation.codeUnitId(), generation);
-            generation.close();
+    /**
+     * Explicit retirement permits old actors/requests to drain before teardown.
+     * Remove publication/registry references under the manager monitor, then
+     * close the context after releasing it: close may wait for an in-flight
+     * generation call to finish.
+     */
+    public void retire(long generationId) {
+        Generation generation;
+        synchronized (this) {
+            generation = generations.remove(generationId);
+            if (generation != null) {
+                active.compareAndSet(generation, null);
+                activeByCodeUnit.remove(generation.codeUnitId(), generation);
+            }
         }
+        if (generation != null) generation.close();
     }
 
     public synchronized int liveGenerations() { return generations.size(); }
 
     @Override
-    public synchronized void close() {
-        RuntimeException runtimeFailure = null;
-        Error fatalFailure = null;
-        try {
-            for (Generation generation : List.copyOf(generations.values())) {
-                try {
-                    generation.close();
-                } catch (RuntimeException failure) {
-                    if (runtimeFailure == null) runtimeFailure = failure;
-                    else runtimeFailure.addSuppressed(failure);
-                } catch (Error failure) {
-                    if (fatalFailure == null) fatalFailure = failure;
-                    else fatalFailure.addSuppressed(failure);
-                }
-            }
-        } finally {
+    public void close() {
+        List<Generation> closing;
+        synchronized (this) {
+            if (managerClosed) return;
+            managerClosed = true;
+            closing = List.copyOf(generations.values());
             generations.clear();
             activeByCodeUnit.clear();
             active.set(null);
+        }
+
+        RuntimeException runtimeFailure = null;
+        Error fatalFailure = null;
+        for (Generation generation : closing) {
+            try {
+                generation.close();
+            } catch (RuntimeException failure) {
+                if (runtimeFailure == null) runtimeFailure = failure;
+                else runtimeFailure.addSuppressed(failure);
+            } catch (Error failure) {
+                if (fatalFailure == null) fatalFailure = failure;
+                else fatalFailure.addSuppressed(failure);
+            }
         }
         if (fatalFailure != null) {
             if (runtimeFailure != null) fatalFailure.addSuppressed(runtimeFailure);
@@ -850,6 +901,7 @@ public final class HotReloadManager implements AutoCloseable {
         // alive through a chain of expectedPreviousActive pointers.
         private final long expectedPreviousActiveId;
         private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean initializing = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
         private Generation(
