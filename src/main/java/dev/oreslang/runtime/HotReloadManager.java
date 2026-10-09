@@ -596,6 +596,10 @@ public final class HotReloadManager implements AutoCloseable {
         private final Context context;
         private final Source source;
         private final SharedCodeRegistry.Lease codeImage;
+        // Keep one parsed executable per generation. For unapproved/adversarial
+        // source the Source is deliberately cached(false); reparsing on each
+        // invocation would create a fresh Evaluator and lose initialized state.
+        private Value parsedProgram;
         private final ExecutionProfile executionProfile;
         private final boolean sharedCodeImage;
         private final boolean initializeModuleOnly;
@@ -686,7 +690,7 @@ public final class HotReloadManager implements AutoCloseable {
             commandArguments[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
             commandArguments[1] = functionName;
             System.arraycopy(arguments, 0, commandArguments, 2, arguments.length);
-            return context.parse(source).execute(commandArguments);
+            return parsedProgram().execute(commandArguments);
         }
 
         private synchronized Value startModule() {
@@ -705,9 +709,17 @@ public final class HotReloadManager implements AutoCloseable {
                 // parse(...).execute(command) enters the Oreslang root with
                 // its supervisor-only init command: link + initialize the
                 // module source without invoking the program's main().
-                return context.parse(source).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                return parsedProgram().execute(OresEvalRootNode.INIT_ONLY_COMMAND);
             }
-            return context.eval(source);
+            // Execute the same parsed handle used for later public calls so
+            // its context-local Evaluator/module state is stable even when
+            // Graal Source caching is disabled for an adversarial generation.
+            return parsedProgram().execute();
+        }
+
+        private Value parsedProgram() {
+            if (parsedProgram == null) parsedProgram = context.parse(source);
+            return parsedProgram;
         }
 
         @Override
