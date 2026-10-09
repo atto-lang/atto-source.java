@@ -6,8 +6,9 @@ resumes through the owning scheduler; I/O workers never execute guest callbacks.
 Existing synchronous APIs remain available for compatibility, but bare
 synchronous I/O names are **legacy**: canonical source-visible native Oreslang
 blocking I/O operations **must** end in `_blocking`, while async I/O operations
-**may** end in `_async`. The current Java/Graal builtins do not yet enforce
-this rule. See the [shared native I/O naming contract](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/docs/NATIVE_IO_NAMING.md).
+**may** end in `_async`. Java/Graal supports an opt-in strict compiler naming gate via
+`-Dores.compiler.strictNativeIo=true`; legacy bare names remain accepted
+by default until downstream migration completes. See the [shared native I/O naming contract](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/docs/NATIVE_IO_NAMING.md).
 
 This migration must add canonical blocking entry points, migrate callers,
 check method/alias paths and test actual blocking/async behavior and capability
@@ -88,7 +89,7 @@ EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 
-## Async-backed `_blocking` I/O migration (implementation in PR #522, CI pending)
+## Async-backed `_blocking` I/O migration (Java/Graal PR #522)
 
 The feature branch now introduces `*_blocking` entry points for filesystem reads/writes, filesystem metadata, TCP connect/socket read/write/close, HTTP client requests, console output, and stdin. These calls are **synchronous only to Oreslang source**: they yield a SourceTask continuation and submit host I/O to `AsyncNativeIo`. The I/O worker is not a scheduler carrier. Java/Graal's continuation path detects `_blocking` calls and automatically awaits the returned host future without exposing it to Oreslang source.
 
@@ -103,7 +104,7 @@ pub routine main(): void {
 }
 ```
 
-`*_async` retains `Future<T>` return semantics. Naming and Java implementation are not evidence of LLVM support. Existing bare entry points remain **legacy compatibility aliases**, and strict rejection plus exhaustive alias/first-class-call checks have not yet been enabled; do not claim the migration is complete until caller conversion, compatibility policy and the test matrix are green.
+`*_async` retains `Future<T>` return semantics. Naming and Java implementation are not evidence of LLVM support. Existing bare entry points remain **legacy compatibility aliases**. Set `-Dores.compiler.strictNativeIo=true` during Java/Graal compilation to reject registered bare filesystem, TCP/network, HTTP-client and stdio I/O names. Strict mode is not yet the default. Native `_blocking` method extraction as a first-class callable is now rejected even without strict mode: the compiler does not yet support implicit suspension effects on indirect calls. The final release gate remains caller conversion, default strict enforcement, and full cross-backend verification.
 
 Native `_blocking` calls must not park an actor carrier, call `Future.get()/join()` on that carrier, or execute guest callbacks on I/O workers. All capability checks and bounded I/O admission remain mandatory.
 
