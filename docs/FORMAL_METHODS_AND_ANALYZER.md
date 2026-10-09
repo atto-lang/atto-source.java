@@ -107,3 +107,42 @@ and treat `ir` as a separately tested analyzer protocol. The v1 actor trace
 contract does not yet carry the detailed lease, continuation, select arm, and
 generation events needed for full runtime refinement; a distinct versioned
 extension and backend instrumentation are required.
+
+## Audit hardening (October 9, 2026)
+
+The actor transition relation now **refuses to dispatch ordinary mail while a
+guest continuation is waiting for I/O completion**. A carrier may be acquired
+only for ready continuations or for eligible runnable mail, and the invariant
+rejects a suspended actor holding a carrier without a ready continuation.
+Because invalid interleavings were removed, the reference two-actor model now
+has 707 reachable states rather than the earlier 949.
+
+The Rust lexical linter now exposes `tokens_checked` and `lint_checked`.
+Unclosed strings, nested block comments, and mismatched/unterminated brackets
+are explicit input errors. The CLI exits nonzero on malformed source rather
+than producing an empty issue list; the compatibility `lint` API emits
+`ORES000` for incomplete analysis. This lexer still does **not** parse source
+semantics, backtick interpolation or the complete grammar.
+
+The compiler-supplied typed-IR validator now recognizes mutable borrows
+across `await`, `select`, `readch`, `writech`, and `yield`, and can flag
+unhandled `may_throw` on any typed IR node. A terminal `return`, `throw` or
+`exit` node cannot declare successors. A non-suspending op cannot claim a
+borrow-across-suspend fact. Cycle membership now uses iterative, linear-time
+SCC analysis rather than quadratic graph walks. All analysis continues to
+depend on correct compiler-generated metadata.
+
+Trace checks reject explicit JSON `null` for typed optional string fields,
+and trace and typed-IR API payloads are bounded at 16 MiB. CLI source walks
+reject symlink inputs, directories deeper than 64, more than 20,000 matching
+files, files larger than 4 MiB, and zero-file scans. Path-based checks are not
+a race-free filesystem sandbox: secure inspection of hostile mutable trees
+requires descriptor-relative, no-follow file opening.
+
+Regression tests cover malformed sources, stale-carrier acquisition,
+mailbox/continuation ordering, closed CFG terminals, select borrowing,
+exception effects, cyclic vs acyclic graphs, null trace fields, oversized
+JSON, and CLI symlink/size failures. The CI workflow now requires Cargo tests,
+strict Clippy, bounded model exploration, trace and typed-IR fixtures. A
+successful model run remains only a bounded **abstract-state** result; no
+production runtime refinement or liveness proof is claimed.
