@@ -68,6 +68,11 @@ final class IdentityReturnChecker {
         }
         for (Ast.Param param : parameters) {
             if (param.name().equals(name)) {
+                String typeName = param.type().name();
+                if (List.of("int", "float", "decimal", "bool", "boolean", "string", "void", "null").contains(typeName)) {
+                    throw new IllegalArgumentException(
+                            "identity return ': " + name + "' requires an identity-bearing object, not value type " + typeName);
+                }
                 if (param.mutable()) throw new IllegalArgumentException(
                         "identity return ': " + name + "' cannot bind a reassignable parameter in " + label);
                 return name;
@@ -126,7 +131,9 @@ final class IdentityReturnChecker {
                 checkBlock(block.body(), scope, origin, module, label);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
-                    checkBlock(branch.body(), scope, origin, module, label);
+                    Scope branchScope = new Scope(scope);
+                    shadowCondition(branch.condition(), branchScope);
+                    checkBlock(branch.body(), branchScope, origin, module, label);
                 }
                 checkBlock(conditional.elseBody(), scope, origin, module, label);
             } else if (stmt instanceof Ast.MatchStmt matched) {
@@ -174,6 +181,20 @@ final class IdentityReturnChecker {
         }
     }
 
+    /** Type- and pattern-test bindings may shadow the identity parameter in a branch. */
+    private static void shadowCondition(Ast.Expr condition, Scope scope) {
+        if (condition instanceof Ast.TypeTestExpr tested && tested.binding() != null) {
+            scope.put(tested.binding(), false);
+        } else if (condition instanceof Ast.PatternTestExpr tested) {
+            shadowPattern(tested.pattern(), scope);
+        } else if (condition instanceof Ast.BinaryExpr pair) {
+            shadowCondition(pair.left(), scope);
+            shadowCondition(pair.right(), scope);
+        } else if (condition instanceof Ast.UnaryExpr unary) {
+            shadowCondition(unary.operand(), scope);
+        }
+    }
+
     private static void shadowPattern(Ast.Pattern pattern, Scope scope) {
         if (pattern instanceof Ast.BindingPattern binding) scope.put(binding.name(), false);
         else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) scope.put(typed.binding(), false);
@@ -201,11 +222,8 @@ final class IdentityReturnChecker {
             List<Callable> sameModule = matches.stream().filter(
                     c -> c.module().equals(module) && c.function().parameters().size() == call.arguments().size()).toList();
             if (sameModule.size() == 1) callee = sameModule.getFirst().function();
-            else if (sameModule.isEmpty()) {
-                List<Callable> global = matches.stream().filter(
-                        c -> c.function().parameters().size() == call.arguments().size()).toList();
-                if (global.size() == 1) callee = global.getFirst().function();
-            }
+            // Calls outside the current module require explicit qualification.
+            // Never infer identity from a potentially different imported symbol.
         } else if (call.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr namespace
                 && !scope.contains(namespace.name())) {

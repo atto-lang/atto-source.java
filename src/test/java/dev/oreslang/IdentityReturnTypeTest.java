@@ -110,7 +110,7 @@ final class IdentityReturnTypeTest {
                 define module m
                   define class T as
                   end
-                  pub fnc decorate(mut T v): v { return v; }
+                  pub fnc decorate(T mut v): v { return v; }
                 end
                 """, "reassignable parameter");
     }
