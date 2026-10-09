@@ -88,7 +88,26 @@ EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 
-## Async-backed `_blocking` I/O migration (not yet implemented)
+## Async-backed `_blocking` I/O migration (implementation in PR #522, CI pending)
+
+The feature branch now introduces `*_blocking` entry points for filesystem reads/writes, filesystem metadata, TCP connect/socket read/write/close, HTTP client requests, console output, and stdin. These calls are **synchronous only to Oreslang source**: they yield a SourceTask continuation and submit host I/O to `AsyncNativeIo`. The I/O worker is not a scheduler carrier. Java/Graal's continuation path detects `_blocking` calls and automatically awaits the returned host future without exposing it to Oreslang source.
+
+Canonical shape:
+
+```ores
+pub routine main(): void {
+  fs.write_text_atomic_blocking("./message.txt", "hello");
+  val String text = fs.read_text_blocking("./message.txt");
+  stdio.println_blocking(text);
+  return;
+}
+```
+
+`*_async` retains `Future<T>` return semantics. Naming and Java implementation are not evidence of LLVM support. Existing bare entry points remain **legacy compatibility aliases**, and strict rejection plus exhaustive alias/first-class-call checks have not yet been enabled; do not claim the migration is complete until caller conversion, compatibility policy and the test matrix are green.
+
+Native `_blocking` calls must not park an actor carrier, call `Future.get()/join()` on that carrier, or execute guest callbacks on I/O workers. All capability checks and bounded I/O admission remain mandatory.
+
+
 
 Existing API names below describe the **currently implemented** Java/Graal
 behavior and are not canonical names under the new language rule. Required
