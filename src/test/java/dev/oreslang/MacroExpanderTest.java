@@ -439,6 +439,152 @@ final class MacroExpanderTest {
         }
     }
 
+
+    @Test
+    void acceptsEmptyParameterPatternsAndAllInvocationDelimiters() {
+        String source = """
+                macro_rules! forty_two { () => { 42 }; }
+                forty_two!() + forty_two!{} + forty_two![]
+                """;
+        MacroExpander.Result expanded = MacroExpander.expand(new Lexer(source).scan());
+        assertEquals(3, expanded.tokens().stream()
+                .filter(t -> t.type() == Token.Type.INT && t.lexeme().equals("42")).count());
+        assertEquals(1, expanded.snapshot().definitions().size());
+        assertFalse(expanded.tokens().stream().anyMatch(t -> t.lexeme().equals("forty_two")));
+    }
+
+    @Test
+    void identCaptureAcceptsOneNameButNotExpressionsOrKeywordTokens() {
+        String definition = "macro_rules! passthrough { ($item:ident) => { $item }; }\n";
+        List<Token> valid = MacroExpander.expand(
+                new Lexer(definition + "passthrough!(some_name)").scan()).tokens();
+        assertTrue(valid.stream().anyMatch(t -> t.type() == Token.Type.IDENT
+                && t.lexeme().equals("some_name")));
+        for (String argument : List.of("123", "some_name + 1", "(some_name)", "return")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(
+                            new Lexer(definition + "passthrough!(" + argument + ")").scan()),
+                    argument);
+        }
+    }
+
+    @Test
+    void tokenTreeCapturePreservesGroupedNestedCommaAndRejectsLooseTrees() {
+        String definition = "macro_rules! tree { ($value:tt) => { $value }; }\n";
+        for (String argument : List.of("abc", "123", "(1, (2, 3))", "[1, (2, 3)]", "{ 1, [2, 3] }")) {
+            List<Token> expected = new Lexer(argument).scan();
+            List<Token> actual = MacroExpander.expand(
+                    new Lexer(definition + "tree!(" + argument + ")").scan()).tokens();
+            assertEquals(expected, actual, argument);
+        }
+        for (String argument : List.of("1 + 2", "(1), (2)", "one two", "(1, 2) + 3")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(
+                            new Lexer(definition + "tree!(" + argument + ")").scan()),
+                    argument);
+        }
+    }
+
+    @Test
+    void rejectsMissingAndTrailingMacroArguments() {
+        String definition = "macro_rules! add { ($a:expr, $b:expr) => { $a + $b }; }\n";
+        for (String arguments : List.of("", "1", "1,", ",1", ",", "1,,2", "1,2,3")) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(
+                            new Lexer(definition + "add!(" + arguments + ")").scan()), arguments);
+            assertTrue(failure.getMessage().contains("macro"), arguments);
+        }
+    }
+
+    @Test
+    void rejectsMalformedMacroPatternsAndUnknownCaptureIdentifiers() {
+        String[] definitions = {
+                "macro_rules! m { ($a:string) => { $a }; }",
+                "macro_rules! m { ($a:expr, $a:expr) => { $a }; }",
+                "macro_rules! m { ($a:expr,) => { $a }; }",
+                "macro_rules! m { ($a:expr) => { $missing }; }",
+                "macro_rules! m { ($a:expr) => { $ }; }",
+                "macro_rules! m { ($a:expr) => { }; }"
+        };
+        for (String definition : definitions) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(definition).scan()), definition);
+        }
+    }
+
+    @Test
+    void fuzzTruncatedMacroDefinitionsFailWithoutUncheckedIndexErrors() {
+        String definition = "macro_rules! truncate { ($x:expr) => { ($x + 1) }; }";
+        int checked = 0;
+        for (int cut = "macro_rules!".length(); cut < definition.length() - 1; cut++) {
+            String truncated = definition.substring(0, cut);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(truncated).scan()),
+                    () -> "accepted truncated definition at cut " + cut);
+            assertFalse(failure instanceof IndexOutOfBoundsException);
+            checked++;
+        }
+        assertTrue(checked > 25);
+    }
+
+    @Test
+    void rejectsUnknownExpansionModeButDoesNotConsumeUnrelatedAnnotations() {
+        String definition = "macro_rules! identity { ($x:expr) => { $x }; }";
+        for (String mode : List.of("gpu", "AOT", "runtime")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(
+                            new Lexer("@expand(" + mode + ")\n" + definition).scan()), mode);
+        }
+        List<Token> ordinary = new Lexer("@expand(foo) fnc ordinary(): void {}").scan();
+        assertEquals(ordinary, MacroExpander.expand(ordinary).tokens());
+    }
+
+    @Test
+    void enforcesDefinitionQuotaAtTwoHundredFiftySix() {
+        StringBuilder source = new StringBuilder();
+        for (int i = 0; i < 256; i++) {
+            source.append("macro_rules! m").append(i)
+                    .append(" { ($x:expr) => { $x }; }\n");
+        }
+        MacroExpander.Result atLimit = MacroExpander.expand(new Lexer(source.toString()).scan());
+        assertEquals(256, atLimit.snapshot().definitions().size());
+        source.append("macro_rules! overflow { ($x:expr) => { $x }; }\n");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(new Lexer(source.toString()).scan()));
+        assertTrue(failure.getMessage().contains("too many macro definitions"), failure.getMessage());
+    }
+
+    @Test
+    void expansionTokenBudgetRejectsLargeAmplification() {
+        String wideTemplate = "1 + ".repeat(900) + "1";
+        String source = "macro_rules! wide { () => { " + wideTemplate + " }; }\n"
+                + "wide!();\n".repeat(50);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(new Lexer(source).scan()));
+        assertTrue(failure.getMessage().contains("token budget"), failure.getMessage());
+    }
+
+    @Test
+    void snapshotAndOutputAreImmutableAndCapturesRetainSourceLocation() {
+        String source = "macro_rules! step { ($v:expr) => { $v + 1 }; }\nstep!(73)";
+        List<Token> input = new Lexer(source).scan();
+        MacroExpander.Result result = MacroExpander.expand(input);
+        Token captured = result.tokens().stream()
+                .filter(t -> t.type() == Token.Type.INT && t.lexeme().equals("73"))
+                .findFirst().orElseThrow();
+        Token emitted = result.tokens().stream()
+                .filter(t -> t.type() == Token.Type.INT && t.lexeme().equals("1"))
+                .findFirst().orElseThrow();
+        assertEquals(2, captured.line());
+        assertEquals(2, emitted.line());
+        assertEquals(7, captured.column());
+        assertEquals(1, emitted.column());
+        assertThrows(UnsupportedOperationException.class, () -> result.tokens().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> result.snapshot().definitions().clear());
+        assertTrue(input.stream().anyMatch(t -> t.lexeme().equals("macro_rules")));
+    }
+
     @Test
     void scalarAndStringArgumentsRetainLexemeValues() {
         String source = """
