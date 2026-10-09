@@ -1,4 +1,4 @@
-use crate::lexer::{tokens,Token};
+use crate::lexer::{tokens_checked,Token};
 #[derive(Clone,Debug)]
 pub struct Diagnostic{pub path:String,pub line:usize,pub column:usize,pub code:&'static str,pub severity:&'static str,pub message:&'static str}
 #[derive(Clone,Copy)]struct Scope{loop_body:bool,async_context:Option<bool>}
@@ -20,10 +20,17 @@ fn body(ts:&[Token],open:usize)->Vec<&str>{
   if t.value=="}"{depth-=1;if depth==0{break}}
   result.push(t.value.as_str());
  }
- result
+ Ok(result)
 }
+
 pub fn lint(src:&str,path:&str,pedantic:bool)->Vec<Diagnostic>{
- let ts=tokens(src);let mut scopes:Vec<Scope>=vec![];let mut result=vec![];
+ match lint_checked(src,path,pedantic){
+  Ok(findings)=>findings,
+  Err(_)=>vec![Diagnostic{path:path.to_string(),line:1,column:1,code:"ORES000",severity:"error",message:"malformed source; lint analysis incomplete"}]
+ }
+}
+pub fn lint_checked(src:&str,path:&str,pedantic:bool)->Result<Vec<Diagnostic>,String>{
+ let ts=tokens_checked(src)?;let mut scopes:Vec<Scope>=vec![];let mut result=vec![];
  for (i,t) in ts.iter().enumerate(){
   let mut add=|code,severity,message|result.push(Diagnostic{
    path:path.into(),line:t.line,column:t.col,code,severity,message
