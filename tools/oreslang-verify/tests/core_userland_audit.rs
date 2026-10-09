@@ -6,7 +6,7 @@ fn event(kind:&str,actor:&str)->Value{
 }
 fn run(mut events:Vec<Value>,complete:bool)->Result<core_trace::Report,core_trace::Violation>{
     for (i,e) in events.iter_mut().enumerate(){e["seq"]=json!(i);}
-    core_trace::check(&json!({"schema_version":"2.0.0","complete":complete,"events":events}).to_string())
+    core_trace::check(&json!({"schema_version":"2.0.0","complete":complete,"capacity":2,"events":events}).to_string())
 }
 fn fixture()->Vec<Value>{
     vec![
