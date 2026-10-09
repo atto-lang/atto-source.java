@@ -104,7 +104,13 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            final Ast.Program checked;
+            try {
+                checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            } catch (IllegalArgumentException badSource) {
+                throw new IllegalArgumentException(
+                        "Oreslang source unit '" + id + "': " + badSource.getMessage(), badSource);
+            }
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
