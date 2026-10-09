@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import static dev.oreslang.parser.Token.Type.*;
 
@@ -24,6 +25,20 @@ public final class MacroExpander {
     private static final int MAX_DEFINITIONS = 256;
     private static final int MAX_DEPTH = 32;
     private static final int MAX_OUTPUT_TOKENS = 50_000;
+    // A token-only implementation cannot yet prove a generated statement, control
+    // delimiter, declaration, or implicit receiver is hygienic. Keep templates
+    // expression-only until typed AST expansion and symbol IDs are implemented.
+    private static final Set<Token.Type> FORBIDDEN_TEMPLATE_TOKENS = Set.of(
+            SEMICOLON, VAL, LET, CONST, FNC, ROUTINE, DEFINE, CLASS, MODULE,
+            ACTOR, ISOACTOR, IMPORT, RETURN, SELF, SUPER, END, FI, DO, IF,
+            ELSE, ELSEIF, THEN, SWITCH, MATCH, MATCHES, WHEN, CASE, DEFAULT,
+            FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, DEFER,
+            TRY, CATCH, FINALLY, STRUCT, INTERFACE, TRAIT, IMPL, CONTRACT,
+            NAMESPACE, TYPE, TYPES, PUB, PRIVATE, STATIC, ABSTRACT,
+            SHARED, UNTRUSTED, GENERATOR, STOP, DONE, DEF,
+            CONFORMS, EXTENDS, IMPLEMENTS, STRUCTURAL, MUT, NLEX, RT,
+            EQUAL, FAT_ARROW, ARROW);
+
 
     public enum Mode { AOT, JIT }
 
@@ -224,8 +239,7 @@ public final class MacroExpander {
             }
             // Deliberately expression-only. In particular, do not introduce lexical bindings,
             // declarations, actor definitions, or local scopes without hygienic symbol IDs.
-            if (List.of(SEMICOLON, VAL, LET, CONST, FNC, ROUTINE, DEFINE, CLASS, MODULE,
-                    ACTOR, ISOACTOR, IMPORT, RETURN).contains(token.type())) {
+            if (FORBIDDEN_TEMPLATE_TOKENS.contains(token.type())) {
                 throw fail(token, "only expression macro bodies are supported");
             }
         }
