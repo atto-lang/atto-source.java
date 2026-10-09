@@ -507,6 +507,10 @@ public final class TypeChecker {
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            if (fn.returnType().isIdentityReturn()
+                    && fn.returnType().identityParameter().equals(param.name())) {
+                requireIdentityBearing(parameterType, "identity return ': " + param.name() + "'");
+            }
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -1089,6 +1093,10 @@ public final class TypeChecker {
             List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                if (method.returnType().isIdentityReturn()
+                        && method.returnType().identityParameter().equals(param.name())) {
+                    requireIdentityBearing(parameterType, "identity return ': " + param.name() + "'");
+                }
                 methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
