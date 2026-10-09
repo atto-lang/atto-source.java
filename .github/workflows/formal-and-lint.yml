@@ -1,8 +1,15 @@
-name: Oreslang Rust model
-on: workflow_dispatch
+name: Oreslang Rust model and lint
+on:
+  pull_request:
+    paths: ['tools/oreslang-verify/**', '.github/workflows/formal-and-lint.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
-      - run: cargo test --manifest-path tools/oreslang-verify/Cargo.toml
+      - run: cargo test --manifest-path tools/oreslang-verify/Cargo.toml --all-targets
+      - run: cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 2 --messages 2 --workers 2 --capacity 1
