@@ -271,6 +271,35 @@ final class PointerlessFncOwnershipTest {
         assertTrue(bad.getMessage().contains("rt share"), bad.getMessage());
     }
 
+    @Test
+    void rtTakeCannotAliasProjectedSourceStorage() {
+        for (String source : java.util.List.of(
+                """
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc bad(): void {
+                  val Box object = new Box();
+                  val stolen = rt take object.value;
+                  return;
+                }
+                """,
+                """
+                fnc bad(): void {
+                  val Array<int> values = new Array<int>();
+                  values.add(1);
+                  val stolen = rt take values[0];
+                  return;
+                }
+                """)) {
+            IllegalArgumentException bad = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(bad.getMessage().contains("rt take"), bad.getMessage());
+            assertTrue(bad.getMessage().contains("source slot"), bad.getMessage());
+        }
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
