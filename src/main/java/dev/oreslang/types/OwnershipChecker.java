@@ -803,6 +803,15 @@ public final class OwnershipChecker {
                             ownershipRoot(owner));
                 }
                 case "take" -> {
+                    // Consuming an indexed/member expression currently returns its
+                    // value without clearing the original storage slot. That is an
+                    // alias, not a move. Until place-expression moves have an
+                    // atomic remove/uninitialize lowering, accept named owners only.
+                    if (!(argument instanceof Ast.NameExpr)) {
+                        throw error("rt take requires a named owned binding; field/index"
+                                + " ownership transfer is unsupported until the source slot"
+                                + " can be invalidated");
+                    }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
                             || (taken.type != null && taken.type.isBorrow())) {
