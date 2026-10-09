@@ -1418,6 +1418,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "self.send is only valid during an actor execution turn");
         }
+        if (cell.activeMail != null
+                && cell.codeExecutor != null
+                && cell.sourceMessages.get(cell.activeMail.sequence()) != cell.activeMail) {
+            throw new IllegalStateException("cannot emit after m.done()");
+        }
         Objects.requireNonNull(
                 value,
                 "actor output values cannot be null; use Option<T>");
