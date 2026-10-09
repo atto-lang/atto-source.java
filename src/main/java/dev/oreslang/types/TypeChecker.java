@@ -4118,6 +4118,27 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        if (named.name().equals("fs") || named.name().equals("File")) {
+            Type string = Primitive.STRING;
+            Type booleanType = Primitive.BOOL;
+            switch (name) {
+                case "list_dir": return new Function(List.of(string), new ListType(string));
+                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
+                case "read_text": return new Function(List.of(string), string);
+                case "write_text", "append_text":
+                    return new Function(List.of(string, string), Primitive.VOID);
+                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
+                default: break;
+            }
+        }
+        if (named.name().equals("env")) {
+            switch (name) {
+                case "get": return new Function(List.of(Primitive.STRING),
+                        new Named("Option", List.of(Primitive.STRING)));
+                case "has": return new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                default: break;
+            }
+        }
         Type result;
         List<Type> parameters;
         switch (named.name()) {
