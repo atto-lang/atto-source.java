@@ -898,10 +898,12 @@ public final class TypeChecker {
                         || !field.type().name().equals("int")
                         || !(field.initializer() instanceof Ast.LiteralExpr literal)
                         || !(literal.value() instanceof Number number)
-                        || number.longValue() < 1 || number.longValue() > 1024
+                        || number.longValue() < 1
+                        || number.longValue() > (klass.actorKind() == Ast.ActorKind.UNTRUSTED ? 32 : 1024)
                         || number.doubleValue() != number.longValue()) {
                     throw new IllegalArgumentException(
-                            "actor concurrency must be immutable, literal int in 1..1024");
+                            "actor concurrency must be an immutable literal int, "
+                                    + "1..32 for untrusted actors or 1..1024 otherwise");
                 }
             }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
