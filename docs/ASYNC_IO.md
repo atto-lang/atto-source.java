@@ -89,6 +89,24 @@ EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 
+## Blocking I/O naming migration (not yet implemented)
+
+Existing API names below describe the **currently implemented** Java/Graal
+behavior and are not canonical names under the new language rule. Required
+canonical replacements include `fs.list_dir_blocking`,
+`fs.is_dir_blocking`, `fs.is_symlink_blocking` and
+`fs.write_text_atomic_blocking`. `stdio.println` and any other synchronous
+file/console/network I/O builtins must also be audited and either renamed with
+`_blocking` or implemented with a verified async contract. The already
+documented `*_async` functions remain correctly named; the suffix is optional
+for genuinely async calls.
+
+Do not switch the documentation to claim those replacement functions work
+until the builtin resolver, compiler conformance tests and dependent CLI
+programs have been migrated. Migration must check qualified methods and
+aliases, explicit capability gating, diagnostics for legacy bare calls,
+and two-actor scheduling tests proving async calls do not block a carrier.
+
 ## Synchronous directory operations (Oreslang stack CLI)
 
 The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): List<String>`,
