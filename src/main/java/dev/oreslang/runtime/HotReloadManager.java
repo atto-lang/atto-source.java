@@ -41,6 +41,12 @@ public final class HotReloadManager implements AutoCloseable {
     private static final int MAX_ADVERSARIAL_CODE_UNIT_ID_CHARS = 512;
     private static final int MAX_ADVERSARIAL_LIVE_GENERATIONS = 8;
 
+    private record ModuleContractSurface(String digest, Set<String> callableKeys) {
+        private ModuleContractSurface {
+            callableKeys = Set.copyOf(callableKeys);
+        }
+    }
+
     private final IsolatePolicy supervisorPolicy;
     private final IsolatePolicy guestPolicy;
     private final ExecutionProfile executionProfile;
@@ -93,7 +99,7 @@ public final class HotReloadManager implements AutoCloseable {
             boolean activateImmediately,
             String moduleName,
             String contractName,
-            String moduleContractDigest) {
+            ModuleContractSurface contractSurface) {
         validateAdmissionInputs(name, sourceText);
         ensureGenerationCapacity();
         name = normalizeCodeUnitId(name);
@@ -106,7 +112,7 @@ public final class HotReloadManager implements AutoCloseable {
                     guestPolicy);
             return stage(name, digest(sourceText), sourceText, false,
                     initializeModuleOnly, activateImmediately,
-                    moduleName, contractName, moduleContractDigest);
+                    moduleName, contractName, contractSurface);
         }
 
         try (SharedCodeRegistry.Lease image =
@@ -114,7 +120,7 @@ public final class HotReloadManager implements AutoCloseable {
             CapabilityChecker.check(image.checkedProgram(), guestPolicy);
             return stage(name, image.sha256(), sourceText, true,
                     initializeModuleOnly, activateImmediately,
-                    moduleName, contractName, moduleContractDigest);
+                    moduleName, contractName, contractSurface);
         }
     }
 
@@ -171,7 +177,7 @@ public final class HotReloadManager implements AutoCloseable {
                     "hot-loaded source root scope may contain only module contract declarations");
         }
 
-        String moduleContractDigest = moduleContractSetDigest(checked, moduleName);
+        ModuleContractSurface contractSurface = moduleContractSurface(checked, moduleName);
         return loadInternal(
                 codeUnitId,
                 sourceText,
@@ -179,7 +185,7 @@ public final class HotReloadManager implements AutoCloseable {
                 false,
                 moduleName,
                 contractName,
-                moduleContractDigest);
+                contractSurface);
     }
 
     /**
@@ -337,7 +343,7 @@ public final class HotReloadManager implements AutoCloseable {
                 generation.initializeModuleOnly,
                 generation.moduleName,
                 generation.contractName,
-                generation.moduleContractDigest);
+                generation.contractSurface);
     }
 
     private static void ensureReplacementCompatibility(
@@ -345,7 +351,7 @@ public final class HotReloadManager implements AutoCloseable {
             boolean initializeModuleOnly,
             String moduleName,
             String contractName,
-            String moduleContractDigest) {
+            ModuleContractSurface contractSurface) {
         if (current == null) return;
         if (current.initializeModuleOnly != initializeModuleOnly) {
             throw new IllegalStateException(
@@ -362,7 +368,9 @@ public final class HotReloadManager implements AutoCloseable {
                     "hot-loaded module contract changed for code unit '" + current.codeUnitId()
                             + "'; explicit migration is required");
         }
-        if (!java.util.Objects.equals(current.moduleContractDigest, moduleContractDigest)) {
+        if (!java.util.Objects.equals(
+                current.contractSurface == null ? null : current.contractSurface.digest(),
+                contractSurface == null ? null : contractSurface.digest())) {
             throw new IllegalStateException(
                     "module contract ABI changed for code unit '" + current.codeUnitId()
                             + "'; an ordinary hot reload must preserve the complete declared contract set");
@@ -401,7 +409,7 @@ public final class HotReloadManager implements AutoCloseable {
      * a same-named contract to a weaker signature or drop another declared
      * contract and still pass simply by supplying the same contract name.
      */
-    private static String moduleContractSetDigest(Ast.Program program, String moduleName) {
+    private static ModuleContractSurface moduleContractSurface(Ast.Program program, String moduleName) {
         Ast.ModuleDecl module = program.modules().stream()
                 .filter(candidate -> candidate.name().equals(moduleName))
                 .findFirst()
@@ -434,11 +442,12 @@ public final class HotReloadManager implements AutoCloseable {
 
         Set<String> visiting = new LinkedHashSet<>();
         Set<String> visited = new HashSet<>();
+        Set<String> callableKeys = new HashSet<>();
         for (Ast.TypeRef ref : contractRefs) {
             Ast.InterfaceDecl contract = findModuleContractDeclaration(program, ref.name());
-            appendContractClosure(program, contract, abi, visiting, visited);
+            appendContractClosure(program, contract, abi, visiting, visited, callableKeys);
         }
-        return digest(abi.toString());
+        return new ModuleContractSurface(digest(abi.toString()), callableKeys);
     }
 
     private static Ast.InterfaceDecl findModuleContractDeclaration(
@@ -467,7 +476,8 @@ public final class HotReloadManager implements AutoCloseable {
             Ast.InterfaceDecl contract,
             StringBuilder abi,
             Set<String> visiting,
-            Set<String> visited) {
+            Set<String> visited,
+            Set<String> callableKeys) {
         String identity = contract.name();
         if (visiting.contains(identity)) {
             throw new IllegalArgumentException(
@@ -502,6 +512,7 @@ public final class HotReloadManager implements AutoCloseable {
                 }
                 signature.append(")=>").append(contractTypeText(function.returnType()));
                 memberAbi.add(signature.toString());
+                callableKeys.add(function.name() + "#" + function.parameters().size());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 String binding = field.bindingKind() == null
                         ? "readable"
@@ -517,7 +528,7 @@ public final class HotReloadManager implements AutoCloseable {
                 .toList();
         for (Ast.TypeRef parentRef : parents) {
             Ast.InterfaceDecl parent = findModuleContractDeclaration(program, parentRef.name());
-            appendContractClosure(program, parent, abi, visiting, visited);
+            appendContractClosure(program, parent, abi, visiting, visited, callableKeys);
         }
         visiting.remove(identity);
     }
@@ -651,14 +662,14 @@ public final class HotReloadManager implements AutoCloseable {
             boolean activateImmediately,
             String moduleName,
             String contractName,
-            String moduleContractDigest) {
+            ModuleContractSurface contractSurface) {
         ensureGenerationCapacity();
         ensureReplacementCompatibility(
                 activeByCodeUnit.get(codeUnitId),
                 initializeModuleOnly,
                 moduleName,
                 contractName,
-                moduleContractDigest);
+                contractSurface);
 
         long id = sequence.incrementAndGet();
         Context context =
@@ -710,7 +721,7 @@ public final class HotReloadManager implements AutoCloseable {
                     expectedPreviousActiveId,
                     moduleName,
                     contractName,
-                    moduleContractDigest);
+                    contractSurface);
             generations.put(id, generation);
             if (activateImmediately) {
                 activeByCodeUnit.put(codeUnitId, generation);
@@ -820,7 +831,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final boolean initializeModuleOnly;
         private final String moduleName;
         private final String contractName;
-        private final String moduleContractDigest;
+        private final ModuleContractSurface contractSurface;
         // Store only a generation ID, not a Generation reference: an active
         // upgraded generation must not keep every retired predecessor/context
         // alive through a chain of expectedPreviousActive pointers.
@@ -842,7 +853,7 @@ public final class HotReloadManager implements AutoCloseable {
                 long expectedPreviousActiveId,
                 String moduleName,
                 String contractName,
-                String moduleContractDigest) {
+                ModuleContractSurface contractSurface) {
             this.owner = java.util.Objects.requireNonNull(owner, "owner");
             this.id = id;
             this.codeUnitId = codeUnitId;
@@ -856,7 +867,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.expectedPreviousActiveId = expectedPreviousActiveId;
             this.moduleName = moduleName;
             this.contractName = contractName;
-            this.moduleContractDigest = moduleContractDigest;
+            this.contractSurface = contractSurface;
         }
 
         public long id() { return id; }
