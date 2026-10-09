@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.IncrementalCompiler;
+import java.util.Map;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -95,4 +97,14 @@ final class PolyglotClientContractAdmissionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(invalid));
     }
+    @Test
+    void incrementalCompilerDiagnosticsIdentifyFailingSourceUnit() {
+        String malformed = """
+                fnc invalid(): int { return "string"; }
+                """;
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                new IncrementalCompiler().compile(Map.of("payload/invalid.ores", malformed)));
+        assertTrue(error.getMessage().contains("payload/invalid.ores"), error.getMessage());
+    }
+
 }
