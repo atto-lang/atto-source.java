@@ -28,6 +28,7 @@ public final class OresVM implements AutoCloseable {
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    private final OresScheduler controlScheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -51,15 +52,27 @@ public final class OresVM implements AutoCloseable {
                 factory,
                 new ThreadPoolExecutor.AbortPolicy());
 
+        // The ROOT process serializes user code, not the CONTROL carrier pool.
+        // It can migrate carriers between non-overlapping source turns.
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
-                rootAdmission == null ? controlParallelism : 1,
-                rootAdmission == null ? controlExecutor : rootAdmission,
+                1,
+                new SerialProcessExecutor(
+                        rootAdmission == null ? controlExecutor : rootAdmission,
+                        DEFAULT_QUEUE_CAPACITY),
+                turnExecutor);
+        // ActorGroup mailmen have individual execution leases and can run in
+        // parallel with ROOT and with mailmen from other groups.
+        this.controlScheduler = OresScheduler.runtimeOwned(
+                "ores-control-scheduler",
+                controlParallelism,
+                controlExecutor,
                 turnExecutor);
         try {
             startup();
         } catch (RuntimeException | Error failure) {
             rootScheduler.close();
+            controlScheduler.close();
             controlExecutor.shutdownNow();
             throw failure;
         }
@@ -122,6 +135,10 @@ public final class OresVM implements AutoCloseable {
         return controlExecutor.getPoolSize();
     }
 
+    int controlParallelism() {
+        return controlScheduler.parallelism();
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -144,7 +161,7 @@ public final class OresVM implements AutoCloseable {
             throw new RejectedExecutionException(
                     "Oreslang VM CONTROL dispatcher is not available");
         }
-        return rootScheduler.startSync(() -> {
+        return controlScheduler.startSync(() -> {
             task.run();
             return null;
         });
@@ -161,17 +178,21 @@ public final class OresVM implements AutoCloseable {
         try {
             rootScheduler.close();
         } finally {
-            controlExecutor.shutdownNow();
             try {
-                if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                controlScheduler.close();
+            } finally {
+                controlExecutor.shutdownNow();
+                try {
+                    if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "Oreslang CONTROL scheduler carriers did not terminate");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                     throw new IllegalStateException(
-                            "Oreslang CONTROL scheduler carriers did not terminate");
+                            "interrupted while closing Oreslang CONTROL scheduler",
+                            interrupted);
                 }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "interrupted while closing Oreslang CONTROL scheduler",
-                        interrupted);
             }
         }
     }

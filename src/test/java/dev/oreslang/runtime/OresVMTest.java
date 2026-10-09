@@ -38,9 +38,9 @@ final class OresVMTest {
         OresVM vm = OresVM.create(Runnable::run);
         try {
             assertTrue(vm.started());
-            assertEquals(
-                    vm.rootScheduler().parallelism(),
-                    vm.controlCarrierCount(),
+            assertEquals(1, vm.rootScheduler().parallelism(),
+                    "ROOT is one logical user-code process");
+            assertEquals(vm.controlParallelism(), vm.controlCarrierCount(),
                     "all CONTROL carriers must be resident before root execution");
 
             OresFuture<String> first =
@@ -83,9 +83,100 @@ final class OresVMTest {
             assertTrue(dispatch > 0L);
             vm.startup();
             vm.startup();
-            assertEquals(vm.rootScheduler().parallelism(), vm.controlCarrierCount());
+            assertEquals(vm.controlParallelism(), vm.controlCarrierCount());
         } finally {
             vm.close();
+        }
+    }
+
+    @Test
+    void rootTasksAreSingleFlightWhileControlPoolRemainsParallel() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run)) {
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var active = new java.util.concurrent.atomic.AtomicInteger();
+            var maximum = new java.util.concurrent.atomic.AtomicInteger();
+
+            OresFuture<Integer> first = vm.rootScheduler().startSync(() -> {
+                int now = active.incrementAndGet();
+                maximum.accumulateAndGet(now, Math::max);
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test gate timed out");
+                    }
+                    return 1;
+                } finally {
+                    active.decrementAndGet();
+                }
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            var rest = new java.util.ArrayList<OresFuture<Integer>>();
+            for (int i = 0; i < 64; i++) {
+                rest.add(vm.rootScheduler().startSync(() -> {
+                    int now = active.incrementAndGet();
+                    maximum.accumulateAndGet(now, Math::max);
+                    try { return now; }
+                    finally { active.decrementAndGet(); }
+                }));
+            }
+
+            // This is a separate logical control/mailman domain, not ROOT.
+            assertEquals(42, vm.executeControl(() -> {}).thenApply(v -> 42)
+                    .get(5, TimeUnit.SECONDS));
+            release.countDown();
+            assertEquals(1, first.get(5, TimeUnit.SECONDS));
+            for (var future : rest) {
+                assertEquals(1, future.get(5, TimeUnit.SECONDS));
+            }
+            assertEquals(1, maximum.get(), "no two ROOT tasks may overlap");
+        }
+    }
+
+    @Test
+    void rootAwaitReleasesProcessLaneAndContinuationReturnsThroughIt()
+            throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run)) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            var turns = new java.util.concurrent.atomic.AtomicInteger();
+            OresFuture<Integer> waiting = vm.rootScheduler().start(resume -> {
+                if (turns.getAndIncrement() == 0) return OresScheduler.await(gate);
+                return OresScheduler.done((Integer) resume.value() + 1);
+            });
+            OresFuture<Integer> other = vm.rootScheduler().startSync(() -> 7);
+            assertEquals(7, other.get(5, TimeUnit.SECONDS));
+            assertTrue(!waiting.isDone());
+            Thread producer = Thread.ofPlatform().start(() -> gate.completeFromRuntime(41));
+            producer.join();
+            assertEquals(42, waiting.get(5, TimeUnit.SECONDS));
+            assertEquals(2, turns.get());
+        }
+    }
+
+    @Test
+    void independentRootProcessesCanRunInParallel() throws Exception {
+        try (OresVM grandaddy = OresVM.create(Runnable::run);
+             OresVM daddy = OresVM.create(Runnable::run)) {
+            var bothEntered = new java.util.concurrent.CountDownLatch(2);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<Integer> body = () -> {
+                bothEntered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("parallel process test timed out");
+                }
+                return 1;
+            };
+            OresFuture<Integer> parent = grandaddy.rootScheduler().startSync(body);
+            OresFuture<Integer> child = daddy.rootScheduler().startSync(body);
+            try {
+                assertTrue(bothEntered.await(5, TimeUnit.SECONDS),
+                        "different process lanes must not share a global lock");
+            } finally {
+                release.countDown();
+            }
+            assertEquals(1, parent.get(5, TimeUnit.SECONDS));
+            assertEquals(1, child.get(5, TimeUnit.SECONDS));
         }
     }
 }
