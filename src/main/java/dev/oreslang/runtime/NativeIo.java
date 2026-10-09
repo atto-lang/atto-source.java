@@ -75,12 +75,15 @@ public final class NativeIo {
      */
     private static Path metadataTarget(OresContext context, String rawPath, String operation) {
         Path lexical = lexicalPath(rawPath);
-        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), operation);
         Path parent = lexical.getParent();
         if (parent == null) throw new IllegalArgumentException("metadata path has no parent");
-        Path target = realPath(parent).resolve(lexical.getFileName());
-        context.requirePermission(RuntimePermissions.Permission.READ, target.toString(), operation);
-        return target;
+        // Metadata only reads the entry in its parent, not the target of a
+        // symbolic link. Requiring READ on the child would canonicalize a
+        // symlink to its target and incorrectly reject detecting unsafe links.
+        // Resolve/check the parent instead; ancestor escapes still fail.
+        Path canonicalParent = realPath(parent);
+        context.requirePermission(RuntimePermissions.Permission.READ, canonicalParent.toString(), operation);
+        return canonicalParent.resolve(lexical.getFileName());
     }
 
     public static boolean isSymlink(OresContext context, String rawPath) {
