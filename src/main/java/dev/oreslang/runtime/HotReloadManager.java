@@ -24,8 +24,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * Versioned source hot loader.
  *
  * Loading is side-effect free with respect to guest execution: source is
- * parsed/type/capability checked, then assigned a fresh context. The trusted
- * supervisor explicitly starts the generation after activation.
+ * parsed/type/capability checked, then assigned a fresh context. Legacy
+ * code-unit loading preserves its active-slot behavior; module loading stages
+ * and initializes a candidate before publishing it as active.
  *
  * Trusted/private contexts share one process code image and Graal code cache.
  * Adversarial contexts are private by default and may reuse a process-owned
@@ -191,7 +192,6 @@ public final class HotReloadManager implements AutoCloseable {
             } finally {
                 if (previous != null && !previous.closed()) {
                     activeByCodeUnit.put(codeUnitId, previous);
-                    active.set(previous);
                 } else {
                     activeByCodeUnit.remove(codeUnitId);
                 }
@@ -438,7 +438,7 @@ public final class HotReloadManager implements AutoCloseable {
         return generation;
     }
 
-    /** Last generation staged, retained for compatibility with the single-unit API. */
+    /** Last selected active generation, retained for the single-unit compatibility API. */
     public synchronized Generation active() { return active.get(); }
 
     /** Active generation for one independently compiled code unit. */
