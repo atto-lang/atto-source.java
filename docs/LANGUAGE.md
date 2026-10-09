@@ -120,9 +120,11 @@ define module math conforms MathApi as
 end
 ```
 
-Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
+Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields as well as functions. An unqualified field requirement such as `String name;` or `name: String;` means “a readable exported field of this type”; the implementing module may expose it as `const`, `val`, or `let`. An explicit `const`, `val`, or `let` in the contract requires that exact binding kind.
 
-A module contract is not a class/struct interface and cannot be implemented by a class or actor.
+A module may conform to multiple contracts with comma-separated names. Contract declarations are private to their code unit by default; use `pub define contract ...` when the contract must be selected via `import contract`. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead. Contract identity, field binding requirements, and a module's declared `conforms` list are part of the incremental compilation ABI.
+
+A module contract is not a class/struct interface and cannot be implemented by a class or actor. The initial runtime hot-load API is deliberately narrower than ordinary compilation: it rejects source imports, accepts only non-generic requested contracts, and initializes the one named module without invoking the source program's `main()`. See [HOT_RELOAD.md](HOT_RELOAD.md).
 
 ## Functions and returns
 
