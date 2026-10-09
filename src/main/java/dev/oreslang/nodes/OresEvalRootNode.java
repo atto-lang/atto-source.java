@@ -8858,7 +8858,7 @@ public final class OresEvalRootNode extends RootNode {
     private record ProcessFacade(OresContext context) {
         private Object exit(List<Object> args) {
             requireOne(args, "std.process.exit");
-            if (ActorRuntime.currentActorId().isPresent()) {
+            if (ActorRuntime.currentActorId().isPresent() || ActorRuntime.currentActorPolicy() != null) {
                 throw new SecurityException("an actor cannot terminate its owning process");
             }
             context.requireCapability(IsolatePolicy.Capability.PROCESS_EXIT, "std.process.exit");
