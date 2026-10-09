@@ -1927,7 +1927,8 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinStdoutCall(call, "log", env)) {
+            if (isBuiltinStdoutCall(call, "log", env)
+                    || isBuiltinStdoutCall(call, "log_blocking", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -1940,7 +1941,8 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "logList", env)) {
+            if (isBuiltinStdoutCall(call, "logList", env)
+                    || isBuiltinStdoutCall(call, "logList_blocking", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
                 }
@@ -2888,7 +2890,7 @@ public final class TypeChecker {
                         || member.member().equals("logList_blocking")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
-                if (member.member().equals("log")) {
+                if (member.member().equals("log") || member.member().equals("log_blocking")) {
                     throw new IllegalArgumentException(
                             "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
                 }
@@ -2896,7 +2898,7 @@ public final class TypeChecker {
             if (receiver instanceof Named named
                     && named.name().equals("stdio.stdin")
                     && (member.member().equals("read_line") || member.member().equals("read_line_blocking"))) {
-                return new Function(List.of(), Primitive.STRING);
+                return new Function(List.of(), new Named("Option", List.of(Primitive.STRING)));
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process")
