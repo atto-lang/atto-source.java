@@ -36,8 +36,8 @@ class CooperativeBlockingIoTest {
     @Test void blockingIoReturnsValuesInOrdinarySynchronousRoutine() throws Exception {
         Path dir = Files.createDirectories(root.resolve("data"));
         Path file = dir.resolve("hello.txt");
-        String path = file.toString().replace("\", "\\\");
-        String folder = dir.toString().replace("\", "\\\");
+        String path = file.toString().replace("\\", "\\\\");
+        String folder = dir.toString().replace("\\", "\\\\");
         String program = """
             pub routine main(): void {
               fs.write_text_atomic_blocking("%s", "hello");
@@ -112,7 +112,7 @@ class CooperativeBlockingIoTest {
     }
 
     @Test void blockingIOMaintainsDeniedCapabilities() throws Exception {
-        String file = root.resolve("denied.txt").toString().replace("\", "\\\");
+        String file = root.resolve("denied.txt").toString().replace("\\", "\\\\");
         String source = """
             pub routine main(): void {
               fs.write_text_blocking("%s", "forbidden");
