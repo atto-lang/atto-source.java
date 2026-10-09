@@ -20,7 +20,11 @@ pub fn invariant(s:&SelectState,arms:u8)->Result<(),String>{
  if (s.cancelled||s.winner.is_some())&&s.registered!=0{
   return Err("terminal select retained losing arms".into())
  }
- if let Some(win)=s.winner{if win>=arms{return Err("winner out of range".into())}}
+ if let Some(win)=s.winner{
+  if win>=arms{return Err("winner out of range".into())}
+  if s.closed & (1u8<<win)!=0{return Err("select winner was already closed".into())}
+  if !s.wake_queued&&!s.notified{return Err("lost committed winner notification".into())}
+ }
  if (s.wake_queued||s.notified)&&s.winner.is_none(){
   return Err("wake without committed winner".into())
  }
@@ -94,6 +98,14 @@ mod tests{
  #[test]fn catch_double_notify(){
   let s=SelectState{winner:Some(0),notified:true,wake_queued:true,..initial()};
   assert!(invariant(&s,2).unwrap_err().contains("duplicate"));
+ }
+ #[test]fn reject_lost_winner_notification(){
+  let s=SelectState{winner:Some(0),..initial()};
+  assert!(invariant(&s,2).unwrap_err().contains("lost committed"));
+ }
+ #[test]fn reject_closed_select_winner(){
+  let s=SelectState{winner:Some(0),closed:1,wake_queued:true,..initial()};
+  assert!(invariant(&s,2).unwrap_err().contains("already closed"));
  }
  #[test]fn stale_state_budget_fails_closed(){
   assert!(explore(3,2).unwrap_err().contains("NOT exhaustive"));
