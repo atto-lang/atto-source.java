@@ -16,6 +16,19 @@ supervision must all obey the same single-writer rule.
 
 There is one probe per ActorCell, scoped to a runtime and discarded at actor
 termination. We do not keep an unbounded global string-key mutex registry.
+Actor authority is **not** installed on a carrier until both the optional
+CAS witness and mandatory lifecycle lease admit a turn. After guest code and
+final cleanup unwind, actor `ThreadLocal` identity is cleared **before** the
+witness is released. The host-side actor-exit hook runs without guest actor
+authority; lifecycle accounting still protects finalization.
+
+`TurnExecutor` may run the actual guest turn on a thread other than the
+dispatching thread. `isActorCarrierThread()` therefore marks the **executing**
+carrier within the turn, restoring the thread's previous carrier marker on
+normal exit, failure, or finalization. The outer dispatcher retains its own
+marker only for its own dispatch work. This is tested with delegated platform
+threads as well as native carriers.
+
 Each probe records the incumbent and competing Java carrier Thread identities;
 for native-pthread-backed dispatchers the Java Thread is the host carrier
 representation, not an independent OS-level `pthread_self()` measurement.
