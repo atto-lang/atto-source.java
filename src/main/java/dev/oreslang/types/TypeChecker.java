@@ -2828,8 +2828,16 @@ public final class TypeChecker {
                                 new Named("ReadableStream", List.of(channelType.arguments().getFirst())));
                     }
                     case "tee" -> {
-                        if (!isGlobalStdOutputChannel(member.receiver(), env)) {
-                            throw new IllegalArgumentException("tee(target) requires an output descriptor");
+                        // A local variable can hold a writable stdio alias. Its
+                        // static Channel<String> type does not preserve the
+                        // concrete endpoint, so reject *known* input here,
+                        // and let runtime subtype identity gate other aliases.
+                        if (isGlobalStdInputChannel(member.receiver(), env)) {
+                            throw new IllegalArgumentException("tee(target) requires a writable output descriptor");
+                        }
+                        Type item = channelType.arguments().getFirst();
+                        if (item != Unknown.INSTANCE && !assignable(item, Primitive.STRING)) {
+                            throw new IllegalArgumentException("tee(target) requires Channel<String>");
                         }
                         yield new Function(List.of(new Named("Channel", List.of(Primitive.STRING))),
                                 new Named("WritableTee", List.of()));
