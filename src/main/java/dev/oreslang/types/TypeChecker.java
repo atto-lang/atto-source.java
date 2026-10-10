@@ -288,6 +288,12 @@ public final class TypeChecker {
             Record expected = (Record) substituteGenerics(expectedTemplate,
                     genericBindings(contract.genericParameters(), namedRef.arguments(), "contract " + contract.name()));
             if (!assignable(actual, expected)) {
+                String identityConflict = mismatchedIdentitySlot(actual, expected);
+                if (identityConflict != null) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' cannot weaken contract identity return '"
+                                    + identityConflict + "' of " + ref.name());
+                }
                 throw new IllegalArgumentException("module '" + module.name() + "' does not conform to contract '" + ref.name()
                         + "': expected " + expected + " but got " + actual);
             }
@@ -1187,6 +1193,12 @@ public final class TypeChecker {
                     genericBindings(iface.genericParameters(), interfaceType.arguments(), "interface " + iface.name()));
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
+                String identityConflict = mismatchedIdentitySlot(actual, expected);
+                if (identityConflict != null) {
+                    throw new IllegalArgumentException(
+                            "class '" + klass.name() + "' cannot weaken interface identity return '"
+                                    + identityConflict + "' of " + interfaceRef.name());
+                }
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
@@ -5976,9 +5988,38 @@ public final class TypeChecker {
         boolean compatible = methodSlot ? existing.equals(type)
                 : existing == null || (assignable(existing, type) && assignable(type, existing));
         if (!compatible) {
+            if (methodSlot && existing instanceof Function inherited
+                    && type instanceof Function replacement
+                    && inherited.identitySource() != Function.NO_IDENTITY
+                    && inherited.identitySource() != replacement.identitySource()) {
+                String error = owner.startsWith("interface ")
+                        ? "cannot weaken inherited identity contract"
+                        : "cannot weaken inherited identity return";
+                throw new IllegalArgumentException(error + " for '" + name + "' in " + owner
+                        + ": required source slot " + inherited.identitySource()
+                        + " but provided " + replacement.identitySource());
+            }
             throw new IllegalArgumentException("conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
         }
         members.put(name, type);
+    }
+
+    /**
+     * Identify the precise identity ABI mismatch before reporting a generic
+     * structural implementation failure. This preserves useful diagnostics
+     * while provenance-aware assignability rejects unsound implementations.
+     */
+    private String mismatchedIdentitySlot(Record actual, Record expected) {
+        for (Map.Entry<String, Type> required : expected.members().entrySet()) {
+            if (!(required.getValue() instanceof Function promise)
+                    || promise.identitySource() == Function.NO_IDENTITY) continue;
+            Type supplied = actual.members().get(required.getKey());
+            if (supplied instanceof Function implementation
+                    && implementation.identitySource() != promise.identitySource()) {
+                return required.getKey();
+            }
+        }
+        return null;
     }
 
     private Type trapResult(boolean trapped, Type result) {
