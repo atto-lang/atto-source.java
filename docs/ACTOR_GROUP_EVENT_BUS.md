@@ -44,8 +44,8 @@ available*:
 ```ores
 val worker = spawn WorkerActor();          // ActorRef<WorkerActor>, no start barrier
 val initialized = await spawn WorkerActor(); // ActorRef<WorkerActor>, on_start completed
-await worker.ready;                         // equivalent explicit barrier
-await worker.done;                          // waits for termination/finalization
+await worker.get_ready();                   // Future<void> startup barrier
+await worker.get_done();                    // Future<void> finalization barrier
 ```
 
 `await spawn` must not wait for termination and must not discard the ActorRef.
