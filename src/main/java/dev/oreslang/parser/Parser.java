@@ -1642,6 +1642,21 @@ public final class Parser {
         return i < tokens.size() && tokens.get(i).type() == LBRACE;
     }
 
+    /** A select arm participates in one atomic selection; only the enclosing select sets its wait mode. */
+    private void rejectPerArmChannelWaitModifier() {
+        if ((check(NB) || check(TRY))
+                && (checkNext(READCH) || checkNext(WRITECH))) {
+            Token modifier = peek();
+            Token operation = tokens.get(current + 1);
+            throw error(modifier,
+                    "select arm cannot use '" + modifier.lexeme() + " "
+                            + operation.lexeme()
+                            + "'; put the wait mode on the enclosing select "
+                            + "('select', 'nb select', or 'try select') and use "
+                            + "plain 'readch' or 'writech' in each arm");
+        }
+    }
+
     private Ast.SelectStmt parseStaticSelectStatement() {
         boolean explicitDo = match(DO);
         Ast.WaitMode mode = Ast.WaitMode.BLOCKING;
@@ -1661,6 +1676,7 @@ public final class Parser {
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
             if (matchContextualKeyword("when", "case")) {
+                rejectPerArmChannelWaitModifier();
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -1697,6 +1713,7 @@ public final class Parser {
                     }
                     bindingName = consume(IDENT, "select read case requires binding name").lexeme();
                     consume(EQUAL, "select case binding requires '='");
+                    rejectPerArmChannelWaitModifier();
                     consume(READCH, "select case binding requires readch");
                     consume(LPAREN, "binding-first select readch requires '('");
                     channel = parseExpression();
