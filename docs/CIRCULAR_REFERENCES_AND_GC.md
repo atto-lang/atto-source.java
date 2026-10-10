@@ -100,6 +100,25 @@ gate, not a declaration that such lowering has already shipped. A strict
 mode must fail closed on unproved ordinary source allocations, escape to
 the host heap, FFI edge, resurrection or async lifetime.
 
+## Cross-heap cycle hazard with Graal polyglot isolates
+
+A dedicated GraalVM polyglot isolate has its own **managed** guest heap and
+collector, separate from the host. This is useful actor/tenant isolation but
+does not remove GC. Neither collector can automatically prove that a
+host-to-guest-to-host strong reference cycle is dead: host callback objects,
+`Value`/polyglot proxies and leaked handles can keep one another alive.
+Avoid unscoped host references; scope callback access to a call, use
+generation-fenced, explicitly closed leases and reject long-lived guest
+retention of host callback objects. The supervisor must close the isolate and
+invalidate all proxies **after** cancel/acknowledge of outstanding turns,
+callbacks and foreign memory accesses. Do not use isolate close as a workaround
+for leaked active capabilities or as a real-time pause guarantee.
+
+Native guest arenas within Graal can instead use explicit non-owning handles
+with actor/arena ownership, while the control plane remains subject to JVM GC.
+A standalone process is still the stronger boundary for arbitrarily
+untrusted native code. See Graal's polyglot isolate/sandbox reference manual.
+
 ## Portable native collector contract (future work)
 
 Only managed graph allocations go into a cycle-collecting heap. Scope that
