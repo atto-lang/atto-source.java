@@ -621,6 +621,15 @@ public final class ChannelRuntime {
                 armingExternal = false;
                 // Includes completions racing with observer registration.
                 pumpLocked(completions);
+            } catch (RuntimeException | Error admissionFailure) {
+                // Timer registration and external waiter attachment are host
+                // admission steps. A partial failure must never strand this
+                // selection in ACTIVE with a live channel read/write.
+                if (!decided) {
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(admissionFailure));
+                }
             } finally {
                 armingExternal = false;
                 COORDINATOR.unlock();
