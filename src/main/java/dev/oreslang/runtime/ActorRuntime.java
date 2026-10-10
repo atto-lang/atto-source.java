@@ -2308,24 +2308,31 @@ public final class ActorRuntime implements AutoCloseable {
             }
             // Closing a cooperating group never cancels ordinary members.
             // Only explicitly managed workers are structurally cancelled.
+            // Never abort event-bus and Mailman teardown because one worker's
+            // cancellation hook failed. Preserve the failure for the manager.
+            RuntimeException cancellationFailure = null;
             for (ActorRef<?> worker : owned) {
                 try {
                     worker.cancel();
                 } catch (RuntimeException failure) {
-                    // Creator/runtime shutdown may have independently fenced the
-                    // worker; continue draining the rest of the group.
                     if (worker.isAlive()) {
-                        // Preserve safety: an unexpected authority failure
-                        // cannot silently turn into an unowned live worker.
-                        throw failure;
+                        if (cancellationFailure == null) cancellationFailure = failure;
+                        else cancellationFailure.addSuppressed(failure);
                     }
                 }
             }
-            GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
-            if (mailman != null) mailman.close();
-            eventBus.closeFromGroup();
-            members.clear();
-            actorGroups.remove(id, this);
+            try {
+                GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
+                if (mailman != null) mailman.close();
+            } finally {
+                try {
+                    eventBus.closeFromGroup();
+                } finally {
+                    members.clear();
+                    actorGroups.remove(id, this);
+                }
+            }
+            if (cancellationFailure != null) throw cancellationFailure;
         }
 
         @Override
