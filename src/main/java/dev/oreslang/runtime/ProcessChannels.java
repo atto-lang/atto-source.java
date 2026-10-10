@@ -48,6 +48,34 @@ public final class ProcessChannels implements AutoCloseable {
 
         public Direction direction() { return direction; }
 
+        // Direction and capability checks must guard the primitive itself:
+        // source readch/writech lower directly to these methods, not only
+        // through SelectCase factories. A Channel<String> upcast is no bypass.
+        @Override public java.util.Optional<T> tryRead() {
+            checkGuestRead();
+            return super.tryRead();
+        }
+
+        @Override public OresFuture<T> readAsync() {
+            checkGuestRead();
+            return super.readAsync();
+        }
+
+        @Override public boolean tryWrite(T value) {
+            checkGuestWrite();
+            return super.tryWrite(value);
+        }
+
+        @Override public OresFuture<Void> writeAsync(T value) {
+            checkGuestWrite();
+            return super.writeAsync(value);
+        }
+
+        /** VM-only console record submission; does not grant guest write access. */
+        private boolean writeOwned(T value) {
+            return super.tryWrite(value);
+        }
+
         /** Guest code cannot close process-owned channels through Channel.close. */
         @Override public void close() {
             throw new IllegalStateException(name + " is process-owned; close is reserved to the VM");
@@ -107,7 +135,10 @@ public final class ProcessChannels implements AutoCloseable {
 
     /** stdout enqueue is immediate admission, never a delivery acknowledgement. */
     public void logAsync(String record) {
-        if (!out.tryWrite(Objects.requireNonNull(record) + System.lineSeparator()))
+        if (closing.get()) throw new IllegalStateException("async stdout is closing");
+        if (outputFailure.get() != null)
+            throw new IllegalStateException("async stdout writer failed", outputFailure.get());
+        if (!out.writeOwned(Objects.requireNonNull(record) + System.lineSeparator()))
             throw new IllegalStateException("async stdout channel buffer full");
     }
 
