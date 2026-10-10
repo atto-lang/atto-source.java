@@ -40,7 +40,7 @@ final class ActorOwnedGraphArenaTest {
                     assertThrows(IllegalStateException.class, () ->
                             arena.add(() -> {
                                 throw new IllegalStateException("failed factory");
-                            }).toString().equals("never"));
+                            }));
                     assertEquals(2, arena.size(), "failed constructors may not publish a slot");
                     arena.erase(a);
                     assertEquals(1, drops.get());
