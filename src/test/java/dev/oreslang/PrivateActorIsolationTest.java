@@ -289,14 +289,14 @@ final class PrivateActorIsolationTest {
     @Test
     void sharedActorAlsoOwnsPrivateNativeRegionWithoutExportingIt() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            var shared = runtime.<String>spawnShared(factoryContext -> {
-                assertTrue(factoryContext.privateMemory().isEmpty());
-                var owned = factoryContext.actorMemory().orElseThrow().allocatePrivateBytes(64);
+            // Trusted host-side test wiring may capture state; the untrusted
+            // stateless BehaviorFactory gate remains intentionally unchanged.
+            var shared = runtime.<String>spawnShared(() -> (message, context) -> {
+                assertTrue(context.privateMemory().isEmpty());
+                var owned = context.actorMemory().orElseThrow().allocatePrivateBytes(64);
                 owned.writeLong(0, 99L);
-                return (message, context) -> {
-                    assertEquals(99L, owned.readLong(0));
-                    context.self().stop();
-                };
+                assertEquals(99L, owned.readLong(0));
+                context.self().stop();
             });
             shared.send("run");
             assertTrue(shared.awaitTermination(2, TimeUnit.SECONDS));
