@@ -6120,6 +6120,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void runBatch() {
+            Boolean previousDispatcherCarrier = ACTOR_CARRIER.get();
             ACTOR_CARRIER.set(Boolean.TRUE);
             boolean carrierEntered = false;
             boolean reschedule = false;
@@ -6169,7 +6170,11 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     // Finalization hooks and reservation checks are allowed to
                     // fail closed; neither may strand carrier-local VM identity.
-                    ACTOR_CARRIER.remove();
+                    if (Boolean.TRUE.equals(previousDispatcherCarrier)) {
+                        ACTOR_CARRIER.set(Boolean.TRUE);
+                    } else {
+                        ACTOR_CARRIER.remove();
+                    }
                 }
                 if (reschedule) schedule();
             }
@@ -6177,6 +6182,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
+            // A synchronously nested guest turn must never overwrite another
+            // actor's authority on this carrier. Reject before changing any
+            // ThreadLocal or taking a probe, so the outer actor survives intact.
+            if (CURRENT_ACTOR_EXECUTION.get() != null || currentActor.get() != null) {
+                throw new IllegalStateException(
+                        "nested actor guest turn would overwrite existing carrier authority: "
+                                + ref.id());
+            }
             // TurnExecutor is allowed to enter the guest on a different native
             // carrier from runBatch(). Carrier-sensitive runtime checks must
             // follow the actual executing turn, not only the dispatching thread.
