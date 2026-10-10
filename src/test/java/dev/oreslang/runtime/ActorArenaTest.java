@@ -28,6 +28,17 @@ final class ActorArenaTest {
                         var value = memory.newActorArena(2, 2);
                         arena.set(value);
                         durable.set(value.allocatePersistent(40));
+                        long lastGeneration = 0;
+                        for (int index = 0; index < 8192; index++) {
+                            var temporary = value.allocatePersistent(index);
+                            assertEquals(1, temporary.index());
+                            assertTrue(temporary.generation() > lastGeneration);
+                            assertEquals(index, value.readPersistent(temporary));
+                            lastGeneration = temporary.generation();
+                            value.dropPersistent(temporary);
+                            assertThrows(IllegalStateException.class,
+                                    () -> value.readPersistent(temporary));
+                        }
                         loan.set(value.borrowPersistent(durable.get()));
                         try (var scope = value.beginTurn()) {
                             oldTurn.set(scope);
