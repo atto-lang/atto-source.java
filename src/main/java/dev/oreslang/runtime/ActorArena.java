@@ -17,7 +17,7 @@ public final class ActorArena implements AutoCloseable {
     private final ActorRuntime.ActorMemorySlice owner;
     private final ExplicitNativeI64Region persistent;
     private final ExplicitNativeI64Region scratch;
-    private ScratchTurn activeTurn;
+    private volatile ScratchTurn activeTurn;
 
     private ActorArena(ActorRuntime.ActorMemorySlice owner,
                        ExplicitNativeI64Region persistent,
@@ -127,10 +127,11 @@ public final class ActorArena implements AutoCloseable {
     }
 
     private void requireOwner() {
-        // reserveHeap(0) is an inexpensive owner + actor-liveness admission
-        // check: actor identity, never thread affinity.
-        owner.reserveHeap(0).close();
+        // No temporary MemoryReservation object on the hot read/write path.
+        owner.requireOwnerActive();
     }
+
+    boolean hasActiveScratchTurn() { return activeTurn != null; }
 
     public boolean closed() { return persistent.closed() || scratch.closed(); }
     public boolean physicallyClosed() {
@@ -147,5 +148,6 @@ public final class ActorArena implements AutoCloseable {
         // until the last outstanding persistent loan closes.
         scratch.close();
         persistent.close();
+        owner.unregisterArena(this);
     }
 }
