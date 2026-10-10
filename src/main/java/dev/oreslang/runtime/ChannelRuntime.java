@@ -446,6 +446,7 @@ public final class ChannelRuntime {
                 new java.util.LinkedHashMap<>();
         private long version;
         private long fairCursor;
+        private Snapshot<K> cachedSnapshot;
 
         /** Identifies the exact case ordering observed by one operation. */
         public record Snapshot<K>(
@@ -497,15 +498,19 @@ public final class ChannelRuntime {
                     }
                 }
             }
+            long nextVersion = Math.addExact(version, 1L);
             entries.put(key, selectCase);
-            version++;
+            version = nextVersion;
+            cachedSnapshot = null;
         }
 
         public synchronized boolean remove(K key) {
             Objects.requireNonNull(key, "key");
             if (!entries.containsKey(key)) return false;
+            long nextVersion = Math.addExact(version, 1L);
             entries.remove(key);
-            version++;
+            version = nextVersion;
+            cachedSnapshot = null;
             return true;
         }
 
@@ -522,10 +527,15 @@ public final class ChannelRuntime {
             if (entries.isEmpty()) {
                 throw new IllegalStateException("cannot select an empty plan");
             }
-            return new Snapshot<>(
-                    version,
-                    new ArrayList<>(entries.keySet()),
-                    new SelectSet(new ArrayList<>(entries.values()), fairCursor));
+            // Repeated selection reuses case/key descriptors and fairness state;
+            // only a structural mutation requires a new immutable snapshot.
+            if (cachedSnapshot == null) {
+                cachedSnapshot = new Snapshot<>(
+                        version,
+                        new ArrayList<>(entries.keySet()),
+                        new SelectSet(new ArrayList<>(entries.values()), fairCursor));
+            }
+            return cachedSnapshot;
         }
 
         public Optional<Selected<K>> trySelect(SelectPolicy policy) {
@@ -557,7 +567,9 @@ public final class ChannelRuntime {
                 Snapshot<K> snap,
                 SelectResult result,
                 SelectPolicy policy) {
-            if (policy != SelectPolicy.FAIR) return;
+            if (policy != SelectPolicy.FAIR || snap.version() != version) return;
+            // Late completions from an older version must never move the
+            // fairness cursor of a newer structural generation.
             // Translate by stable key, not by a possibly-reused index.
             K selectedKey = snap.keyAt(result.index());
             int currentIndex = 0;
