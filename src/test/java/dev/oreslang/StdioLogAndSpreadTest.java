@@ -25,7 +25,7 @@ final class StdioLogAndSpreadTest {
                   stdio.stdout.log_async("two", "|", 2);
                 }
                 """);
-        assertEquals("one|1\\ntwo|2\\n", output);
+        assertEquals("one|1\ntwo|2\n", output);
     }
 
     @Test
@@ -37,7 +37,7 @@ final class StdioLogAndSpreadTest {
                   stdio.stdout.log_async("last");
                 }
                 """);
-        assertEquals("first\\nlast\\n", output);
+        assertEquals("first\nlast\n", output);
     }
 
     @Test
@@ -49,7 +49,7 @@ final class StdioLogAndSpreadTest {
                   stdio.stdout.logList_async(parts);
                 }
                 """);
-        assertEquals("A1B\\nA1B\\n", output);
+        assertEquals("A1B\nA1B\n", output);
     }
 
     @Test
