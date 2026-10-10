@@ -8059,7 +8059,12 @@ public final class OresEvalRootNode extends RootNode {
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable, Set<Ast.TypeAliasDecl> resolving) {
             if (declared == null) return value;
             if (declared.isIdentityReturn()) {
-                return shapeReturnedValue(declared.identityUnderlyingType(), value, callable, resolving);
+                // A dependent return must preserve the original reference.
+                // Type/element validation may create an auxiliary shaped value
+                // (e.g. Array<T> normally rebuilds a List), but that copy must
+                // NEVER be substituted for the original identity result.
+                shapeReturnedValue(declared.identityUnderlyingType(), value, callable, resolving);
+                return value;
             }
 
             Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
