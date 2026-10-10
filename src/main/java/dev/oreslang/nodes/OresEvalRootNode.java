@@ -2070,6 +2070,10 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation);
                                     return;
                                 }
+                                if (iterable instanceof ChannelRuntime.Channel<?> channel) {
+                                    runChannelForOfIteration(t, loop, env, channel, continuation);
+                                    return;
+                                }
                                 Iterable<?> values = iterableValues(iterable, env);
                                 runForOfIteration(
                                         t,
@@ -2668,6 +2672,45 @@ public final class OresEvalRootNode extends RootNode {
                         finishAsyncForOf(t2, generator, flow, continuation);
                     } else {
                         runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
+                    }
+                });
+            });
+        }
+
+        /** Suspendable channel iteration: never calls blocking Iterator.hasNext on a guest carrier. */
+        private void runChannelForOfIteration(
+                SourceTask task,
+                Ast.ForOfStmt loop,
+                Env env,
+                ChannelRuntime.Channel<?> channel,
+                SourceFlowCont continuation) {
+            task.suspend(channel.readAsync(), (t, value, failure) -> {
+                if (failure != null) {
+                    Throwable root = OresFuture.unwrap(failure);
+                    if (root instanceof ChannelRuntime.ChannelClosedException ended
+                            && ended.getCause() == null) {
+                        continuation.accept(t, SourceFlow.normal());
+                    } else {
+                        continuation.accept(t, SourceFlow.throwing(root));
+                    }
+                    return;
+                }
+                Env iteration = new Env(env);
+                iteration.define(loop.bindingName(), value, loop.bindingKind());
+                runBlock(t, loop.body(), iteration, (t2, flow) -> {
+                    if (flow.kind() == SourceFlowKind.BREAK) {
+                        continuation.accept(t2, SourceFlow.normal());
+                    } else if (flow.kind() == SourceFlowKind.RETURN
+                            || flow.kind() == SourceFlowKind.THROW) {
+                        continuation.accept(t2, flow);
+                    } else {
+                        t2.scheduleLoopContinuation(env, (resumed, ignored, resumeError) -> {
+                            if (resumeError != null) {
+                                continuation.accept(resumed, SourceFlow.throwing(resumeError));
+                            } else {
+                                runChannelForOfIteration(resumed, loop, env, channel, continuation);
+                            }
+                        });
                     }
                 });
             });
@@ -6064,7 +6107,9 @@ public final class OresEvalRootNode extends RootNode {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
                     case "stdout" -> new StdoutFacade(stdio.context());
-                    case "stdin" -> new StdinFacade(stdio.context());
+                    case "stdin", "in" -> stdio.context().standardChannels().input();
+                    case "out" -> stdio.context().standardChannels().output();
+                    case "stderr", "err" -> stdio.context().standardChannels().error();
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
             }
@@ -6077,10 +6122,24 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
-            if (receiver instanceof StdinFacade stdin) {
-                return switch (name) {
-                    case "read_line" -> (Invokable) stdin::readLine;
-                    default -> throw new IllegalArgumentException("unknown stdin member " + name);
+            if (receiver instanceof dev.oreslang.runtime.StdChannels.InputChannel stdin
+                    && name.equals("read_line")) {
+                return (Invokable) args -> {
+                    requireZero(args, "stdio.stdin.read_line");
+                    if (ActorRuntime.inActorExecution() || context.vm().isRootSchedulerCurrent()) {
+                        throw new IllegalStateException(
+                                "stdio.stdin.read_line cannot block a guest carrier; use readch stdio.in");
+                    }
+                    try {
+                        return new OptionValue(true, stdin.readAsync().join());
+                    } catch (java.util.concurrent.CompletionException failure) {
+                        Throwable root = OresFuture.unwrap(failure);
+                        if (root instanceof ChannelRuntime.ChannelClosedException closed
+                                && closed.getCause() == null) {
+                            return new OptionValue(false, null);
+                        }
+                        throw failure;
+                    }
                 };
             }
             if (receiver instanceof FileSystemFacade fs) {
@@ -7426,6 +7485,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
+            if (value instanceof ChannelRuntime.Channel<?> channel) return channel;
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
@@ -8958,18 +9018,6 @@ public final class OresEvalRootNode extends RootNode {
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");
             requireOne(args,"stdio.stdout.logList");
             return log(expandArgumentSequence(args.getFirst(),"stdio.stdout.logList"));
-        }
-    }
-    private record StdinFacade(OresContext context) {
-        private Object readLine(List<Object> args) {
-            context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
-            requireZero(args, "stdio.stdin.read_line");
-            try {
-                String value = context.input().readLine();
-                return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-            } catch (java.io.IOException failure) {
-                throw new IllegalStateException("stdin read failed: " + failure.getMessage(), failure);
-            }
         }
     }
     private record StdFacade(OresContext context) { }
