@@ -28,7 +28,8 @@ public final class NativePrelude {
                 || source.matches("(?s).*\\bWritableTee\\b.*")
                 || source.matches("(?s).*\\.stream\\s*\\(.*")
                 || source.matches("(?s).*\\.tee\\s*\\(.*");
-        if (!needObservable && !needStreams) return program;
+        boolean needStdio = source.matches("(?s).*\\\\bStdio\\\\b.*");
+        if (!needObservable && !needStreams && !needStdio) return program;
 
         Set<String> present = new HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
@@ -45,6 +46,15 @@ public final class NativePrelude {
             }
         }
         List<Ast.ModuleDecl> merged = new ArrayList<>(program.modules());
+        if (needStdio && !present.contains("Stdio")) {
+            Ast.Program stdlib = parsePackaged("std/stdio");
+            for (Ast.ModuleDecl module : stdlib.modules()) {
+                if (module.name().equals("Stdio")) {
+                    merged.add(module);
+                    present.add("Stdio");
+                }
+            }
+        }
         if (needObservable && !present.contains("Observable")) {
             Ast.Program stdlib = parsePackaged("std/observable");
             for (Ast.ModuleDecl module : stdlib.modules()) {
