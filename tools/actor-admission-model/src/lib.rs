@@ -145,6 +145,20 @@ impl Admission {
         Ok(())
     }
 
+    /// Cancellation fences queued and suspended continuation identities.
+    /// Active guest code cannot be revoked while holding its actor execution
+    /// lease: request a safepoint unwind, then call again after lease release.
+    /// A late wake from an old IO completion will be UnknownMessage.
+    pub fn cancel_request(&mut self, request: u64) -> Result<(), Error> {
+        if self.active.is_some_and(|lease| lease.request == request) {
+            return Err(Error::TurnStillActive);
+        }
+        if self.requests.remove(&request).is_none() {
+            return Err(Error::UnknownRequest);
+        }
+        Ok(())
+    }
+
     pub fn finish_request(&mut self, request: u64) -> Result<(), Error> {
         let r = self.requests.get(&request).ok_or(Error::UnknownRequest)?;
         if !r.messages.is_empty() { return Err(Error::RequestNotEmpty); }
@@ -245,6 +259,71 @@ mod tests {
         assert_eq!(a.active_lease(), Some(current));
         assert!(a.check_invariants());
         a.suspend(current).unwrap();
+    }
+
+    #[test]
+    fn cancelled_suspended_request_cannot_be_resurrected_by_late_wakeup() {
+        let mut a = Admission::new(Limits::new(2, 2).unwrap());
+        a.admit_request(1).unwrap();
+        a.admit_message(1, 100).unwrap();
+        let turn = a.enter(1, 100).unwrap();
+        assert_eq!(a.cancel_request(1), Err(Error::TurnStillActive));
+        assert_eq!(a.active_lease(), Some(turn));
+        a.suspend(turn).unwrap();
+        assert_eq!(a.cancel_request(1), Ok(()));
+        assert_eq!(a.wake(1, 100), Err(Error::UnknownRequest));
+        assert_eq!(a.finish_message(1, 100), Err(Error::UnknownRequest));
+        assert!(a.check_invariants());
+    }
+
+    #[test]
+    fn failed_admission_and_turn_transitions_leave_existing_lease_intact() {
+        let mut a = Admission::new(Limits::new(1, 1).unwrap());
+        a.admit_request(1).unwrap();
+        a.admit_message(1, 1).unwrap();
+        let turn = a.enter(1, 1).unwrap();
+        assert_eq!(a.admit_request(2), Err(Error::RequestLimit));
+        assert_eq!(a.admit_message(1, 2), Err(Error::MessageLimit));
+        assert_eq!(a.enter(1, 1), Err(Error::TurnBusy));
+        assert_eq!(a.wake(1, 1), Err(Error::NotRunnable));
+        assert_eq!(a.finish_message(1, 1), Err(Error::TurnStillActive));
+        assert_eq!(a.active_lease(), Some(turn));
+        assert!(a.check_invariants());
+    }
+
+    #[test]
+    fn deterministic_interleaving_exercises_suspension_and_cancellation() {
+        let mut a = Admission::new(Limits::new(3, 4).unwrap());
+        let mut seed = 0x99e3_c845_1465_3081_u64;
+        for iteration in 0..4000u64 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let request = seed % 5;
+            let message = (seed >> 8) % 6;
+            match seed % 7 {
+                0 => { let _ = a.admit_request(request); }
+                1 => { let _ = a.admit_message(request, message); }
+                2 => { let _ = a.wake(request, message); }
+                3 => { let _ = a.finish_message(request, message); }
+                4 => { let _ = a.cancel_request(request); }
+                5 => {
+                    if let Ok(lease) = a.enter(request, message) {
+                        if iteration % 2 == 0 {
+                            a.suspend(lease).unwrap();
+                        } else {
+                            a.yield_turn(lease).unwrap();
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(lease) = a.active_lease() {
+                        a.yield_turn(lease).unwrap();
+                    }
+                }
+            }
+            assert!(a.check_invariants(), "violation on deterministic event {iteration}");
+        }
     }
 
     #[test]
