@@ -363,6 +363,13 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             for (Object retired : retiredDomains) {
                 if (inspected >= maxEntriesToInspect) break;
                 Set<TrackedCleanup> entries = trackedByDomain.getOrDefault(retired, Set.of());
+                // Even a stale/empty retired domain consumes a work quantum.
+                // Otherwise arbitrarily many tombstones could be traversed
+                // by a supposedly bounded maintenance pass.
+                if (entries.isEmpty()) {
+                    inspected++;
+                    continue;
+                }
                 for (TrackedCleanup entry : entries) {
                     if (inspected >= maxEntriesToInspect) break;
                     inspected++;
