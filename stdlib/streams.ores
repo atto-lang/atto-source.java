@@ -1,0 +1,26 @@
+// Native Oreslang stream wrappers. The host bridge only supplies Channel<T>.
+// These types are installed into the standard prelude and need no import.
+
+// ReadableStream is a cold, single-consumer, pull stream. Its iteration
+// delegates to native Observable.from_ch; it doesn't create a reader thread.
+pub define class ReadableStream<T> as
+  val Channel<T> source;
+
+  pub [Symbol.iterator](): Iterator<T> {
+    return Observable.from_ch(self.source);
+  }
+end
+
+// A tee of WRITE-ONLY sinks is a composed writable, not a readable stream.
+// Every write awaits both bounded admissions in order. A sink failure after
+// the first admission can cause a partial fan-out; no atomicity is claimed.
+pub define class WritableTee as
+  val Channel<String> primary;
+  val Channel<String> secondary;
+
+  pub async write(String frame): void {
+    await nb writech self.primary, frame;
+    await nb writech self.secondary, frame;
+    return;
+  }
+end
