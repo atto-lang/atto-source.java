@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -394,25 +395,74 @@ final class ActorEventBusTest {
     }
 
     @Test
-    void privateActorsCannotSubscribeToZeroCopyGroupEvents() throws Exception {
+    void privateActorSubscriberGetsIndependentFrozenGraphAndBudgetIsReleased() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
             group.events().defineTopic("bounds", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            CountDownLatch subscribed = new CountDownLatch(1);
+            CountDownLatch read = new CountDownLatch(1);
+            AtomicReference<List<Integer>> received = new AtomicReference<>();
+            AtomicReference<ActorEventBus.Event<List<Integer>>> observedEvent = new AtomicReference<>();
 
             ActorRuntime.ActorRef<ActorRuntime.ActorGroupJoinCapability> privateActor =
-                    runtime.spawnPrivate(factoryContext -> (joinCapability, context) -> {
-                        ActorRuntime.ActorGroup joined = joinCapability.join();
-                        joined.events().subscribe("bounds");
+                    runtime.spawnPrivate(factoryContext -> {
+                        final AtomicReference<ActorEventBus.Subscription<List<Integer>>> events =
+                                new AtomicReference<>();
+                        return (joinCapability, context) -> {
+                            if (events.get() == null) {
+                                ActorRuntime.ActorGroup joined = joinCapability.join();
+                                events.set(joined.events().subscribe("bounds"));
+                                subscribed.countDown();
+                            } else {
+                                var event = events.get().tryRead().orElseThrow();
+                                observedEvent.set(event);
+                                received.set(event.value());
+                                read.countDown();
+                                context.self().stop();
+                            }
+                        };
                     });
 
             privateActor.send(capability);
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+            ArrayList<Integer> mutable = new ArrayList<>(List.of(1, 2));
+            group.events().publishSystem("bounds", mutable);
+            assertTrue(runtime.actorMemoryBytes() > runtime.sharedMemoryBytes(),
+                    "isolated event copy must reserve private actor memory");
+            mutable.add(3);
+            privateActor.send(capability);
+            assertTrue(read.await(5, TimeUnit.SECONDS));
+            assertEquals(List.of(1, 2), received.get());
+            assertThrows(UnsupportedOperationException.class, () -> received.get().add(5));
+            assertTrue(privateActor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(privateActor.failure().isEmpty(), String.valueOf(privateActor.failure()));
+            assertEquals(0L, runtime.actorMemoryBytes(),
+                    "every shared and private event memory lease must be released");
+            assertEquals(0, group.memberCount());
+        }
+    }
 
-            assertTrue(privateActor.awaitTermination(2, TimeUnit.SECONDS));
-            Throwable failure = privateActor.failure().orElseThrow();
-            assertTrue(failure instanceof SecurityException, failure.toString());
-            assertEquals(0, group.memberCount(),
-                    "failed private subscriber must be removed when the actor terminates");
+    @Test
+    void untrustedRecipientCopiesAreDataOnlyAndReclaimPrivateMemory() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> untrusted =
+                    runtime.spawnUntrusted(ctx -> (message, actor) -> { });
+            untrusted.getReadySignal().getAwaited().get(5, TimeUnit.SECONDS);
+            long baseline = runtime.actorMemoryBytes();
+            Object original = List.of(Map.of("value", List.of(1L, 2L)));
+            var isolated = runtime.copyActorGroupEventForSubscriber(
+                    ActorRuntime.freeze(original), untrusted.id());
+            assertEquals(original, isolated.value());
+            assertNotSame(original, isolated.value());
+            assertNotSame(((List<?>) original).getFirst(),
+                    ((List<?>) isolated.value()).getFirst());
+            assertTrue(runtime.actorMemoryBytes() > baseline);
+            isolated.reservation().close();
+            isolated.reservation().close();
+            assertEquals(baseline, runtime.actorMemoryBytes());
+            untrusted.stop();
+            assertTrue(untrusted.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
 
