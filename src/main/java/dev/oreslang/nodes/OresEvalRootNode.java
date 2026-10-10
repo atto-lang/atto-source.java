@@ -6617,6 +6617,9 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "read" -> (Invokable) factory::read;
                     case "write" -> (Invokable) factory::write;
+                    case "await" -> (Invokable) factory::await;
+                    case "cancelled" -> (Invokable) factory::cancelled;
+                    case "timeout" -> (Invokable) factory::timeout;
                     case "default" -> (Invokable) factory::defaultCase;
                     default -> throw new IllegalArgumentException(
                             "unknown SelectCase factory member " + name);
@@ -9075,6 +9078,31 @@ public final class OresEvalRootNode extends RootNode {
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
                     args.get(1));
+        }
+
+        private Object await(List<Object> args) {
+            requireOne(args, "SelectCase.await");
+            if (!(args.getFirst() instanceof OresFuture<?> future)) {
+                throw new IllegalArgumentException("SelectCase.await expects Future<T>");
+            }
+            return ChannelRuntime.await(future);
+        }
+
+        private Object cancelled(List<Object> args) {
+            requireOne(args, "SelectCase.cancelled");
+            if (!(args.getFirst() instanceof OresFuture<?> signal)) {
+                throw new IllegalArgumentException("SelectCase.cancelled expects Future<T>");
+            }
+            return ChannelRuntime.cancelled(signal);
+        }
+
+        private Object timeout(List<Object> args) {
+            requireOne(args, "SelectCase.timeout");
+            if (!(args.getFirst() instanceof Number millis)) {
+                throw new IllegalArgumentException("SelectCase.timeout expects integer milliseconds");
+            }
+            return ChannelRuntime.timeout(
+                    Math.toIntExact(millis.longValue()), java.util.concurrent.TimeUnit.MILLISECONDS);
         }
 
         private Object defaultCase(List<Object> args) {
