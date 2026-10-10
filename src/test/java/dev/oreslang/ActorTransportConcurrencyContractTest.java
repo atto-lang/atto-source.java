@@ -74,6 +74,22 @@ final class ActorTransportConcurrencyContractTest {
                 denied::getMessage);
     }
 
+    @Test void transportActorsCannotBeSpawnedThroughGenericMailboxDispatch() {
+        String source = """
+                define serial http actor HttpHandler as
+                  receive(ActorMail<String> mail): void { return; }
+                end
+                pub routine main(): void {
+                  val server = spawn HttpHandler();
+                  return;
+                }
+                """;
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(denied.getMessage().contains("request-dispatch adapter"),
+                denied::getMessage);
+    }
+
     @Test void invalidConfigurationsAndKeywordMisuseAreRejectedEarly() {
         String[] invalid = {
             "define serial http actor Server as int requestConcurrency = 2; end",
