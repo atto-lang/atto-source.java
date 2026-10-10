@@ -68,7 +68,7 @@ final class ActorHttpMatrixBenchmarkTest {
     private static Reply request(HttpClient client, int port, int actor) throws Exception {
         var r = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/work/" + actor))
                 .timeout(Duration.ofSeconds(45))
-                .GET().header("Connection", "close").build();
+                .GET().build();
         long begin = System.nanoTime();
         var got = client.send(r, HttpResponse.BodyHandlers.ofString());
         return new Reply(got.statusCode(), got.body(), System.nanoTime() - begin);
