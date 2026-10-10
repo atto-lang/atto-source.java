@@ -1,0 +1,377 @@
+//! Transport-neutral, deny-by-default ProxyActor routing model.
+//!
+//! This crate does **not** perform network IO or implement source-language
+//! ProxyActor. It models endpoint lease fencing, actor identity, ready/close
+//! transitions, and per-stream credits, independently of IPC/TCP/HTTP2.
+//! A transport adapter must authenticate peers and bind the observed identity
+//! to the handshake before calling `confirm_handshake`.
+
+use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct RemoteActorId {
+    pub namespace: String,
+    pub service: String,
+    pub actor_id: u128,
+    pub incarnation: u64,
+    pub contract_hash: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Transport {
+    Ipc,
+    TcpTls,
+    Http2Tls,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EndpointLease {
+    pub actor: RemoteActorId,
+    pub endpoint: String,
+    pub authority: String,
+    pub transport: Transport,
+    /// Freshness is checked against a monotonic runtime clock, not wall time.
+    pub expires_at_tick: u64,
+    pub routing_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedPeer {
+    pub actor: RemoteActorId,
+    pub authority: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RouteError {
+    ExpiredLease,
+    StaleGeneration,
+    WrongService,
+    WrongNamespace,
+    WrongAuthority,
+    ContractMismatch,
+    ActorReplaced,
+    TransportDenied,
+    InvalidEndpoint,
+    NotConnecting,
+    AuthenticationMismatch,
+    NotReady,
+    Closing,
+    DuplicateStream,
+    MissingStream,
+    DuplicateOrStaleSequence,
+    WindowExceeded,
+    InvalidCredit,
+    CreditOverflow,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RouteState {
+    Unresolved,
+    Connecting { generation: u64 },
+    Ready { generation: u64, session_epoch: u64 },
+    Disconnected,
+    Draining,
+    Closed,
+}
+
+/// The caller must restrict trusted service names/addresses independently;
+/// routing strings must never be interpolated into OS commands or raw URLs.
+pub struct ProxyRoute {
+    namespace: String,
+    service: String,
+    authority: String,
+    contract_hash: [u8; 32],
+    transports: Vec<Transport>,
+    state: RouteState,
+    /// Once pinned, redirecting to another actor/incarnation is not automatic.
+    pinned: Option<RemoteActorId>,
+    selected: Option<EndpointLease>,
+    highest_generation: Option<u64>,
+    session_epoch: u64,
+    streams: BTreeMap<u64, StreamWindow>,
+}
+
+impl ProxyRoute {
+    pub fn new(
+        namespace: impl Into<String>,
+        service: impl Into<String>,
+        authority: impl Into<String>,
+        contract_hash: [u8; 32],
+        transports: Vec<Transport>,
+    ) -> Self {
+        Self {
+            namespace: namespace.into(),
+            service: service.into(),
+            authority: authority.into(),
+            contract_hash,
+            transports,
+            state: RouteState::Unresolved,
+            pinned: None,
+            selected: None,
+            highest_generation: None,
+            session_epoch: 0,
+            streams: BTreeMap::new(),
+        }
+    }
+
+    pub fn state(&self) -> &RouteState { &self.state }
+    pub fn pinned(&self) -> Option<&RemoteActorId> { self.pinned.as_ref() }
+
+    pub fn begin_connect(
+        &mut self,
+        lease: EndpointLease,
+        now_tick: u64,
+    ) -> Result<u64, RouteError> {
+        if matches!(self.state, RouteState::Draining | RouteState::Closed) {
+            return Err(RouteError::Closing);
+        }
+        if lease.expires_at_tick <= now_tick { return Err(RouteError::ExpiredLease); }
+        if lease.actor.service != self.service { return Err(RouteError::WrongService); }
+        if lease.actor.namespace != self.namespace { return Err(RouteError::WrongNamespace); }
+        if lease.authority != self.authority { return Err(RouteError::WrongAuthority); }
+        if lease.actor.contract_hash != self.contract_hash {
+            return Err(RouteError::ContractMismatch);
+        }
+        if !self.transports.contains(&lease.transport) {
+            return Err(RouteError::TransportDenied);
+        }
+        // Do not confuse a transport address with an authenticated actor ID.
+        // Scheme checks prevent accidental plaintext downgrade; connectors must
+        // still validate their own host/address policy and peer credentials.
+        let scheme_ok = match lease.transport {
+            Transport::Ipc => lease.endpoint.starts_with("unix://"),
+            Transport::TcpTls => lease.endpoint.starts_with("tls://"),
+            Transport::Http2Tls => lease.endpoint.starts_with("https://"),
+        };
+        if !scheme_ok || lease.endpoint.contains('\n') || lease.endpoint.contains('\r') {
+            return Err(RouteError::InvalidEndpoint);
+        }
+        if self.pinned.as_ref().is_some_and(|actor| actor != &lease.actor) {
+            return Err(RouteError::ActorReplaced);
+        }
+        if self.highest_generation.is_some_and(|generation| lease.routing_generation <= generation) {
+            return Err(RouteError::StaleGeneration);
+        }
+        let generation = lease.routing_generation;
+        self.highest_generation = Some(generation);
+        self.selected = Some(lease);
+        self.state = RouteState::Connecting { generation };
+        // Abandon all unacknowledged window state on session replacement.
+        // A real adapter must fail pending Futures as outcome-unknown instead
+        // of replaying them without an idempotency guarantee.
+        self.streams.clear();
+        Ok(generation)
+    }
+
+    pub fn confirm_handshake(
+        &mut self,
+        generation: u64,
+        peer: AuthenticatedPeer,
+    ) -> Result<u64, RouteError> {
+        if self.state != (RouteState::Connecting { generation }) {
+            return Err(RouteError::NotConnecting);
+        }
+        let selected = self.selected.as_ref().ok_or(RouteError::NotConnecting)?;
+        if peer.authority != selected.authority || peer.actor != selected.actor {
+            return Err(RouteError::AuthenticationMismatch);
+        }
+        if self.pinned.as_ref().is_some_and(|old| old != &peer.actor) {
+            return Err(RouteError::ActorReplaced);
+        }
+        self.pinned = Some(peer.actor);
+        self.session_epoch = self.session_epoch.checked_add(1).ok_or(RouteError::CreditOverflow)?;
+        self.state = RouteState::Ready { generation, session_epoch: self.session_epoch };
+        Ok(self.session_epoch)
+    }
+
+    pub fn disconnect(&mut self, generation: u64) -> bool {
+        let current = match self.state {
+            RouteState::Connecting { generation: g } | RouteState::Ready { generation: g, .. } => g,
+            _ => return false,
+        };
+        if current != generation { return false; }
+        self.state = RouteState::Disconnected;
+        self.streams.clear();
+        true
+    }
+
+    pub fn start_drain(&mut self) {
+        if self.state != RouteState::Closed {
+            self.state = RouteState::Draining;
+            self.streams.clear();
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.state = RouteState::Closed;
+        self.selected = None;
+        self.streams.clear();
+    }
+
+    pub fn open_stream(&mut self, id: u64, maximum_credit: u64) -> Result<(), RouteError> {
+        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
+        if maximum_credit == 0 { return Err(RouteError::InvalidCredit); }
+        if self.streams.contains_key(&id) { return Err(RouteError::DuplicateStream); }
+        self.streams.insert(id, StreamWindow {
+            maximum_credit,
+            available_credit: 0,
+            next_sequence: 0,
+        });
+        Ok(())
+    }
+
+    pub fn grant_credit(&mut self, stream_id: u64, credit: u64) -> Result<(), RouteError> {
+        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
+        if credit == 0 { return Err(RouteError::InvalidCredit); }
+        let w = self.streams.get_mut(&stream_id).ok_or(RouteError::MissingStream)?;
+        let new_credit = w.available_credit.checked_add(credit).ok_or(RouteError::CreditOverflow)?;
+        if new_credit > w.maximum_credit { return Err(RouteError::WindowExceeded); }
+        w.available_credit = new_credit;
+        Ok(())
+    }
+
+    /// Admission consumes exactly one credit and monotonically orders DATA
+    /// within a stream. This is not a durable processing acknowledgment.
+    pub fn admit_data(&mut self, stream_id: u64, sequence: u64) -> Result<(), RouteError> {
+        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
+        let w = self.streams.get_mut(&stream_id).ok_or(RouteError::MissingStream)?;
+        if sequence != w.next_sequence { return Err(RouteError::DuplicateOrStaleSequence); }
+        if w.available_credit == 0 { return Err(RouteError::WindowExceeded); }
+        let next = w.next_sequence.checked_add(1).ok_or(RouteError::CreditOverflow)?;
+        w.available_credit -= 1;
+        w.next_sequence = next;
+        Ok(())
+    }
+
+    pub fn finish_stream(&mut self, id: u64) -> Result<(), RouteError> {
+        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
+        self.streams.remove(&id).ok_or(RouteError::MissingStream)?;
+        Ok(())
+    }
+}
+
+struct StreamWindow {
+    maximum_credit: u64,
+    available_credit: u64,
+    next_sequence: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn actor(incarnation: u64) -> RemoteActorId {
+        RemoteActorId {
+            namespace: "tenant-one".into(),
+            service: "transform.v1".into(),
+            actor_id: 123,
+            incarnation,
+            contract_hash: [7; 32],
+        }
+    }
+
+    fn lease(incarnation: u64, generation: u64) -> EndpointLease {
+        EndpointLease {
+            actor: actor(incarnation),
+            endpoint: "tls://worker.example:8443".into(),
+            authority: "trusted-worker".into(),
+            transport: Transport::TcpTls,
+            expires_at_tick: 100,
+            routing_generation: generation,
+        }
+    }
+
+    fn route() -> ProxyRoute {
+        ProxyRoute::new(
+            "tenant-one", "transform.v1", "trusted-worker",
+            [7; 32], vec![Transport::TcpTls],
+        )
+    }
+
+    fn connected() -> ProxyRoute {
+        let mut proxy = route();
+        assert_eq!(proxy.begin_connect(lease(1, 1), 20), Ok(1));
+        assert_eq!(proxy.confirm_handshake(1, AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        }), Ok(1));
+        proxy
+    }
+
+    #[test]
+    fn handshake_requires_authenticated_actor_identity() {
+        let mut proxy = route();
+        assert_eq!(proxy.begin_connect(lease(1, 10), 20), Ok(10));
+        assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
+            actor: actor(2), authority: "trusted-worker".into(),
+        }), Err(RouteError::AuthenticationMismatch));
+        assert_eq!(proxy.confirm_handshake(9, AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        }), Err(RouteError::NotConnecting));
+        assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        }), Ok(1));
+    }
+
+    #[test]
+    fn lease_is_fenced_against_expiry_tenant_auth_and_downgrade() {
+        let mut p = route();
+        assert_eq!(p.begin_connect(lease(1, 1), 100), Err(RouteError::ExpiredLease));
+        let mut wrong = lease(1, 1);
+        wrong.actor.namespace = "attacker".into();
+        assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::WrongNamespace));
+        let mut wrong = lease(1, 1);
+        wrong.authority = "attacker".into();
+        assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::WrongAuthority));
+        let mut wrong = lease(1, 1);
+        wrong.transport = Transport::Ipc;
+        assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::TransportDenied));
+        let mut wrong = lease(1, 1);
+        wrong.endpoint = "tcp://unencrypted:8080".into();
+        assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::InvalidEndpoint));
+    }
+
+    #[test]
+    fn reconnect_cannot_silently_change_remote_incarnation() {
+        let mut p = connected();
+        assert!(p.disconnect(1));
+        assert!(!p.disconnect(1));
+        assert_eq!(p.begin_connect(lease(2, 2), 21), Err(RouteError::ActorReplaced));
+        assert_eq!(p.begin_connect(lease(1, 1), 21), Err(RouteError::StaleGeneration));
+        assert_eq!(p.begin_connect(lease(1, 2), 21), Ok(2));
+        assert_eq!(p.confirm_handshake(2, AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        }), Ok(2));
+        assert!(!p.disconnect(1)); // old transport callback is fenced
+        assert!(matches!(p.state(), RouteState::Ready { session_epoch: 2, .. }));
+    }
+
+    #[test]
+    fn bounded_window_preserves_sequence_and_rejects_overproduction() {
+        let mut p = connected();
+        assert_eq!(p.open_stream(42, 2), Ok(()));
+        assert_eq!(p.admit_data(42, 0), Err(RouteError::WindowExceeded));
+        assert_eq!(p.grant_credit(42, 2), Ok(()));
+        assert_eq!(p.grant_credit(42, 1), Err(RouteError::WindowExceeded));
+        assert_eq!(p.admit_data(42, 0), Ok(()));
+        assert_eq!(p.admit_data(42, 0), Err(RouteError::DuplicateOrStaleSequence));
+        assert_eq!(p.admit_data(42, 1), Ok(()));
+        assert_eq!(p.admit_data(42, 2), Err(RouteError::WindowExceeded));
+        assert_eq!(p.grant_credit(42, 1), Ok(()));
+        assert_eq!(p.admit_data(42, 2), Ok(()));
+        assert_eq!(p.finish_stream(42), Ok(()));
+        assert_eq!(p.finish_stream(42), Err(RouteError::MissingStream));
+    }
+
+    #[test]
+    fn cancellation_blocks_late_handshakes_and_stream_resurrection() {
+        let mut p = route();
+        assert_eq!(p.begin_connect(lease(1, 4), 10), Ok(4));
+        p.start_drain();
+        assert_eq!(p.confirm_handshake(4, AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        }), Err(RouteError::NotConnecting));
+        assert_eq!(p.begin_connect(lease(1, 5), 10), Err(RouteError::Closing));
+        p.close();
+        assert_eq!(p.open_stream(1, 1), Err(RouteError::NotReady));
+    }
+}
