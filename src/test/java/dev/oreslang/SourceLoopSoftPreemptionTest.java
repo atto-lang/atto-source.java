@@ -132,6 +132,27 @@ final class SourceLoopSoftPreemptionTest {
         assertTrue(cooperates > 0, "synchronous actor receive must be source-task preemptible");
     }
 
+    @Test
+    void automaticLoopCooperationDoesNotYieldWhileMutexGuardIsLive() throws Exception {
+        assertEquals("2000|0", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  for (let i = 0; i < 2000; i = i + 1) do
+                    guard.value = guard.value + 1;
+                  done
+                  stdio.stdout.write(guard.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  guard.release();
+                  return;
+                }
+                """));
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
