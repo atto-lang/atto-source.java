@@ -174,6 +174,11 @@ impl ProxyRoute {
         }
         let selected = self.selected.as_ref().ok_or(RouteError::NotConnecting)?;
         if peer.authority != selected.authority || peer.actor != selected.actor {
+            // Authenticated identity mismatch poisons this attempted session.
+            // It cannot be retried in-place with a different claimed peer.
+            self.selected = None;
+            self.state = RouteState::Disconnected;
+            self.streams.clear();
             return Err(RouteError::AuthenticationMismatch);
         }
         if self.pinned.as_ref().is_some_and(|old| old != &peer.actor) {
@@ -334,10 +339,14 @@ mod tests {
         assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
             actor: actor(2), authority: "trusted-worker".into(),
         }), Err(RouteError::AuthenticationMismatch));
-        assert_eq!(proxy.confirm_handshake(9, AuthenticatedPeer {
+        assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Err(RouteError::NotConnecting));
+        assert_eq!(proxy.begin_connect(lease(1, 11), 20), Ok(11));
         assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        }), Err(RouteError::NotConnecting));
+        assert_eq!(proxy.confirm_handshake(11, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Ok(1));
     }
