@@ -321,9 +321,9 @@ final class NativeStdioChannelsTest {
     @Test
     void teeWritesToBothOutputDescriptorsWithoutReadingEither() throws Exception {
         Output result = run("""
-                pub async routine main(): void {
+                pub routine main(): void {
                   val WritableTee mirrored = stdio.out.tee(stdio.err);
-                  await mirrored.write("copied\\n");
+                  mirrored.write("copied\\n");
                   return;
                 }
                 """, "");
