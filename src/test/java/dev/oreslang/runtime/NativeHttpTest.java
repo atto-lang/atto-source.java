@@ -145,6 +145,54 @@ class NativeHttpTest {
             """, port -> assertEquals("onetwo", request(port, "GET", "/", "").body()));
     }
 
+    @Test void reusableActorStreamsTwoDifferentRequestsWithoutJoiningActorLifetime() throws Exception {
+        String output = run("""
+            define actor MultiRequest as
+              int concurrency: 2;
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                await request.start(200, "text/plain");
+                await request.write(request.target);
+                await request.write("|");
+                await request.write(request.request_id);
+                await request.finish();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 8000);
+              stdio.println(server.port);
+              val worker = spawn MultiRequest();
+              await worker.ready;
+              val a = await server.accept();
+              val doneA = a.completion;
+              worker.send(a.move_to_reusable(worker));
+              val b = await server.accept();
+              val doneB = b.completion;
+              http.handler("MultiRequest").dispatch_to(rt borrow mut b, worker);
+              stdio.println(await doneA);
+              stdio.println(await doneB);
+              stdio.println(server.active);
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+                try (var clients = Executors.newFixedThreadPool(2)) {
+                    var a = clients.submit(() -> request(port, "GET", "/request-A", ""));
+                    var b = clients.submit(() -> request(port, "GET", "/request-B", ""));
+                    var first = a.get(10, TimeUnit.SECONDS);
+                    var second = b.get(10, TimeUnit.SECONDS);
+                    assertEquals(200, first.statusCode());
+                    assertEquals(200, second.statusCode());
+                    assertTrue(first.body().startsWith("/request-A|"), first.body());
+                    assertTrue(second.body().startsWith("/request-B|"), second.body());
+                    assertNotEquals(first.body().split("\\|")[1], second.body().split("\\|")[1],
+                            "each request must keep an independent immutable request identity");
+                }
+            });
+        assertTrue(output.contains("200\\n200\\n0"), output);
+    }
+
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
         for (String binding : new String[] {
                 "val borrowed = rt borrow values;",
