@@ -84,7 +84,8 @@ final class NativeStdioChannelsTest {
         assertTrue(thrown.toString().contains("stdio")
                 || thrown.toString().contains("Input")
                 || thrown.getCause() != null,
-                "invalid UTF-8 must fail instead of silently completing stdin");
+                "invalid UTF-8 must fail instead of silently completing stdin; observed: "
+                        + thrown.getClass().getName() + ": " + thrown);
     }
 
     @Test
@@ -225,7 +226,9 @@ final class NativeStdioChannelsTest {
         assertTrue(problem.toString().contains("stdio")
                 || problem.toString().contains("stdin")
                 || problem.toString().contains("line")
-                || problem.getCause() != null);
+                || problem.getCause() != null,
+                "oversized input failure was: " + problem.getClass().getName()
+                        + ": " + problem);
     }
 
     @Test
