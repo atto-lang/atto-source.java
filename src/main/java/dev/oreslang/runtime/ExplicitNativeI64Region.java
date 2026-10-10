@@ -157,7 +157,13 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
     public synchronized void write(Slot slot, long value) {
         requireActor.run();
-        put(requireLive(slot), value);
+        int index = requireLive(slot);
+        // A live shared loan may cross await/FFI boundaries. Do not mutate
+        // underneath a pinned borrower; release all loans before writing.
+        if (slotLoans[index] != 0) {
+            throw new IllegalStateException("cannot mutate loaned actor-native storage");
+        }
+        put(index, value);
     }
 
     public synchronized Loan borrow(Slot slot) {
