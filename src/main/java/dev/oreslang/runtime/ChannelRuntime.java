@@ -8,6 +8,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
@@ -48,7 +51,10 @@ public final class ChannelRuntime {
     public enum SelectOperation {
         READ,
         WRITE,
-        DEFAULT
+        DEFAULT,
+        AWAIT,
+        CANCELLED,
+        TIMEOUT
     }
 
     public record SelectResult(
@@ -218,7 +224,8 @@ public final class ChannelRuntime {
         }
     }
 
-    public sealed interface SelectCase permits ReadCase, WriteCase, DefaultCase { }
+    public sealed interface SelectCase permits ReadCase, WriteCase, DefaultCase,
+            AwaitCase, CancelCase, TimeoutCase { }
 
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
         public ReadCase {
@@ -238,6 +245,23 @@ public final class ChannelRuntime {
 
     public record DefaultCase() implements SelectCase { }
 
+    /** Observe one Future outcome without taking cancellation authority over it. */
+    public record AwaitCase<T>(OresFuture<T> future) implements SelectCase {
+        public AwaitCase { Objects.requireNonNull(future, "future"); }
+    }
+
+    /** Ready only when the observed Future is cancelled, not when it succeeds. */
+    public record CancelCase(OresFuture<?> signal) implements SelectCase {
+        public CancelCase { Objects.requireNonNull(signal, "signal"); }
+    }
+
+    /** A monotonic relative deadline, measured from registration admission. */
+    public record TimeoutCase(long delayNanos) implements SelectCase {
+        public TimeoutCase {
+            if (delayNanos < 0) throw new IllegalArgumentException("select timeout cannot be negative");
+        }
+    }
+
     public static <T> ReadCase<T> read(Channel<T> channel) {
         return new ReadCase<>(channel);
     }
@@ -248,6 +272,34 @@ public final class ChannelRuntime {
 
     public static DefaultCase defaultCase() {
         return new DefaultCase();
+    }
+
+    public static <T> AwaitCase<T> await(OresFuture<T> future) {
+        return new AwaitCase<>(future);
+    }
+
+    public static CancelCase cancelled(OresFuture<?> signal) {
+        return new CancelCase(signal);
+    }
+
+    public static TimeoutCase timeout(long delay, TimeUnit unit) {
+        Objects.requireNonNull(unit, "unit");
+        if (delay < 0) throw new IllegalArgumentException("select timeout cannot be negative");
+        return new TimeoutCase(unit.toNanos(delay));
+    }
+
+    /** Lazily activated by an actually armed deadline, never by a try-select. */
+    private static final class TimeoutClock {
+        private static final ScheduledThreadPoolExecutor EXECUTOR = newClock();
+        private static ScheduledThreadPoolExecutor newClock() {
+            ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
+                Thread thread = new Thread(r, "ores-select-deadline");
+                thread.setDaemon(true);
+                return thread;
+            });
+            executor.setRemoveOnCancelPolicy(true);
+            return executor;
+        }
     }
 
     /**
@@ -453,12 +505,15 @@ public final class ChannelRuntime {
             if (selectCase instanceof ReadCase<?> read) return read.channel();
             if (selectCase instanceof WriteCase<?> write) return write.channel();
             throw new IllegalStateException(
-                    "default case is never channel-registered");
+                    "non-channel select case has no channel registration");
         }
 
         private SelectOperation operation() {
             if (selectCase instanceof ReadCase<?>) return SelectOperation.READ;
             if (selectCase instanceof WriteCase<?>) return SelectOperation.WRITE;
+            if (selectCase instanceof AwaitCase<?>) return SelectOperation.AWAIT;
+            if (selectCase instanceof CancelCase) return SelectOperation.CANCELLED;
+            if (selectCase instanceof TimeoutCase) return SelectOperation.TIMEOUT;
             return SelectOperation.DEFAULT;
         }
 
