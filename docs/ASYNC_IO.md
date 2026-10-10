@@ -44,8 +44,9 @@ pub async routine main(): void {
 
 Grant the same filesystem/network permissions required by synchronous calls.
 Actor-local capabilities are checked before submission. Canonical path resolution,
-resource permission checks, DNS/connect, file operations and blocking client HTTP
-work execute off the actor carrier. Only immutable argument values are captured.
+resource permission checks, DNS/connect, and filesystem operations execute
+outside the actor carrier. HTTP client requests now use HttpClient.sendAsync
+instead of spending a virtual thread waiting for the HTTP response. Only immutable argument values are captured.
 HTTP redirects remain disabled so a response cannot bypass the destination grant.
 Failures retain their cause and a bounded `native:io` boundary annotation.
 
@@ -60,13 +61,19 @@ counters, not additional actor channels. One future is created per
 operation, not one channel. Await uses the actor's existing continuation transport.
 
 This is **non-blocking for guest execution**. The portable implementation offloads
-blocking host filesystem, TCP and HTTP client calls; it does not promise kernel
-asynchronous filesystem I/O or zero blocked OS threads. HTTP client connections
-are currently per call and closed after completion. No throughput improvement is
+blocking host filesystem and TCP calls; the HTTP client path uses asynchronous
+sendAsync completion and does not occupy an offload worker while waiting for
+a response. The HTTP implementation still uses JDK-managed internal threads;
+this change does not establish an entirely nonblocking kernel I/O stack, and
+notably does not promise asynchronous filesystem I/O or zero blocked OS threads.
+HTTP client connections are currently per call and asynchronously shut down
+after completion. No throughput improvement is
 claimed for tiny cached files.
 
 Cancellation of an individual I/O future is declined (`cancel` returns false):
-filesystem writes cannot safely promise rollback. Ending an actor does not undo
+filesystem writes cannot safely promise rollback. On context close, outstanding
+HTTP transport stages are cancelled and their clients are shut down; any late
+completion must not resume a closed source task. Ending an actor does not undo
 an already submitted operation. Context closure stops new admission, interrupts
 workers, closes tracked sockets and settles pending futures. A filesystem syscall
 that ignores interruption may still finish after context closure. Await outstanding
@@ -169,3 +176,29 @@ https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619591
 The downstream generator additionally passed its full real-runtime command
 integration:
 https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619670
+
+## Async-only I/O architecture target
+
+Core and standard-library I/O should be exclusively based on asynchronous
+transport operations. The user-visible `*_blocking` spelling is **not** a
+request to use a blocking syscall: it returns a plain `T` to the caller by
+implicitly suspending its continuation while the same async operation settles.
+The `*_async` spelling returns `Future<T>`; `await` explicitly suspends.
+Both paths share capability admission, bounded queues, failure propagation and
+scheduler-owned resumption. An OS thread must never be occupied waiting on
+behalf of an Oreslang logical task when a native async transport exists.
+
+Transport readiness must be tracked separately from carrier-freedom:
+
+| Transport | Status on this branch |
+| --- | --- |
+| HTTP client GET/POST | `HttpClient.sendAsync` and bounded callback-driven admission; both source styles use it |
+| Filesystem / filesystem metadata | Host offload; true async or platform-specific design pending |
+| TCP connect/read/write | Host blocking Socket offload; NIO state machine pending |
+| Stdio/stdin/stdout | Host offload or legacy synchronous facades; nonblocking transport pending |
+| Native LLVM backend | Not implemented; native compiler must fail closed |
+
+The HTTP path is a first migration step, **not** evidence of complete async-only
+I/O, no OS-blocked threads, zero-copy I/O, or Java/LLVM parity. In particular,
+`sendAsync` may still rely on implementation-managed threads for DNS or other
+operations; it avoids `HttpClient.send` on the Oreslang I/O worker.
