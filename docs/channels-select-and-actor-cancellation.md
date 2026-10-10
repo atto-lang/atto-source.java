@@ -267,6 +267,29 @@ select random {
 Fairness policy governs the probe order among cases observed ready together.
 It cannot reverse a case that has already atomically won a readiness race.
 
+### Ownership at suspension and registration boundaries
+
+A blocking `select { ... }`, `readch`, `writech`, or `select from cases`
+may yield the actor execution lane. Because a different actor message may run
+before the suspended continuation resumes, the ownership checker rejects
+ordinary live lexical borrows across these operations, just as it does across
+`await`. Actor-confined `self` is the narrow mailbox-managed exception.
+`try select` and immediate channel probes do not suspend and may retain
+ordinary lexical borrows.
+
+A nonblocking operation returns without yielding the current activation.
+`nb readch` and `nb select from cases` register an operation and return
+a Future, so an otherwise unrelated borrow in the caller need not end.
+A static `nb select { ... }` additionally detaches *arm bodies*: every
+captured non-Copy owned value transfers to the selection at registration;
+captured ordinary borrows and MutexGuard-bearing values are rejected; and
+Copy values can be captured without moving the caller's binding. Actor
+`self` is only captured for re-entry on its own serialized lane. A read-arm
+binding shadows an outer binding of the same name and is not an outer capture.
+
+This distinction protects logical overlapping lifetimes even when the runtime
+never executes two actor turns on separate native threads.
+
 ## Nonblocking static select
 
 ```ores
