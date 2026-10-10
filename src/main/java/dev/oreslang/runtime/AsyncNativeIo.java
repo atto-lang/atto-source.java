@@ -1,21 +1,29 @@
 package dev.oreslang.runtime;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.Supplier;
 
 /** Context-owned host I/O. Never invokes guest code or parks an actor carrier.
- * The underlying filesystem/socket calls may block a host worker. Admission is
- * bounded independently of virtual thread implementation and has no caller-runs path.
+ * Legacy filesystem/socket calls may block an offload worker. Truly asynchronous
+ * transports use submitNonblocking() and do not occupy an I/O worker for the
+ * operation's lifetime. Both paths have bounded admission and no caller-runs path.
  */
 public final class AsyncNativeIo implements AutoCloseable {
     private final ExecutorService workers = Executors.newThreadPerTaskExecutor(
             Thread.ofVirtual().name("ores-native-io-", 0).factory());
     private final Set<OresFuture<?>> pending = new HashSet<>();
     private final Set<OresFuture<?>> controls = new HashSet<>();
+    private final Map<OresFuture<?>, CompletableFuture<?>> nonblocking = new HashMap<>();
     private final Set<AutoCloseable> resources = new HashSet<>();
     private final int capacity;
     private boolean closed;
@@ -44,6 +52,59 @@ public final class AsyncNativeIo implements AutoCloseable {
     public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
         context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close_async");
         return submitControl("socket.close_async", work);
+    }
+
+    /** Admit a transport that completes through callbacks, not a blocking host
+     * worker. The supplier must only initiate asynchronous work: no send(),
+     * blocking socket read, join(), or get() is permitted on the calling carrier.
+     * Cancelling the owning context also cancels the submitted transport stage.
+     * Per-operation cancellation is intentionally not exposed until the I/O
+     * cancellation/rollback contract is defined.
+     */
+    public <T> OresFuture<T> submitNonblocking(OresContext context,
+            RuntimePermissions.Permission permission, String operation,
+            Supplier<CompletableFuture<T>> start) {
+        context.requireCapability(permission.capability(), operation);
+        return submitNonblocking(operation, start);
+    }
+
+    private synchronized <T> OresFuture<T> submitNonblocking(String operation,
+            Supplier<CompletableFuture<T>> start) {
+        OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
+        if (closed || pending.size() >= capacity) {
+            result.failFromRuntime(new RejectedExecutionException(
+                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
+            return result;
+        }
+        pending.add(result);
+        try {
+            CompletableFuture<T> transport = Objects.requireNonNull(start.get(),
+                    "nonblocking I/O transport returned null future");
+            nonblocking.put(result, transport);
+            transport.whenComplete((value, failure) -> {
+                synchronized (AsyncNativeIo.this) {
+                    pending.remove(result);
+                    nonblocking.remove(result);
+                }
+                if (failure != null) {
+                    Throwable cause = failure instanceof CompletionException completion
+                            && completion.getCause() != null ? completion.getCause() : failure;
+                    SourceBoundaryTrace.record(cause, "native:io", operation, "I/O");
+                    result.failFromRuntime(cause);
+                } else {
+                    result.completeFromRuntime(value);
+                }
+            });
+        } catch (Throwable failure) {
+            pending.remove(result);
+            nonblocking.remove(result);
+            SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
+            result.failFromRuntime(failure);
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+        }
+        return result;
     }
 
     synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
@@ -102,6 +163,7 @@ public final class AsyncNativeIo implements AutoCloseable {
     @Override public void close() {
         Set<AutoCloseable> closing;
         Set<OresFuture<?>> failing;
+        Set<CompletableFuture<?>> cancelling;
         synchronized (this) {
             if (closed) return;
             closed = true;
@@ -111,7 +173,10 @@ public final class AsyncNativeIo implements AutoCloseable {
             failing.addAll(controls);
             controls.clear();
             pending.clear();
+            cancelling = new HashSet<>(nonblocking.values());
+            nonblocking.clear();
         }
+        for (CompletableFuture<?> stage : cancelling) stage.cancel(true);
         workers.shutdownNow();
         for (AutoCloseable resource : closing) {
             try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
