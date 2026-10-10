@@ -965,7 +965,7 @@ public final class OresMutex {
      * <p>Runtime adapter only: no `CriticalMutex<T>` Oreslang surface type is
      * enabled until type/ownership checking can manage its linear guards.</p>
      */
-    public static final class Critical<T> {
+    static final class Critical<T> {
         private final T value;
         private final CriticalGate gate = new CriticalGate();
 
@@ -1059,7 +1059,7 @@ public final class OresMutex {
     }
 
     /** Runtime adapter for user-defined critical scopes around owned state. */
-    public static <T> Critical<T> critical(T value) {
+    static <T> Critical<T> critical(T value) {
         return new Critical<>(value);
     }
 
