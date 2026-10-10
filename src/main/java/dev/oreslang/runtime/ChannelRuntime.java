@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
@@ -238,10 +240,58 @@ public final class ChannelRuntime {
     }
 
     /**
+     * Affine payload commits must be tracked by referential identity, not
+     * equals/hashCode (which may be mutable, reentrant, or adversarial).
+     *
+     * All lookups/claims run under COORDINATOR. Weak keys ensure that a
+     * committed object is not kept alive merely because it was sent once.
+     * This is a defensive host-interop backstop; it cannot prevent a foreign
+     * Java caller from mutating an object after giving it away.
+     */
+    private static final class TransferredPayloads {
+        private static final ReferenceQueue<Object> COLLECTED = new ReferenceQueue<>();
+        private static final Map<PayloadIdentity, Boolean> CLAIMS = new java.util.HashMap<>();
+
+        private static final class PayloadIdentity extends WeakReference<Object> {
+            private final int identityHash;
+
+            private PayloadIdentity(Object value, ReferenceQueue<Object> queue) {
+                super(value, queue);
+                identityHash = System.identityHashCode(value);
+            }
+
+            @Override public int hashCode() { return identityHash; }
+
+            @Override public boolean equals(Object candidate) {
+                if (this == candidate) return true;
+                if (!(candidate instanceof PayloadIdentity other)) return false;
+                Object value = get();
+                return value != null && value == other.get();
+            }
+        }
+
+        private static void reclaimCollected() {
+            java.lang.ref.Reference<? extends Object> dead;
+            while ((dead = COLLECTED.poll()) != null) CLAIMS.remove(dead);
+        }
+
+        private static boolean alreadyClaimed(Object value) {
+            reclaimCollected();
+            return CLAIMS.containsKey(new PayloadIdentity(value, null));
+        }
+
+        private static boolean claim(Object value) {
+            reclaimCollected();
+            return CLAIMS.putIfAbsent(new PayloadIdentity(value, COLLECTED),
+                    Boolean.TRUE) == null;
+        }
+    }
+
+    /**
      * A write descriptor owns its payload. Immutable scalar payloads are
      * Copy-like and may be sent repeatedly; object/collection payloads are
-     * affine and may be committed at most once across ALL SelectSets/Plans
-     * referencing this descriptor (including concurrent revisions).
+     * affine and may be committed at most once by object identity across
+     * distinct descriptors, SelectSets and Plans (including concurrent revisions).
      */
     public static final class WriteCase<T> implements SelectCase {
         private final Channel<T> channel;
@@ -258,20 +308,24 @@ public final class ChannelRuntime {
                     || value instanceof Byte || value instanceof Short
                     || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double
-                    || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal;
+                    || value.getClass() == java.math.BigInteger.class
+                    || value.getClass() == java.math.BigDecimal.class;
         }
 
         public Channel<T> channel() { return channel; }
         public T value() { return value; }
 
         private boolean exhausted() {
-            return !repeatable && transferred.get();
+            return !repeatable
+                    && (transferred.get() || TransferredPayloads.alreadyClaimed(value));
         }
 
-        /** Called only by the atomic channel coordinator on winning commit. */
+        /** Called only under COORDINATOR, at the actual send commit. */
         private boolean claimCommit() {
-            return repeatable || transferred.compareAndSet(false, true);
+            if (repeatable) return true;
+            if (transferred.get() || !TransferredPayloads.claim(value)) return false;
+            transferred.set(true);
+            return true;
         }
     }
 
