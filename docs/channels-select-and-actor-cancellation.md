@@ -457,9 +457,11 @@ works with a one-shot Future adapter once its ownership/transport semantics
 are defined. Never turn every event in an unbounded Observable into a separate
 select case; the subscription has exactly one winner and cleanup lifetime.
 
-**Current verification status:** these mixed-case changes are committed to
-draft #519, not yet production-tested. The source runner and alternate-org
-mirror have not executed a full exact-head JVM/Graal/native suite. The Java
+**Verification scope:** an exact-blob, credential-free mirror of 83 focused
+files passed 366 targeted Java/Graal compiler and runtime test executions at
+source commit `f274ecf436cedc6cbe9ed473e863a30ab5a12dfd` on October 10, 2026.
+Later hardening commits need their own execution evidence. This was not the
+full source tree, Native Image/AOT, or full actor isolation suite. The Java
 `Flow.Publisher` adapter is for trusted host-integrated streams only, not a
 capability that may be smuggled across actor boundaries.
 
@@ -561,16 +563,24 @@ sets and reusable plans must not send one mutable object twice just because
 the descriptor was reused:
 
 - Built-in immutable scalar payloads (strings, primitive wrappers,
-  `BigInteger`, `BigDecimal`) are Copy-like and may be sent repeatedly.
-- Other Java/reference payloads have an atomic **one-shot transfer token**.
+  **exact-class** `BigInteger` and `BigDecimal`) are Copy-like and may be
+  sent repeatedly. Subclasses of arbitrary-precision numbers are *not*
+  automatically Copy; user subclasses can carry mutable state.
+- Other Java/reference payloads have an atomic **one-shot transfer claim**.
   The coordinator claims that token at the same instant as buffered enqueue
-  or unbuffered rendezvous. It cannot be claimed twice even if the descriptor
-  is shared across multiple `SelectSet` objects or plan revisions.
+  or unbuffered rendezvous. It cannot be claimed twice even if descriptors
+  are distinct, or the same descriptor is shared across SelectSets and plan
+  revisions. A weak referential-identity claim table (never `equals` or
+  user-defined `hashCode`) prevents duplicate host aliases without retaining
+  the payload merely for tracking its previous transfer.
 - A selection that **loses** to another case does not consume its candidate
   write token; it can be selected on a later invocation.
-- Reusing an already-transferred write descriptor fails closed instead of
+- Reusing an already-transferred write descriptor, or wrapping the same
+  mutable Java object in a *different* descriptor, fails closed instead of
   silently aliasing its payload into a second mailbox. Refresh the case with
-  a new payload via `plan.replaceCase(index, SelectCase.write(...))`.
+  a **newly owned payload** via `plan.replaceCase(index, SelectCase.write(...))`.
+  A received Java reference is not magically restored to a sendable state:
+  there is no trusted runtime provenance/capability handback protocol yet.
 - Existing channel reads and default/deadline/Future observers remain freely
   reusable; mutability belongs to write payload ownership, not observation.
 
@@ -578,7 +588,13 @@ This runtime token is defensive validation in addition to source-level
 non-`Copy` `SelectCase` and `SelectSet` types. A future typed
 `Copy`/`Clone` trait can grant repeatability to additional immutable
 user-defined types; a Java host claiming its custom object is immutable does
-not by itself make that object `Copy`.
+not by itself make that object `Copy`. This weak-key identity fence is **only**
+a fail-closed duplicate-send check for host-origin aliases: it cannot revoke
+the sender's original Java reference or prevent it from mutating the object
+after handoff. Untrusted cross-actor traffic must use ownership-proven source
+values, isolated copies/frozen snapshots or fully validated message transport.
+Global weak-claim metadata also adds allocation/GC overhead and should be
+measured before using it in a zero-GC fast path.
 
 ## Resource ownership for completed select Futures
 
