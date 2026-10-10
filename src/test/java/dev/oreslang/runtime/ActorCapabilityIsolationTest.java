@@ -327,48 +327,54 @@ final class ActorCapabilityIsolationTest {
 
 
     @Test
-    void retainedStdioHandlesCannotLaunderDescriptorAuthorityIntoRestrictedActors() throws Exception {
-        // Test process-owned descriptors without starting any I/O workers.
-        StdChannels channels = new StdChannels(null);
-        var outField = StdChannels.class.getDeclaredField("output");
-        outField.setAccessible(true);
-        var inField = StdChannels.class.getDeclaredField("input");
-        inField.setAccessible(true);
-        StdChannels.OutputChannel stdout =
-                (StdChannels.OutputChannel) outField.get(channels);
-        StdChannels.InputChannel stdin =
-                (StdChannels.InputChannel) inField.get(channels);
-
-        // Construct once under supervisor authority, then reuse inside a
-        // narrower actor: constructor-time checks alone are insufficient.
-        ChannelRuntime.SelectSet cachedWrite =
-                ChannelRuntime.SelectSet.of(ChannelRuntime.write(stdout, "cached"));
+    void stdioDescriptorOperationsRespectCurrentActorPolicy() throws Exception {
         IsolatePolicy restricted = IsolatePolicy.developer().withoutCapabilities(
                 IsolatePolicy.Capability.STDIN, IsolatePolicy.Capability.STDOUT);
 
+        // The BehaviorFactory must remain stateless. Capturing host channel
+        // objects in an actor closure is itself rejected by actor isolation.
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             var actor = runtime.<String>spawnShared(restricted, factoryContext ->
                     (message, turn) -> {
-                        assertThrows(SecurityException.class,
-                                () -> stdout.writeAsync("forbidden"));
-                        assertThrows(SecurityException.class,
-                                () -> stdout.tryWrite("forbidden"));
-                        assertThrows(SecurityException.class, cachedWrite::trySelect);
-                        assertThrows(SecurityException.class,
-                                () -> ChannelRuntime.SelectSet.of(
-                                        ChannelRuntime.write(stdout, "forbidden")));
-                        assertThrows(SecurityException.class,
-                                () -> ChannelRuntime.SelectSet.from(
-                                        java.util.List.of(ChannelRuntime.read(stdin))));
-                        assertThrows(SecurityException.class, stdin::tryRead);
+                        assertRestrictedStdioOperations();
                         turn.self().stop();
                     });
-
             actor.send("check");
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(actor.failure().isEmpty(),
-                    "restricted actor could use a retained stdio descriptor: "
-                            + actor.failure());
+                    "restricted actor could use a stdio descriptor: " + actor.failure());
+        }
+    }
+
+    private static void assertRestrictedStdioOperations() {
+        // A context-free fixture isolates primitive-operation authorization.
+        // Real contexts additionally enforce their capability ceiling and
+        // ActorRuntime identity through OresContext.requireCapability.
+        StdChannels channels = new StdChannels(null);
+        try {
+            var outField = StdChannels.class.getDeclaredField("output");
+            outField.setAccessible(true);
+            var inField = StdChannels.class.getDeclaredField("input");
+            inField.setAccessible(true);
+            StdChannels.OutputChannel stdout =
+                    (StdChannels.OutputChannel) outField.get(channels);
+            StdChannels.InputChannel stdin =
+                    (StdChannels.InputChannel) inField.get(channels);
+
+            assertThrows(SecurityException.class,
+                    () -> stdout.writeAsync("forbidden"));
+            assertThrows(SecurityException.class,
+                    () -> stdout.tryWrite("forbidden"));
+            assertThrows(SecurityException.class,
+                    () -> ChannelRuntime.SelectSet.of(
+                            ChannelRuntime.write(stdout, "forbidden")));
+            assertThrows(SecurityException.class,
+                    () -> ChannelRuntime.SelectSet.from(
+                            java.util.List.of(ChannelRuntime.read(stdin))));
+            assertThrows(SecurityException.class, stdin::tryRead);
+            assertThrows(SecurityException.class, stdin::readAsync);
+        } catch (ReflectiveOperationException failed) {
+            throw new AssertionError("could not construct stdio descriptor fixture", failed);
         }
     }
 }
