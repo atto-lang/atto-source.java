@@ -296,6 +296,75 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void fairnessWinnerCannotDeadlockWithPlanMonitorAndChannelLock() throws Exception {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        assertTrue(channel.tryWrite(71));
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("ready", ChannelRuntime.read(channel));
+        // Snapshot before either thread starts: it can then attempt admission
+        // without acquiring the public plan's monitor first.
+        var snapshot = plan.selectSetSnapshot();
+        var field = ChannelRuntime.class.getDeclaredField("COORDINATOR");
+        field.setAccessible(true);
+        var coordinator = (java.util.concurrent.locks.ReentrantLock) field.get(null);
+
+        var readerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var holderFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var monitorHeld = new java.util.concurrent.CountDownLatch(1);
+        var reader = new Thread(() -> {
+            try {
+                assertEquals(71, snapshot.trySelect(ChannelRuntime.SelectPolicy.FAIR)
+                        .orElseThrow().value());
+            } catch (Throwable failure) {
+                readerFailure.set(failure);
+            }
+        }, "select-fair-reader");
+        var holder = new Thread(() -> {
+            try {
+                synchronized (plan) {
+                    monitorHeld.countDown();
+                    // Deliberately take the inverse lock order from an
+                    // application that owns its plan while probing a channel.
+                    channel.size();
+                }
+            } catch (Throwable failure) {
+                holderFailure.set(failure);
+            }
+        }, "plan-monitor-holder");
+        reader.setDaemon(true);
+        holder.setDaemon(true);
+
+        coordinator.lock();
+        try {
+            reader.start();
+            awaitQueued(coordinator, reader);
+            holder.start();
+            assertTrue(monitorHeld.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            awaitQueued(coordinator, holder);
+        } finally {
+            coordinator.unlock();
+        }
+
+        reader.join(5000);
+        holder.join(5000);
+        assertFalse(reader.isAlive(), "select must not wait for plan monitor under channel coordinator");
+        assertFalse(holder.isAlive(), "plan monitor holder must be able to enter channel coordinator");
+        assertNull(readerFailure.get());
+        assertNull(holderFailure.get());
+    }
+
+    private static void awaitQueued(
+            java.util.concurrent.locks.ReentrantLock coordinator,
+            Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (!coordinator.hasQueuedThread(thread) && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertTrue(coordinator.hasQueuedThread(thread),
+                "expected " + thread.getName() + " to wait on channel coordinator");
+    }
+
+    @Test
     void rejectsSecondDefaultAtomicallyAndKeepsPreviousSnapshot() {
         var channel = new ChannelRuntime.Channel<String>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
