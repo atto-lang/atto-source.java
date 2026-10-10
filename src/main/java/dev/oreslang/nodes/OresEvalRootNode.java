@@ -24,6 +24,7 @@ import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
+import dev.oreslang.runtime.UntrustedJitScalarTransport;
 import dev.oreslang.runtime.GeneratorRuntime;
 
 import java.nio.file.Path;
