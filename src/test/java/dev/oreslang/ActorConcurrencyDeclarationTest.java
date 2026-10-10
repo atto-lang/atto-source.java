@@ -118,6 +118,35 @@ final class ActorConcurrencyDeclarationTest {
     }
 
     @Test
+    void ordinaryActorsCannotHideAdmissionLimitsAsMutableFields() {
+        Ast.ClassDecl actor = actor("""
+                define actor Worker as
+                    int requestConcurrency = 1;
+                    int messageConcurrency = 1;
+                end
+                """);
+        assertNotNull(actor.concurrencySpec());
+        assertEquals("actor", actor.concurrencySpec().protocol());
+        assertTrue(actor.concurrencySpec().serial());
+        assertTrue(actor.fields().isEmpty());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                    int requestConcurrency = 1;
+                    int messageConcurrency = 1;
+                end
+                """)));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                    int requestConcurrency = 3;
+                    int messageConcurrency = 4;
+                end
+                """)));
+        assertTrue(error.getMessage().contains("multi-continuation mailbox admission"),
+                error::getMessage);
+    }
+
+    @Test
     void supportsNetworkActorDeclarationsInsideModules() {
         Ast.Program program = Parser.parse("""
                 define module network as
