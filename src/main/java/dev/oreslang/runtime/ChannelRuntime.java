@@ -423,6 +423,11 @@ public final class ChannelRuntime {
             return set.cases();
         }
 
+        /** Expose an immutable descriptor for language-level dynamic select. */
+        public SelectSet selectSetSnapshot() {
+            return set;
+        }
+
         public OresFuture<SelectResult> selectAsync() {
             return set.selectAsync();
         }
