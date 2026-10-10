@@ -119,6 +119,12 @@ final class TargetAdmissionTest {
         assertThrows(IllegalArgumentException.class, () ->
                 TargetAdmission.validate("main.ores", Map.of("main.ores",
                         host.replace("server", "browser")), "browser", Set.of("interop.java")));
+        // Even a server build must reject a file that falsely promises browser
+        // compatibility while unconditionally importing Java host APIs.
+        assertThrows(IllegalArgumentException.class, () ->
+                TargetAdmission.validate("main.ores", Map.of("main.ores",
+                        host.replace("targets=server", "targets=browser,server")),
+                        "server", Set.of("interop.java")));
         assertThrows(IllegalArgumentException.class, () ->
                 TargetAdmission.validate("main.ores", Map.of("main.ores",
                         host.replace("// ores:requires=interop.java\n", "")), "server", Set.of("interop.java")));
