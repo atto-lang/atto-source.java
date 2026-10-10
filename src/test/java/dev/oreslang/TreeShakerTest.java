@@ -327,7 +327,7 @@ final class TreeShakerTest {
                   stdio.stdout.write(value.is_some());
                   return;
                 }
-                """, BuildOptions.executable(Map.of()));
+                """, BuildOptions.library(Map.of()));
 
         Ast.FunctionDecl ready = result.program().modules().stream()
                 .flatMap(module -> module.declarations().stream())
