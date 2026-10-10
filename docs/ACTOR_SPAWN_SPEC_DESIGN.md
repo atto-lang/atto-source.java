@@ -1,8 +1,10 @@
 # Consistent actor construction, per-instance concurrency and spawn syntax
 
-Status: **language proposal / acceptance plan (2026-10-09)**. The currently
-executable Java/Graal source form is `spawn Worker()` without actor constructor
-parameters. Oreslang *ordinary classes* already use `new Class(...)` and
+Status: **partially implemented (immediate-spawn syntax), otherwise a
+language proposal / acceptance plan (2026-10-09)**. Java/Graal source
+supports `spawn Worker()`, `spawn new Worker()` and
+`spawn (new Worker())` for actors without constructor arguments.
+All three forms compile to the same internal spawn operation. Oreslang *ordinary classes* already use `new Class(...)` and
 `constructor(...)`, but actor constructors, `new Actor(...)`,
 `ActorSpec.set_concurrency`, and `spawn spec` **are not implemented**.
 LLVM has no matching source implementation either.
@@ -120,9 +122,11 @@ prevents actor guest code from setting host admission policy.
 | `new Class(x)` | `Class` | Existing eager ordinary class constructor, unchanged |
 | `new Worker(x)` | `ActorSpec<Worker>` | New: inert, constructor args validated and stored |
 | `spawn spec` | `ActorRef<Worker>` | New: atomically consume a compatible actor spec |
-| `spawn Worker()` | `ActorRef<Worker>` | **Existing executable** zero-argument shorthand |
+| `spawn Worker()` | `ActorRef<Worker>` | **Executable** zero-argument shorthand |
+| `spawn new Worker()` | `ActorRef<Worker>` | **Executable** zero-argument alias |
+| `spawn (new Worker())` | `ActorRef<Worker>` | **Executable** zero-argument alias |
 | `spawn Worker(x)` | `ActorRef<Worker>` | Proposed shorthand when actor constructor exists |
-| `spawn new Worker(x)` | `ActorRef<Worker>` | Proposed explicit inline spelling |
+| `spawn new Worker(x)` | `ActorRef<Worker>` | Syntax accepted but constructor args are **currently rejected** |
 | `spawn spec` twice | error | One-shot spec; make another for a second actor |
 | `spec.set_concurrency(...)` after spawn | error | Revoked/consumed spec |
 | `running.set_concurrency(...)` | error | ActorRef cannot mutate running admission synchronously |
@@ -173,6 +177,22 @@ is greater than one. The existing source scheduler serializes
 suspended handlers; configurations that promise logical interleaving
 above existing support must be explicitly feature-gated rather than
 claiming the new capability is already delivered.
+
+## Immediately implemented grammar and its boundaries
+
+The Java/Graal parser accepts these zero-argument source spellings:
+`spawn Worker()`, `spawn new Worker()`, and
+`spawn (new Worker())`. Their ASTs compare equal and use the existing
+`RuntimeCallExpr("spawn", [NewExpr(Worker, [])])` lowering. Existing
+typechecking and runtime actor ownership remain identical; non-actor
+targets and constructor/startup parameters still fail closed. The
+regression suite `ActorSpawnNewSyntaxTest` covers AST equality,
+typechecking, startup/ready/mailbox/done behavior, invalid nesting,
+non-actor rejection and unsupported actor constructor arguments.
+
+This does **not** implement `new Worker()` by itself: outside an
+immediate `spawn`, actor construction remains prohibited until
+`ActorSpec`, its ownership typing and isolation enforcement exist.
 
 ## Implementation and acceptance gates
 
