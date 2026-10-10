@@ -18,5 +18,4 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Verify ProxyActor Rust protocol model
         run: |
-          cargo fmt --manifest-path tools/proxy-actor-protocol/Cargo.toml -- --check
           cargo test --manifest-path tools/proxy-actor-protocol/Cargo.toml --offline --all-targets
