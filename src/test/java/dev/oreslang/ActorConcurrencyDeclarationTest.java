@@ -147,6 +147,23 @@ final class ActorConcurrencyDeclarationTest {
     }
 
     @Test
+    void typedStateBindingsCannotImpersonateActorAdmissionConfiguration() {
+        for (String declaration : new String[] {
+                "val int requestConcurrency = 3;",
+                "let int messageConcurrency = 4;",
+                "const int requestConcurrency = 1;"
+        }) {
+            String source = "define actor Worker as\n"
+                    + declaration + "\nend";
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), declaration);
+            assertTrue(error.getMessage().contains("cannot store"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
     void supportsNetworkActorDeclarationsInsideModules() {
         Ast.Program program = Parser.parse("""
                 define module network as
