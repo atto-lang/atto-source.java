@@ -4660,21 +4660,28 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     static final class ActorGroupEventReservation implements AutoCloseable {
-        private final AtomicReference<ActorRuntime> owner;
+        private final AtomicReference<Runnable> release;
         private final long bytes;
 
         private ActorGroupEventReservation(ActorRuntime owner, long bytes) {
-            this.owner = new AtomicReference<>(Objects.requireNonNull(owner, "owner"));
+            Objects.requireNonNull(owner, "owner");
             if (bytes < 0) throw new IllegalArgumentException("bytes cannot be negative");
             this.bytes = bytes;
+            this.release = new AtomicReference<>(() -> owner.releaseSharedRuntimeBytes(bytes));
+        }
+
+        private ActorGroupEventReservation(MemoryReservation reservation, long bytes) {
+            Objects.requireNonNull(reservation, "reservation");
+            this.bytes = bytes;
+            this.release = new AtomicReference<>(reservation::close);
         }
 
         long bytes() { return bytes; }
 
         @Override
         public void close() {
-            ActorRuntime runtime = owner.getAndSet(null);
-            if (runtime != null) runtime.releaseSharedRuntimeBytes(bytes);
+            Runnable cleanup = release.getAndSet(null);
+            if (cleanup != null) cleanup.run();
         }
     }
 
@@ -4728,6 +4735,39 @@ public final class ActorRuntime implements AutoCloseable {
         return new FrozenActorGroupEventPayload(
                 frozen,
                 new ActorGroupEventReservation(this, bytes));
+    }
+
+    /**
+     * Per-subscriber data copy into the recipient's independent private
+     * mailbox-memory budget. Used by ActorEventBus for PRIVATE/UNTRUSTED,
+     * never for SHARED zero-copy subscriptions. No guest code runs here.
+     *
+     * This is *logical* JVM heap isolation. It does not imply a protected
+     * OS process / WASM / GraalVM native isolate has been provisioned.
+     */
+    FrozenActorGroupEventPayload copyActorGroupEventForSubscriber(
+            Object frozenValue, ActorId subscriber) {
+        Objects.requireNonNull(frozenValue, "frozenValue");
+        Objects.requireNonNull(subscriber, "subscriber");
+        ActorCell<?> cell = actors.get(subscriber);
+        if (cell == null || cell.stopped.get() || cell.finalized) {
+            throw new IllegalStateException("ActorGroup subscriber is no longer alive");
+        }
+        if (!isPrivateKind(cell.kind) || cell.memorySlice == null) {
+            throw new SecurityException("isolated event copies require a private actor memory slice");
+        }
+        validateMessageGraph(frozenValue);
+        rejectDataFreezeCapabilities(frozenValue, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(frozenValue, new IdentityHashMap<>(), 0);
+        }
+        long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+        long allowed = Math.min(cell.memorySlice.remainingBytes(), runtimeRemaining);
+        estimatePrivateTransportBytes(frozenValue, new IdentityHashMap<>(), 0, allowed);
+        Object copy = isolateCopy(frozenValue);
+        MemoryReservation reserved = cell.memorySlice.reserveMailbox(copy);
+        return new FrozenActorGroupEventPayload(copy,
+                new ActorGroupEventReservation(reserved, estimateFrozenBytes(copy)));
     }
 
     @SuppressWarnings("unchecked")
