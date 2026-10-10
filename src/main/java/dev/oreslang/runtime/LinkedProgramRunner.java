@@ -196,7 +196,13 @@ public final class LinkedProgramRunner {
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
                                 .buildLiteral();
-                        parsedUnits.put(id, context.parse(source));
+                        try (dev.oreslang.compiler.OresCompiler.LinkedParseScope ignored =
+                                     dev.oreslang.compiler.OresCompiler.openLinkedParse(
+                                             id, unit.sourceText(),
+                                             IncrementalCompiler.linkedModuleContracts(
+                                                     id, build, importResolutions))) {
+                            parsedUnits.put(id, context.parse(source));
+                        }
                     }
 
                     for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {
