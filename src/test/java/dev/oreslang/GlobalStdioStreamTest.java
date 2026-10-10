@@ -35,12 +35,12 @@ final class GlobalStdioStreamTest {
     void globalAliasesPointToTheSameContextOwnedDescriptorObjects() throws Exception {
         var result = run("""
                 pub routine main(): void {
-                  stdio.println(process.stdin === stdio.in);
-                  stdio.println(process.stdin === stdio.stdin);
-                  stdio.println(process.stdin === stdin.in);
-                  stdio.println(process.stdout === stdio.out);
-                  stdio.println(process.stderr === stdio.err);
-                  stdio.println(stdio.err === stdio.stderr);
+                  stdio.println(process.stdin == stdio.in);
+                  stdio.println(process.stdin == stdio.stdin);
+                  stdio.println(process.stdin == stdin.in);
+                  stdio.println(process.stdout == stdio.out);
+                  stdio.println(process.stderr == stdio.err);
+                  stdio.println(stdio.err == stdio.stderr);
                   return;
                 }
                 """, "");
@@ -77,9 +77,9 @@ final class GlobalStdioStreamTest {
     @Test
     void outputTeeIsAnExplicitComposedWriter() throws Exception {
         var result = run("""
-                pub async routine main(): void {
+                pub routine main(): void {
                   val WritableTee tee = stdio.out.tee(stdio.err);
-                  await tee.write("paired");
+                  tee.write("paired");
                   return;
                 }
                 """, "");
@@ -118,7 +118,7 @@ final class GlobalStdioStreamTest {
                   return;
                 }
                 """, "");
-        assertEquals("true\\n", result.stdout());
+        assertEquals("true\n", result.stdout());
     }
 
     @Test
