@@ -89,7 +89,7 @@ final class DistinctPipeSyntaxTest {
         Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(code));
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(parsed));
-        assertTrue(failure.getMessage().contains("ActorStream graph composition"),
+        assertTrue(failure.getMessage().contains("must explicitly implement StreamOperator"),
                 failure::getMessage);
     }
 
