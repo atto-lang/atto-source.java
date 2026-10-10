@@ -8,6 +8,19 @@ bounded channel-backed mailboxes, actor identity, child supervision, and
 **already used for ActorGroup Mailman outbox messages**. Do not silently
 repurpose it as a class actor's inbound message.
 
+## Readiness signal API (PR #519)
+
+`await actor.get_ready_signal()` is the preferred stable source spelling.
+It returns one actor-owned, non-consumable `ReadySignal<void>` implementing the
+runtime's `Awaitable<void>` protocol. It currently projects an `OresFuture`;
+the channel/Future implementation can change without changing source callers.
+All waiters observe the same startup outcome; subscribing after initialization
+still completes, and all startup failures settle exceptionally. It is **not**
+a consumable channel read or a capability to complete/cancel readiness.
+`actor.ready` remains for source compatibility. Do not pass a `ReadySignal`
+into `Future.all` as if it were a raw Future; await each or add an explicit
+`Awaitable.all` combinator later.
+
 ## Target `main.ores` (partially implemented end-to-end target)
 
 ```ores
@@ -37,7 +50,10 @@ end
 
 pub async routine main(): void {
   val workers = [spawn Worker(), spawn Worker(), spawn Worker()];
-  await Future.all([workers[0].ready, workers[1].ready, workers[2].ready]);
+  // Readiness is a multicast, non-consuming awaitable signal.
+  await workers[0].get_ready_signal();
+  await workers[1].get_ready_signal();
+  await workers[2].get_ready_signal();
 
   // Creating an actor does not automatically send a receive() message.
   for const worker of workers do
@@ -69,7 +85,8 @@ of output strings.
 | --- | --- | --- |
 | `spawn Worker()` | `ActorRef<Worker>` | Allocates actor identity; reserved on_start hook runs in actor execution context, not the caller |
 | `w.id`, `w.kind` | `ActorId`, `ActorKind` | Immutable identity/diagnostics |
-| `w.ready` | `Future<void>` | Completes once actor-local field initialization and reserved `on_start()` succeed; fails if startup fails/stops |
+| `w.get_ready_signal()` | `ReadySignal<void>` (awaitable) | Stable reusable readiness abstraction; all waiters, including late waiters, observe completion or startup failure |
+| `w.ready` | `Future<void>` (compatibility) | Legacy property retained while userland migrates to get_ready_signal(); do not design new APIs around its implementation type |
 | `w.send(mail)` | `void` or explicit nonblocking variant | **Inbound**, serialized, bounded actor mailbox; reject capability/pointer/function payloads |
 | `w.outputs` | `AsyncIterator<ActorOutput<T>>` or read-only `Channel<ActorOutput<T>>` | **Outbound**, bounded, async/backpressure-capable, parent-observable stream |
 | `w.done` | `Future<void>` | Settles after actor finalization and isolate/carrier cleanup |
@@ -194,7 +211,7 @@ example are separate gates; do not silently substitute fat arrows.
 // completeness remains independently gated where syntax/runtime coverage is missing.
 const create = async || -> {
   const worker = spawn Worker();
-  await worker.ready;
+  await worker.get_ready_signal();
   return worker;
 };
 ```
