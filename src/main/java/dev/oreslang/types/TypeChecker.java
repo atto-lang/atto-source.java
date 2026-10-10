@@ -1859,7 +1859,7 @@ public final class TypeChecker {
                 }
                 case "<", "<=", ">", ">=" -> {
                     if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
-                        throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
+                        throw new IllegalArgumentException("comparison operands must both be numeric or both strings; operator=" + binary.operator() + ", left=" + left + ", right=" + right + ", expression=" + binary);
                     }
                     yield Primitive.BOOL;
                 }
