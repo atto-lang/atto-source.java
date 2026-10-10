@@ -107,6 +107,17 @@ final class DistinctPipeSyntaxTest {
     }
 
     @Test
+    void functionalPipeAcceptsParenthesizedTypedLambda() throws Exception {
+        assertEquals("17", run("""
+                pub routine main(): void {
+                    val int outcome = 7 |> (|int x| -> x + 10);
+                    stdio.stdout.write(outcome);
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void invalidFunctionalPipelineTargetsFailDuringParsing() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
