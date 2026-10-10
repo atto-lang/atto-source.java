@@ -4,6 +4,7 @@ import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -45,6 +46,20 @@ final class IdentityReturnProvenanceTest {
     @Test void invalidProvenanceIndexIsRejectedAtConstruction() {
         assertThrows(IllegalArgumentException.class, () -> callable(-3));
         assertThrows(IllegalArgumentException.class, () -> callable(2));
+    }
+
+    @Test void opaqueValuesCannotForgeIdentityCallablePromises() {
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, callable(0)));
+        assertFalse(Types.isAssignable(new Types.Generic("U"), callable(0)));
+        assertTrue(Types.isAssignable(Types.Unknown.INSTANCE, callable(Types.Function.NO_IDENTITY)));
+    }
+
+    @Test void nestedStructuralPromisesAlsoRejectUnknownOrigins() {
+        Types.Record contract = new Types.Record(Map.of("relay", callable(0)));
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, contract));
+        assertFalse(Types.isAssignable(new Types.Generic("U"), contract));
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE,
+                new Types.Named("Option", List.of(contract))));
     }
 
     private static void rejectsDetached(String statements) {
