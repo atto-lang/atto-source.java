@@ -1566,6 +1566,8 @@ public final class TypeChecker {
                         ? new Env(env, env.descendantsNonLexical(), true)
                         : new Env(env);
                 if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
+                    validateStdDescriptorDirection(arm.channel(), env,
+                            arm.operation() == Ast.ChannelOperation.READ);
                     Type element = channelElementType(
                             typeOf(arm.channel(), env, generics, self),
                             "select " + arm.operation().name().toLowerCase());
@@ -2075,6 +2077,7 @@ public final class TypeChecker {
                         if (call.arguments().size() != 1) {
                             throw new IllegalArgumentException("SelectCase.read expects one Channel<T>");
                         }
+                        validateStdDescriptorDirection(call.arguments().getFirst(), env, true);
                         channelElementType(
                                 typeOf(call.arguments().getFirst(), env, generics, self),
                                 "SelectCase.read");
@@ -2085,6 +2088,7 @@ public final class TypeChecker {
                             throw new IllegalArgumentException(
                                     "SelectCase.write expects Channel<T>, value");
                         }
+                        validateStdDescriptorDirection(call.arguments().get(0), env, false);
                         Type element = channelElementType(
                                 typeOf(call.arguments().get(0), env, generics, self),
                                 "SelectCase.write");
@@ -2816,12 +2820,20 @@ public final class TypeChecker {
                 return switch (member.member()) {
                     case "close" -> new Function(List.of(), Primitive.VOID);
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
-                    case "stream" -> new Function(
-                            List.of(),
-                            new Named("ReadableStream", List.of(channelType.arguments().getFirst())));
-                    case "tee" -> new Function(
-                            List.of(new Named("Channel", List.of(Primitive.STRING))),
-                            new Named("WritableTee", List.of()));
+                    case "stream" -> {
+                        if (isGlobalStdOutputChannel(member.receiver(), env)) {
+                            throw new IllegalArgumentException("stdout/stderr are write-only; stream() requires a readable channel");
+                        }
+                        yield new Function(List.of(),
+                                new Named("ReadableStream", List.of(channelType.arguments().getFirst())));
+                    }
+                    case "tee" -> {
+                        if (!isGlobalStdOutputChannel(member.receiver(), env)) {
+                            throw new IllegalArgumentException("tee(target) requires an output descriptor");
+                        }
+                        yield new Function(List.of(new Named("Channel", List.of(Primitive.STRING))),
+                                new Named("WritableTee", List.of()));
+                    }
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
                 };
@@ -3163,6 +3175,8 @@ public final class TypeChecker {
                     "await requires Future<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            validateStdDescriptorDirection(channelOp.channel(), env,
+                    channelOp.operation() == Ast.ChannelOperation.READ);
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
@@ -3319,6 +3333,40 @@ public final class TypeChecker {
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    // Conservative static descriptor checks; runtime channel subtypes enforce
+    // these invariants even after aliasing or dynamic select composition.
+    private boolean isGlobalStdOutputChannel(Ast.Expr expr, Env env) {
+        if (!(expr instanceof Ast.MemberExpr member)) return false;
+        if (!(member.receiver() instanceof Ast.NameExpr base)
+                || env.lookup(base.name()) != null) return false;
+        return switch (base.name()) {
+            case "stdio" -> member.member().equals("out")
+                    || member.member().equals("err") || member.member().equals("stderr");
+            case "process" -> member.member().equals("stdout")
+                    || member.member().equals("stderr");
+            default -> false;
+        };
+    }
+
+    private boolean isGlobalStdInputChannel(Ast.Expr expr, Env env) {
+        if (!(expr instanceof Ast.MemberExpr member)) return false;
+        if (!(member.receiver() instanceof Ast.NameExpr base)
+                || env.lookup(base.name()) != null) return false;
+        return switch (base.name()) {
+            case "stdio", "stdin" -> member.member().equals("in")
+                    || member.member().equals("stdin");
+            case "process" -> member.member().equals("stdin");
+            default -> false;
+        };
+    }
+
+    private void validateStdDescriptorDirection(Ast.Expr expr, Env env, boolean reading) {
+        if (reading && isGlobalStdOutputChannel(expr, env))
+            throw new IllegalArgumentException("cannot read from a write-only stdio descriptor");
+        if (!reading && isGlobalStdInputChannel(expr, env))
+            throw new IllegalArgumentException("cannot write to a read-only stdin descriptor");
     }
 
     private Type channelElementType(Type channel, String where) {
