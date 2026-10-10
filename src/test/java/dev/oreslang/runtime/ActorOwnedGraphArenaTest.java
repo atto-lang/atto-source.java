@@ -225,4 +225,29 @@ final class ActorOwnedGraphArenaTest {
             if (failure.get() != null) fail(failure.get());
         }
     }
+
+    @Test
+    void physicalHeapPlacementFailsClosedForAllBootstrapActorKinds() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var shared = runtime.<String>spawnShared(() -> (mail, ctx) -> { });
+            var isolated = runtime.<String>spawnPrivate(() -> (mail, ctx) -> { });
+            var untrusted = runtime.<String>spawnUntrusted(
+                    context -> (mail, ctx) -> { });
+
+            for (ActorRuntime.ActorRef<?> actor : java.util.List.of(
+                    shared, isolated, untrusted)) {
+                assertDoesNotThrow(() -> runtime.requireActorHeapBacking(
+                        actor, ActorRuntime.ActorHeapBacking.OWNER_CHECKED_REGION));
+                for (var backing : new ActorRuntime.ActorHeapBacking[] {
+                        ActorRuntime.ActorHeapBacking.DETERMINISTIC_NATIVE_ARENA,
+                        ActorRuntime.ActorHeapBacking.INDEPENDENT_GRAAL_ISOLATE,
+                        ActorRuntime.ActorHeapBacking.ISOLATED_PROCESS
+                }) {
+                    assertThrows(IllegalStateException.class, () ->
+                            runtime.requireActorHeapBacking(actor, backing),
+                            "actor kind alone must never fabricate a physical heap boundary");
+                }
+            }
+        }
+    }
 }
