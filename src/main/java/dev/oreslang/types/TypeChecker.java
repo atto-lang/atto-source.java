@@ -39,6 +39,9 @@ public final class TypeChecker {
             Named ownerType,
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
+    /** Compile-time actor stream ports; not a second actor or scheduler. */
+    private record StreamPorts(Type input, Type output) { }
+
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
@@ -1170,6 +1173,10 @@ public final class TypeChecker {
         Set<String> implemented = new HashSet<>();
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
+            if (interfaceRef.name().equals("StreamOperator")) {
+                streamPortsForClass(klass, nominalClassType(klass));
+                continue;
+            }
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
@@ -1836,12 +1843,23 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             if (binary.operator().equals("pipe")) {
-                // The grammar reserves actor graph syntax, but no graph may
-                // execute without checked stage port types and owned links.
+                Type lhs = typeOf(binary.left(), env, generics, self);
+                Type rhs = typeOf(binary.right(), env, generics, self);
+                StreamPorts from = streamPortsForPipeOperand(lhs, "left");
+                StreamPorts into = streamPortsForPipeOperand(rhs, "right");
+                if (from.output() == Primitive.VOID || into.input() == Primitive.VOID)
+                    throw new IllegalArgumentException(
+                            "pipe cannot attach stages through a void output/input port");
+                if (!from.output().equals(into.input()))
+                    throw new IllegalArgumentException(
+                            "pipe port type mismatch: producer emits " + from.output()
+                            + " but consumer requires " + into.input());
+                // Still fail closed: the current actor mailbox send() is void
+                // and lacks awaitable bounded admission. Do not silently spawn
+                // actors or build an unbackpressured bridge.
                 throw new IllegalArgumentException(
-                        "'pipe' is reserved for ActorStream graph composition; "
-                        + "actor stage contracts, bounded links and graph lifecycle "
-                        + "are not implemented yet. Use |> for eager function piping.");
+                        "typed pipe ports are compatible, but ActorStream runtime "
+                        + "with bounded delivery/startup/cancellation is not implemented yet");
             }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
@@ -2227,6 +2245,18 @@ public final class TypeChecker {
                                 currentActorKind,
                                 false,
                                 "self.send outbound value");
+                        if (currentClassOwner != null) {
+                            StreamPorts ports = streamPortsForClass(
+                                    currentClassOwner, nominalClassType(currentClassOwner));
+                            if (ports != null) {
+                                if (ports.output() == Primitive.VOID)
+                                    throw new IllegalArgumentException(
+                                            "StreamOperator sink '" + currentClassOwner.name()
+                                            + "' cannot emit a value with self.send");
+                                requireAssignable(payload, ports.output(),
+                                        "StreamOperator output of actor '" + currentClassOwner.name() + "'");
+                            }
+                        }
                         return Primitive.VOID;
                     }
                     if (member.member().equals("end")) {
@@ -4081,6 +4111,69 @@ public final class TypeChecker {
             return new Record(members, record.readOnly());
         }
         return type;
+    }
+
+    private StreamPorts streamPortsForClass(Ast.ClassDecl actor, Type actorType) {
+        Ast.TypeRef marker = null;
+        for (Ast.TypeRef iface : actor.interfaces()) {
+            if (!iface.name().equals("StreamOperator")) continue;
+            if (marker != null)
+                throw new IllegalArgumentException(
+                        "duplicate StreamOperator on actor '" + actor.name() + "'");
+            marker = iface;
+        }
+        if (marker == null) return null;
+        if (actor.actorKind() == Ast.ActorKind.NONE)
+            throw new IllegalArgumentException(
+                    "StreamOperator<I,O> can only be implemented by actors");
+        if (marker.inferArguments() || marker.arguments().size() != 2)
+            throw new IllegalArgumentException(
+                    "StreamOperator requires exactly two explicit port type arguments");
+        Set<String> ownerGenerics = Set.copyOf(actor.genericParameters());
+        Type rawInput = resolve(marker.arguments().get(0), ownerGenerics, actorType);
+        Type rawOutput = resolve(marker.arguments().get(1), ownerGenerics, actorType);
+        Map<String, Type> bindings = actorType instanceof Named concrete
+                ? classGenericBindings(actor, concrete) : Map.of();
+        Type input = substituteGenerics(rawInput, bindings);
+        Type output = substituteGenerics(rawOutput, bindings);
+        if (input != Primitive.VOID)
+            validateActorCallableBoundaryType(input, actor.actorKind(), false,
+                    "StreamOperator input for actor '" + actor.name() + "'");
+        if (output != Primitive.VOID)
+            validateActorCallableBoundaryType(output, actor.actorKind(), false,
+                    "StreamOperator output for actor '" + actor.name() + "'");
+        if (input != Primitive.VOID) {
+            Type declared = actorMailboxPayloadType(new Named("ActorRef", List.of(actorType)));
+            if (!input.equals(declared))
+                throw new IllegalArgumentException(
+                        "StreamOperator input for actor '" + actor.name()
+                        + "' is " + input + ", but receive(ActorMail<T>) uses " + declared);
+        } else {
+            for (Ast.MethodDecl method : actor.methods()) {
+                if (method.name().equals("receive") && !method.isStatic())
+                    throw new IllegalArgumentException(
+                            "StreamOperator source actor '" + actor.name()
+                            + "' has void input and cannot declare receive");
+            }
+        }
+        return new StreamPorts(input, output);
+    }
+
+    private StreamPorts streamPortsForPipeOperand(Type value, String side) {
+        Type type = receiverDispatchType(deref(value));
+        if (!(type instanceof Named named))
+            throw new IllegalArgumentException("pipe " + side + " operand must be a typed actor stage/graph");
+        if (named.name().equals("ActorStream") && named.arguments().size() == 2)
+            return new StreamPorts(named.arguments().get(0), named.arguments().get(1));
+        if (!named.name().equals("ActorRef") || named.arguments().size() != 1)
+            throw new IllegalArgumentException("pipe " + side + " operand must be ActorRef<StreamOperator<I,O>> or ActorStream<I,O>");
+        Ast.ClassDecl actor = actorClassForRef(named);
+        StreamPorts ports = streamPortsForClass(actor, named.arguments().get(0));
+        if (ports == null)
+            throw new IllegalArgumentException(
+                    "pipe " + side + " actor '" + actor.name()
+                    + "' must explicitly implement StreamOperator<I,O>");
+        return ports;
     }
 
     private Type actorMailboxPayloadType(Named actorRef) {
