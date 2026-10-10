@@ -349,7 +349,7 @@ final class AsyncSuspensionOwnershipMatrixTest {
                   val Bar owner = new Bar();
                   val view = rt borrow owner;
                   val Option<SelectResult> immediate = try select from cases;
-                  val Future<SelectResult> pending = nb select from cases;
+                  val Future<Option<SelectResult>> pending = nb select from cases;
                   stdio.println(view.value);
                   return;
                 }
@@ -399,6 +399,100 @@ final class AsyncSuspensionOwnershipMatrixTest {
                   return;
                 }
                 """, "writech cannot transport a borrowed reference");
+    }
+
+    @Test
+    void ActorSelfRemainsUnderMailboxLeaseAcrossCooperation() {
+        accept("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    rt cooperate;
+                    self.end();
+                    return;
+                  }
+                end
+                """);
+    }
+
+    @Test
+    void ActorSelfBorrowAliasCannotCrossCooperation() {
+        reject("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    val alias = rt borrow self;
+                    rt cooperate;
+                    stdio.println(alias);
+                    return;
+                  }
+                end
+                """, "cannot cooperate while an ordinary borrow is live");
+    }
+
+    @Test
+    void NonblockingReadRegistrationCannotOutliveMutexGuard() {
+        reject("""
+                fnc bad(): void {
+                  val Channel<int> ch = Channel.new<int>(1);
+                  val Mutex<int> lock = Mutex.new(7);
+                  val guard = lock.lock();
+                  val Future<int> pending = nb readch ch;
+                  guard.release();
+                  return;
+                }
+                """, "cannot register a channel waiter while holding a MutexGuard");
+    }
+
+    @Test
+    void DoNbSelectCannotCaptureExclusiveBorrow() {
+        reject("""
+                actor fnc bad(): void {
+                  val Channel<int> ch = Channel.new<int>(1);
+                  let mut Bar owner = new Bar();
+                  val view = rt borrow mut owner;
+                  do nb select {
+                    when readch ch: val received {
+                      stdio.println(view.value);
+                    }
+                  }
+                  return;
+                }
+                """, "nb select continuation cannot capture borrowed value 'view'");
+    }
+
+    @Test
+    void DoNbSelectCannotTransportBorrowedWritePayload() {
+        reject("""
+                actor fnc bad(): void {
+                  val Channel<Bar> ch = Channel.new<Bar>(1);
+                  val Bar owner = new Bar();
+                  do nb select {
+                    when writech ch, rt borrow owner: {
+                      stdio.println("invalid");
+                    }
+                  }
+                  return;
+                }
+                """, "writech cannot transport a borrowed reference");
+    }
+
+    @Test
+    void AwaitInsideDefaultArmStillChecksLiveBorrow() {
+        reject("""
+                async fnc bad(): void {
+                  val Channel<int> ch = Channel.new<int>(1);
+                  val Bar owner = new Bar();
+                  val view = rt borrow owner;
+                  select {
+                    when readch ch: val received { stdio.println(received); }
+                    default: {
+                      val int received = await (nb readch ch);
+                      stdio.println(received);
+                    }
+                  }
+                  stdio.println(view.value);
+                  return;
+                }
+                """, "cannot await while an ordinary borrow is live");
     }
 
 }
