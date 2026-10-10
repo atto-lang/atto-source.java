@@ -113,7 +113,7 @@ final class SourceLoopSoftPreemptionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   worker.send("first");
                   worker.send("second");
                   val first = (await worker.outputs.next()).value.unwrap();
@@ -121,7 +121,7 @@ final class SourceLoopSoftPreemptionTest {
                   stdio.stdout.write(first.value);
                   stdio.stdout.write("|");
                   stdio.stdout.write(second.value);
-                  await worker.done;
+                  await worker.get_done();
                   stdio.stdout.write("|");
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
                   return;
