@@ -203,15 +203,15 @@ final class ActorConcurrencyDeclarationTest {
     @Test
     void allNetworkActorKindsMustHaveAdaptersBeforeSpawnOrPipe() {
         for (String protocol : new String[] {"http", "tcp", "websocket"}) {
-            String declaration = "define " + protocol + " actor Endpoint as\\n"
-                    + "  int requestConcurrency = 1;\\n"
-                    + "  int messageConcurrency = 1;\\nend\\n";
+            String declaration = "define " + protocol + " actor Endpoint as\n"
+                    + "  int requestConcurrency = 1;\n"
+                    + "  int messageConcurrency = 1;\nend\n";
             for (String spelling : new String[]{
                     "spawn Endpoint()", "spawn new Endpoint()",
                     "spawn (new Endpoint())"
             }) {
-                String source = declaration + "pub routine main(): void {\\n"
-                        + "  val running = " + spelling + ";\\n  return;\\n}";
+                String source = declaration + "pub routine main(): void {\n"
+                        + "  val running = " + spelling + ";\n  return;\n}";
                 IllegalArgumentException failure = assertThrows(
                         IllegalArgumentException.class,
                         () -> TypeChecker.check(Parser.parse(source)),
