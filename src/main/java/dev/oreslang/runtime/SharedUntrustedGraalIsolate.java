@@ -61,7 +61,9 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
                     .spawnIsolate(true)
                     .option("engine.MaxIsolateMemory", isolateHeapBytes + "B")
                     .build();
-            IsolatePolicy baseline = IsolatePolicy.untrustedActor();
+            // A domain root may create bounded actors, but individual
+            // untrusted actors still have zero ambient capabilities.
+            IsolatePolicy baseline = IsolatePolicy.sharedUntrustedDomain(isolateHeapBytes);
             opened = baseline.restrictedContextBuilder(
                     ExecutionProfile.parse(NativeBuildMode.defaultExecutionMode(), "server"),
                     java.util.Set.of(),
