@@ -27,18 +27,34 @@ public final class ChannelReadableStream<T> {
     public static final class Reader<T> implements AutoCloseable {
         private final ChannelReadableStream<T> stream;
         private final AtomicBoolean closed = new AtomicBoolean();
+        private OresFuture<T> pending;
 
         private Reader(ChannelReadableStream<T> stream) { this.stream = stream; }
 
-        public OresFuture<T> readAsync() {
+        /**
+         * One pending pull at a time. The callback only clears the runtime
+         * registration; it never resumes guest code on the producer thread.
+         */
+        public synchronized OresFuture<T> readAsync() {
             if (closed.get())
                 return OresFuture.failed(new IllegalStateException("ReadableStream reader released"));
-            return stream.source.readAsync();
+            if (pending != null && !pending.isDone())
+                return OresFuture.failed(new IllegalStateException("ReadableStream already has a pending read"));
+            OresFuture<T> next = stream.source.readAsync();
+            pending = next;
+            next.whenCompleteRuntime((item, failure) -> {
+                synchronized (Reader.this) {
+                    if (pending == next) pending = null;
+                }
+            });
+            return next;
         }
 
-        @Override public void close() {
-            if (closed.compareAndSet(false, true))
-                stream.readerClaimed.set(false);
+        @Override public synchronized void close() {
+            if (!closed.compareAndSet(false, true)) return;
+            if (pending != null && !pending.isDone()) pending.cancel(false);
+            pending = null;
+            stream.readerClaimed.set(false);
         }
     }
 }
