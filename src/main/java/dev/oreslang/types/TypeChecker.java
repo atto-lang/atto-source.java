@@ -3145,8 +3145,15 @@ public final class TypeChecker {
                     && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
+            if (awaitedType instanceof Named actorRef
+                    && actorRef.name().equals("ActorRef")) {
+                // await spawn Actor() is a readiness barrier, not a termination
+                // barrier. The expression retains its ActorRef<T> type.
+                actorClassForRef(actorRef);
+                return actorRef;
+            }
             throw new IllegalArgumentException(
-                    "await requires Future<T>; got " + awaitedType);
+                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
