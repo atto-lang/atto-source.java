@@ -47,6 +47,18 @@ final class OresExceptionPolicyTest {
     }
 
     @Test
+    void processExitDominatesPanicRaisedDuringCleanup() {
+        ProcessExitSignal exit = new ProcessExitSignal(23);
+        OresPanic cleanup = new OresPanic("cleanup broke an invariant");
+        Throwable terminal = OresExceptionPolicy.combine(exit, cleanup);
+        assertSame(exit, terminal, "explicit process exit must never become a guest panic");
+        assertArrayEquals(new Throwable[]{cleanup}, exit.getSuppressed());
+        ProcessExitSignal actual = assertThrows(ProcessExitSignal.class,
+                () -> OresExceptionPolicy.rethrow(terminal));
+        assertEquals(23, actual.exitStatus());
+    }
+
+    @Test
     void selfSuppressionIsNotAttempted() {
         OresPanic same = new OresPanic("same");
         assertSame(same, OresExceptionPolicy.combine(same, same));
