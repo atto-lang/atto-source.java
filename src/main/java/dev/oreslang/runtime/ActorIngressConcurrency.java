@@ -79,20 +79,21 @@ public final class ActorIngressConcurrency implements AutoCloseable {
     }
 
     /**
-     * The broker assigns strictly increasing positive connection IDs per actor
-     * incarnation. Old/reused IDs are rejected, including after closing a
-     * prior session. Exhaustion returns null without consuming the next ID.
+     * The broker admits a session and receives a fresh, internally minted
+     * connection ID. This is atomic under contention: callers cannot choose
+     * duplicate, out-of-order or recycled session identities. A full quota
+     * returns null without consuming an ID or admitting the connection.
      */
-    public synchronized Connection tryOpenConnection(long connectionId, long actorIncarnation) {
+    public synchronized Connection tryOpenConnection(long actorIncarnation) {
         requireIncarnation(actorIncarnation);
         if (protocol == Protocol.REGULAR) throw new IllegalStateException("regular actors have no connections");
         requireOpen();
-        if (connectionId <= lastOpenedConnectionId)
-            throw new IllegalArgumentException("stale or reused connection id");
         if (connections.size() >= maxConnections) return null;
+        if (lastOpenedConnectionId == Long.MAX_VALUE)
+            throw new IllegalStateException("connection generation exhausted");
+        long connectionId = ++lastOpenedConnectionId;
         Connection connection = new Connection(connectionId);
         connections.put(connectionId, connection);
-        lastOpenedConnectionId = connectionId;
         return connection;
     }
 
