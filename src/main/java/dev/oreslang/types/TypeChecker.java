@@ -840,6 +840,36 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        if (klass.proxySpec() != null) {
+            Ast.ProxyActorSpec proxy = klass.proxySpec();
+            if (klass.actorKind() != Ast.ActorKind.SHARED
+                    || !klass.fields().isEmpty()
+                    || !klass.methods().isEmpty()
+                    || klass.constructor() != null
+                    || !klass.parents().isEmpty()
+                    || !klass.interfaces().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "ProxyActor declarations must be declarative and cannot execute local actor behavior");
+            }
+            Ast.InterfaceDecl contract = findInterface(proxy.remoteContract().name());
+            if (contract == null) {
+                throw new IllegalArgumentException(
+                        "ProxyActor '" + klass.name() + "' names unknown remote contract '"
+                        + proxy.remoteContract().name() + "'");
+            }
+            if (proxy.remoteContract().inferArguments()
+                    || proxy.remoteContract().arguments().size() != contract.genericParameters().size()) {
+                throw new IllegalArgumentException(
+                        "ProxyActor remote contract generic arity mismatch for '"
+                        + contract.name() + "'");
+            }
+            if (!proxy.serviceKey().matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,127}")
+                    || proxy.serviceKey().contains("..")
+                    || proxy.serviceKey().contains("//")) {
+                throw new IllegalArgumentException(
+                        "ProxyActor discovery key must be a bounded service identifier, not a URL or path traversal");
+            }
+        }
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
