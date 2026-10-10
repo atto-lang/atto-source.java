@@ -1900,6 +1900,13 @@ public final class TypeChecker {
                                     + "' is not a source actor visible to this compilation unit");
                 }
                 rejectUnimportedClassNamespace(actorClass);
+                if (actorClass.proxySpec() != null) {
+                    throw new IllegalArgumentException(
+                            "ProxyActor '" + actorClass.name()
+                            + "' is declared but remote spawn is not executable yet: "
+                            + "a verified service resolver, authenticated native transport, "
+                            + "contract negotiation, and bounded stream bridge are required");
+                }
                 if (actorClass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "spawn requires an actor class; '" + actorClass.name()
