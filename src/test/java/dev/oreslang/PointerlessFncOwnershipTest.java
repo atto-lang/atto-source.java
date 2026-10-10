@@ -419,6 +419,25 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void conditionalStructuralBorrowProtectsAllPossibleNamedOwners() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        fnc inspect(structural Box value, Box consumed): void { return; }
+                        fnc bad(bool choose): void {
+                          let mut Box left = new Box();
+                          let mut Box right = new Box();
+                          inspect(choose ? left : right, rt take left);
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().toLowerCase().contains("borrow"),
+                rejected.getMessage());
+    }
+
+    @Test
     void firstClassFncReadonlyArgumentCannotBeMovedByLaterArgument() {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
