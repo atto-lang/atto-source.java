@@ -2074,6 +2074,18 @@ public final class OresEvalRootNode extends RootNode {
                                     runChannelForOfIteration(t, loop, env, channel, continuation);
                                     return;
                                 }
+                                // The native ReadableStream<T> class is a
+                                // single-consumer adapter over one Channel<T>.
+                                // Drive it directly on the resumable source-task
+                                // protocol: do not park an actor/root turn in
+                                // GeneratorRuntime.Generator.nextStep().
+                                if (iterable instanceof OresObject stream
+                                        && stream.owner == this
+                                        && stream.klass == classes.get("ReadableStream")
+                                        && stream.fields.get("source") instanceof ChannelRuntime.Channel<?> source) {
+                                    runChannelForOfIteration(t, loop, env, source, continuation);
+                                    return;
+                                }
                                 Iterable<?> values = iterableValues(iterable, env);
                                 runForOfIteration(
                                         t,
