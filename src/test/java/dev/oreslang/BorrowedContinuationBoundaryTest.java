@@ -42,6 +42,34 @@ final class BorrowedContinuationBoundaryTest {
     }
 
     @Test
+    void ownedByValueParameterDoesNotAcceptEphemeralBorrow() {
+        reject(BOX + """
+                fnc consume(Box owned): void {
+                  return;
+                }
+                fnc bad(): void {
+                  let Box box = new Box();
+                  consume(rt borrow box);
+                  return;
+                }
+                """, "owned by-value parameter");
+    }
+
+    @Test
+    void ownedByValueParameterCanConsumeOwnedValue() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
+                fnc consume(Box owned): void {
+                  return;
+                }
+                fnc good(): void {
+                  let Box box = new Box();
+                  consume(rt take box);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void asyncCallCannotRetainCallSiteBorrow() {
         reject(BOX + """
                 async fnc later(&Box box): int {
