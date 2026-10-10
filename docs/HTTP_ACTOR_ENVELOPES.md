@@ -8,6 +8,71 @@ surface is `define actor`/`define isoactor` with
 [HTTP_SERVER.md](HTTP_SERVER.md). LLVM has no corresponding source HTTP actor
 integration yet.
 
+## Concurrency policy: one ordinary control, two network controls
+
+**Public configuration under design (not executable Oreslang yet):**
+
+```ores
+@concurrency(messages = 16)
+define actor OrdinaryWorker as
+  receive(ActorMail<String> m): void { }
+end
+
+@concurrency(connections = 128, messages_per_connection = 8)
+define http actor HttpWorker as
+  receive_http(HttpMessage m): void { }
+end
+
+@concurrency(connections = 128, messages_per_connection = 4)
+define tcp actor TcpWorker as
+  receive_tcp(TcpMessage m): void { }
+end
+
+@concurrency(connections = 128, messages_per_connection = 4)
+define ws actor WebSocketWorker as
+  receive_ws(WsMessage m): void { }
+end
+```
+
+Regular `actor`/`isoactor` declarations have **one** concurrency axis,
+`messages`: number of concurrently **in-flight** `receive` handlers.
+HTTP/TCP/WS actors have **exactly two** such axes: maximum live
+**connections assigned to the actor**, and maximum **in-flight
+`receive_*` message handler invocations per one connection**.
+In-flight means admitted but not completed/cancelled, *including awaits*.
+Per-connection counts are independent, so a slow client cannot consume
+another connection's message permits. The product of the two axes is
+an upper bound on in-flight network handler invocations; separate
+host-wide resource/queue limits can lower effective admission.
+
+Message counts are **not** TCP packets, bytes, HTTP body chunks
+as transport framing, WebSocket fragments, or total lifetime messages.
+The broker assigns a distinct, stable session identity and actor
+incarnation to every admitted connection. HTTP keep-alive/HTTP/2/HTTP/3
+connections may carry multiple request IDs and streams. Each delivered
+application envelope has its own monotonically sequenced message
+activation; many envelopes may refer to the same request. The broker
+must preserve request/response identity and per-request order.
+In HTTP/1.1 pipelining, response ordering still follows protocol
+semantics even when application handlers overlap.
+
+One actor-wide guest **execution** lease still allows only one carrier
+to execute actor guest code at a time. This is a *fixed invariant*,
+not an additional public concurrency setting. Awaiting yields that
+carrier without consuming an extra thread, while the logical handler's
+admission permit remains live. Interleaving suspended handlers and
+scheduling fairness are **pending implementation**, not an established
+feature of this PR.
+
+The Java reference `ActorIngressConcurrency` gate now enforces
+one- or two-axis host-side admission, scope/epoch fencing and
+deterministic cleanup, with independent regression tests. **It is not
+yet connected to NativeHttp or source actor dispatch.** In particular,
+`http.listen(..., capacity, ...)` is a *listener-wide active exchange*
+limit, not the actor's `connections` limit, and current JDK
+`HttpExchange` does not expose enough connection identity for true
+per-actor/per-connection admission.
+
 ## Scheduling and lifetime invariants
 
 1. **Actor-wide one-writer lease.** Exactly one carrier at a time may execute
@@ -17,12 +82,14 @@ integration yet.
    No arbitrary transport callback may call actor guest code directly.
 2. **A request is not an actor turn.** Actor instances can own zero, one,
    or many live requests/connections. Requests have independent IDs,
-   deadlines, cancellation and response state. `receive` concurrency=1
-   means max **one executing guest segment** per actor, *not* one HTTP
-   request, connection or message alive at a time. FIFO order within one
-   request is required; fairness between request IDs must be explicit.
-   Current source receive suspension serializes logical receive turns
-   and does **not** yet interleave multiple suspended HTTP handlers.
+   deadlines, cancellation and response state. Network actor
+   `connections` and `messages_per_connection` bound admitted session
+   and in-flight handler counts independently; they do **not** permit
+   two guest code segments to execute at once in the same actor.
+   FIFO ordering within requests and fair servicing across connection
+   identities are separate guarantees. Current source receive
+   suspension serializes logical receive turns and does **not** yet
+   interleave multiple suspended HTTP handlers.
 3. **Correlation is mandatory.** Every HTTP message, body chunk, writable
    response action, and completion carries `request_id` AND a non-reusable
    incarnation/generation. The receiving actor cannot acquire a global
@@ -158,6 +225,9 @@ an OS FD handoff or protected isolate process boundary.
 
 | Scenario | Required property |
 | --- | --- |
+| Concurrency axes | Generic actor admits <= N in-flight handlers; transport actor admits <= C connections and <= M in-flight handlers on each |
+| Rejected admission | Does not consume an event sequence or connection ID; connection-local backpressure cannot starve other connections |
+| Completion/cancel/connection close | Releases only the affected message permit, or all permits for the closed connection, without affecting other sessions |
 | Two requests on one persistent actor | Distinct request IDs, no reply mixup, admission reclaimed independently |
 | Deadline/abort of request A | Actor and request B remain alive; A's authority is revoked |
 | Dedicated handler deadline | Only its dedicated actor is cancelled, admission drains on finalization |
@@ -173,6 +243,11 @@ an OS FD handoff or protected isolate process boundary.
 
 ### Follow-on implementation gates
 
+- Implement parser/typechecker recognition of the `@concurrency` annotation with
+  **one** regular vs **two** transport parameters; reject invalid mixes,
+  nonpositive limits and overflow. Enforce per-connection session limits
+  in broker adapters using `ActorIngressConcurrency`, then wire in-flight
+  handler permit release to actor cancellation and continuation finalization.
 - Implement compiler/typechecker recognition of `http/tcp/ws actor` and
   `receive_http/receive_tcp/receive_ws` and reject mixed/ambiguous
   declarations; add parser and lowering conformance cases in both backends.
