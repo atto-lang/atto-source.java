@@ -740,7 +740,7 @@ public final class ActorRuntime implements AutoCloseable {
             return new MemoryReservation(this, bytes);
         }
 
-        private ActorCell<?> requireCurrentOwner() {
+        ActorCell<?> requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
             if (cell == null || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
@@ -1274,6 +1274,11 @@ public final class ActorRuntime implements AutoCloseable {
         /** Actor-owned mutable region, available to every actor kind. */
         default Optional<ActorMemorySlice> actorOwnedMemory() {
             return privateMemory();
+        }
+
+        /** Persistent, actor-owned non-owning graph arena for cyclic data. */
+        default Optional<ActorGraphArena> actorGraphArena() {
+            return Optional.empty();
         }
 
         /**
@@ -5724,6 +5729,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
+        private final ActorGraphArena graphArena;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private volatile boolean forceKillFenced;
@@ -5799,6 +5805,7 @@ public final class ActorRuntime implements AutoCloseable {
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
             this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
+            this.graphArena = new ActorGraphArena(memorySlice);
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -6000,7 +6007,11 @@ public final class ActorRuntime implements AutoCloseable {
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            // No actor turn, continuation or child may use the graph beyond
+            // this point. Graph handles never own nodes: even cyclic graphs
+            // are retired without graph traversal or JVM GC requests.
+            graphArena.retireFromActorTermination();
+            memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -6268,6 +6279,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public Optional<ActorMemorySlice> actorOwnedMemory() {
                         return Optional.of(memorySlice);
+                    }
+                    @Override public Optional<ActorGraphArena> actorGraphArena() {
+                        return Optional.of(graphArena);
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
