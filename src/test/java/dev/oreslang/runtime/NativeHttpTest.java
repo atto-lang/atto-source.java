@@ -190,15 +190,15 @@ class NativeHttpTest {
               val actor = spawn Reused();
               await actor.ready;
 
+              // Keep both requests admitted before delivering either to
+              // the shared actor. Response envelopes must not cross streams.
               val first = await server.accept();
-              val firstDone = first.completion;
-              actor.send(first.move_to(actor));
-              stdio.println(await firstDone);
-              stdio.println(server.active);
-
               val second = await server.accept();
+              val firstDone = first.completion;
               val secondDone = second.completion;
+              actor.send(first.move_to(actor));
               actor.send(second.move_to(actor));
+              stdio.println(await firstDone);
               stdio.println(await secondDone);
               stdio.println(server.active);
 
@@ -208,15 +208,19 @@ class NativeHttpTest {
               return;
             }
             """, port -> {
-            HttpResponse<String> first = request(port, "GET", "/first", "");
-            HttpResponse<String> second = request(port, "GET", "/second", "");
-            assertEquals(200, first.statusCode());
-            assertEquals(200, second.statusCode());
-            assertTrue(first.body().startsWith("/first::"), first.body());
-            assertTrue(second.body().startsWith("/second::"), second.body());
-            assertNotEquals(first.body(), second.body(), "each exchange must keep its own request identity");
+            try (ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<HttpResponse<String>> firstWork = clients.submit(() -> request(port, "GET", "/first", ""));
+                Future<HttpResponse<String>> secondWork = clients.submit(() -> request(port, "GET", "/second", ""));
+                HttpResponse<String> first = firstWork.get(8, TimeUnit.SECONDS);
+                HttpResponse<String> second = secondWork.get(8, TimeUnit.SECONDS);
+                assertEquals(200, first.statusCode());
+                assertEquals(200, second.statusCode());
+                assertTrue(first.body().startsWith("/first::"), first.body());
+                assertTrue(second.body().startsWith("/second::"), second.body());
+                assertNotEquals(first.body(), second.body(), "each exchange must keep its own request identity");
+            }
         });
-        assertTrue(output.contains("200\n0\n200\n0"), output);
+        assertTrue(output.contains("200\n200\n0"), output);
     }
 
     @Test void abortingOneRequestNeverCancelsReusableActorOrAnotherRequest() throws Exception {
