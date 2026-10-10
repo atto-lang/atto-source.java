@@ -29,11 +29,17 @@ public final class SupervisorFailureLane {
 
     public enum Kind { THROW, RAISE, PANIC, CANCEL, HOST_FAILURE }
 
-    public record Failure(ActorKey actor, Kind kind, String summary) {
+    public record Failure(ActorKey actor, Kind kind, String summary, String parentId) {
+        public Failure(ActorKey actor, Kind kind, String summary) {
+            this(actor, kind, summary, "");
+        }
+
         public Failure {
             Objects.requireNonNull(actor, "actor");
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(summary, "summary");
+            Objects.requireNonNull(parentId, "parentId");
+            if (parentId.length() > 128) throw new IllegalArgumentException("parentId too long");
             // Control-plane event size must be bounded, including hostile guest errors.
             if (summary.length() > 512) summary = summary.substring(0, 512);
         }
