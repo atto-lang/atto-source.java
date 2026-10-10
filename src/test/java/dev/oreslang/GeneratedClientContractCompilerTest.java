@@ -45,10 +45,11 @@ final class GeneratedClientContractCompilerTest {
     @Test
     void generatedContractIsNotMistakenForAnExecutableClientOrRuntime() throws Exception {
         var checked = OresCompiler.parseAndTypeCheck(Files.readString(GENERATED));
-        assertTrue(checked.modules().isEmpty());
-        assertFalse(checked.rootDeclarations().isEmpty());
+        assertEquals(1, checked.modules().size());
+        assertEquals(Parser.ROOT_MODULE, checked.modules().get(0).name());
+        assertFalse(checked.modules().get(0).declarations().isEmpty());
         // The only represented artifact is a top-level contract declaration.
-        assertTrue(checked.rootDeclarations().stream()
+        assertTrue(checked.modules().get(0).declarations().stream()
                 .allMatch(decl -> decl instanceof dev.oreslang.ast.Ast.InterfaceDecl));
     }
 }
