@@ -404,7 +404,7 @@ mod tests {
         wrong.endpoint = "tcp://unencrypted:8080".into();
         assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::InvalidEndpoint));
         for bad in ["tls://", "tls://user@host:443",
-                    "tls://host:443\\nmalicious", "tls://host:443#redirect"] {
+                    "tls://host:443\nmalicious", "tls://host:443#redirect"] {
             let mut wrong = lease(1, 1);
             wrong.endpoint = bad.into();
             assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::InvalidEndpoint));
