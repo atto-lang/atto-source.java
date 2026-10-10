@@ -1596,6 +1596,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Java host accessor corresponding to Oreslang's get_ready().
+         * Kept separate from await-spawn's ref-valued readiness barrier.
+         */
+        public OresFuture<Void> getReady() {
+            return ready();
+        }
+
+        /**
          * An actor-ref-valued initialization barrier for `await spawn Actor()`.
          * Neither awaiting nor attempting to cancel this observer owns or
          * cancels the actor. Completion means on_start succeeded, not done.
@@ -1611,6 +1619,11 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> done() {
             return doneFuture;
+        }
+
+        /** Java host accessor corresponding to Oreslang's get_done(). */
+        public OresFuture<Void> getDone() {
+            return done();
         }
 
         /** Read-only outputs emitted by actor-local self.send(...). */
