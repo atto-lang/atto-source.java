@@ -388,7 +388,7 @@ final class ChannelRuntimeTest {
         assertEquals(ChannelRuntime.SelectOperation.WRITE, set.selectAsync().join().operation());
         org.junit.jupiter.api.Assertions.assertSame(owned, receiver.join());
         assertThrows(java.util.concurrent.CompletionException.class,
-                () -> set.selectAsync().join());
+                () -> set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join());
     }
 
     @Test
