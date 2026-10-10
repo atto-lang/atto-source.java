@@ -7681,6 +7681,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void closeIterable(Iterable<?> iterable) {
+            // A Channel is a borrowed stream endpoint, not an owned iterator
+            // activation. Closing its iterator (including on normal EOF or
+            // break) must never close the ambient process.stdin descriptor or
+            // a caller-owned channel shared by other consumers.
+            if (iterable instanceof ChannelRuntime.Channel<?>) return;
             if (!(iterable instanceof AutoCloseable closeable)) return;
             try {
                 closeable.close();
