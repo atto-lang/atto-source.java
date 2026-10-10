@@ -6361,11 +6361,15 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "stream" -> (Invokable) args -> {
                         requireZero(args, "Channel.stream");
-                        if (!(channel instanceof dev.oreslang.runtime.ProcessChannels.ConsoleChannel<?> console)
-                                || console.direction() != dev.oreslang.runtime.ProcessChannels.Direction.READ)
-                            throw new IllegalArgumentException("stream() requires a readable process channel");
-                        console.checkGuestRead();
-                        return context.processChannels().stdinStream();
+                        if (channel instanceof dev.oreslang.runtime.ProcessChannels.ConsoleChannel<?> console) {
+                            if (console.direction() != dev.oreslang.runtime.ProcessChannels.Direction.READ)
+                                throw new IllegalArgumentException("cannot obtain a read stream from an output channel");
+                            console.checkGuestRead();
+                            return context.processChannels().stdinStream();
+                        }
+                        @SuppressWarnings("unchecked")
+                        ChannelRuntime.Channel<Object> ordinary = (ChannelRuntime.Channel<Object>) channel;
+                        return new dev.oreslang.runtime.ChannelReadableStream<>(ordinary);
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
