@@ -68,48 +68,66 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submitNonblocking(operation, start);
     }
 
-    private synchronized <T> OresFuture<T> submitNonblocking(String operation,
+    private <T> OresFuture<T> submitNonblocking(String operation,
             Supplier<CompletableFuture<T>> start) {
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || pending.size() >= capacity) {
-            result.failFromRuntime(new RejectedExecutionException(
-                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
-            return result;
+        synchronized (this) {
+            if (closed || pending.size() >= capacity) {
+                result.failFromRuntime(new RejectedExecutionException(
+                        closed ? "I/O context closed" : "I/O admission capacity exhausted"));
+                return result;
+            }
+            // Reserve admission first. Start the transport OUTSIDE this monitor:
+            // a JDK/library asynchronous API can still do synchronous setup.
+            pending.add(result);
         }
-        pending.add(result);
+
+        CompletableFuture<T> transport;
         try {
-            CompletableFuture<T> transport = Objects.requireNonNull(start.get(),
+            transport = Objects.requireNonNull(start.get(),
                     "nonblocking I/O transport returned null future");
-            nonblocking.put(result, transport);
-            transport.whenComplete((value, failure) -> {
-                boolean contextClosed;
-                synchronized (AsyncNativeIo.this) {
-                    contextClosed = closed;
-                    pending.remove(result);
-                    nonblocking.remove(result);
-                }
-                // A context close wins over transport cancellation to retain
-                // one stable error contract for all admitted I/O operations.
-                if (contextClosed) {
-                    result.failFromRuntime(new IllegalStateException("I/O context closed"));
-                } else if (failure != null) {
-                    Throwable cause = failure instanceof CompletionException completion
-                            && completion.getCause() != null ? completion.getCause() : failure;
-                    SourceBoundaryTrace.record(cause, "native:io", operation, "I/O");
-                    result.failFromRuntime(cause);
-                } else {
-                    result.completeFromRuntime(value);
-                }
-            });
         } catch (Throwable failure) {
-            pending.remove(result);
-            nonblocking.remove(result);
+            synchronized (this) { pending.remove(result); }
             SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
             result.failFromRuntime(failure);
             if (failure instanceof VirtualMachineError fatal) throw fatal;
             if (failure instanceof ThreadDeath fatal) throw fatal;
             if (failure instanceof LinkageError fatal) throw fatal;
+            return result;
         }
+
+        boolean contextClosed;
+        synchronized (this) {
+            contextClosed = closed;
+            if (!contextClosed) nonblocking.put(result, transport);
+        }
+        if (contextClosed) {
+            // Close may have won while the producer was starting the request.
+            // Never retain an untracked live transport or resume its guest task.
+            transport.cancel(true);
+            result.failFromRuntime(new IllegalStateException("I/O context closed"));
+            return result;
+        }
+        transport.whenComplete((value, failure) -> {
+            boolean closedAtCompletion;
+            synchronized (AsyncNativeIo.this) {
+                closedAtCompletion = closed;
+                pending.remove(result);
+                nonblocking.remove(result);
+            }
+            // A context close wins over transport cancellation to retain one
+            // stable error contract for all admitted I/O operations.
+            if (closedAtCompletion) {
+                result.failFromRuntime(new IllegalStateException("I/O context closed"));
+            } else if (failure != null) {
+                Throwable cause = failure instanceof CompletionException completion
+                        && completion.getCause() != null ? completion.getCause() : failure;
+                SourceBoundaryTrace.record(cause, "native:io", operation, "I/O");
+                result.failFromRuntime(cause);
+            } else {
+                result.completeFromRuntime(value);
+            }
+        });
         return result;
     }
 
