@@ -109,6 +109,23 @@ final class ActorMailTypeContractTest {
     }
 
     @Test
+    void lifecycleSignalsAreObserverCapabilitiesNotActorMailPayloads() {
+        for (String signal : new String[] {"ReadySignal", "DoneSignal"}) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Subscriber as
+                              receive(ActorMail<%s<void>> mail): void {
+                                return;
+                              }
+                            end
+                            """.formatted(signal))));
+            assertTrue(failure.getMessage().contains(signal),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
     void actorRefSendMustMatchReceivePayload() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
