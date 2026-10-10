@@ -446,6 +446,39 @@ final class RuntimeGarbageCollectorTest {
     }
 
     @Test
+    void permanentlyFailingCleanupRetriesCannotStarveNewlyDeadOwners() throws Exception {
+        AtomicInteger cleaned = new AtomicInteger();
+        AtomicInteger failures = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                () -> fail("automatic fallback must not invoke System.gc"),
+                Duration.ofHours(1))) {
+            // Earlier iterations retried an unordered failure set until all
+            // 256 budget slots were consumed, starving the ReferenceQueue.
+            for (int i = 0; i < 320; i++) {
+                Object owner = new Object();
+                owners.add(owner);
+                var poisoned = gc.track(owner, () -> {
+                    failures.incrementAndGet();
+                    throw new IllegalStateException("poisoned cleanup");
+                });
+                assertThrows(IllegalStateException.class, poisoned::close);
+            }
+            Object healthyOwner = new Object();
+            owners.add(healthyOwner);
+            var healthy = gc.track(healthyOwner, cleaned::incrementAndGet);
+            enqueue(healthy);
+            var first = gc.collectPeriodic();
+            assertTrue(first.inspected() <= 256);
+            assertFalse(first.jvmGcRequested());
+            assertEquals(1, cleaned.get(),
+                    "a large retry backlog must not starve a fresh weak owner");
+            assertTrue(failures.get() > 320, "retry queue must execute bounded work");
+            java.lang.ref.Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
     void periodicFallbackBoundsQueueWorkAndDoesNotRequestHostGc() throws Exception {
         AtomicInteger jvmGcRequests = new AtomicInteger();
         AtomicInteger cleanups = new AtomicInteger();
