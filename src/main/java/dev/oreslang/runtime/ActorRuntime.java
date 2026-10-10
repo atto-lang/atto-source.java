@@ -1558,6 +1558,10 @@ public final class ActorRuntime implements AutoCloseable {
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // Non-cancellable observer: cancelling a waiter never cancels its actor.
+        // Unlike readyFuture, this projects the successfully initialized ref.
+        private final OresFuture<ActorRef<M>> readyRefFuture =
+                new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
@@ -1565,6 +1569,13 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
+            readyFuture.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) {
+                    readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
+                } else {
+                    readyRefFuture.completeFromRuntime(this);
+                }
+            });
         }
 
         public ActorId id() { return id; }
@@ -1585,11 +1596,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Java host accessor corresponding to Oreslang's get_ready().
+         * Kept separate from await-spawn's ref-valued readiness barrier.
+         */
+        public OresFuture<Void> getReady() {
+            return ready();
+        }
+
+        /**
+         * An actor-ref-valued initialization barrier for `await spawn Actor()`.
+         * Neither awaiting nor attempting to cancel this observer owns or
+         * cancels the actor. Completion means on_start succeeded, not done.
+         */
+        public OresFuture<ActorRef<M>> readyRef() {
+            ready();
+            return readyRefFuture;
+        }
+
+        /**
          * Settles only after actor finalization and the TurnExecutor exit.
          * Exceptional termination is reported as a failed Future.
          */
         public OresFuture<Void> done() {
             return doneFuture;
+        }
+
+        /** Java host accessor corresponding to Oreslang's get_done(). */
+        public OresFuture<Void> getDone() {
+            return done();
         }
 
         /** Read-only outputs emitted by actor-local self.send(...). */
@@ -1880,6 +1914,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        // Explicitly lifecycle-managed workers, distinct from cooperating
+        // members: membership never grants cancellation authority.
+        private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
@@ -1924,6 +1961,127 @@ public final class ActorRuntime implements AutoCloseable {
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
             return Set.copyOf(members);
+        }
+
+        /**
+         * Opt a worker into lifecycle management without automatically joining
+         * it to the group's event bus. Cooperating membership and structured
+         * lifecycle ownership are separate capabilities.
+         *
+         * Host/supervisors may manage runtime-local actors. Inside an actor,
+         * only the group's creator may register a structured descendant.
+         */
+        public <M> ActorRef<M> manageWorker(ActorRef<M> worker) {
+            Objects.requireNonNull(worker, "worker");
+            requireManager("manage an ActorGroup worker");
+            if (!worker.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
+            }
+            requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
+            synchronized (authorityLock) {
+                requireOpen();
+                ActorCell<?> cell = actors.get(worker.id());
+                if (cell == null || cell.stopped.get()) {
+                    throw new IllegalStateException("cannot manage a stopped or unknown worker");
+                }
+                if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
+                    throw new IllegalStateException(
+                            "ActorGroup managed worker limit exceeded: maximum " + memberLimit);
+                }
+                // A worker has exactly one structured ActorGroup owner.
+                // Other cooperation groups may still admit it as a member,
+                // but no second manager may acquire independent stop rights.
+                ActorGroupId owningGroup = cell.managedByGroup.get();
+                if (owningGroup == null) {
+                    if (cell.managedByGroup.compareAndSet(null, id)) {
+                        owningGroup = id;
+                    } else {
+                        owningGroup = cell.managedByGroup.get();
+                    }
+                }
+                if (!id.equals(owningGroup)) {
+                    throw new IllegalStateException(
+                            "actor is already managed by a different ActorGroup");
+                }
+                managedWorkers.putIfAbsent(worker.id(), worker);
+                if (cell.stopped.get()) {
+                    managedWorkers.remove(worker.id(), worker);
+                    throw new IllegalStateException("worker stopped during group admission");
+                }
+            }
+            return worker;
+        }
+
+        /**
+         * Spawn, then register the worker before any readiness/mailbox work is
+         * scheduled. A registration failure cancels the newly spawned actor.
+         */
+        public <M> ActorRef<M> spawnWorker(
+                ActorKind kind,
+                IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory) {
+            requireManager("spawn an ActorGroup worker");
+            requireOpen();
+            ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
+            try {
+                return manageWorker(worker);
+            } catch (RuntimeException | Error failure) {
+                try {
+                    worker.cancel();
+                } catch (RuntimeException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
+        }
+
+        /** Non-blocking readiness barrier retaining the worker reference. */
+        public <M> OresFuture<ActorRef<M>> spawnReadyWorker(
+                ActorKind kind,
+                IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory) {
+            return spawnWorker(kind, policy, behaviorFactory).readyRef();
+        }
+
+        /** Live managed workers at a point in time; never exposes cancellation authority. */
+        public List<ActorRef<?>> workers() {
+            requireObserver("inspect ActorGroup workers");
+            return List.copyOf(managedWorkers.values());
+        }
+
+        public int workerCount() {
+            requireObserver("inspect ActorGroup workers");
+            return managedWorkers.size();
+        }
+
+        /** The snapshot can be awaited without blocking an OresVM carrier. */
+        public OresFuture<List<Void>> workersReady() {
+            requireObserver("await ActorGroup workers readiness");
+            return OresFutures.all(workers().stream().map(ActorRef::ready).toList());
+        }
+
+        /** Completion snapshot; new worker admissions are not included. */
+        public OresFuture<List<Void>> workersDone() {
+            requireObserver("await ActorGroup workers completion");
+            return OresFutures.all(workers().stream().map(ActorRef::done).toList());
+        }
+
+        /** Manager-only graceful stop. Never acts on membership-only actors. */
+        public void stopWorkers() {
+            requireManager("stop ActorGroup workers");
+            for (ActorRef<?> ref : workers()) {
+                if (ref.isAlive()) ref.stop();
+            }
+        }
+
+        /** Manager-only structured cancellation, not force-kill. */
+        public int cancelWorkers() {
+            requireManager("cancel ActorGroup workers");
+            int cancelled = 0;
+            for (ActorRef<?> ref : workers()) {
+                if (ref.cancel()) cancelled++;
+            }
+            return cancelled;
         }
 
         int eventTopicLimit() { return eventTopicLimit; }
@@ -2145,6 +2303,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void actorTerminated(ActorId actorId) {
+            // Fenced against concurrent worker admission so stale actor refs
+            // cannot be resurrected after finalization.
+            synchronized (authorityLock) {
+                managedWorkers.remove(actorId);
+            }
             leaveId(actorId);
             if (Objects.equals(creator, actorId)) closeFromRuntime();
         }
@@ -2162,17 +2325,42 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
+            List<ActorRef<?>> owned;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
+                owned = List.copyOf(managedWorkers.values());
+                managedWorkers.clear();
             }
-            GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
-            if (mailman != null) mailman.close();
-            eventBus.closeFromGroup();
-            members.clear();
-            actorGroups.remove(id, this);
+            // Closing a cooperating group never cancels ordinary members.
+            // Only explicitly managed workers are structurally cancelled.
+            // Never abort event-bus and Mailman teardown because one worker's
+            // cancellation hook failed. Preserve the failure for the manager.
+            RuntimeException cancellationFailure = null;
+            for (ActorRef<?> worker : owned) {
+                try {
+                    worker.cancel();
+                } catch (RuntimeException failure) {
+                    if (worker.isAlive()) {
+                        if (cancellationFailure == null) cancellationFailure = failure;
+                        else cancellationFailure.addSuppressed(failure);
+                    }
+                }
+            }
+            try {
+                GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
+                if (mailman != null) mailman.close();
+            } finally {
+                try {
+                    eventBus.closeFromGroup();
+                } finally {
+                    members.clear();
+                    actorGroups.remove(id, this);
+                }
+            }
+            if (cancellationFailure != null) throw cancellationFailure;
         }
 
         @Override
@@ -5648,6 +5836,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        // Lifetime-affine structured owner: never transferred before physical
+        // finalization, even if the original group closes during cancellation.
+        private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
