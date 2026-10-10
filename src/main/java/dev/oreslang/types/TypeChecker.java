@@ -842,9 +842,12 @@ public final class TypeChecker {
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         if (klass.concurrencySpec() != null) {
             Ast.ActorConcurrencySpec limits = klass.concurrencySpec();
-            if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null) {
+            if (klass.actorKind() == Ast.ActorKind.NONE || klass.proxySpec() != null
+                    || (!limits.protocol().equals("actor")
+                        && klass.actorKind() != Ast.ActorKind.SHARED)) {
                 throw new IllegalArgumentException(
-                        "protocol actor concurrency configuration requires a local SHARED actor");
+                        "actor concurrency configuration requires an actor; "
+                        + "network protocol actors must currently be SHARED");
             }
             // The existing source actor receive scheduler has one suspended
             // receive slot. Accepting >1 here would silently ignore the
