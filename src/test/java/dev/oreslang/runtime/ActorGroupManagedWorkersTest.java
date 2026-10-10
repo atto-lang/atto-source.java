@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -112,6 +114,69 @@ final class ActorGroupManagedWorkersTest {
             right.done().get(5, TimeUnit.SECONDS);
             assertEquals(0, group.workerCount());
             assertTrue(group.workersDone().isDone(), "empty group settles immediately");
+        }
+    }
+
+    @Test
+    void managedWorkerCannotLeaveMembershipUntilManagerReleasesOwnership()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> ref = runtime.spawnShared(
+                    () -> (value, context) -> {
+                        try {
+                            group.leaveCurrent();
+                            failure.set(new AssertionError(
+                                    "managed worker silently left its group"));
+                        } catch (IllegalStateException expected) {
+                            // Managed workers must remain members until
+                            // the manager explicitly releases ownership.
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            group.manage(ref);
+            ref.send(1);
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertTrue(group.contains(ref));
+            assertTrue(group.releaseWorker(ref));
+            group.close();
+            assertTrue(ref.isAlive(), "released worker is not stopped by group");
+            ref.stop();
+            ref.done().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void pendingStopFencesOwnershipHandoffWhileWorkerTurnIsStillRunning()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch exit = new CountDownLatch(1);
+            ActorRuntime.ActorRef<Integer> ref = runtime.spawnShared(
+                    () -> (value, context) -> {
+                        entered.countDown();
+                        if (!exit.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("test worker was not released");
+                        }
+                    });
+            group.manage(ref);
+            ref.send(7);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                group.stopWorkers();
+                assertThrows(IllegalStateException.class,
+                        () -> group.releaseWorker(ref),
+                        "stop admission must fence ownership transfer");
+            } finally {
+                exit.countDown();
+            }
+            ref.done().get(5, TimeUnit.SECONDS);
+            assertEquals(0, group.workerCount());
         }
     }
 
