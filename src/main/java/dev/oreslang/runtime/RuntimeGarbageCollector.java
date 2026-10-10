@@ -484,11 +484,18 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 // entry; the queue can retain this weak-reference object.
                 entry.domain = null;
             }
-            // Deterministic final release is the normal path. Stop even the
-            // bounded fallback ticker when no unmanaged registrations remain.
-            if (tracked.isEmpty() && periodicSweep != null) {
-                periodicSweep.cancel(false);
-                periodicSweep = null;
+            // After the last foreign registration is closed, stale retry
+            // notifications are no longer useful. Retaining them while the
+            // timer is dormant pins cleared entry objects indefinitely.
+            // Clearing under lifecycleLock cannot discard a live retry:
+            // track() and retainRetry() use this same admission lock.
+            if (tracked.isEmpty()) {
+                retryQueue.clear();
+                retryableFailures.clear();
+                if (periodicSweep != null) {
+                    periodicSweep.cancel(false);
+                    periodicSweep = null;
+                }
             }
         }
     }
