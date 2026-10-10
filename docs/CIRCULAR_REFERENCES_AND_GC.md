@@ -70,6 +70,36 @@ Do not silently change the semantics of `Ref<T>` between Java and LLVM.
 Either keep `Ref<T>` as explicitly traced across backends, or split its
 type from a nontracing arena/strong-counted handle with explicit diagnostics.
 
+## JVM/Graal private actor memory is not automatically a GC-free heap
+
+The current `ActorRuntime.ActorMemorySlice` enforces an ActorId-scoped logical
+memory budget. Its `PrivateMemoryBlock` uses `ByteBuffer.allocateDirect` for
+native backing bytes but stores the wrapper and remaining guest state as
+ordinary Java objects. Closing the block **zeroes bytes and revokes logical
+access**, but clearing the ByteBuffer Java reference is **not** proof that the
+physical direct allocation was freed immediately; its host Cleaner may be
+involved. Per-actor confinement therefore does not imply an independent
+physical Java heap or absence of automatic JVM GC.
+
+A practical future Graal implementation can lower *eligible fixed-layout
+Oreslang guest objects* into an explicit foreign/native memory arena owned
+by a private/isolated actor. Use checked offsets + generations rather than
+raw JVM references. Destructors must run after all mailbox turns, suspended
+continuations, callbacks, wakers and FFI/pinned leases quiesce. Only then
+should the allocator bulk free/revoke the region. This allows truly
+deterministic guest-data release **within a Java/Graal process** while its
+JVM control-plane allocations remain managed. A separate Native Image
+isolate may furnish a separate managed Java heap, but that heap still GC's;
+a confined direct-memory slice alone also does not isolate untrusted native
+code against its host process.
+
+The JVM OresVM bootstrap now rejects `ores.runtime.gc.mode=strict-no-gc`,
+`zero-gc` or `manual-only` until actual source-object lowering and physical
+release exist. The `ActorHeapAdmission` proof is a future backend capability
+gate, not a declaration that such lowering has already shipped. A strict
+mode must fail closed on unproved ordinary source allocations, escape to
+the host heap, FFI edge, resurrection or async lifetime.
+
 ## Portable native collector contract (future work)
 
 Only managed graph allocations go into a cycle-collecting heap. Scope that
