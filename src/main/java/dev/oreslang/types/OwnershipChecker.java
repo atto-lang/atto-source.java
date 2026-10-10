@@ -1458,14 +1458,27 @@ public final class OwnershipChecker {
                 && !callableType.arguments().isEmpty()) {
             int parameterCount = callableType.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
-                for (int i = 0; i < call.arguments().size(); i++) {
-                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
-                    if (containsMutexGuardType(argument.type)) {
-                        throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
+                // The first-class Fnc<T,...> ABI is read-borrowing, not
+                // by-value. Retain each argument's source loan while later
+                // arguments run; otherwise f(box, rt take box) aliases a moved
+                // object even though the first argument was borrowed.
+                ArrayList<CallLoan> loans = new ArrayList<>();
+                try {
+                    Ast.Param readonly = new Ast.Param(
+                            Ast.TypeRef.inferred(), "$fnc", true, false);
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Ast.Expr expression = call.arguments().get(i);
+                        ValueInfo argument = checkExpr(expression, scope, false);
+                        if (containsMutexGuardType(argument.type)) {
+                            throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
+                        }
+                        if (argument.kind == ValueKind.MUT_BORROW) {
+                            throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                        }
+                        reserveCallLoan(expression, readonly, scope, loans);
                     }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
-                        throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
-                    }
+                } finally {
+                    releaseCallLoans(loans);
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
                 return new ValueInfo(result, kindOfType(result), null);
