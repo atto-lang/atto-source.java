@@ -431,7 +431,7 @@ final class PointerlessFncOwnershipTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
                           pub let int value = 1;
-                          pub fnc combine(Box other): int { return self.value; }
+                          pub combine(Box other): int { return self.value; }
                         end
                         fnc bad(): void {
                           let mut Box box = new Box();
@@ -448,7 +448,7 @@ final class PointerlessFncOwnershipTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
                           pub let int value = 1;
-                          pub fnc inspect(borrow mut Box other): int { return self.value; }
+                          pub inspect(borrow mut Box other): int { return self.value; }
                         end
                         fnc bad(): void {
                           let mut Box box = new Box();
@@ -464,7 +464,7 @@ final class PointerlessFncOwnershipTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Box as
                   pub let int value = 1;
-                  pub fnc inspect(int other): int { return self.value; }
+                  pub inspect(int other): int { return self.value; }
                 end
                 fnc consume(Box box): void { return; }
                 fnc ok(): void {
