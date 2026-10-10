@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,22 @@ final class ActorTransportConcurrencyContractTest {
                   receive(ActorMail<int> mail): void { return; }
                 end
                 """)));
+    }
+
+    @Test void annotationExpansionPreservesTransportPolicyBeforeSafetyChecking() {
+        String source = """
+                define http actor ConcurrentEndpoint as
+                  int requestConcurrency = 3;
+                  int messageConcurrency = 4;
+                end
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        Ast.Program expanded = AnnotationExpander.expand(parsed);
+        Ast.ClassDecl before = (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
+        Ast.ClassDecl after = (Ast.ClassDecl) expanded.modules().getFirst().declarations().getFirst();
+        assertEquals(before.actorConcurrency(), after.actorConcurrency(),
+                "AST transforms must not silently fall back to generic serial actor policy");
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
     }
 
     @Test void tcpAndWebsocketConfigurationsAreDistinctAndLocal() {
