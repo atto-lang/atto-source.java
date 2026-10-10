@@ -73,7 +73,7 @@ final class SelectArmWaitModeSyntaxTest {
                 fnc receive(Channel<int> messages): void {
                   select {
                     when readch messages: val msg {
-                      stdio.println("got: ", msg);
+                      stdio.println(msg);
                     }
                   }
                   do select {
