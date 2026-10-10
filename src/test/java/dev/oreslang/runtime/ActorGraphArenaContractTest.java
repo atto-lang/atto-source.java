@@ -123,6 +123,28 @@ final class ActorGraphArenaContractTest {
     }
 
     @Test
+    void actorGraphHandlesCannotEscapeIntoSharedCellsOrActorMailboxes() {
+        var untrustedHandle = new ActorGraphArena.NodeId(
+                java.util.UUID.randomUUID(), 0, 1);
+        assertThrows(SecurityException.class,
+                () -> ActorRuntime.freeze(untrustedHandle));
+        assertThrows(SecurityException.class,
+                () -> ActorRuntime.freeze(List.of("ordinary", untrustedHandle)));
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            assertThrows(SecurityException.class,
+                    () -> runtime.shareReadonly(untrustedHandle),
+                    "a handle into an actor-local heap is not immutable shared data");
+            var receiver = runtime.<Object>spawnShared(
+                    () -> (message, actor) -> {});
+            assertThrows(SecurityException.class,
+                    () -> receiver.send(untrustedHandle));
+            assertThrows(SecurityException.class,
+                    () -> receiver.send(List.of("nested", untrustedHandle)));
+        }
+    }
+
+    @Test
     void placementIsExplicitAndCannotSilentlyFallbackToHostHeap() {
         assertEquals(ActorRuntime.ActorHeapPlacement.ACTOR_ARENA,
                 ActorRuntime.defaultHeapPlacement(ActorRuntime.ActorKind.PRIVATE));
