@@ -49,7 +49,7 @@ final class ActorTurnContentionProbe {
 
         @Override
         public void close() {
-            if (released || !owner.compareAndSet(carrier, null)) {
+            if (released || Thread.currentThread() != carrier || !owner.compareAndSet(carrier, null)) {
                 violationCount.incrementAndGet();
                 throw new IllegalStateException(
                         "core actor contention probe release violation for " + actorId
