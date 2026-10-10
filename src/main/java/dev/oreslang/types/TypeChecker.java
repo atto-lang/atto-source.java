@@ -882,6 +882,7 @@ public final class TypeChecker {
                         "ProxyActor remote contract generic arity mismatch for '"
                         + contract.name() + "'");
             }
+            resolve(proxy.remoteContract(), Set.of(), null);
             if (!proxy.serviceKey().matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,127}")
                     || proxy.serviceKey().contains("..")
                     || proxy.serviceKey().contains("//")) {
