@@ -339,6 +339,10 @@ final class ActorCapabilityIsolationTest {
         StdChannels.InputChannel stdin =
                 (StdChannels.InputChannel) inField.get(channels);
 
+        // Construct once under supervisor authority, then reuse inside a
+        // narrower actor: constructor-time checks alone are insufficient.
+        ChannelRuntime.SelectSet cachedWrite =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.write(stdout, "cached"));
         IsolatePolicy restricted = IsolatePolicy.developer().withoutCapabilities(
                 IsolatePolicy.Capability.STDIN, IsolatePolicy.Capability.STDOUT);
 
@@ -347,6 +351,9 @@ final class ActorCapabilityIsolationTest {
                     (message, turn) -> {
                         assertThrows(SecurityException.class,
                                 () -> stdout.writeAsync("forbidden"));
+                        assertThrows(SecurityException.class,
+                                () -> stdout.tryWrite("forbidden"));
+                        assertThrows(SecurityException.class, cachedWrite::trySelect);
                         assertThrows(SecurityException.class,
                                 () -> ChannelRuntime.SelectSet.of(
                                         ChannelRuntime.write(stdout, "forbidden")));
