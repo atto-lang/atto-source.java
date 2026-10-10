@@ -25,7 +25,7 @@ final class ActorGroupManagedWorkersTest {
             assertSame(immediate, group.workerRefs().getFirst());
             immediate.ready().get(5, TimeUnit.SECONDS);
 
-            ActorRuntime.ActorRef<String> awaited = group.spawnWorkerReady(
+            ActorRuntime.ActorRef<String> awaited = group.<String>spawnWorkerReady(
                     ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
                     ctx -> (message, turn) -> { }).get(5, TimeUnit.SECONDS);
             assertTrue(awaited.isAlive());
