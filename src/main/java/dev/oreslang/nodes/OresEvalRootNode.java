@@ -6126,7 +6126,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
-                    case "print" -> (Invokable) stdio::print;
+                    case "print", "print_blocking" -> (Invokable) stdio::print;
                     case "println" , "println_blocking" -> (Invokable) stdio::println;
                     case "println_async" -> (Invokable) stdio::printlnAsync;
                     case "flush_async_logs" -> (Invokable) args -> {
@@ -6141,7 +6141,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdoutFacade stdout) {
                 return switch (name) {
-                    case "write" -> (Invokable) stdout::write;
+                    case "write", "write_blocking" -> (Invokable) stdout::write;
                     case "println", "println_blocking" -> (Invokable) stdout::println;
                     case "println_async" -> (Invokable) stdout::printlnAsync;
                     case "log", "log_blocking" -> (Invokable) stdout::log;
@@ -9045,11 +9045,18 @@ public final class OresEvalRootNode extends RootNode {
             requireOne(args, "stdio.stdout.logList_async");
             return logAsync(expandArgumentSequence(args.getFirst(), "stdio.stdout.logList_async"));
         }
-        private Object log(List<Object> args){
-            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(String.valueOf(arg));
-            context.output().println();
-            context.output().flush();
+        private Object log(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.log");
+            StringBuilder message = new StringBuilder();
+            for (Object arg : args) message.append(String.valueOf(arg));
+            long started = dev.oreslang.runtime.CorePerf.start();
+            try {
+                // One PrintWriter call per record prevents asynchronous and
+                // synchronous emitters from interleaving partial log lines.
+                context.output().println(message);
+            } finally {
+                dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
+            }
             return null;
         }
         private Object logList(List<Object> args){
