@@ -185,6 +185,7 @@ final class ActorGroupManagedWorkersTest {
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroup other = runtime.createActorGroup();
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch exit = new CountDownLatch(1);
             ActorRuntime.ActorRef<Integer> worker = runtime.spawnShared(
@@ -207,12 +208,15 @@ final class ActorGroupManagedWorkersTest {
                 assertFalse(finished.cancel(false),
                         "observers must not cancel group lifecycle completion");
                 assertTrue(group.closed());
+                assertThrows(IllegalStateException.class, () -> other.manage(worker),
+                        "closing workers cannot be re-adopted until retired");
             } finally {
                 exit.countDown();
             }
             group.closedDone().get(5, TimeUnit.SECONDS);
             worker.done().get(5, TimeUnit.SECONDS);
             assertFalse(worker.isAlive());
+            other.close();
         }
     }
 
