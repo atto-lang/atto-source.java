@@ -482,8 +482,25 @@ bindings are stable. Otherwise the compiler must keep the original lowering.
 
 Dynamic selection can explicitly build a plan after constructing its runtime
 case list. Mutating the source list afterward does not mutate the plan; create a
-new plan for a changed case set. A later versioned dynamic-plan builder may
-support incremental add/remove/rebind without changing this snapshot contract.
+new plan for a changed case set. The Java runtime now also exposes a keyed `ChannelRuntime.DynamicSelectPlan<K>`
+builder with `put(key, case)`, `remove(key)`, `snapshot()`, `trySelect()`,
+and `selectAsync()`. The builder can be empty, but an empty plan cannot be
+selected. Each update increments a version (except no-op replacements and
+absent removals). Rebinding a key preserves its position; replacing the sole
+default is allowed, but adding a second default is rejected.
+
+Each invocation freezes a `SelectSet` and its key order. The result carries
+the originating snapshot version and stable key as well as the normal indexed
+`SelectResult`; already pending invocations are unaffected by mutation.
+The old immutable `SelectPlan` API and source-language `SelectSet` semantics
+remain unchanged. The keyed builder is presently a Java runtime API, **not**
+a source-language builtin or an LLVM-native implementation. Concurrent
+operations still allocate registrations, and the fair cursor is only
+best-effort under overlapping operations and structural mutations.
+
+The compiler must not blindly hoist side-effectful channel/value expressions
+from a static select. The LLVM parity gate remains intentionally closed until
+native syntax, runtime registration, differential tests, and benchmarks exist.
 
 ## Cancellation
 
