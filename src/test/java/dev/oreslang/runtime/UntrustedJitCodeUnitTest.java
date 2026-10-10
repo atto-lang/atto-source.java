@@ -22,6 +22,31 @@ final class UntrustedJitCodeUnitTest {
                 Double.POSITIVE_INFINITY));
     }
 
+    @Test
+    void isolatedActorControlCommandsFailClosedInOrdinaryHostContext() {
+        String code = """
+                define untrusted actor LocalSandbox as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        try (org.graalvm.polyglot.Context host =
+                     org.graalvm.polyglot.Context.create("ores")) {
+            var parsed = host.parse(org.graalvm.polyglot.Source
+                    .newBuilder("ores", code, "host-control-rejection")
+                    .buildLiteral());
+            parsed.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
+            var denied = assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                    () -> parsed.execute(
+                            dev.oreslang.nodes.OresEvalRootNode.ISOLATED_ACTOR_SPAWN_COMMAND,
+                            "LocalSandbox"));
+            assertTrue(denied.getMessage().contains("adversarial"),
+                    "ordinary trusted Context cannot masquerade as untrusted isolate");
+        }
+    }
+
     /**
      * Actual actor source must execute inside the guest Context, not in the
      * host ActorRuntime. This remains gated until a language-isolate artifact
