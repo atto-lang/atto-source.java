@@ -99,11 +99,12 @@ final class ExplicitNativeI64RegionTest {
 
     @Test
     void rejectsUnsupportedPhysicalArenaInsteadOfManagedFallback() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            try (ActorRuntime runtime = new ActorRuntime()) {
-                runtime.requireActorHeapBacking(null,
-                        ActorRuntime.ActorHeapBacking.DETERMINISTIC_NATIVE_ARENA);
-            }
-        }); // null actor ref cannot masquerade as a verified native placement.
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {});
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.requireActorHeapBacking(ref,
+                            ActorRuntime.ActorHeapBacking.DETERMINISTIC_NATIVE_ARENA),
+                    "FFM data allocation alone does not prove full compiler-native actor placement");
+        }
     }
 }
