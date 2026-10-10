@@ -117,6 +117,16 @@ public final class ChannelRuntime {
             }
         }
 
+        /** True only after an orderly close without an attached I/O failure. */
+        public boolean isClosedNormally() {
+            COORDINATOR.lock();
+            try {
+                return closed && closeCause == null;
+            } finally {
+                COORDINATOR.unlock();
+            }
+        }
+
         /**
          * Immediate receive probe. No waiter remains registered when this
          * method returns empty.
