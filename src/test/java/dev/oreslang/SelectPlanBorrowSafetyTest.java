@@ -144,6 +144,19 @@ final class SelectPlanBorrowSafetyTest {
     }
 
     @Test
+    void consumingDynamicPayloadCannotExtractSameResultTwice() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                        fnc bad(SelectResult result): void {
+                          val first = result.value;
+                          val second = result.value;
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("moved value"), error::getMessage);
+    }
+
+    @Test
     void nestedOptionCannotDuplicateOwnedSelectCase() {
         reject("""
                 fnc bad(): void {
