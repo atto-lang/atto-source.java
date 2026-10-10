@@ -26,8 +26,15 @@ authority; lifecycle accounting still protects finalization.
 dispatching thread. `isActorCarrierThread()` therefore marks the **executing**
 carrier within the turn, restoring the thread's previous carrier marker on
 normal exit, failure, or finalization. The outer dispatcher retains its own
-marker only for its own dispatch work. This is tested with delegated platform
-threads as well as native carriers.
+marker only for its own dispatch work, restoring any prior marker even if
+dispatch itself was synchronously nested.
+
+Synchronous nested guest turn entry on a carrier already holding another
+actor's `ThreadLocal` authority is **rejected before the nested turn touches
+the current identity or optional probe**. This prevents reentrant host code or
+a buggy `TurnExecutor` from overwriting and then clearing the enclosing
+actor's identity. A fault-injection test invokes the private turn entry
+recursively and checks that the original actor can finish normally.
 
 Each probe records the incumbent and competing Java carrier Thread identities;
 for native-pthread-backed dispatchers the Java Thread is the host carrier
