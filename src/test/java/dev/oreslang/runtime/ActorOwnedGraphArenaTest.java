@@ -164,38 +164,30 @@ final class ActorOwnedGraphArenaTest {
 
     @Test
     void untrustedActorStillOwnsItsOwnGraphDomain() throws Exception {
-        AtomicInteger drops = new AtomicInteger();
-        AtomicReference<ActorOwnedGraphArena<Payload>> owned = new AtomicReference<>();
-        AtomicReference<Throwable> failure = new AtomicReference<>();
-        CountDownLatch finished = new CountDownLatch(1);
-
         try (ActorRuntime runtime = new ActorRuntime()) {
-            // Host-provided test behavior, not evidence of execution inside
-            // a separately provisioned Graal JIT isolate.
+            // Deliberately stateless BehaviorFactory: the UNTRUSTED actor
+            // must never capture counters, latches or references from host.
+            // This is still bootstrap execution, not a physical JIT isolate.
             var actor = runtime.<String>spawnUntrusted(policy -> (mail, context) -> {
-                try {
-                    assertEquals(ActorRuntime.ActorKind.UNTRUSTED, context.kind());
-                    var heap = context.actorOwnedMemory().orElseThrow();
-                    assertEquals(heap, context.privateMemory().orElseThrow());
-                    var arena = heap.<Payload>newGraphArena(2, 2);
-                    var node = arena.add(() -> new Payload(drops));
-                    arena.link(node, node);
-                    assertEquals(1, arena.links(node).size());
-                    owned.set(arena);
-                } catch (Throwable problem) {
-                    failure.set(problem);
-                } finally {
-                    finished.countDown();
-                }
+                assertEquals(ActorRuntime.ActorKind.UNTRUSTED, context.kind());
+                var heap = context.actorOwnedMemory().orElseThrow();
+                assertEquals(heap, context.privateMemory().orElseThrow());
+                AtomicInteger drops = new AtomicInteger();
+                var arena = heap.<Payload>newGraphArena(2, 2);
+                var node = arena.add(() -> new Payload(drops));
+                arena.link(node, node);
+                assertEquals(1, arena.links(node).size());
+                arena.close();
+                assertEquals(1, drops.get());
+                assertTrue(arena.fullyClosed());
+                context.self().stop();
             });
             actor.send("allocate");
-            assertTrue(finished.await(15, TimeUnit.SECONDS));
-            if (failure.get() != null) fail(failure.get());
+            assertTrue(actor.awaitTermination(15, TimeUnit.SECONDS),
+                    "untrusted actor should finish its validated mailbox turn");
+            assertTrue(actor.failure().isEmpty(), () ->
+                    "untrusted actor failed: " + actor.failure());
         }
-
-        assertNotNull(owned.get());
-        assertTrue(owned.get().fullyClosed());
-        assertEquals(1, drops.get());
     }
 
     @Test
