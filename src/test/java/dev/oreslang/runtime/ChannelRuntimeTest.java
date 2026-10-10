@@ -266,6 +266,38 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void duplicateIdenticalOnSubscribeDoesNotCancelTheActiveSubscription()
+            throws Exception {
+        var subscriberRef = new java.util.concurrent.atomic.AtomicReference<
+                java.util.concurrent.Flow.Subscriber<? super Integer>>();
+        var duplicateDelivered = new java.util.concurrent.CountDownLatch(1);
+        var cancelled = new java.util.concurrent.CountDownLatch(1);
+        var cancelledCount = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Flow.Publisher<Integer> malformed = subscriber -> {
+            subscriberRef.set(subscriber);
+            var subscription = new java.util.concurrent.Flow.Subscription() {
+                @Override public void request(long n) { }
+                @Override public void cancel() {
+                    cancelledCount.incrementAndGet();
+                    cancelled.countDown();
+                }
+            };
+            subscriber.onSubscribe(subscription);
+            subscriber.onSubscribe(subscription); // Same object, not a new subscription.
+            duplicateDelivered.countDown();
+        };
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malformed))
+                .selectAsync();
+        assertTrue(duplicateDelivered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(0, cancelledCount.get(),
+                "the duplicate must not cancel the still-active subscription");
+        subscriberRef.get().onNext(74);
+        assertEquals(74, selected.get(5, java.util.concurrent.TimeUnit.SECONDS).value());
+        assertTrue(cancelled.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(1, cancelledCount.get());
+    }
+
+    @Test
     void observableEmptyCompletionFailsSelectRatherThanHanging() throws Exception {
         java.util.concurrent.Flow.Publisher<Integer> empty = subscriber ->
                 subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
@@ -441,6 +473,98 @@ final class ChannelRuntimeTest {
                         payload, channel.tryRead().orElseThrow());
             }
         }
+    }
+
+    @Test
+    void independentWriteDescriptorsCannotTransferTheSameMutableObject() {
+        ChannelRuntime.Channel<List<Integer>> channel = new ChannelRuntime.Channel<>(3);
+        List<Integer> shared = new java.util.ArrayList<>(List.of(5));
+        var first = ChannelRuntime.write(channel, shared);
+        var alias = ChannelRuntime.write(channel, shared);
+        assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                ChannelRuntime.SelectSet.of(first).selectAsync().join().operation());
+        var rejected = assertThrows(java.util.concurrent.CompletionException.class,
+                () -> ChannelRuntime.SelectSet.of(alias).selectAsync().join());
+        assertTrue(rejected.getCause().getMessage().contains("already transferred"));
+        assertEquals(1, channel.size());
+        org.junit.jupiter.api.Assertions.assertSame(shared, channel.tryRead().orElseThrow());
+
+        // A fresh object whose contents compare equal is a distinct owner.
+        List<Integer> independent = new java.util.ArrayList<>(List.of(5));
+        assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                ChannelRuntime.SelectSet.of(ChannelRuntime.write(channel, independent))
+                        .selectAsync().join().operation());
+        org.junit.jupiter.api.Assertions.assertSame(independent, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void independentDescriptorsRacingAcrossChannelsCannotDuplicateOneMutablePayload()
+            throws Exception {
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int trial = 0; trial < 50; trial++) {
+                var first = new ChannelRuntime.Channel<List<Integer>>(1);
+                var second = new ChannelRuntime.Channel<List<Integer>>(1);
+                var shared = new java.util.ArrayList<>(List.of(trial));
+                var firstCase = ChannelRuntime.write(first, shared);
+                var secondCase = ChannelRuntime.write(second, shared);
+                var ready = new java.util.concurrent.CountDownLatch(1);
+                var a = pool.submit(() -> {
+                    ready.await();
+                    try {
+                        ChannelRuntime.SelectSet.of(firstCase).selectAsync().join();
+                        return true;
+                    } catch (java.util.concurrent.CompletionException rejected) {
+                        return false;
+                    }
+                });
+                var b = pool.submit(() -> {
+                    ready.await();
+                    try {
+                        ChannelRuntime.SelectSet.of(secondCase).selectAsync().join();
+                        return true;
+                    } catch (java.util.concurrent.CompletionException rejected) {
+                        return false;
+                    }
+                });
+                ready.countDown();
+                boolean aWon = a.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                boolean bWon = b.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                assertTrue(aWon ^ bWon, "aliased payload published twice at trial " + trial);
+                assertEquals(1, first.size() + second.size());
+                org.junit.jupiter.api.Assertions.assertSame(shared,
+                        (aWon ? first : second).tryRead().orElseThrow());
+            }
+        }
+    }
+
+    @Test
+    void subclassedArbitraryPrecisionNumbersAreNotTreatedAsCopyScalars() {
+        class MutableBigDecimal extends java.math.BigDecimal {
+            int mutableState;
+            MutableBigDecimal() { super("123"); }
+        }
+        class MutableBigInteger extends java.math.BigInteger {
+            int mutableState;
+            MutableBigInteger() { super("123"); }
+        }
+        for (Number value : List.of(new MutableBigDecimal(), new MutableBigInteger())) {
+            ChannelRuntime.Channel<Number> channel = new ChannelRuntime.Channel<>(2);
+            var descriptor = ChannelRuntime.write(channel, value);
+            ChannelRuntime.SelectSet.of(descriptor).selectAsync().join();
+            assertThrows(java.util.concurrent.CompletionException.class,
+                    () -> ChannelRuntime.SelectSet.of(descriptor).selectAsync().join());
+            assertEquals(1, channel.size());
+        }
+
+        // Exact immutable JDK values remain reusable, preserving Copy semantics.
+        ChannelRuntime.Channel<Number> ordinary = new ChannelRuntime.Channel<>(4);
+        for (Number number : List.<Number>of(
+                new java.math.BigDecimal("123"), new java.math.BigInteger("123"))) {
+            var descriptor = ChannelRuntime.write(ordinary, number);
+            ChannelRuntime.SelectSet.of(descriptor).selectAsync().join();
+            ChannelRuntime.SelectSet.of(descriptor).selectAsync().join();
+        }
+        assertEquals(4, ordinary.size());
     }
 
     @Test
