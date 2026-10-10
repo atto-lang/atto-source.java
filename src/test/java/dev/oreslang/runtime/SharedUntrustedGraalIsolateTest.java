@@ -53,8 +53,9 @@ class SharedUntrustedGraalIsolateTest {
                     "a missing Graal isolate must fail closed, not fall back to the host JVM");
             assertNotNull(unavailable.getCause());
             String causeText = unavailable.getCause().toString();
-            assertFalse(causeText.contains("validation for the given sandbox policy"),
-                    "UNTRUSTED sandbox configuration errors must fail this regression: " + causeText);
+            assertTrue(causeText.contains("No native isolate library is available for the requested language(s) [ores]"),
+                    "only the expected absent Oreslang native-isolate artifact may pass this "
+                    + "fail-closed test; configuration or lifecycle errors must fail: " + causeText);
             return;
         }
 
