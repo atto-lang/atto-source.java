@@ -3204,13 +3204,22 @@ public final class Parser {
             return new Ast.NameExpr(previous().lexeme());
         }
         if (match(SPAWN)) {
+            // Three spellings produce exactly the same actor-runtime operation:
+            // spawn Worker(), spawn new Worker(), spawn (new Worker()).
+            // In none of these does the caller construct or own actor state.
+            boolean parenthesizedNew = match(LPAREN);
+            if (parenthesizedNew) {
+                consume(NEW, "expected 'new' inside parenthesized actor spawn");
+            } else {
+                match(NEW);
+            }
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
-            // Keep actor creation semantically distinct from ordinary class construction.
-            // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
-            // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
+            if (parenthesizedNew) {
+                consume(RPAREN, "expected ')' to close parenthesized actor spawn");
+            }
             return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
         }
         if (match(NEW)) {
