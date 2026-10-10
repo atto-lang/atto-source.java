@@ -283,7 +283,7 @@ final class DynamicSelectPlanTest {
                 if (cancelled) {
                     assertTrue(pending.isCancelled());
                     assertThrows(java.util.concurrent.CancellationException.class, pending::join);
-                    assertFalse(outgoing.isCompletedExceptionally() == false && !outgoing.isCancelled(),
+                    assertThrows(java.util.concurrent.CompletionException.class, outgoing::join,
                             "writer must not succeed when its rendezvous reader was cancelled");
                 } else {
                     assertEquals(99, pending.join().value());
