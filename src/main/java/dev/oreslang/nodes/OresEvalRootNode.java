@@ -1986,7 +1986,8 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && isGuestCatchable(flow.failure())) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -4449,6 +4450,14 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        // Async source-flow transport cannot turn scheduler cancellation,
+        // panic, process-exit or VM-fatal signals into a guest catch binding.
+        private boolean isGuestCatchable(Throwable failure) {
+            return failure instanceof RuntimeException
+                    && !(failure instanceof OresPanic)
+                    && !(failure instanceof java.util.concurrent.CancellationException);
+        }
+
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
             if (!fn.trapped()) {
                 return callFunctionBodyUnchecked(fn, args);
@@ -4810,6 +4819,7 @@ public final class OresEvalRootNode extends RootNode {
                 catch (TailCallSignal signal) { throw signal; }
                 catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
+                catch (java.util.concurrent.CancellationException cancelled) { throw cancelled; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
