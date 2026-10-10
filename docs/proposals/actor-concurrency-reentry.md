@@ -47,6 +47,16 @@ For future concurrent actors, a request handler must own separate request-local 
 
 Parallel actor handlers may enter concurrently up to requestConcurrency and messageConcurrency only once the borrow/effect checker, request-local state partitions, actor scheduling and supervisor lifecycle support it. No blanket implicit mutex for whole parallel actors, and no implicit shared-memory access across untrusted or isolated actors; serialize/copy cross-domain transport.
 
+## Exclusive state loans (preparatory runtime implementation)
+
+`ActorStateLoans(maxPending)` now supplies a bounded, cancellation-aware, FIFO-exclusive loan for one **logical handler identity**, not one OS thread. Its exclusive lease remains held over await, select, cooperative yields, and carrier handoff until explicitly closed by handler cleanup. Same-handler reentrant acquisition is rejected to avoid self-deadlock. Duplicate closing is safe. A revoked arbiter refuses new admissions, fails queued waiters, and fences an outstanding loan without forcibly terminating its in-flight handler; handlers must still close outstanding loans in finally/finalization. Monotonic instance-local epochs support future generation fencing. Future notifications are published outside the admission monitor.
+
+This class is an **unattached VM-internal arbitration primitive**. It does not yet guard source actor field reads or writes, does not make shared mutable objects thread-safe, and does not permit 3/4 transport actors to execute. The `heldBy` observation is diagnostic only: it must never be used as a check-then-mutate authorization, because that would introduce a TOCTOU race. A future executor must bind each lease to the logical handler execution context, enforce generation/owner checks at actual state-access operations, and arrange fail-safe cancellation/finalization. A request-local or message-local region is likewise not automatically safe merely because it has a distinct Java wrapper: no mutable aliases may escape into other regions or supervisor objects.
+
+The existing `NativeHttp.Handler` spawns an independent code actor per HTTP exchange, so its current per-request isolation does not establish parallel handler access to **one shared actor's state**. The JDK HTTP/1.1 transport does not provide websocket-style message-handler lanes. Do not interpret its existing listener capacity as proof of 3 × 4 actor concurrency.
+
+The loan unit tests exercise the withdraw(80)/withdraw(30) example at the *arbitration* layer; real source-level atomicity across AOT/JIT, await, select and forced cancellation still requires executor integration tests before unlocking compiler admission.
+
 ## Required admission and regression gates
 
 1. Bind HTTP/TCP/WebSocket connection handlers and per-request/per-message state regions to actor metadata. Keep the current generic mailbox semantics unchanged.
