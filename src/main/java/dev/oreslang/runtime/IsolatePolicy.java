@@ -234,7 +234,15 @@ public record IsolatePolicy(
                 .in(new ByteArrayInputStream(new byte[0]))
                 .out(new ByteArrayOutputStream())
                 .err(new ByteArrayOutputStream())
-                .arguments(OresLanguage.ID, applicationArguments(profile, permissions, permissionCheckMode));
+                // The host is a GraalVM JVM (--mode=jit), but the single
+                // untrusted guest runs inside the compiled HYBRID Native
+                // Image. Guest arguments must describe the GUEST build mode,
+                // not the hosting JVM; host-side compatibility was already
+                // validated above with the original profile.
+                .arguments(OresLanguage.ID, applicationArguments(
+                        sharedUntrustedEngine == null
+                                ? profile : ExecutionProfile.serverHybrid(),
+                        permissions, permissionCheckMode));
 
         if (sharedUntrustedEngine != null) {
             builder.engine(sharedUntrustedEngine);
