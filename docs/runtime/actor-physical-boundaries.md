@@ -116,20 +116,45 @@ actor's *private* memory is not automatically exported to its peers.
   Benchmark allocations, zeroization, object promotion, RSS and GC pauses
   before asserting any improvement.
 
-**Untrusted actor warning:** `IsolatePolicy.restrictedContextBuilder()`
-chooses `SandboxPolicy.UNTRUSTED` and `spawnIsolate(true)` for adversarial
-Graal contexts; that is separate from the Java `ActorRuntime.spawnUntrusted()`
-implementation, which currently schedules guest behavior on a distinct
-dispatcher but does **not** provision a physical Graal isolate per ActorCell.
-Giving the latter FFM-backed byte blocks does not turn it into a VM sandbox.
-An isolate-worker bootstrap plus serialized actor message bridge, teardown
-and resource-limit tests are still required before guaranteeing a Graal
-isolate per untrusted actor. Untrusted native/FFI capabilities remain denied.
+### Single Graal isolate for ALL untrusted actors (corrected architecture)
+
+The **host process** owns exactly one `SharedUntrustedGraalIsolate` manager.
+It creates **one Graal `Engine` with `spawnIsolate(true)` and one Oreslang
+guest `Context`**, into which untrusted actor source is admitted through a
+bounded asynchronous queue. The guest `OresVM`/`ActorRuntime` is shared by
+every actor spawned in that context. The Engine sets the aggregate isolate
+heap cap; actor-local `ActorMemorySlice` budgets and FFM arenas remain separate
+**logical ownership regions**, not independent managed heaps or GC domains.
+
+The process-wide singleton fails closed when the language-isolate Native
+Image or required Graal sandbox is unavailable, or when a second caller
+requests a conflicting aggregate heap cap. The domain root receives only
+`ACTOR_SPAWN` authority; `IsolatePolicy.untrustedActor()` continues to
+grant **no** capabilities to individual untrusted actors. Context source
+submission returns completion-only futures; raw guest `Value` and
+`MemorySegment` references never pass back to host code.
+
+**Integration gap:** The existing Java `ActorRuntime.spawnUntrusted()` direct
+host entrypoint still runs on a distinct **host dispatcher**, not inside this
+physical isolate. Production security must not use that API as an isolation
+boundary until routing over a serialized host/guest actor mailbox bridge is
+implemented. Likewise the polyglot Oreslang isolate image must be built,
+installed, and verified with at least two simultaneously live actors. This
+commit establishes the ONE-isolate bootstrap and policy, not complete
+message routing or host-isolation certification.
+
+The untrusted actors are **one trust domain**: they share the same managed
+isolate heap, collector and failure fate. One actor panic should be locally
+supervised if possible; corruption, isolate OOM or host-enforced termination
+may take out *all* untrusted actors together. No intra-domain hostile-code
+security separation is promised. This is intentionally **not** one isolate
+per actor. Untrusted native/FFI/host reflection remains denied.
 
 ## Physical heap backend decision
 
-Start with exec'd workers as the reference protected backend. Each live isolated
-actor needs its own address space; putting several isolated actors in one worker
+For PRIVATE/isolated actors that require a physically separate worker, start
+with exec'd workers as the reference protected backend. Each such actor
+needs its own address space; putting several isolated actors in one worker
 would weaken this contract. Warm workers can amortize startup, but reassignment
 must recreate the address space, or demonstrate complete VM teardown and absence
 of retained authority. Never fork a running multithreaded JVM and continue guest
