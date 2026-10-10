@@ -85,6 +85,7 @@ final class ActorHttpMatrixBenchmarkTest {
         AtomicLong ticket = new AtomicLong();
         List<ActorArena> owned = new java.util.concurrent.CopyOnWriteArrayList<>();
         long started = System.nanoTime();
+        long teardownStarted = started;
         try (ActorRuntime runtime = new ActorRuntime();
              ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
              HttpClient client = HttpClient.newBuilder()
@@ -221,12 +222,14 @@ final class ActorHttpMatrixBenchmarkTest {
                 http.stop(0);
             }
             assertTrue(pending.isEmpty());
+            teardownStarted = System.nanoTime();
             System.out.printf("MATRIX backend=graal mode=%s shutdown_begin=true%n", mode);
         }
         for (ActorArena arena : owned) assertTrue(arena.physicallyClosed());
         assertEquals(ACTORS, owned.size());
-        System.out.printf(Locale.ROOT, "MATRIX backend=graal mode=%s shutdown_ms=%.3f physical_reclaim=true%n",
-                          mode, millis(System.nanoTime() - started));
+        long finished = System.nanoTime();
+        System.out.printf(Locale.ROOT, "MATRIX backend=graal mode=%s shutdown_ms=%.3f mode_total_ms=%.3f physical_reclaim=true%n",
+                          mode, millis(finished - teardownStarted), millis(finished - started));
     }
 
     @Test void fourConcurrencyLevelsAcrossFiveSharedAndFivePrivateActors() throws Exception {
