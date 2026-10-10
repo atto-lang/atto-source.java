@@ -20,14 +20,44 @@ public final class StdChannels implements AutoCloseable {
     private static final ThreadLocal<Boolean> BRIDGE = ThreadLocal.withInitial(() -> false);
     static boolean isBridgeCurrent() { return Boolean.TRUE.equals(BRIDGE.get()); }
 
-    /** Read-only to guest source. Runtime producer may write internally. */
+    /**
+     * A process-owned descriptor is NOT an ordinary guest-owned channel.
+     * Channel.close() is public for user-created channels, but must not allow
+     * any Oreslang alias to shut down the ambient process input.
+     */
     public static final class InputChannel extends ChannelRuntime.Channel<String> {
         private InputChannel() { super(0); }
+
+        @Override
+        public void close() { close(null); }
+
+        @Override
+        public void close(Throwable cause) {
+            if (!isBridgeCurrent()) {
+                throw new SecurityException("stdin is process-owned; consumer cannot close the descriptor");
+            }
+            super.close(cause);
+        }
+
+        private void finishFromContext(Throwable cause) { super.close(cause); }
     }
 
-    /** Write-only to guest source. Runtime sink may read internally. */
+    /** Process-owned writable descriptor; the context retains close authority. */
     public static final class OutputChannel extends ChannelRuntime.Channel<String> {
         private OutputChannel() { super(0); }
+
+        @Override
+        public void close() { close(null); }
+
+        @Override
+        public void close(Throwable cause) {
+            if (!isBridgeCurrent()) {
+                throw new SecurityException("stdout/stderr are process-owned; guest cannot close the descriptor");
+            }
+            super.close(cause);
+        }
+
+        private void finishFromContext(Throwable cause) { super.close(cause); }
     }
 
     private final OresContext context;
@@ -163,12 +193,12 @@ public final class StdChannels implements AutoCloseable {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        input.close();
+        input.finishFromContext(null);
         if (inputThread != null) inputThread.interrupt();
-        // Closing rendezvous channels settles parked sink receives after
-        // any already committed frame has been handed to its worker.
-        output.close();
-        error.close();
+        // Context teardown retains descriptor-close authority. A guest alias
+        // cannot call close(), including through an ordinary Channel<T> type.
+        output.finishFromContext(null);
+        error.finishFromContext(null);
         joinQuietly(outputThread);
         joinQuietly(errorThread);
         Throwable failed = failure;
