@@ -73,7 +73,7 @@ final class ActorMailTypeContractTest {
                     IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse("""
                             define actor Worker as
-                              fnc %s(): void { return; }
+                              %s(): void { return; }
                               receive(ActorMail<String> mail): void { return; }
                             end
                             """.formatted(method))));
@@ -83,7 +83,7 @@ final class ActorMailTypeContractTest {
         // Reserved only on actors: ordinary classes can choose these names.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Ordinary as
-                  fnc get_done_signal(): void { return; }
+                  get_done_signal(): void { return; }
                 end
                 """)));
     }
