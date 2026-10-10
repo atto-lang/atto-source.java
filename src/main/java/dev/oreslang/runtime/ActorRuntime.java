@@ -785,9 +785,11 @@ public final class ActorRuntime implements AutoCloseable {
                 PrivateMemoryBlock block = allocatePrivateBytes(
                         Math.multiplyExact(slots, Long.BYTES));
                 try {
+                    AtomicReference<ActorOwnedI64Region> registered = new AtomicReference<>();
                     ActorOwnedI64Region region = new ActorOwnedI64Region(block, slots,
                             this::requireCurrentOwner,
-                            () -> ownedI64Regions.removeIf(r -> r.closed()));
+                            () -> ownedI64Regions.remove(registered.get()));
+                    registered.set(region);
                     ownedI64Regions.add(region);
                     return region;
                 } catch (RuntimeException | Error failure) {
