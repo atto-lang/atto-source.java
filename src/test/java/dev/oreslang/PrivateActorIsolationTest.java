@@ -287,6 +287,29 @@ final class PrivateActorIsolationTest {
         }
     }
     @Test
+    void sharedActorAlsoOwnsPrivateNativeRegionWithoutExportingIt() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> leaked = new AtomicReference<>();
+            var shared = runtime.<String>spawnShared(factoryContext -> {
+                assertTrue(factoryContext.privateMemory().isEmpty());
+                var owned = factoryContext.actorMemory().orElseThrow().allocatePrivateBytes(64);
+                owned.writeLong(0, 99L);
+                leaked.set(owned);
+                return (message, context) -> {
+                    assertEquals(99L, owned.readLong(0));
+                    context.self().stop();
+                };
+            });
+            shared.send("run");
+            assertTrue(shared.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(shared.failure().isEmpty());
+            assertThrows(IllegalStateException.class, () -> leaked.get().readLong(0));
+            assertTrue(leaked.get().closed());
+            assertEquals(0L, runtime.privateMemoryBytes());
+        }
+    }
+
+    @Test
     void privateActorCannotEscalateBySpawningSharedChild() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var parent = runtime.<String>spawnPrivate(factoryContext -> (message, context) -> {
