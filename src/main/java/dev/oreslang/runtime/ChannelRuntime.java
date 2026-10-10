@@ -595,20 +595,45 @@ public final class ChannelRuntime {
             }
         }
 
+        private static void cancelSubscription(Flow.Subscription prior) {
+            // Neither an untrusted Publisher's cancel() nor its exceptions may
+            // block a native guest carrier or poison Future delivery.
+            Runnable cleanup = () -> {
+                try {
+                    prior.cancel();
+                } catch (Throwable ignored) {
+                    // Selection settlement is already authoritative. A broken
+                    // host cancellation hook cannot roll back its winner.
+                }
+            };
+            try {
+                Thread.ofVirtual().name("ores-select-unsubscribe").start(cleanup);
+            } catch (RuntimeException | Error launchFailure) {
+                // Last-resort asynchronous fallback: do not run arbitrary
+                // foreign cancel code inline on the caller's actor carrier.
+                try {
+                    java.util.concurrent.CompletableFuture.runAsync(cleanup);
+                } catch (RuntimeException | Error ignored) {
+                    // Host thread exhaustion can prevent best-effort remote
+                    // cancellation; admission/selection remain fully detached.
+                }
+            }
+        }
+
         private void stop() {
             terminal.set(true);
             Flow.Subscription prior = subscription.getAndSet(STOPPED);
-            if (prior != null && prior != STOPPED) {
-                // A foreign cancel hook is arbitrary code; it may block/reenter.
-                Thread.ofVirtual().name("ores-select-unsubscribe").start(prior::cancel);
-            }
+            if (prior != null && prior != STOPPED) cancelSubscription(prior);
         }
 
         @Override
         public void onSubscribe(Flow.Subscription next) {
             Objects.requireNonNull(next, "subscription");
             if (!subscription.compareAndSet(null, next)) {
-                Thread.ofVirtual().start(next::cancel);
+                // A Publisher that sends onSubscribe twice violates Flow's
+                // contract. Cancel the extra subscription without poisoning
+                // the valid first subscription or blocking its callback.
+                cancelSubscription(next);
                 return;
             }
             if (terminal.get()) {
