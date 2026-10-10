@@ -588,12 +588,13 @@ public final class ActorRuntime implements AutoCloseable {
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
 
     /**
-     * Logical actor-confined memory slice for one private actor.
+     * Actor-confined memory slice for every actor, including shared actors.
      *
      * This is independent of carrier threads. Mailbox payloads and persistent
-     * actor-state allocations share one budget. The current JVM backend uses
-     * accounting plus alias isolation; a native/polyglot-isolate backend can map
-     * this same contract to a physically separate heap/arena.
+     * actor-state allocations share one budget. Actor-owned byte regions use
+     * FFM arenas on JDK 22+ (Java 21 compatibility uses direct ByteBuffers).
+     * Ordinary Java/Truffle objects still reside on a managed GC heap.
+     * Actor ownership is logical, not a claim of an OS/address-space sandbox.
      */
     public final class ActorMemorySlice implements AutoCloseable {
         private final ActorId owner;
@@ -671,7 +672,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (cell == null || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
                         "private actor memory slice may only be reserved by its owning actor");
             }
@@ -716,7 +717,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final MemoryReservation reservation;
         private final int capacity;
-        private volatile ByteBuffer memory;
+        private volatile ActorForeignMemory region;
         private final AtomicBoolean blockClosed = new AtomicBoolean();
 
         private PrivateMemoryBlock(
@@ -726,12 +727,14 @@ public final class ActorRuntime implements AutoCloseable {
             this.slice = Objects.requireNonNull(slice);
             this.reservation = Objects.requireNonNull(reservation);
             this.capacity = bytes;
-            this.memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            this.region = ActorForeignMemory.allocate(bytes);
         }
 
         public int capacity() { return capacity; }
         public ActorId owner() { return slice.owner(); }
         public boolean closed() { return blockClosed.get(); }
+        /** True when this block uses an explicitly closeable FFM Arena. */
+        public boolean deterministicReclamation() { return region != null && region.deterministicReclamation(); }
 
         public byte readByte(int index) {
             return openMemory().get(index);
@@ -792,18 +795,16 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("private actor memory block is closed");
             }
             slice.requireCurrentOwner();
-            ByteBuffer live = memory;
+            ActorForeignMemory live = region;
             if (live == null) throw new IllegalStateException("private actor memory block is closed");
-            return live;
+            return live.memory();
         }
 
         private void zeroAndDetachMemory() {
-            ByteBuffer live = memory;
+            ActorForeignMemory live = region;
             if (live == null) return;
-            ByteBuffer duplicate = live.duplicate();
-            duplicate.clear();
-            while (duplicate.hasRemaining()) duplicate.put((byte) 0);
-            memory = null;
+            region = null;
+            live.close(); // zeroize and free the native Arena on JDK 22+
         }
 
         private void invalidateFromSlice() {
@@ -1197,6 +1198,8 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+        /** Actor-owned native-byte region, including for SHARED actors. */
+        default Optional<ActorMemorySlice> actorMemory() { return privateMemory(); }
 
         /**
          * Current admitted mailbox envelope, present only while onMessage is
@@ -5720,9 +5723,9 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
-                    : null;
+            // SHARED actors have private allocations too; only explicitly shared
+            // regions may cross actor boundaries.
+            this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -6184,7 +6187,10 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public IsolatePolicy policy() { return policy; }
                     @Override public ActorKind kind() { return kind; }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
-                        return Optional.ofNullable(memorySlice);
+                        return isPrivateKind(kind) ? Optional.of(memorySlice) : Optional.empty();
+                    }
+                    @Override public Optional<ActorMemorySlice> actorMemory() {
+                        return Optional.of(memorySlice);
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
