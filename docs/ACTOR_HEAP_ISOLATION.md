@@ -23,6 +23,17 @@ calls may still affect latencies. Strict untrusted-tenant separation is a
 different security/performance tier and requires an additional worker
 process/isolate by explicit policy, not by default.
 
+The group policy is distinct from the actor policy: `IsolatePolicy.untrustedActorGroup()`
+sets a multi-hour **cumulative Context CPU-time budget**, while
+`IsolatePolicy.untrustedActor()` retains its 250 ms actor-turn policy.
+A long-running group MUST NOT be created from the 250 ms policy;
+`SharedUntrustedIsolatePool` rejects that mistake. Groups need a
+supervisor-controlled, generation-fenced rotation process before their
+cumulative CPU budget expires. One group Context has
+`sandbox.MaxThreads=1` and therefore serial guest entry; multiple group
+Contexts can run within the same isolated Engine to achieve concurrency,
+subject to hard aggregate memory/CPU bounds.
+
 The host's AOT Native Image compilation is distinct from AOT-lowering
 native Oreslang actor functions. Current Java/Graal host AOT build modes
 exist, but full LLVM Oreslang AOT codegen for actors is still unfinished.
