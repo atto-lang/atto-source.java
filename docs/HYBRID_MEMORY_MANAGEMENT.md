@@ -50,9 +50,18 @@ This patch specifically changes fallback cleanup housekeeping:
 - Completed host-cleanup entries sever their actor-domain links and clear their
   weak owner reference; a queued stale notification cannot pin an old actor
   domain merely because its cleanup handle was retained.
+- Actor termination inspects at most **32** cleanup registrations synchronously;
+  remaining retired-domain entries stay eligible for bounded fallback sweeps.
+- Retryable failures rotate in an explicit FIFO, consuming **at most a
+  quarter** of a background maintenance quantum. Even hundreds of permanently
+  failing hooks cannot monopolize inspection and starve new weak-reference
+  notifications; the reference queue reserves capacity for retired domains.
 - `actor.gc()` remains actor-domain-local and bounded. Actor termination
-  eagerly retires its domain. `process.gc()` remains an explicit full sweep
-  that can request throttled JVM GC.
+  marks its domain retired. `process.gc()` is **supervisor-only** and
+  remains an explicit full sweep that can request throttled JVM GC.
+  An actor, including one with `GC_CONTROL`, cannot trigger whole-process
+  collection. The physical heap is shared across JVM actors; actor-local
+  collection only runs host-resource cleanup, not separate physical GC.
 - Cleanup callbacks are arbitrary host code: the entry-count bound is
   **not** a bounded-time / hard-realtime proof. Bad callbacks can still stall
   the shared timer. Explicitly close resources; do not rely on weak-reference
