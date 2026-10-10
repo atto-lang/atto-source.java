@@ -95,7 +95,7 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     @Override public synchronized void close() {
-        active();
+        if (moved) return; // No ownership remains on the transferred wrapper.
         if (state.status != Status.CLOSED) {
             throw new IllegalStateException("backend must quiesce and release before owner closes");
         }
