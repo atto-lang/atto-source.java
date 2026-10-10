@@ -213,6 +213,7 @@ public final class OresMain {
                 profile,
                 allowedHostClasses,
                 System.getenv(),
+                System.in,
                 System.out,
                 System.err).exitStatus();
         if (exitStatus != 0) System.exit(exitStatus);
