@@ -404,8 +404,11 @@ final class RuntimeGarbageCollectorTest {
         try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
                 jvmGcRequests::incrementAndGet, Duration.ofHours(1))) {
             ArrayList<RuntimeGarbageCollector.CleanupHandle> handles = new ArrayList<>();
+            ArrayList<Object> owners = new ArrayList<>();
             for (int n = 0; n < 320; n++) {
-                var handle = gc.track(new Object(), cleanups::incrementAndGet);
+                Object owner = new Object();
+                owners.add(owner); // deterministic weak-reference enqueue, not JVM timing
+                var handle = gc.track(owner, cleanups::incrementAndGet);
                 handles.add(handle);
                 enqueue(handle);
             }
@@ -427,6 +430,7 @@ final class RuntimeGarbageCollectorTest {
             // Retaining handles cannot accidentally repeat completed cleanups.
             handles.forEach(RuntimeGarbageCollector.CleanupHandle::close);
             assertEquals(320, cleanups.get());
+            java.lang.ref.Reference.reachabilityFence(owners);
         }
     }
 
