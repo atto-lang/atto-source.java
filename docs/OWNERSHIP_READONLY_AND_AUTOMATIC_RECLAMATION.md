@@ -52,9 +52,12 @@ argument admission; failed admission releases them as well.
   runtime-controlled lifetime. True task-lifetime loans are deferred.
 - Actor `self` is a runtime-scoped capability, not a freely transferable
   `&mut` pointer. Its resumed continuation must re-enter the owning actor
-  under the exclusive native carrier lease. Other borrowed values cannot be
-  captured by detached nonblocking-select continuations, transported through
-  actor/channel mail, or kept live across `await`/`rt cooperate`.
+  under the exclusive native carrier lease. **Only the canonical compiler-
+  provided `self` parameter**, not `val alias = rt borrow self`, may cross a
+  deferred `nb select` or an actor-local async receiver boundary. Other
+  borrowed values cannot be captured by detached nonblocking-select
+  continuations, transported through actor/channel mail, or kept live
+  across `await`/`rt cooperate`.
 
 These checks are fail-closed **source-level constraints**, not proof that
 host interop, opaque imports, foreign ABI implementations, every constructor
