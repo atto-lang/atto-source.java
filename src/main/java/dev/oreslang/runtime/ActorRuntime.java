@@ -1354,9 +1354,9 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(factory, "factory");
         ActorCell<?> cell = currentActor.get();
         if (cell == null || currentActorRuntime() != this
-                || cell.guestTurnOwner.get() != Thread.currentThread()) {
+                || !currentThreadOwnsActorNativeLease()) {
             throw new SecurityException(
-                    "module state can only be accessed from its owning actor guest turn");
+                    "module state can only be accessed from its owning actor native turn");
         }
         return cell.moduleStates.computeIfAbsent(
                 new ModuleStateKey(codeUnitId, moduleName, generation),
@@ -1577,7 +1577,7 @@ public final class ActorRuntime implements AutoCloseable {
     public void configureCurrentActorConcurrency(int maxInFlight) {
         ActorCell<?> cell = currentActor.get();
         if (cell == null || currentActorRuntime() != this
-                || cell.guestTurnOwner.get() != Thread.currentThread()) {
+                || !currentThreadOwnsActorNativeLease()) {
             throw new SecurityException("actor concurrency may only be configured during actor startup");
         }
         int ceiling = cell.kind == ActorKind.UNTRUSTED ? 32 : 1024;
@@ -4054,6 +4054,13 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = currentActor.get();
         if (cell == null || cell.kind != ActorKind.SHARED) {
             throw new IllegalStateException("shared state mutation requires a shared actor mailbox turn");
+        }
+        // The synchronized cell lock coordinates multiple *actors*, but does
+        // not replace the caller actor's exclusive native-thread execution lease.
+        // Reject even an otherwise valid SHARED identity that lost its turn.
+        requireCallerRuntimeAffinity("access shared SyncCell state");
+        if (!currentThreadOwnsActorNativeLease()) {
+            throw new SecurityException("shared SyncCell access requires a live native actor lease");
         }
     }
 
