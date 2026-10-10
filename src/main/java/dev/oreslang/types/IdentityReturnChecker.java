@@ -53,6 +53,7 @@ final class IdentityReturnChecker {
         }
         checker.verifyOverrideContracts(program);
         checker.verifyInterfaceIdentityContracts(program);
+        checker.verifyModuleIdentityContracts(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl function && function.returnType().isIdentityReturn()) {
@@ -117,6 +118,43 @@ final class IdentityReturnChecker {
                                 throw new IllegalArgumentException(
                                         "class '" + klass.name() + "' cannot weaken interface identity return '"
                                                 + iface.name() + "." + fn.name() + "'");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 'module X conforms Contract' must preserve dependent-return semantics,
+     * not merely the nominal return shape checked by TypeChecker.
+     */
+    private void verifyModuleIdentityContracts(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.TypeRef required : module.contracts()) {
+                Ast.InterfaceDecl contract = resolveInterface(module.name(), required.name());
+                if (contract == null || !contract.moduleContract()) continue;
+                java.util.Set<Ast.InterfaceDecl> ancestors = java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+                collectInterfaceParents(module.name(), contract, ancestors);
+                for (Ast.InterfaceDecl iface : ancestors) {
+                    for (Ast.InterfaceMember member : iface.members()) {
+                        if (!(member instanceof Ast.InterfaceFunctionDecl fn)
+                                || !fn.returnType().isIdentityReturn()) continue;
+                        for (Ast.Decl actual : module.declarations()) {
+                            if (actual instanceof Ast.FunctionDecl implementation
+                                    && implementation.actorKind() == Ast.ActorKind.NONE
+                                    && sameSlot(fn.name(), fn.parameters().size(),
+                                                implementation.name(), implementation.parameters().size())) {
+                                int requiredSlot = identitySlot(fn.returnType(), fn.parameters());
+                                int providedSlot = identitySlot(
+                                        implementation.returnType(), implementation.parameters());
+                                if (providedSlot != requiredSlot) {
+                                    throw new IllegalArgumentException(
+                                            "module '" + module.name() + "' cannot weaken contract identity return '"
+                                                    + iface.name() + "." + fn.name() + "'");
+                                }
                             }
                         }
                     }
