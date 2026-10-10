@@ -936,7 +936,8 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     } else {
                         startInitialBody();
-                    }                } else {
+                    }
+                } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
                     if (continuation == null) {
