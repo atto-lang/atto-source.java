@@ -276,7 +276,7 @@ public final class LinkedProgramRunner {
     private static int requireExitStatus(Value value) {
         if (value == null || value.isNull()) return 0;
         if (!value.fitsInInt()) {
-            throw new IllegalStateException("Oreslang main() exit status must be an int");
+            throw new IllegalArgumentException("Oreslang main() exit status must be an int");
         }
         int code = value.asInt();
         if (code < 0 || code > 255) {

@@ -540,11 +540,6 @@ public final class TypeChecker {
         // : AsyncIterator<int>). The body always checks yields against the
         // element type and calls expose exactly one iterator wrapper.
         Type declaredReturn = resolve(fn.returnType(), generics, null);
-        if (fn.name().equals("main") && fn.parameters().isEmpty()
-                && declaredReturn != Primitive.VOID && declaredReturn != Primitive.INT) {
-            throw new IllegalArgumentException(
-                    "program entrypoint main() must return void or int, not " + declaredReturn);
-        }
         Type returns = fn.generator()
                 ? generatorYieldType(fn.async(), declaredReturn)
                 : declaredReturn;

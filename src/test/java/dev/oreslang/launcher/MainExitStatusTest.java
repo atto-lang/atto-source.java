@@ -61,7 +61,7 @@ final class MainExitStatusTest {
             () -> exit("pub routine main(): void { std.process.exit(256); }"));
     }
 
-    @Test void unsupportedMainReturnTypeIsStaticError() throws Exception {
+    @Test void unsupportedLinkedMainReturnValueIsRejected() throws Exception {
         assertThrows(IllegalArgumentException.class,
             () -> exit("pub routine main(): String { return \"invalid\"; }"));
     }

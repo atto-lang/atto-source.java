@@ -3,6 +3,9 @@
 The static root entrypoint supports `pub routine main(): void` (success = 0) and
 `pub routine main(): int` (return 0–255). `async main` completion is awaited by
 the root scheduler; a completed integer is likewise the exit status.
+The linked CLI runner rejects other completed return values. Direct Polyglot
+evaluation retains its existing value-returning entrypoint semantics; the
+general type checker does not impose the CLI exit-status contract on embedding.
 
 Use `std.process.exit(code)` (alias `process.exit(code)`) for early termination;
 the argument is statically checked as `int` and validated at runtime in 0–255.
