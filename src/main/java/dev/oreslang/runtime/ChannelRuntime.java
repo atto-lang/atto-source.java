@@ -258,7 +258,6 @@ public final class ChannelRuntime {
     public static final class SelectSet {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
-        private final java.util.function.IntConsumer fairWinner;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -278,16 +277,8 @@ public final class ChannelRuntime {
         private SelectSet(
                 Collection<? extends SelectCase> cases,
                 AtomicLong sharedFairCursor) {
-            this(cases, sharedFairCursor, null);
-        }
-
-        private SelectSet(
-                Collection<? extends SelectCase> cases,
-                AtomicLong sharedFairCursor,
-                java.util.function.IntConsumer fairWinner) {
             Objects.requireNonNull(cases, "cases");
             this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
-            this.fairWinner = fairWinner;
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
@@ -383,8 +374,7 @@ public final class ChannelRuntime {
         private void selected(int index, SelectPolicy policy) {
             if (policy == SelectPolicy.FAIR && !cases.isEmpty()
                     && !(cases.get(index) instanceof DefaultCase)) {
-                if (fairWinner != null) fairWinner.accept(index);
-                else fairCursor.set((index + 1L) % cases.size());
+                fairCursor.set((index + 1L) % cases.size());
             }
         }
     }
@@ -468,7 +458,10 @@ public final class ChannelRuntime {
      */
     public static final class DynamicSelectPlan<K> {
         private final LinkedHashMap<K, SelectCase> entries = new LinkedHashMap<>();
-        private final AtomicLong fairness = new AtomicLong();
+        // New structural generations get their own atomic cursor. A winner
+        // from an old registration can only update the old generation, and
+        // arbitration never takes the plan monitor while holding COORDINATOR.
+        private AtomicLong fairness = new AtomicLong();
         private long version;
         private Snapshot<K> cached;
 
@@ -504,6 +497,7 @@ public final class ChannelRuntime {
             }
             long nextVersion = Math.addExact(version, 1L);
             entries.put(key, selectCase);
+            fairness = new AtomicLong(fairness.get());
             version = nextVersion;
             cached = null;
         }
@@ -514,6 +508,7 @@ public final class ChannelRuntime {
             if (!entries.containsKey(key)) return false;
             long nextVersion = Math.addExact(version, 1L);
             entries.remove(key);
+            fairness = new AtomicLong(fairness.get());
             version = nextVersion;
             cached = null;
             return true;
@@ -537,22 +532,11 @@ public final class ChannelRuntime {
             if (entries.isEmpty()) {
                 throw new IllegalStateException("cannot select from an empty dynamic plan");
             }
-            long snapshotVersion = version;
-            int caseCount = entries.size();
             cached = new Snapshot<>(
-                    snapshotVersion,
+                    version,
                     List.copyOf(entries.keySet()),
-                    new SelectSet(entries.values(), fairness,
-                            winner -> advanceFairIfCurrent(snapshotVersion, winner, caseCount)));
+                    new SelectSet(entries.values(), fairness));
             return cached;
-        }
-
-        /** Old-generation winners cannot reorder a newer configuration. */
-        private synchronized void advanceFairIfCurrent(
-                long generation, int winnerIndex, int caseCount) {
-            if (version == generation) {
-                fairness.set((winnerIndex + 1L) % caseCount);
-            }
         }
 
         public OresFuture<SelectResult> selectAsync() {
