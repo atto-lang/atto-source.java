@@ -277,6 +277,50 @@ final class SourceActorSpawnExecutionTest {
         }
     }
 
+    @Test
+    void builtinSerialActorSubclassPreservesRuntimeSchedulingAndOverrideHooks() throws Exception {
+        String program = """
+                define actor Base from serial actor as {
+                    let int progress;
+                    on_start(): void {
+                        self.progress = 0;
+                        return;
+                    }
+                    receive(ActorMail<String> mail): void {
+                        self.send("base");
+                        self.end();
+                        return;
+                    }
+                }
+
+                define actor Child extends Base as
+                    receive(ActorMail<String> mail): void {
+                        self.progress = 1;
+                        self.send("before");
+                        rt cooperate;
+                        self.send(self.progress);
+                        self.end();
+                        return;
+                    }
+                end
+
+                pub async routine main(): void {
+                    val worker = spawn Child();
+                    await worker.ready;
+                    worker.send("first");
+                    val one = (await worker.outputs.next()).value.unwrap();
+                    val two = (await worker.outputs.next()).value.unwrap();
+                    stdio.stdout.write(one.value);
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(two.value);
+                    await worker.done;
+                    return;
+                }
+                """;
+        assertEquals("before|1", run(program, "builtin-serial-subclass.ores"),
+                "child receive override must preserve inherited actor state and single-flight scheduling");
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
