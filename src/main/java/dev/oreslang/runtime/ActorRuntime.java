@@ -779,10 +779,11 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Owner-checked direct memory owned by exactly one private actor.
+     * Owner-checked direct memory owned by exactly one actor of any kind.
      *
-     * No mutable buffer reference escapes this wrapper. Closing the block or
-     * terminating the actor overwrites the entire region before invalidation.
+     * No mutable buffer reference escapes this wrapper. A SHARED actor's own
+     * private region is separate from explicitly synchronized shared cells.
+     * Closing the block or actor zeroes and invalidates this backing buffer.
      */
     public final class PrivateMemoryBlock implements AutoCloseable {
         private final ActorMemorySlice slice;
