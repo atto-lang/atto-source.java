@@ -438,6 +438,10 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         synchronized (lifecycleLock) {
             tracked.remove(entry);
             retryableFailures.remove(entry);
+            // Once the cleanup is complete, the GC no longer needs to watch
+            // this owner. Explicitly disarm the weak reference so it cannot
+            // become another queued notification after deterministic drop.
+            entry.clear();
             Object domain = entry.domain;
             if (domain != null) {
                 Set<TrackedCleanup> domainEntries = trackedByDomain.get(domain);
