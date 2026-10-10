@@ -1432,7 +1432,12 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
-                checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                checkArguments(call.arguments(), signature.parameters(), scope,
+                        "method " + method.name(), member.receiver(),
+                        AnnotationExpander.isGeneratedFromJsonSetter(method)
+                                || (method.explicitReceiverType() != null
+                                        && method.explicitReceiverType().isBorrow()
+                                        && method.explicitReceiverType().mutableBorrow()));
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
@@ -1558,8 +1563,20 @@ public final class OwnershipChecker {
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+        checkArguments(arguments, params, scope, callable, null, false);
+    }
+
+    /** Instance receivers are held until all arguments have been evaluated. */
+    private void checkArguments(
+            List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope,
+            String callable, Ast.Expr receiver, boolean mutableReceiver) {
         ArrayList<CallLoan> loans = new ArrayList<>();
         try {
+            if (receiver != null) {
+                reserveCallLoan(receiver, new Ast.Param(
+                        Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), mutableReceiver),
+                        "$receiver", false, false), scope, loans);
+            }
             int parameterIndex = 0;
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
@@ -1597,23 +1614,27 @@ public final class OwnershipChecker {
             }
         } finally {
             // The callee's borrows begin when an argument is evaluated, NOT
-            // after the entire list is checked. All loans end together once
-            // the call is fully admitted; compiler failure also unwinds them.
-            for (int i = loans.size() - 1; i >= 0; i--) {
-                CallLoan loan = loans.get(i);
-                if (loan.mutable()) {
-                    loan.owner().mutableBorrowed = false;
-                } else {
-                    loan.owner().immutableBorrows--;
-                    if (loan.owner().immutableBorrows < 0) {
-                        throw new IllegalStateException("Oreslang ownership invariant violated: negative call loan count");
-                    }
-                }
-            }
+            // after the entire list is checked. Compiler failure also unwinds them.
+            releaseCallLoans(loans);
         }
     }
 
     private record CallLoan(VarState owner, boolean mutable) { }
+
+    private void releaseCallLoans(List<CallLoan> loans) {
+        for (int i = loans.size() - 1; i >= 0; i--) {
+            CallLoan loan = loans.get(i);
+            if (loan.mutable()) {
+                loan.owner().mutableBorrowed = false;
+            } else {
+                loan.owner().immutableBorrows--;
+                if (loan.owner().immutableBorrows < 0) {
+                    throw new IllegalStateException(
+                            "Oreslang ownership invariant violated: negative call loan count");
+                }
+            }
+        }
+    }
 
     /** Keep structural/borrow parameter loans active across subsequent arguments. */
     private void reserveCallLoan(
@@ -1632,7 +1653,14 @@ public final class OwnershipChecker {
             source = unary.operand();
         }
         if (source == null) return; // Temporary expression has no named owner.
-
+        // Projections borrow through the enclosing owner, not just their last
+        // field. Thus box.inner.method(rt take box) is rejected.
+        while (true) {
+            if (source instanceof Ast.MemberExpr member) source = member.receiver();
+            else if (source instanceof Ast.IndexExpr indexed) source = indexed.receiver();
+            else break;
+        }
+        if (!(source instanceof Ast.NameExpr)) return;
         VarState owner = borrowOwner(source, scope);
         boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
         if (owner.kind == ValueKind.IMM_BORROW || owner.kind == ValueKind.MUT_BORROW
