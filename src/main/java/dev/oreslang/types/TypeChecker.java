@@ -2116,7 +2116,7 @@ public final class TypeChecker {
                     && factory.name().equals("SelectCase")) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
-                            "SelectCase constructors infer channel element types");
+                            "SelectCase constructors infer case argument types");
                 }
                 return switch (selectCaseCall.member()) {
                     case "read" -> {
