@@ -416,6 +416,12 @@ public final class OresContext implements AutoCloseable {
                 "control_carriers_started", vm.controlCarrierCount(),
                 "scheduler_safepoints", schedulerSafepoints.get()));
         descriptor.put("source_loop_cooperates", sourceLoopCooperates.get());
+        // All actors in this OresContext share its managed guest heap, even
+        // when the context itself runs inside a Graal polyglot isolate.
+        // Per-actor physical collector isolation is not implemented here.
+        descriptor.put("actor_heap_backend", "shared_truffle_context");
+        descriptor.put("actor_heap_independently_collectable", false);
+        descriptor.put("actor_gc_operation", "host_cleanup_only");
         return Map.copyOf(descriptor);
     }
 
