@@ -161,7 +161,7 @@ public final class ProcessChannels implements AutoCloseable {
 
     public ConsoleChannel<String> stdout() { return out; }
     public ConsoleChannel<String> stderr() { return err; }
-    public ConsoleChannel<String> stdin() {
+    public synchronized ConsoleChannel<String> stdin() {
         if (closing.get()) throw new IllegalStateException("stdin is closing");
         if (stdinStarted.compareAndSet(false, true)) inWorker.start();
         return in;
@@ -295,13 +295,17 @@ public final class ProcessChannels implements AutoCloseable {
     }
 
     @Override public void close() {
-        if (!closing.compareAndSet(false, true)) return;
-        out.closeOwned();
-        err.closeOwned();
-        // Interrupt the daemon feeder. The embedding host owns stdin and may
-        // be performing an uninterruptible read; never close its stream here.
-        if (stdinStarted.get()) inWorker.interrupt();
-        in.closeOwned();
+        synchronized (this) {
+            // Coordinate with lazy stdin() startup: never start a feeder after
+            // shutdown sealed the context or interrupt a not-yet-started thread.
+            if (!closing.compareAndSet(false, true)) return;
+            out.closeOwned();
+            err.closeOwned();
+            if (stdinStarted.get()) inWorker.interrupt();
+            in.closeOwned();
+        }
+        // The embedding host owns stdin and may perform an uninterruptible
+        // read, so the daemon feeder cannot be awaited or forcibly closed.
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         try {
             outWorker.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(
