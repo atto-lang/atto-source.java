@@ -53,18 +53,23 @@ public final class CoreLibrarySources {
         }
         String resource = RESOURCE_PREFIX + relative;
         ClassLoader loader = CoreLibrarySources.class.getClassLoader();
+        // Class-relative lookup retains the owning named module. A loader-wide
+        // enumeration cannot see non-open module resources in modular launchers.
+        URL unique = CoreLibrarySources.class.getResource("/" + resource);
+        if (unique == null) {
+            throw new IllegalArgumentException(
+                    "unknown Oreslang core-library module: " + importPath);
+        }
         // Packaged stdlib is compiler authority, not ambient classpath policy.
         // Ambiguous duplicate resource names must never silently select a
         // user-controlled earlier classpath entry.
         Enumeration<URL> matches = loader.getResources(resource);
-        if (!matches.hasMoreElements()) {
-            throw new IllegalArgumentException(
-                    "unknown Oreslang core-library module: " + importPath);
-        }
-        URL unique = matches.nextElement();
-        if (matches.hasMoreElements()) {
-            throw new SecurityException(
-                    "duplicate packaged Oreslang core-library resource: " + importPath);
+        while (matches.hasMoreElements()) {
+            URL candidate = matches.nextElement();
+            if (!candidate.toExternalForm().equals(unique.toExternalForm())) {
+                throw new SecurityException(
+                        "duplicate packaged Oreslang core-library resource: " + importPath);
+            }
         }
         try (InputStream input = unique.openStream()) {
             byte[] bytes = input.readNBytes(MAX_SOURCE_BYTES + 1);

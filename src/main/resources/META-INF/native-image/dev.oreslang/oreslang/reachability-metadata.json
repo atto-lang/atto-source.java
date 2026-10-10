@@ -27,9 +27,11 @@
   ],
   "resources": [
     {
+      "module": "dev.oreslang",
       "glob": "dev/oreslang/std/*.ores"
     },
     {
+      "module": "dev.oreslang",
       "glob": "dev/oreslang/std/**/*.ores"
     }
   ]
