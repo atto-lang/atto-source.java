@@ -382,6 +382,16 @@ public final class ActorRuntime implements AutoCloseable {
     private volatile ForceCancellationHook forceCancellationHook =
             request -> false;
 
+    /**
+     * Explicit heap requirement for all actor kinds. A shared Truffle/JVM
+     * context cannot satisfy independent collector admission.
+     */
+    public enum HeapIsolationRequirement {
+        ALLOW_SHARED_JVM,
+        REQUIRE_INDEPENDENT_COLLECTOR
+    }
+
+    private final HeapIsolationRequirement heapIsolationRequirement;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
@@ -428,7 +438,30 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                HeapIsolationRequirement.ALLOW_SHARED_JVM);
+    }
+
+    /**
+     * Strict admission ensures source actors cannot quietly fall back to the
+     * shared-JVM collector. Use a dedicated polyglot isolate or process-backed
+     * actor host instead when this is REQUIRED.
+     */
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            HeapIsolationRequirement requirement) {
+        this(policyCeiling, DispatcherConfig.defaults(), TurnExecutor.direct(),
+                ControlDispatcher.unavailable(), requirement);
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            HeapIsolationRequirement requirement) {
         long poolsPerf = CorePerf.start();
+        this.heapIsolationRequirement = Objects.requireNonNull(requirement, "requirement");
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
@@ -462,6 +495,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+    public HeapIsolationRequirement heapIsolationRequirement() {
+        return heapIsolationRequirement;
+    }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -3550,6 +3586,15 @@ public final class ActorRuntime implements AutoCloseable {
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
+        if (heapIsolationRequirement == HeapIsolationRequirement.REQUIRE_INDEPENDENT_COLLECTOR) {
+            // All actor kinds allocate Java guest objects inside this one
+            // parent Truffle context, regardless of dispatcher or ByteBuffer
+            // regions. Fail BEFORE invoking a factory or reserving an actor.
+            throw new IllegalStateException(
+                    "independent per-actor GC heap required for " + kind
+                    + ": shared JVM ActorRuntime cannot provide it; "
+                    + "launch through a dedicated polyglot isolate or worker process");
+        }
         if ((behaviorFactory == null) == (codeExecutor == null)) {
             throw new IllegalArgumentException(
                     "actor spawn requires exactly one behavior factory or source-code executor");
