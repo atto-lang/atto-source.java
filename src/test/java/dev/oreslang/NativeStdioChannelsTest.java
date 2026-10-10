@@ -216,6 +216,45 @@ final class NativeStdioChannelsTest {
     }
 
     @Test
+    void globalObservableFromProcessStdinCompletesAtEof() throws Exception {
+        Output result = run("""
+                pub routine main(): void {
+                  for const line of Observable.from_ch(process.stdin) {
+                    stdio.println(line);
+                  }
+                  return;
+                }
+                """, "north\nsouth\n");
+        assertEquals("north\nsouth\n", result.stdout());
+    }
+
+    @Test
+    void userCannotShadowTrustedReadableStreamClass() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub define class ReadableStream<T> as
+                  val Channel<T> source;
+                end
+                pub routine main(): void {
+                  val reader = stdio.in.stream();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void userCannotShadowGlobalObservableModule() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module Observable as
+                  pub fnc from_ch(String x): String { return x; }
+                end
+                pub routine main(): void {
+                  val v = Observable.from_ch("unexpected");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void stdinStreamReturnsNativeReadableStreamWithoutImports() throws Exception {
         Output result = run("""
                 pub routine main(): void {
