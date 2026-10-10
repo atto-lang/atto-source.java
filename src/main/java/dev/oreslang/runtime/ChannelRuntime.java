@@ -237,13 +237,41 @@ public final class ChannelRuntime {
         }
     }
 
-    public record WriteCase<T>(Channel<T> channel, T value)
-            implements SelectCase {
-        public WriteCase {
-            Objects.requireNonNull(channel, "channel");
-            Objects.requireNonNull(
-                    value,
+    /**
+     * A write descriptor owns its payload. Immutable scalar payloads are
+     * Copy-like and may be sent repeatedly; object/collection payloads are
+     * affine and may be committed at most once across ALL SelectSets/Plans
+     * referencing this descriptor (including concurrent revisions).
+     */
+    public static final class WriteCase<T> implements SelectCase {
+        private final Channel<T> channel;
+        private final T value;
+        private final boolean repeatable;
+        private final AtomicBoolean transferred = new AtomicBoolean();
+
+        public WriteCase(Channel<T> channel, T value) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+            this.value = Objects.requireNonNull(value,
                     "Oreslang channels cannot carry null; use Option<T>");
+            this.repeatable = value instanceof String
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
+        }
+
+        public Channel<T> channel() { return channel; }
+        public T value() { return value; }
+
+        private boolean exhausted() {
+            return !repeatable && transferred.get();
+        }
+
+        /** Called only by the atomic channel coordinator on winning commit. */
+        private boolean claimCommit() {
+            return repeatable || transferred.compareAndSet(false, true);
         }
     }
 
