@@ -331,16 +331,32 @@ public final class NativeHttp implements AutoCloseable {
             // Never perform socket I/O or actor cancellation while holding this monitor.
             if (cancelDedicatedActor != null) cancelDedicatedActor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            Runnable finalizeTransport = () -> {
+                try {
+                    if (send) reject(raw, status);
+                    else raw.close();
+                } finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            };
+            try {
+                io.execute(finalizeTransport);
+            } catch (RejectedExecutionException stopped) {
+                // The I/O executor may already be shut down during runtime
+                // teardown. Never release admission before closing the socket,
+                // and never perform potentially blocking socket close on the
+                // actor's scheduler carrier.
+                Thread.startVirtualThread(finalizeTransport);
+            }
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
         void release() {
-            // Admission includes the actor lifetime, even after the response ends.
-            // A handler that forgets self.end cannot accumulate unbounded actors.
+            // Dedicated handlers hold admission until their one-shot actor
+            // finishes; reusable actors release each request independently.
             synchronized (this) {
                 if (!transportClosed || (dedicatedActor && actor != null && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
