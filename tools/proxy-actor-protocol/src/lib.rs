@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 pub const MAX_STREAMS_PER_PROXY: usize = 256;
 pub const MAX_MESSAGES_PER_STREAM: u64 = 4096;
 pub const MAX_WINDOW_BYTES_PER_STREAM: u64 = 1024 * 1024;
+pub const MAX_ENDPOINT_BYTES: usize = 2048;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RemoteActorId {
@@ -155,12 +156,19 @@ impl ProxyRoute {
         // Do not confuse a transport address with an authenticated actor ID.
         // Scheme checks prevent accidental plaintext downgrade; connectors must
         // still validate their own host/address policy and peer credentials.
-        let scheme_ok = match lease.transport {
-            Transport::Ipc => lease.endpoint.starts_with("unix://"),
-            Transport::TcpTls => lease.endpoint.starts_with("tls://"),
-            Transport::Http2Tls => lease.endpoint.starts_with("https://"),
+        let remainder = match lease.transport {
+            Transport::Ipc => lease.endpoint.strip_prefix("unix:///"),
+            Transport::TcpTls => lease.endpoint.strip_prefix("tls://"),
+            Transport::Http2Tls => lease.endpoint.strip_prefix("https://"),
         };
-        if !scheme_ok || lease.endpoint.contains('\n') || lease.endpoint.contains('\r') {
+        let Some(remainder) = remainder else {
+            return Err(RouteError::InvalidEndpoint);
+        };
+        if remainder.is_empty() || lease.endpoint.len() > MAX_ENDPOINT_BYTES
+            || lease.endpoint.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+            || lease.endpoint.contains('@') || lease.endpoint.contains('#')
+            || lease.endpoint.contains('?')
+            || (lease.transport != Transport::Ipc && remainder.starts_with('/')) {
             return Err(RouteError::InvalidEndpoint);
         }
         if self.pinned.as_ref().is_some_and(|actor| actor != &lease.actor) {
@@ -395,6 +403,12 @@ mod tests {
         let mut wrong = lease(1, 1);
         wrong.endpoint = "tcp://unencrypted:8080".into();
         assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::InvalidEndpoint));
+        for bad in ["tls://", "tls://user@host:443",
+                    "tls://host:443\\nmalicious", "tls://host:443#redirect"] {
+            let mut wrong = lease(1, 1);
+            wrong.endpoint = bad.into();
+            assert_eq!(p.begin_connect(wrong, 10), Err(RouteError::InvalidEndpoint));
+        }
     }
 
     #[test]
