@@ -34,6 +34,8 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    private final AsyncStdioLogs asyncStdio; 
+    public AsyncStdioLogs asyncStdio() { return asyncStdio; }
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
@@ -77,6 +79,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
+        this.asyncStdio = new AsyncStdioLogs(this.output);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
@@ -127,6 +130,7 @@ public final class OresContext implements AutoCloseable {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            try { asyncStdio.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
         CorePerf.end(CorePerf.CONTEXT_STARTUP, contextPerf);
@@ -421,13 +425,23 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
         RuntimeException failure = null;
+        // Drain accepted async records before closing guest and host streams.
+        // No actor carrier waits during normal log_async admission.
+        try { asyncStdio.close(); } catch (RuntimeException logFailure) { failure = logFailure; }
+        try { nativeIo.close(); } catch (RuntimeException ioFailure) {
+            if (failure == null) failure = ioFailure;
+            else failure.addSuppressed(ioFailure);
+        }
+        try { http.close(); } catch (RuntimeException httpFailure) {
+            if (failure == null) failure = httpFailure;
+            else failure.addSuppressed(httpFailure);
+        }
         try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            if (failure == null) failure = asyncFailure;
+            else failure.addSuppressed(asyncFailure);
         }
         try {
             actors.close();
