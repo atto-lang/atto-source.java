@@ -182,6 +182,104 @@ final class NativeStdioChannelsTest {
     }
 
     @Test
+    void processAndStdioChannelsAreTheSameGlobalObjects() throws Exception {
+        Output result = run("""
+                pub routine main(): void {
+                  stdio.stdout.write(stdio.in == process.stdin);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(stdio.out == process.stdout);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(stdio.err == process.stderr);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(stdin.in == stdio.in);
+                  return;
+                }
+                """, "");
+        assertEquals("true:true:true:true", result.stdout());
+    }
+
+    @Test
+    void globalObservableRequiresNoImports() throws Exception {
+        Output result = run("""
+                pub routine main(): void {
+                  val Channel<int> source = Channel.new<int>(2);
+                  writech source, 3;
+                  writech source, 4;
+                  source.close();
+                  for const item of Observable.from_ch(source) {
+                    stdio.stdout.write(item);
+                  }
+                  return;
+                }
+                """, "");
+        assertEquals("34", result.stdout());
+    }
+
+    @Test
+    void stdinStreamReturnsNativeReadableStreamWithoutImports() throws Exception {
+        Output result = run("""
+                pub routine main(): void {
+                  val ReadableStream<String> lines = stdin.in.stream();
+                  for const line of lines {
+                    stdio.println(line);
+                  }
+                  return;
+                }
+                """, "red\\nblue\\n");
+        assertEquals("red\\nblue\\n", result.stdout());
+    }
+
+    @Test
+    void processStdinStreamAliasWorksWithoutImports() throws Exception {
+        Output result = run("""
+                pub routine main(): void {
+                  for const line of process.stdin.stream() {
+                    stdio.println(line);
+                  }
+                  return;
+                }
+                """, "hello\\n");
+        assertEquals("hello\\n", result.stdout());
+    }
+
+    @Test
+    void teeWritesToBothOutputDescriptorsWithoutReadingEither() throws Exception {
+        Output result = run("""
+                pub async routine main(): void {
+                  val WritableTee mirrored = stdio.out.tee(stdio.err);
+                  await mirrored.write("copied\\n");
+                  return;
+                }
+                """, "");
+        assertEquals("copied\\n", result.stdout());
+        assertEquals("copied\\n", result.stderr());
+    }
+
+    @Test
+    void directDescriptorMisuseIsRejectedByTypeChecker() {
+        for (String operation : new String[]{
+                "readch stdio.out", "readch stdio.err",
+                "readch process.stdout", "readch process.stderr",
+                "writech stdio.in, \\"x\\"",
+                "writech process.stdin, \\"x\\""
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(
+                            "pub routine main(): void { " + operation + "; return; }"));
+        }
+    }
+
+    @Test
+    void noArgumentOutputTeeIsRejectedStatically() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub routine main(): void {
+                  stdio.out.tee();
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void sourceAllowsSynchronousGeneratorWithoutAsync() throws Exception {
         OresCompiler.parseAndTypeCheck("""
                 pub gen* stdin_lines(): Iterator<String> {
