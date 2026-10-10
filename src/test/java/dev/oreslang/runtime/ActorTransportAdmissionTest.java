@@ -122,6 +122,40 @@ final class ActorTransportAdmissionTest {
         assertEquals(0, admission.activeRequestCount());
     }
 
+    @Test void fifoFutureCallbacksDoNotRunUnderAdmissionLock() {
+        try (ActorTransportAdmission admission = new ActorTransportAdmission(1, 1, 2, 1)) {
+            var first = admission.requestAsync().join();
+            var waiting = admission.requestAsync();
+            var completed = new java.util.concurrent.CountDownLatch(1);
+            waiting.whenCompleteRuntime((granted, failure) -> {
+                assertNull(failure);
+                var gotMonitor = new java.util.concurrent.CountDownLatch(1);
+                Thread.ofPlatform().start(() -> {
+                    admission.pendingRequestCount();
+                    gotMonitor.countDown();
+                });
+                try {
+                    assertTrue(gotMonitor.await(2, java.util.concurrent.TimeUnit.SECONDS),
+                            "grant callback must not execute while monitor is held");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("interrupted awaiting admission monitor", interrupted);
+                } finally {
+                    granted.close();
+                    completed.countDown();
+                }
+            });
+            first.close();
+            try {
+                assertTrue(completed.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                fail(interrupted);
+            }
+            assertEquals(0, admission.activeRequestCount());
+        }
+    }
+
     @Test void doubleCloseAndInvalidLimitsAreSafe() {
         assertThrows(IllegalArgumentException.class,
                 () -> new ActorTransportAdmission(0, 1, 2, 1));
