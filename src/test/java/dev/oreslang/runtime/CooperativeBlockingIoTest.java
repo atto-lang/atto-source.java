@@ -232,4 +232,75 @@ class CooperativeBlockingIoTest {
             else System.setProperty("ores.runtime.actor.shared.parallelism", previous);
         }
     }
+
+    @Test void asyncAwaitAndImplicitBlockingHttpUseSameTransportResults() throws Exception {
+        var server = com.sun.net.httpserver.HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/", exchange -> {
+            try {
+                String body = new String(exchange.getRequestBody().readAllBytes(),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                String answer = exchange.getRequestMethod().equals("POST")
+                        ? "post:" + body : "get:ok";
+                byte[] payload = answer.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, payload.length);
+                exchange.getResponseBody().write(payload);
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            String source = """
+                pub async routine main(): void {
+                  val a = await http.get_text_async("http://127.0.0.1:%d/");
+                  val b = http.get_text_blocking("http://127.0.0.1:%d/");
+                  val c = await http.post_text_async("http://127.0.0.1:%d/", "A");
+                  val d = http.post_text_blocking("http://127.0.0.1:%d/", "B");
+                  stdio.println(a);
+                  stdio.println(b);
+                  stdio.println(c);
+                  stdio.println(d);
+                  return;
+                }
+                """.formatted(server.getAddress().getPort(), server.getAddress().getPort(),
+                    server.getAddress().getPort(), server.getAddress().getPort());
+            OresCompiler.parseAndTypeCheck(source);
+            String output = run(source, RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET,
+                    "127.0.0.1:" + server.getAddress().getPort()),
+                    new ByteArrayOutputStream());
+            assertEquals(2, output.split("get:ok", -1).length - 1, output);
+            assertTrue(output.contains("post:A"), output);
+            assertTrue(output.contains("post:B"), output);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test void asyncHttpFailsBeforeSendWhenCapabilityIsDenied() throws Exception {
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        var server = com.sun.net.httpserver.HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/", exchange -> {
+            requests.incrementAndGet();
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String source = """
+                pub async routine main(): void {
+                  await http.get_text_async("http://127.0.0.1:%d/");
+                  return;
+                }
+                """.formatted(server.getAddress().getPort());
+            assertThrows(RuntimeException.class,
+                    () -> run(source, RuntimePermissions.denyAll(),
+                            new ByteArrayOutputStream()));
+            assertEquals(0, requests.get(), "denied request was sent");
+        } finally {
+            server.stop(0);
+        }
+    }
 }
