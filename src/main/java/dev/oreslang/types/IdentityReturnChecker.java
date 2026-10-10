@@ -77,22 +77,26 @@ final class IdentityReturnChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.InterfaceDecl iface) {
+                    java.util.Set<Ast.InterfaceDecl> ancestors = java.util.Collections.newSetFromMap(
+                            new java.util.IdentityHashMap<>());
                     for (Ast.TypeRef parent : iface.parents()) {
-                        Ast.InterfaceDecl ancestor = resolveInterface(module.name(), parent.name());
-                        if (ancestor != null) {
-                            for (Ast.InterfaceMember member : ancestor.members()) {
-                                if (!(member instanceof Ast.InterfaceFunctionDecl inherited)
-                                        || !inherited.returnType().isIdentityReturn()) continue;
-                                for (Ast.InterfaceMember own : iface.members()) {
-                                    if (own instanceof Ast.InterfaceFunctionDecl declared
-                                            && sameSlot(inherited.name(), inherited.parameters().size(),
-                                                        declared.name(), declared.parameters().size())
-                                            && identitySlot(declared.returnType(), declared.parameters())
-                                                != identitySlot(inherited.returnType(), inherited.parameters())) {
-                                        throw new IllegalArgumentException(
-                                                "interface '" + iface.name() + "' cannot weaken inherited identity contract '"
-                                                        + ancestor.name() + "." + inherited.name() + "'");
-                                    }
+                        Ast.InterfaceDecl directParent = resolveInterface(module.name(), parent.name());
+                        if (directParent != null) collectInterfaceParents(module.name(), directParent, ancestors);
+                    }
+                    for (Ast.InterfaceDecl ancestor : ancestors) {
+                        for (Ast.InterfaceMember member : ancestor.members()) {
+                            if (!(member instanceof Ast.InterfaceFunctionDecl inherited)
+                                    || !inherited.returnType().isIdentityReturn()) continue;
+                            for (Ast.InterfaceMember own : iface.members()) {
+                                if (own instanceof Ast.InterfaceFunctionDecl declared
+                                        && sameSlot(inherited.name(), inherited.parameters().size(),
+                                                    declared.name(), declared.parameters().size())
+                                        && identitySlot(declared.returnType(), declared.parameters())
+                                            != identitySlot(inherited.returnType(), inherited.parameters())) {
+                                    throw new IllegalArgumentException(
+                                            "interface '" + iface.name()
+                                                    + "' cannot weaken inherited identity contract '"
+                                                    + ancestor.name() + "." + inherited.name() + "'");
                                 }
                             }
                         }
