@@ -254,7 +254,7 @@ public final class ChannelRuntime {
     }
 
     public static <T> WriteCase<T> write(Channel<T> channel, T value) {
-        if (channel instanceof ProcessChannels.ConsoleChannel<?> console) console.checkGuestWrite();
+        if (channel instanceof ProcessChannels.ConsoleChannel<?> console) console.checkGuestPayload(value);
         return new WriteCase<>(channel, value);
     }
 
