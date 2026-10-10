@@ -1146,6 +1146,55 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
 
+        // A reusable SelectCase is a persistent descriptor, not a one-shot
+        // channel operation. It must never retain a lexical borrow or a linear
+        // outbound payload that could be transmitted again on another select.
+        if (call.callee() instanceof Ast.MemberExpr selectFactory
+                && selectFactory.receiver() instanceof Ast.NameExpr factoryName
+                && factoryName.name().equals("SelectCase")) {
+            String member = selectFactory.member();
+            if (member.equals("read") || member.equals("write")) {
+                if (call.arguments().isEmpty()) {
+                    throw error("SelectCase." + member + " needs a channel");
+                }
+                ValueInfo channel = checkExpr(call.arguments().getFirst(), scope, false);
+                if (isBorrowValue(channel) || containsBorrowType(channel.type)) {
+                    throw error("SelectCase." + member
+                            + " cannot retain a borrowed channel; copy its owned Channel<T> handle instead");
+                }
+                if (member.equals("write") && call.arguments().size() >= 2) {
+                    ValueInfo payload = checkExpr(call.arguments().get(1), scope, false);
+                    if (isBorrowValue(payload) || containsBorrowType(payload.type)) {
+                        throw error("SelectCase.write cannot retain a borrowed payload");
+                    }
+                    if (containsMutexGuardType(payload.type)) {
+                        throw error("SelectCase.write cannot retain MutexGuard state");
+                    }
+                    if (payload.kind != ValueKind.COPY) {
+                        throw error("reusable SelectCase.write requires a Copy payload; "
+                                + "use one-shot writech or static select for move-only values");
+                    }
+                }
+            }
+            // TypeChecker separately enforces arity and valid factory members.
+            return new ValueInfo(Ast.TypeRef.simple("SelectCase"), ValueKind.MOVE_ONLY, null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr selectFactory
+                && selectFactory.receiver() instanceof Ast.NameExpr factoryName
+                && factoryName.name().equals("SelectSet")
+                && selectFactory.member().equals("new")
+                && !call.arguments().isEmpty()) {
+            ValueInfo source = checkExpr(call.arguments().getFirst(), scope, true);
+            if (isBorrowValue(source) || containsBorrowType(source.type)) {
+                throw error("SelectSet.new cannot retain a borrowed case collection");
+            }
+            if (containsMutexGuardType(source.type)) {
+                throw error("SelectSet.new cannot retain MutexGuard state");
+            }
+            return new ValueInfo(Ast.TypeRef.simple("SelectSet"), ValueKind.MOVE_ONLY, null);
+        }
+
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
@@ -2976,13 +3025,22 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
             default -> false;
         };
+    }
+
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument)) return true;
+        }
+        return false;
     }
 
     private boolean isScopedMutexReceiver(VarState state) {
