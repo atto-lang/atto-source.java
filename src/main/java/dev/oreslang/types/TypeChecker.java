@@ -1953,6 +1953,14 @@ public final class TypeChecker {
                             + "a verified service resolver, authenticated native transport, "
                             + "contract negotiation, and bounded stream bridge are required");
                 }
+                if (actorClass.concurrencySpec() != null
+                        && !actorClass.concurrencySpec().protocol().equals("actor")) {
+                    throw new IllegalArgumentException(
+                            "protocol actor '" + actorClass.name()
+                            + "' requires a native "
+                            + actorClass.concurrencySpec().protocol()
+                            + " request/session adapter; source mailbox spawn is not a network listener");
+                }
                 if (actorClass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "spawn requires an actor class; '" + actorClass.name()
