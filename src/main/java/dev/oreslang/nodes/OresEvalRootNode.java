@@ -6417,6 +6417,35 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
                 return switch (name) {
+                    case "stream" -> (Invokable) args -> {
+                        requireZero(args, "Channel.stream");
+                        if (channel instanceof dev.oreslang.runtime.StdChannels.OutputChannel) {
+                            throw new IllegalArgumentException("write-only stdio output cannot create a readable stream");
+                        }
+                        Ast.ClassDecl stream = classes.get("ReadableStream");
+                        if (stream == null) {
+                            throw new IllegalStateException("native ReadableStream prelude is not installed");
+                        }
+                        return instantiate(stream, List.of(channel), false);
+                    };
+                    case "tee" -> (Invokable) args -> {
+                        requireOne(args, "Channel.tee");
+                        if (!(channel instanceof dev.oreslang.runtime.StdChannels.OutputChannel)) {
+                            throw new IllegalArgumentException("tee is for a writable stdout/stderr descriptor");
+                        }
+                        Object other = args.getFirst();
+                        if (!(other instanceof ChannelRuntime.Channel<?> target)
+                                || target instanceof dev.oreslang.runtime.StdChannels.InputChannel) {
+                            throw new IllegalArgumentException("tee target must be a writable Channel<String>");
+                        }
+                        Ast.ClassDecl tee = classes.get("WritableTee");
+                        if (tee == null) {
+                            throw new IllegalStateException("native WritableTee prelude is not installed");
+                        }
+                        // Compose a new writer. Do not capture/intercept unrelated
+                        // writes to the global descriptor behind the caller's back.
+                        return instantiate(tee, List.of(channel, target), false);
+                    };
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "Channel.close");
                         channel.close();
