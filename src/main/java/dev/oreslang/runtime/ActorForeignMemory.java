@@ -53,8 +53,10 @@ final class ActorForeignMemory implements AutoCloseable {
                 throw failure;
             }
         } catch (ClassNotFoundException unsupportedJdk) {
-            // The repository's current Maven release is 21. JDK 22+ supplies
-            // java.lang.foreign, while JDK 21 stays an explicit compatibility mode.
+            // Native Image must never silently fall back when FFM is missing.
+            // Only the supported Java 21 compatibility mode uses direct buffers.
+            if (Runtime.version().feature() >= 22)
+                throw new IllegalStateException("FFM Arena unavailable on JDK 22+; refuse unscoped allocation", unsupportedJdk);
             return new ActorForeignMemory(ByteBuffer.allocateDirect(bytes), null);
         } catch (InvocationTargetException failed) {
             Throwable cause = failed.getCause();
