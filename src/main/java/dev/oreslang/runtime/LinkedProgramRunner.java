@@ -233,7 +233,10 @@ public final class LinkedProgramRunner {
                         effectiveHostClasses,
                         permissions,
                         permissionCheckMode);
-                if (in != null) builder.in(nonClosingInput(in));
+                // GraalVM's builder default may inherit the host process
+                // input. Embedders without explicit stdin authority must
+                // receive deterministic EOF instead of ambient System.in.
+                builder.in(in == null ? InputStream.nullInputStream() : nonClosingInput(in));
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
 
