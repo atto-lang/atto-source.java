@@ -114,7 +114,7 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
      * A supervisor-only lifetime lease. Never expose the raw Context or
      * polyglot Value handles across the actor message transport boundary.
      */
-    public final class Group implements AutoCloseable {
+    public final class Group implements UntrustedGuestIsolateScope, AutoCloseable {
         private final Context context;
         private volatile boolean groupClosed;
         private Group(Context context) { this.context = context; }
