@@ -76,7 +76,11 @@ public final class OresContext implements AutoCloseable {
         long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
-        this.input = new BufferedReader(new InputStreamReader(env.in()));
+        this.input = new BufferedReader(new InputStreamReader(
+                env.in(),
+                java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)));
         this.output = new PrintWriter(env.out(), true);
         this.standardChannels = new StdChannels(this);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
