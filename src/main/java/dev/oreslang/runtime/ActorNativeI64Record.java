@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.util.LinkedHashMap;
 import java.util.Collections;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.Map;
 import java.util.Objects;
 
@@ -14,7 +16,8 @@ import java.util.Objects;
  * Schema/handle wrappers remain Java-managed; it is not zero JVM GC.
  */
 public final class ActorNativeI64Record implements AutoCloseable {
-    public record Field(String name, long initialValue) {
+    public record Field(String name, long initialValue, boolean mutable) {
+        public Field(String name, long initialValue) { this(name, initialValue, false); }
         public Field {
             Objects.requireNonNull(name, "field name");
             if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
@@ -26,13 +29,16 @@ public final class ActorNativeI64Record implements AutoCloseable {
     private final String typeName;
     private final ExplicitNativeI64Region region;
     private final Map<String, ExplicitNativeI64Region.Slot> fields;
+    private final Set<String> mutableFields;
 
     private ActorNativeI64Record(
             String typeName, ExplicitNativeI64Region region,
-            Map<String, ExplicitNativeI64Region.Slot> fields) {
+            Map<String, ExplicitNativeI64Region.Slot> fields,
+            Set<String> mutableFields) {
         this.typeName = typeName;
         this.region = region;
         this.fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+        this.mutableFields = Set.copyOf(mutableFields);
     }
 
     static ActorNativeI64Record allocate(ActorRuntime.ActorMemorySlice memory,
@@ -45,11 +51,13 @@ public final class ActorNativeI64Record implements AutoCloseable {
             throw new IllegalArgumentException("bounded valid actor native record required");
         }
         var schema = new LinkedHashMap<String, Long>();
+        var mutableNames = new LinkedHashSet<String>();
         for (Field field : declaredFields) {
             Objects.requireNonNull(field, "field");
             if (schema.putIfAbsent(field.name(), field.initialValue()) != null) {
                 throw new IllegalArgumentException("duplicate actor native field: " + field.name());
             }
+            if (field.mutable()) mutableNames.add(field.name());
         }
 
         // Validate full schema before allocating native memory. Failure is
@@ -60,7 +68,7 @@ public final class ActorNativeI64Record implements AutoCloseable {
             for (var field : schema.entrySet()) {
                 slots.put(field.getKey(), nativeRegion.allocate(field.getValue()));
             }
-            return new ActorNativeI64Record(typeName, nativeRegion, slots);
+            return new ActorNativeI64Record(typeName, nativeRegion, slots, mutableNames);
         } catch (RuntimeException | Error failed) {
             try {
                 nativeRegion.close();
@@ -79,6 +87,20 @@ public final class ActorNativeI64Record implements AutoCloseable {
 
     public long read(String fieldName) {
         return region.read(field(fieldName));
+    }
+
+    /** Field mutation is admitted only for explicitly declared `let`/mutable fields. */
+    public void write(String fieldName, long value) {
+        var slot = field(fieldName);
+        if (!mutableFields.contains(fieldName)) {
+            throw new IllegalStateException("cannot write immutable actor-native field: " + fieldName);
+        }
+        region.write(slot, value);
+    }
+
+    public boolean mutable(String fieldName) {
+        field(fieldName);
+        return mutableFields.contains(fieldName);
     }
 
     public ExplicitNativeI64Region.Loan borrow(String fieldName) {
