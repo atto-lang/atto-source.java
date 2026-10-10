@@ -208,6 +208,16 @@ do select {
 }
 ```
 
+**One wait mode per selection:** the enclosing `select`, `nb select`, or
+`try select` controls whether the entire selection suspends, registers an
+asynchronous selection, or probes immediately. A `when`/`case` arm is an
+atomic operation candidate and must use plain `readch` or `writech`.
+`when nb readch ...`, `when try readch ...`, and their `writech`
+counterparts are syntax errors, **including** inside `do nb select`.
+The binding-first form likewise requires `msg = readch(channel)`, not
+`msg = nb readch(channel)`. Standalone `nb readch` expressions remain valid
+outside arm headers (including as independent operations within an arm body).
+
 A read arm may bind with `let`, `val`, or `const`. `const` means the
 selected runtime value is bound immutably; it does not imply the message was a
 compile-time constant.
