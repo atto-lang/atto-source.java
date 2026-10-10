@@ -1438,9 +1438,9 @@ public final class OwnershipChecker {
                 if (method.async()) {
                     rejectAsyncBorrowedParameters(signature.parameters(),
                             "method " + target.owner().name() + "." + method.name());
-                    if (!isRootedAtActorSelf(member.receiver(), scope)) {
+                    if (!isCanonicalActorSelfReceiver(member.receiver(), scope)) {
                         throw error("async method receiver needs a proven owned task lifetime; "
-                                + "ordinary borrowed class receivers cannot outlive the caller");
+                                + "ordinary class receivers and lexical aliases of actor self cannot outlive the caller");
                     }
                 }
                 checkArguments(call.arguments(), signature.parameters(), scope,
@@ -2852,6 +2852,16 @@ public final class OwnershipChecker {
         }
     }
 
+    private boolean isCanonicalActorSelfReceiver(Ast.Expr expression, Scope scope) {
+        if (!(expression instanceof Ast.NameExpr name) || !name.name().equals("self")) {
+            return false;
+        }
+        VarState self = scope.lookup("self");
+        return self != null && self.origin == Origin.PARAM
+                && self.kind == ValueKind.MUT_BORROW
+                && isActorConfinedBorrow(self);
+    }
+
     private boolean isRootedAtActorSelf(Ast.Expr expr, Scope scope) {
         Ast.Expr current = expr;
         while (true) {
@@ -2916,7 +2926,7 @@ public final class OwnershipChecker {
             // self is a runtime-owned actor borrow. The continuation is
             // guaranteed to re-enter the same actor under its single-turn
             // execution lease, so this borrow may span the deferred arm.
-            if (isActorConfinedBorrow(source)) continue;
+            if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) continue;
 
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
@@ -2947,6 +2957,15 @@ public final class OwnershipChecker {
         }
 
         return List.copyOf(perArm);
+    }
+
+    private static boolean isDirectActorSelfCapture(Capture capture) {
+        // A user-created borrow rooted at actor self has an ordinary lexical
+        // lifetime. Only the runtime-provided self PARAM may outlive a
+        // suspended actor turn and be reacquired through its native lease.
+        return capture.name.equals("self")
+                && capture.source.origin == Origin.PARAM
+                && capture.source.kind == ValueKind.MUT_BORROW;
     }
 
     private Scope deferredSelectArmScope(CaptureSet captures) {
