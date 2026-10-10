@@ -162,6 +162,19 @@ public final class ActorRuntime implements AutoCloseable {
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
+    /**
+     * Required physical placement for actor-owned guest state. A VM isolate
+     * can contain MANY actor-owned heaps; it is not one isolate per actor.
+     * No option here turns a logical heap quota into a new JVM collector.
+     */
+    public enum ActorHeapPlacement { ACTOR_ARENA, VM_ISOLATE, PROCESS_ISOLATE }
+
+    /** Compiler/supervisor placement default; backend admission is separate. */
+    public static ActorHeapPlacement defaultHeapPlacement(ActorKind kind) {
+        return Objects.requireNonNull(kind, "kind") == ActorKind.UNTRUSTED
+                ? ActorHeapPlacement.VM_ISOLATE : ActorHeapPlacement.ACTOR_ARENA;
+    }
+
     public static final class UntrustedActorQuotaExceededException extends SecurityException {
         public enum Resource { FUEL, WALL_TIME, CPU_TIME }
         private final Resource resource;
@@ -489,6 +502,62 @@ public final class ActorRuntime implements AutoCloseable {
                         "independent actor GC requires a physically independent heap");
             }
         }
+    }
+
+    /**
+     * One actor owns exactly one graph arena identity, regardless of how its
+     * parent execution VM is deployed. Introspection is supervisor-only;
+     * owning a NodeId alone does not grant access to private guest bytes.
+     */
+    public record ActorHeapIdentity(
+            ActorId actor, UUID graphArenaId, ActorHeapPlacement placement) {
+        public ActorHeapIdentity {
+            Objects.requireNonNull(actor);
+            Objects.requireNonNull(graphArenaId);
+            Objects.requireNonNull(placement);
+        }
+    }
+
+    public ActorHeapIdentity heapIdentityFor(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor heap identity");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to another runtime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) throw new IllegalStateException("actor has finalized");
+        return new ActorHeapIdentity(
+                ref.id(), cell.graphArena.arenaId(), ActorHeapPlacement.ACTOR_ARENA);
+    }
+
+    /**
+     * Strict production entry point. A JVM ActorRuntime is ONLY an actor
+     * arena-backed executor. It cannot place any actor in another isolate or
+     * process, nor can it securely host untrusted source code in its host
+     * execution context. Those placements require the supervisor router.
+     *
+     * Legacy spawnUntrusted remains a bootstrap/testing API; never use it to
+     * satisfy VM_ISOLATE or PROCESS_ISOLATE production requirements.
+     */
+    public <M> ActorRef<M> spawnWithHeapPlacement(
+            ActorKind kind,
+            IsolatePolicy policy,
+            ActorHeapPlacement placement,
+            BehaviorFactory<M> factory) {
+        requireSupervisorContext("admit actor heap placement");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(placement, "placement");
+        if (placement != ActorHeapPlacement.ACTOR_ARENA) {
+            throw new IllegalStateException(
+                    "required " + placement + " backend is not attached to this "
+                    + "ActorRuntime; route via a verified Graal isolate or process");
+        }
+        if (kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "untrusted actors cannot use host ACTOR_ARENA placement; "
+                    + "route to a verified sandboxed VM_ISOLATE or PROCESS_ISOLATE");
+        }
+        return spawn(kind, policy, factory);
     }
 
     /** Supervisor-only truth about this actor's *current* physical heap. */
