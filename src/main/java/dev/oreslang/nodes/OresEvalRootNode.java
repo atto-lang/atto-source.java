@@ -6063,6 +6063,7 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
+                    case "flush_async_logs" -> (Invokable) args -> { requireZero(args, "stdio.flush_async_logs"); stdio.context().requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.flush_async_logs"); return dev.oreslang.runtime.OresFuture.from(stdio.context().asyncStdout().flushAsync()); };
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin" -> new StdinFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
@@ -6073,6 +6074,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "write" -> (Invokable) stdout::write;
                     case "println" -> (Invokable) stdout::println;
                     case "log" -> (Invokable) stdout::log;
+                    case "log_async" -> (Invokable) stdout::logAsync;
                     case "logList" -> (Invokable) stdout::logList;
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
@@ -8953,6 +8955,15 @@ public final class OresEvalRootNode extends RootNode {
             context.output().println();
             context.output().flush();
             return null;
+        }
+        private Object logAsync(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.log_async");
+            StringBuilder line = new StringBuilder();
+            for (Object arg : args) line.append(String.valueOf(arg));
+            // Return a completed Future for admission; flush_async_logs is the
+            // explicit delivery barrier. Never write to stdout on this carrier.
+            context.asyncStdout().logAsync(line.toString());
+            return dev.oreslang.runtime.OresFuture.completed(null);
         }
         private Object logList(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");
