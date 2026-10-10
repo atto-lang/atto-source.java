@@ -81,6 +81,9 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final boolean[] live;
     private final int[] slotLoans;
     private final long[] generations;
+    /** Preallocated O(1) allocator metadata; no search over occupied slots. */
+    private final int[] freeSlots;
+    private int freeCount;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean physicalClosed = new AtomicBoolean();
     private int loanCount;
@@ -98,7 +101,10 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         this.live = new boolean[slots];
         this.slotLoans = new int[slots];
         this.generations = new long[slots];
+        this.freeSlots = new int[slots];
+        this.freeCount = slots;
         Arrays.fill(generations, 1L);
+        for (int i = 0; i < slots; i++) freeSlots[i] = slots - i - 1;
         Object allocatedArena = null;
         try {
             // The class is deliberately unavailable on Java 21. Never
@@ -151,15 +157,20 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     public synchronized Slot allocate(long value) {
         requireActor.run();
         requireOpen();
-        for (int i = 0; i < live.length; i++) {
-            if (!live[i] && generations[i] != Long.MAX_VALUE) {
-                put(i, value);
-                live[i] = true;
-                occupied++;
-                return new Slot(identity, i, generations[i]);
-            }
+        if (freeCount == 0) {
+            throw new IllegalStateException("explicit actor-native heap capacity exhausted");
         }
-        throw new IllegalStateException("explicit actor-native heap capacity exhausted");
+        int index = freeSlots[freeCount - 1];
+        if (index < 0 || index >= live.length || live[index]
+                || generations[index] == Long.MAX_VALUE) {
+            throw new IllegalStateException("actor-native allocator free-list invariant violated");
+        }
+        // Commit only after native FFM write succeeds.
+        put(index, value);
+        freeCount--;
+        live[index] = true;
+        occupied++;
+        return new Slot(identity, index, generations[index]);
     }
 
     public synchronized long read(Slot slot) {
@@ -201,6 +212,10 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         put(index, 0L);
         generations[index]++;
         live[index] = false;
+        if (freeCount >= freeSlots.length) {
+            throw new IllegalStateException("actor-native allocator free-list overflow");
+        }
+        freeSlots[freeCount++] = index;
         occupied--;
     }
 
