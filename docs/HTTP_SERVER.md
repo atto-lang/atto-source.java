@@ -24,9 +24,16 @@ HttpServer. Guest code cannot manufacture these opaque handles.
 
 For lower-level supervisors, `exchange.move_to(actor_ref)` exposes the same
 single-use transfer; the caller sends the returned String token. Both move
-and claim reject stale owners, and failed dispatch cancels the destination
-and closes the exchange. Actor startup failure and termination revoke any
-unclaimed token and unfinished exchange.
+and claim reject stale owners. Unlike `handler.dispatch` (which creates a
+dedicated actor for one exchange), explicitly moving into an **existing**
+actor supports multiple HTTP exchanges on a single long-lived actor.
+Request abort or expiry revokes that exchange without cancelling the reusable
+actor or disturbing its other requests. HTTP listener capacity is released
+once that exchange's transport closes, without waiting for the reusable actor
+to terminate. A dedicated handler retains its original actor-finalization
+barrier for admission release. Actor death revokes unfinished exchanges.
+See [typed HTTP/TCP/WS actor envelopes](HTTP_ACTOR_ENVELOPES.md) for the
+proposed source API and remaining compiler/backend work.
 
 The socket and HTTP framing state remain in the transport. An isolated actor
 exclusively owns **guest authority** over one exchange; this is not a physical
@@ -72,10 +79,13 @@ call lowering introduces an internal continuation task.
 
 ## Lifecycle and limits
 
-A request has a deadline from admission through actor termination. Capacity
-counts both transport completion and actor finalization: forgetting self.end
-cannot accumulate unlimited actors after sending a response. Finished actors
-and exchanges release capacity exactly once. Exhausted capacity gets 503.
+Every request has its own deadline. For `handler.dispatch` dedicated actors,
+capacity counts both transport completion and actor finalization: forgetting
+self.end cannot accumulate unlimited dedicated actors after responding.
+For requests explicitly moved to reusable actors, capacity counts each request's
+transport closure independently of actor lifetime, and failure of one request
+must not cancel other work belonging to the actor. Finished exchanges release
+capacity exactly once. Exhausted capacity gets 503.
 Unfinished actor termination gets 500 before headers, or connection closure
 after headers. A deadline gets 504 when no I/O is in progress; otherwise it
 closes the transport and cancels the actor. Partial responses are never retried.
