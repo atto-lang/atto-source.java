@@ -8831,8 +8831,10 @@ public final class OresEvalRootNode extends RootNode {
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
-    private static final class OresPanic extends RuntimeException {
-        private OresPanic(String message) { super(message, null, true, false); }
+    private static final class OresPanic extends dev.oreslang.runtime.GuestFailureSignal {
+        private OresPanic(String message) {
+            super(dev.oreslang.runtime.SupervisorFailureLane.Kind.PANIC, message);
+        }
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
