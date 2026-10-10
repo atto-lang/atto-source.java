@@ -1436,6 +1436,11 @@ public final class OresEvalRootNode extends RootNode {
                         .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.LambdaExpr lambda && lambda.blockBody() != null
+                        && lambda.blockBody().stream().anyMatch(stmt ->
+                                statementContainsPotentialSuspension(stmt, seen))) {
+                    return true;
+                }
                 for (Ast.Expr argument : call.arguments()) {
                     if (expressionContainsPotentialSuspension(argument, seen)) return true;
                 }
@@ -1722,6 +1727,35 @@ public final class OresEvalRootNode extends RootNode {
                     continuation);
         }
 
+        private record RegisteredDefer(List<Ast.Stmt> body, Env captured) { }
+
+        /**
+         * A directly invoked inline lambda in defer captures its arguments at
+         * registration, not at scope exit. Never hold a guest borrow/guard in
+         * the stored frame (the ownership checker enforces this).
+         */
+        private Ast.Expr registerDefer(Ast.Expr expression, Env env) {
+            if (!(expression instanceof Ast.CallExpr call)
+                    || !(call.callee() instanceof Ast.LambdaExpr lambda)
+                    || lambda.blockBody() == null) {
+                return expression; // legacy deferred expressions retain their semantics
+            }
+            List<Object> arguments = new ArrayList<>(call.arguments().size());
+            for (Ast.Expr argument : call.arguments()) {
+                if (argument instanceof Ast.SpreadExpr
+                        || expressionContainsPotentialSuspension(argument,
+                                java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
+                    throw new IllegalArgumentException(
+                            "defer inline lambda arguments must not suspend or spread; capture owned values first");
+                }
+                arguments.add(eval(argument, env));
+            }
+            Env captured = lambda.nonLexical() ? env.lexicalBoundaryOnly() : env.snapshot();
+            Env bound = new Env(captured, lambda.nonLexical());
+            bindCallableArguments(bound, lambda.parameters(), arguments, "defer lambda");
+            return new Ast.LiteralExpr(new RegisteredDefer(lambda.blockBody(), bound));
+        }
+
         private void runOneDefer(
                 SourceTask task,
                 Env env,
@@ -1738,6 +1772,22 @@ public final class OresEvalRootNode extends RootNode {
                     completed = SourceFlow.throwing(failure);
                 }
                 continuation.accept(task, completed);
+                return;
+            }
+
+            if (defer instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof RegisteredDefer registered) {
+                runBlock(task, registered.body(), registered.captured(), (t, flow) -> {
+                    if (flow.failure() != null) {
+                        Throwable failure = flow.failure();
+                        if (currentFlow.failure() != null) failure.addSuppressed(currentFlow.failure());
+                        runOneDefer(t, env, defers, SourceFlow.throwing(failure), continuation);
+                    } else {
+                        // Return within a defer closure returns from that closure,
+                        // never from the surrounding routine.
+                        runOneDefer(t, env, defers, currentFlow, continuation);
+                    }
+                });
                 return;
             }
 
@@ -1882,7 +1932,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.DeferStmt defer) {
-                    defers.push(defer.expression());
+                    defers.push(registerDefer(defer.expression(), env));
                     continuation.accept(task, SourceFlow.normal());
                     return;
                 }
@@ -4596,7 +4646,19 @@ public final class OresEvalRootNode extends RootNode {
             } finally {
                 boolean deferredFailure = false;
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    while (!deferred.isEmpty()) {
+                        Ast.Expr action = deferred.pop();
+                        if (action instanceof Ast.LiteralExpr literal
+                                && literal.value() instanceof RegisteredDefer registered) {
+                            try {
+                                executeBlock(registered.body(), registered.captured());
+                            } catch (ReturnSignal ignored) {
+                                // A defer closure's return is local to that closure.
+                            }
+                        } else {
+                            eval(action, env);
+                        }
+                    }
                 } catch (RuntimeException | Error failure) {
                     deferredFailure = true;
                     throw failure;
@@ -4680,7 +4742,10 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
-            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                deferred.push(registerDefer(defer.expression(), env));
+                return;
+            }
             if (stmt instanceof Ast.BlockStmt block) {
                 executeBlock(
                         block.body(),
