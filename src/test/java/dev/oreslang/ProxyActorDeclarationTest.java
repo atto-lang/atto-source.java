@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ProxyActorDeclarationTest {
 
     private static final String DECLARATION = """
-            define contract RemoteTransformer as
+            define interface RemoteTransformer as
                 fnc transform(int value) => int;
             end
 
@@ -69,7 +69,7 @@ final class ProxyActorDeclarationTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(DECLARATION)));
         Ast.Program nested = Parser.parse("""
                 define module gateway as
-                    define contract RemoteTransformer as
+                    define interface RemoteTransformer as
                         fnc transform(int value) => int;
                     end
                     define proxy actor TransformProxy
