@@ -430,6 +430,56 @@ final class IdentityReturnTypeTest {
                 """);
     }
 
+    @Test void runtimeArrayIdentityDoesNotCopyValidatedElements() throws Exception {
+        String program = """
+                pub fnc retain(Array<int> values): values {
+                  return values;
+                }
+                pub fnc main(): void {
+                  val Array<int> input = [11, 23, 42];
+                  val Array<int> same = retain(input);
+                  stdio.println(same[1]);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "identity-array.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("23\\n", output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+    }
+
+    @Test void runtimeReceiverIdentitySurvivesReturnValidation() throws Exception {
+        String program = """
+                define class T as
+                  pub let string message = "before";
+                  pub same(): this {
+                    self.message = "after";
+                    return self;
+                  }
+                end
+                pub fnc main(): void {
+                  val T original = new T();
+                  val T result = original.same();
+                  stdio.println(result.message);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "identity-receiver.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("after\\n", output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+    }
+
     @Test void shadowedAliasDoesNotProveIdentity() {
         rejects("""
                 define module m
