@@ -1,0 +1,20 @@
+import module Stdio from "std/stdio";
+import module Observable from "std/observable";
+
+// The input channel holds zero messages. Backpressure travels to the
+// writer's pending Future and eventually to the OS shell-pipe buffer.
+pub gen* read_stdin(): Iterator<String> {
+  for const line of stdio.in {
+    yield line;
+  }
+  return;
+}
+
+pub routine main(): void {
+  // Observable.from_ch is lazy, pull-based and single-consumer.
+  for const message of Observable.from_ch(stdio.stdin) {
+    Stdio.println_blocking(message);
+  }
+  Stdio.eprintln_blocking("stdin closed");
+  return;
+}
