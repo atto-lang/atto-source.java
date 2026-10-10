@@ -88,6 +88,35 @@ final class GlobalStdioStreamTest {
     }
 
     @Test
+    void ambientDescriptorCannotBeClosedThroughAnyAlias() {
+        for (String descriptor : List.of(
+                "stdio.in", "stdin.in", "process.stdin",
+                "stdio.out", "process.stdout", "stdio.err", "process.stderr")) {
+            Exception failure = assertThrows(Exception.class, () -> run("""
+                    pub routine main(): void {
+                      val Channel<String> alias = %s;
+                      alias.close();
+                      return;
+                    }
+                    """.formatted(descriptor), ""));
+            assertNotNull(failure, descriptor);
+        }
+    }
+
+    @Test
+    void ordinaryUserOwnedChannelCanStillClose() throws Exception {
+        var result = run("""
+                pub routine main(): void {
+                  val Channel<String> mine = Channel.new<String>(1);
+                  mine.close();
+                  stdio.println(mine.is_closed());
+                  return;
+                }
+                """, "");
+        assertEquals("true\\n", result.stdout());
+    }
+
+    @Test
     void cannotStreamWriteOnlySinkOrTeeInputChannel() {
         assertThrows(Exception.class, () -> run("""
                 pub routine main(): void {
