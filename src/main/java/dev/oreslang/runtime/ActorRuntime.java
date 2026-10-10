@@ -1558,6 +1558,10 @@ public final class ActorRuntime implements AutoCloseable {
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // Non-cancellable observer: cancelling a waiter never cancels its actor.
+        // Unlike readyFuture, this projects the successfully initialized ref.
+        private final OresFuture<ActorRef<M>> readyRefFuture =
+                new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
@@ -1565,6 +1569,13 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
+            readyFuture.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) {
+                    readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
+                } else {
+                    readyRefFuture.completeFromRuntime(this);
+                }
+            });
         }
 
         public ActorId id() { return id; }
