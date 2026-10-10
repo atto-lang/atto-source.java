@@ -64,17 +64,19 @@ public final class CriticalGate {
             }
             OresFuture<Void> ready = enterAsync();
             if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
-                // Never park a scheduler/actor worker. The source compiler must
-                // lower contended calls to suspendable continuations instead.
+                // Never park a scheduler/actor worker. Release and fail outside
+                // the monitor, because Future settlement runs callbacks.
+                boolean admittedNow;
                 synchronized (CriticalGate.this) {
-                    if (!granted || closed) {
-                        close();
-                        throw new IllegalStateException(
-                                "contended synchronous critical call would block an actor/scheduler carrier; declare suspend critical and await it");
-                    }
-                    synchronousOwner = Thread.currentThread();
-                    return;
+                    admittedNow = granted && !closed;
+                    if (admittedNow) synchronousOwner = Thread.currentThread();
                 }
+                if (!admittedNow) {
+                    close();
+                    throw new IllegalStateException(
+                            "contended synchronous critical call would block an actor/scheduler carrier; declare suspend critical and await it");
+                }
+                return;
             }
             java.util.concurrent.CountDownLatch signal = null;
             synchronized (CriticalGate.this) {
