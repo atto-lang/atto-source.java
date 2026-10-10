@@ -92,6 +92,7 @@ public final class ProcessChannels implements AutoCloseable {
     private final ConsoleChannel<String> out;
     private final ConsoleChannel<String> err;
     private final ConsoleChannel<String> in;
+    private final ChannelReadableStream<String> stdinStream;
     private final PrintWriter stdout;
     private final PrintWriter stderr;
     private final BufferedReader stdin;
@@ -118,6 +119,7 @@ public final class ProcessChannels implements AutoCloseable {
                 IsolatePolicy.Capability.STDOUT, Direction.WRITE, 8192);
         this.in = new ConsoleChannel<>(owner, "process.stdin",
                 IsolatePolicy.Capability.STDIN, Direction.READ, 64);
+        this.stdinStream = new ChannelReadableStream<>(in);
         this.outWorker = Thread.ofPlatform().daemon(true)
                 .name("ores-process-stdout").start(() -> drain(out, stdout, stdoutBarriers));
         this.errWorker = Thread.ofPlatform().daemon(true)
@@ -129,8 +131,15 @@ public final class ProcessChannels implements AutoCloseable {
     public ConsoleChannel<String> stdout() { return out; }
     public ConsoleChannel<String> stderr() { return err; }
     public ConsoleChannel<String> stdin() {
+        if (closing.get()) throw new IllegalStateException("stdin is closing");
         if (stdinStarted.compareAndSet(false, true)) inWorker.start();
         return in;
+    }
+
+    /** One cached stream view owns the reader lock across all aliases. */
+    public ChannelReadableStream<String> stdinStream() {
+        stdin();
+        return stdinStream;
     }
 
     /** stdout enqueue is immediate admission, never a delivery acknowledgement. */
