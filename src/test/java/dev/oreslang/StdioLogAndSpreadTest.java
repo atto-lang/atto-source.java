@@ -18,6 +18,41 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class StdioLogAndSpreadTest {
     @Test
+    void detachedAsyncLogsAreAutomaticallyDrainedWhenContextCloses() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  stdio.stdout.log_async("one", "|", 1);
+                  stdio.stdout.log_async("two", "|", 2);
+                }
+                """);
+        assertEquals("one|1\\ntwo|2\\n", output);
+    }
+
+    @Test
+    void explicitAsyncFlushBarrierCanBeAwaitedWithoutCarrierBlocking() throws Exception {
+        String output = run("""
+                pub async routine main(): void {
+                  stdio.stdout.log_async("first");
+                  await stdio.flush_async_logs();
+                  stdio.stdout.log_async("last");
+                }
+                """);
+        assertEquals("first\\nlast\\n", output);
+    }
+
+    @Test
+    void detachedAsyncLogSpreadPreservesArgumentOrder() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  val parts = arr["A", 1, "B"];
+                  stdio.stdout.log_async(...parts);
+                  stdio.stdout.logList_async(parts);
+                }
+                """);
+        assertEquals("A1B\\nA1B\\n", output);
+    }
+
+    @Test
     void stdoutLogConcatenatesArgumentsAndAppendsOneNewline() throws Exception {
         String output = run("""
                 pub routine main(): void {
