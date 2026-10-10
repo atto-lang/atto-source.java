@@ -29,6 +29,7 @@ final class ActorTransportConcurrencyContractTest {
         assertEquals(new Ast.ActorConcurrency(Ast.ActorTransport.HTTP, 1, 1),
                 explicit.actorConcurrency());
         assertEquals(alias.actorConcurrency(), explicit.actorConcurrency());
+        assertEquals(alias, explicit, "serial is a canonical AST alias for explicit 1/1");
         // Configuration is not actor-owned mutable state.
         assertTrue(alias.fields().isEmpty());
         assertTrue(explicit.fields().isEmpty());
