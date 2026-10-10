@@ -169,6 +169,29 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void cancellingSelectUnsubscribesObservableWithoutRunningAnyGuestCase()
+            throws Exception {
+        var subscribed = new java.util.concurrent.CountDownLatch(1);
+        var unsubscribed = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.Flow.Publisher<Integer> never = subscriber -> {
+            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                @Override public void request(long n) { subscribed.countDown(); }
+                @Override public void cancel() { unsubscribed.countDown(); }
+            });
+        };
+        var sharedFuture = new OresFuture<Integer>();
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.observeOnce(never), ChannelRuntime.await(sharedFuture))
+                .selectAsync();
+        assertTrue(subscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(selected.cancel(false));
+        assertThrows(CancellationException.class, selected::join);
+        assertTrue(unsubscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(0, sharedFuture.pendingRuntimeWaiterCount());
+        assertFalse(sharedFuture.isCancelled());
+    }
+
+    @Test
     void readyChannelPreventsUnnecessaryObservableSubscription() throws Exception {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         assertTrue(channel.tryWrite(5));
