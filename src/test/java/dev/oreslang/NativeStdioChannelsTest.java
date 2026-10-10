@@ -94,6 +94,42 @@ final class NativeStdioChannelsTest {
     }
 
     @Test
+    void nativeFormattedLinesAndFlushBarriersPreserveOrdering() throws Exception {
+        Output result = run("""
+                import module Stdio from "std/stdio";
+                pub routine main(): void {
+                  Stdio.println_parts_blocking(["hello", "-", "world"]);
+                  Stdio.println_blocking("next");
+                  Stdio.flush_blocking();
+                  Stdio.eprintln_blocking("warning");
+                  Stdio.err_flush_blocking();
+                  return;
+                }
+                """, "");
+        assertEquals("hello-world\\nnext\\n", result.stdout());
+        assertEquals("warning\\n", result.stderr());
+    }
+
+    @Test
+    void observableDoesNotConsumeBeforeFirstPull() throws Exception {
+        Output result = run("""
+                import module Observable from "std/observable";
+                pub routine main(): void {
+                  val Channel<int> inbox = Channel.new<int>(0);
+                  val Future<void> pending = nb writech inbox, 9;
+                  val Iterator<int> stream = Observable.from_ch(inbox);
+                  for const value of stream {
+                    stdio.stdout.write(value);
+                    break;
+                  }
+                  inbox.close();
+                  return;
+                }
+                """, "");
+        assertEquals("9", result.stdout());
+    }
+
+    @Test
     void outputChannelRejectsReadDirection() {
         assertThrows(Exception.class, () -> run("""
                 pub routine main(): void {
