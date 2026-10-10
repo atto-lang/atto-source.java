@@ -433,6 +433,147 @@ public final class ChannelRuntime {
         }
     }
 
+    /**
+     * Mutable, keyed select descriptor. Updates are serialized while each
+     * invocation owns a frozen case-set snapshot and a fresh registration.
+     * Removing a case never cancels an operation already using that snapshot.
+     *
+     * <p>This is a runtime building block, not permission to share channel
+     * capabilities across actor execution domains.</p>
+     */
+    public static final class DynamicSelectPlan<K> {
+        private final java.util.LinkedHashMap<K, SelectCase> entries =
+                new java.util.LinkedHashMap<>();
+        private long version;
+        private long fairCursor;
+
+        /** Identifies the exact case ordering observed by one operation. */
+        public record Snapshot<K>(
+                long version,
+                List<K> keys,
+                SelectSet set) {
+            public Snapshot {
+                keys = List.copyOf(keys);
+                Objects.requireNonNull(set, "set");
+                if (keys.size() != set.cases().size()) {
+                    throw new IllegalArgumentException("snapshot key/case mismatch");
+                }
+            }
+
+            public K keyAt(int index) {
+                return keys.get(index);
+            }
+        }
+
+        /** Stable case identity plus snapshot version prevent index ABA. */
+        public record Selected<K>(
+                long version,
+                K key,
+                SelectResult result) {
+            public Selected {
+                Objects.requireNonNull(key, "key");
+                Objects.requireNonNull(result, "result");
+            }
+        }
+
+        /**
+         * Add or replace one case atomically. Replacing a key preserves its
+         * insertion position. Repeatedly putting the identical descriptor is
+         * a no-op and does not invalidate existing snapshot caches.
+         */
+        public synchronized void put(K key, SelectCase selectCase) {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(selectCase, "selectCase");
+            SelectCase old = entries.get(key);
+            if (Objects.equals(old, selectCase) && entries.containsKey(key)) {
+                return;
+            }
+            if (selectCase instanceof DefaultCase) {
+                for (Map.Entry<K, SelectCase> entry : entries.entrySet()) {
+                    if (!entry.getKey().equals(key)
+                            && entry.getValue() instanceof DefaultCase) {
+                        throw new IllegalArgumentException(
+                                "select permits at most one default case");
+                    }
+                }
+            }
+            entries.put(key, selectCase);
+            version++;
+        }
+
+        public synchronized boolean remove(K key) {
+            Objects.requireNonNull(key, "key");
+            if (!entries.containsKey(key)) return false;
+            entries.remove(key);
+            version++;
+            return true;
+        }
+
+        public synchronized int size() {
+            return entries.size();
+        }
+
+        public synchronized long version() {
+            return version;
+        }
+
+        /** Empty builders are allowed; selecting an empty set is not. */
+        public synchronized Snapshot<K> snapshot() {
+            if (entries.isEmpty()) {
+                throw new IllegalStateException("cannot select an empty plan");
+            }
+            return new Snapshot<>(
+                    version,
+                    new ArrayList<>(entries.keySet()),
+                    new SelectSet(new ArrayList<>(entries.values()), fairCursor));
+        }
+
+        public Optional<Selected<K>> trySelect(SelectPolicy policy) {
+            Snapshot<K> snap = snapshot();
+            Optional<SelectResult> outcome = snap.set().trySelect(policy);
+            outcome.ifPresent(result -> advanceFair(snap, result, policy));
+            return outcome.map(result -> new Selected<>(
+                    snap.version(), snap.keyAt(result.index()), result));
+        }
+
+        public Optional<Selected<K>> trySelect() {
+            return trySelect(SelectPolicy.FAIR);
+        }
+
+        public OresFuture<Selected<K>> selectAsync(SelectPolicy policy) {
+            Snapshot<K> snap = snapshot();
+            return mapSelection(snap.set().selectAsync(policy), result -> {
+                advanceFair(snap, result, policy);
+                return new Selected<>(
+                        snap.version(), snap.keyAt(result.index()), result);
+            });
+        }
+
+        public OresFuture<Selected<K>> selectAsync() {
+            return selectAsync(SelectPolicy.FAIR);
+        }
+
+        private synchronized void advanceFair(
+                Snapshot<K> snap,
+                SelectResult result,
+                SelectPolicy policy) {
+            if (policy != SelectPolicy.FAIR) return;
+            // Translate by stable key, not by a possibly-reused index.
+            K selectedKey = snap.keyAt(result.index());
+            int currentIndex = 0;
+            for (K key : entries.keySet()) {
+                if (key.equals(selectedKey)) {
+                    fairCursor = currentIndex + 1L;
+                    return;
+                }
+                currentIndex++;
+            }
+            // The winning case was removed meanwhile. Move the cursor
+            // forward without resurrecting the removed case.
+            fairCursor++;
+        }
+    }
+
     private static final class CaseRegistration {
         private final SelectRegistration selection;
         private final int index;
