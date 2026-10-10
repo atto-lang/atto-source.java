@@ -103,7 +103,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -1694,7 +1694,9 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("SelectCase")
+                    || name.name().equals("SelectSet") || name.name().equals("SelectPlan")
+                    || name.name().equals("DynamicSelectPlan")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2092,17 +2094,19 @@ public final class TypeChecker {
 
             if (call.callee() instanceof Ast.MemberExpr selectSetCall
                     && selectSetCall.receiver() instanceof Ast.NameExpr factory
-                    && factory.name().equals("SelectSet")
+                    && (factory.name().equals("SelectSet") || factory.name().equals("SelectPlan")
+                        || factory.name().equals("DynamicSelectPlan"))
                     && selectSetCall.member().equals("new")) {
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("SelectSet.new does not accept type arguments");
+                    throw new IllegalArgumentException(factory.name() + ".new does not accept type arguments");
                 }
-                if (call.arguments().size() != 1) {
+                int expected = factory.name().equals("DynamicSelectPlan") ? 0 : 1;
+                if (call.arguments().size() != expected) {
                     throw new IllegalArgumentException(
-                            "SelectSet.new expects one list/map of SelectCase values");
+                            factory.name() + ".new expects " + expected + " argument(s)");
                 }
-                typeOf(call.arguments().getFirst(), env, generics, self);
-                return new Named("SelectSet", List.of());
+                for (Ast.Expr argument : call.arguments()) typeOf(argument, env, generics, self);
+                return new Named(factory.name(), List.of());
             }
 
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -2495,6 +2499,37 @@ public final class TypeChecker {
                         }
                         return result;
                     }
+                }
+
+                if (receiver instanceof Named dynamicPlan
+                        && dynamicPlan.name().equals("DynamicSelectPlan")) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException("DynamicSelectPlan methods do not accept type arguments");
+                    }
+                    String method = member.member();
+                    int expected = switch (method) {
+                        case "put" -> 2;
+                        case "remove" -> 1;
+                        case "size", "version" -> 0;
+                        default -> throw new IllegalArgumentException("unknown DynamicSelectPlan method " + method);
+                    };
+                    if (call.arguments().size() != expected) {
+                        throw new IllegalArgumentException("DynamicSelectPlan." + method
+                                + " expects " + expected + " argument(s)");
+                    }
+                    if (expected > 0) {
+                        requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.STRING, "DynamicSelectPlan key");
+                    }
+                    if (expected == 2) {
+                        requireAssignable(typeOf(call.arguments().get(1), env, generics, self),
+                                new Named("SelectCase", List.of()), "DynamicSelectPlan case");
+                    }
+                    return switch (method) {
+                        case "put" -> Primitive.VOID;
+                        case "remove" -> Primitive.BOOL;
+                        default -> Primitive.INT;
+                    };
                 }
 
                 if (receiver instanceof ClassNamespace classNamespace) {
@@ -4340,7 +4375,8 @@ public final class TypeChecker {
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
+                || named.name().equals("SelectSet") || named.name().equals("SelectPlan")
+                || named.name().equals("DynamicSelectPlan") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
