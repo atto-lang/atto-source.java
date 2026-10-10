@@ -25,6 +25,17 @@ class SharedUntrustedGraalIsolateTest {
     }
 
     @Test
+    void rootDomainRejectsPrivateAndSharedPrivilegeEscalation() {
+        try (ActorRuntime guest = new ActorRuntime(
+                IsolatePolicy.sharedUntrustedDomain(256L * 1024 * 1024))) {
+            assertThrows(SecurityException.class, () ->
+                    guest.<String>spawnPrivate(context -> (message, turn) -> { }));
+            assertThrows(SecurityException.class, () ->
+                    guest.<String>spawnShared(context -> (message, turn) -> { }));
+        }
+    }
+
+    @Test
     void tooSmallIsolateCannotBeCreated() {
         assertThrows(IllegalArgumentException.class, () ->
                 SharedUntrustedGraalIsolate.open(1024));
