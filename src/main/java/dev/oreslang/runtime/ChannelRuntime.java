@@ -320,11 +320,34 @@ public final class ChannelRuntime {
     }
 
     /**
+     * Internal-only descriptor reads. The explicit endpoint type prevents an
+     * arbitrary guest select from inheriting host I/O bridge privileges.
+     */
+    static OresFuture<String> bridgeReadOutput(StdChannels.OutputChannel output) {
+        Objects.requireNonNull(output, "output");
+        OresFuture<SelectResult> selected =
+                new SelectSet(List.of(read(output)), 0L, true)
+                        .selectAsync(SelectPolicy.PRIORITY);
+        return mapSelection(selected, result -> (String) result.value());
+    }
+
+    /** Internal-only descriptor writes, never exposed through public Channel APIs. */
+    static OresFuture<Void> bridgeWriteInput(StdChannels.InputChannel input, String line) {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(line, "line");
+        OresFuture<SelectResult> selected =
+                new SelectSet(List.of(write(input, line)), 0L, true)
+                        .selectAsync(SelectPolicy.PRIORITY);
+        return mapSelection(selected, ignored -> null);
+    }
+
+    /**
      * Reusable select descriptor. Static and dynamic source select lower to
      * this same primitive.
      */
     public static final class SelectSet {
         private final List<SelectCase> cases;
+        private final boolean trustedBridge;
         private final AtomicLong fairCursor = new AtomicLong();
 
         public SelectSet(Collection<? extends SelectCase> cases) {
@@ -339,13 +362,21 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
+            this(cases, initialFairCursor, false);
+        }
+
+        private SelectSet(
+                Collection<? extends SelectCase> cases,
+                long initialFairCursor,
+                boolean trustedBridge) {
             Objects.requireNonNull(cases, "cases");
+            this.trustedBridge = trustedBridge;
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
             this.cases = List.copyOf(cases);
-            if (!StdChannels.isBridgeCurrent()) {
+            if (!trustedBridge) {
                 for (SelectCase selected : this.cases) {
                     if (selected instanceof ReadCase<?> reader
                             && reader.channel() instanceof StdChannels.OutputChannel) {
@@ -639,7 +670,7 @@ public final class ChannelRuntime {
         // Apply a hard, pre-admission quota so an unawaited stream of writes
         // cannot accumulate arbitrarily many registrations. Do this BEFORE
         // registering any case, otherwise an error could leak a partial select.
-        if (!StdChannels.isBridgeCurrent()) {
+        if (!selection.set.trustedBridge) {
             java.util.IdentityHashMap<Channel<?>, Integer> pending =
                     new java.util.IdentityHashMap<>();
             for (SelectCase candidate : selection.set.cases) {

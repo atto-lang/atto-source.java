@@ -17,8 +17,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class StdChannels implements AutoCloseable {
     public static final int MAX_LINE_CHARS = 65_536;
-    private static final ThreadLocal<Boolean> BRIDGE = ThreadLocal.withInitial(() -> false);
-    static boolean isBridgeCurrent() { return Boolean.TRUE.equals(BRIDGE.get()); }
 
     /**
      * A process-owned descriptor is NOT an ordinary guest-owned channel.
@@ -48,10 +46,7 @@ public final class StdChannels implements AutoCloseable {
 
         @Override
         public void close(Throwable cause) {
-            if (!isBridgeCurrent()) {
-                throw new SecurityException("stdin is process-owned; consumer cannot close the descriptor");
-            }
-            super.close(cause);
+            throw new SecurityException("stdin is process-owned; consumer cannot close the descriptor");
         }
 
         private void finishFromContext(Throwable cause) { super.close(cause); }
@@ -66,10 +61,7 @@ public final class StdChannels implements AutoCloseable {
 
         @Override
         public void close(Throwable cause) {
-            if (!isBridgeCurrent()) {
-                throw new SecurityException("stdout/stderr are process-owned; guest cannot close the descriptor");
-            }
-            super.close(cause);
+            throw new SecurityException("stdout/stderr are process-owned; guest cannot close the descriptor");
         }
 
         private void finishFromContext(Throwable cause) { super.close(cause); }
@@ -138,38 +130,36 @@ public final class StdChannels implements AutoCloseable {
     }
 
     private void pumpInput() {
-        BRIDGE.set(true);
         try {
             BufferedReader reader = context.input();
             while (!closed.get()) {
                 String line = readBoundedLine(reader);
                 if (line == null) {
-                    input.close();
+                    input.finishFromContext(null);
                     return;
                 }
                 // The kernel read does NOT happen on an actor/root carrier.
                 // This join waits for a consumer to accept the previous line.
-                input.writeAsync(line).join();
+                ChannelRuntime.bridgeWriteInput(input, line).join();
             }
         } catch (java.util.concurrent.CompletionException failed) {
             Throwable root = OresFuture.unwrap(failed);
             if (!(root instanceof ChannelRuntime.ChannelClosedException ended
                     && ended.getCause() == null) && !closed.get()) {
                 recordFailure(root);
-                input.close(root);
+                input.finishFromContext(root);
             }
         } catch (ChannelRuntime.ChannelClosedException ignored) {
             // A clean channel close was requested by its owner.
         } catch (Throwable err) {
             if (!closed.get()) {
                 recordFailure(err);
-                input.close(err);
+                input.finishFromContext(err);
             }
         } finally {
             // Close while bridge authority is still held; guest aliases
             // never obtain the privilege to close this descriptor.
             input.finishFromContext(null);
-            BRIDGE.remove();
         }
     }
 
@@ -191,12 +181,11 @@ public final class StdChannels implements AutoCloseable {
     }
 
     private void pumpOutput(OutputChannel channel, PrintWriter target, String descriptor) {
-        BRIDGE.set(true);
         try {
             for (;;) {
                 String frame;
                 try {
-                    frame = channel.readAsync().join();
+                    frame = ChannelRuntime.bridgeReadOutput(channel).join();
                 } catch (java.util.concurrent.CompletionException done) {
                     Throwable root = OresFuture.unwrap(done);
                     if (root instanceof ChannelRuntime.ChannelClosedException closed && closed.getCause() == null) return;
@@ -212,9 +201,7 @@ public final class StdChannels implements AutoCloseable {
             // A sink failure after graceful close was initiated is still a
             // real I/O failure and must be reported to the context owner.
             recordFailure(err);
-            channel.close(err);
-        } finally {
-            BRIDGE.remove();
+            channel.finishFromContext(err);
         }
     }
 

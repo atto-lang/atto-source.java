@@ -11,6 +11,33 @@ import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
+
+    @Test
+    void descriptorBridgeCannotGrantThreadAmbientCloseOrDirectionAuthority() throws Exception {
+        // Construct a sink without starting a worker. Public channel operations
+        // must reject reads/close; only the exact internal host bridge can read.
+        var constructor = StdChannels.OutputChannel.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        StdChannels.OutputChannel sink = constructor.newInstance();
+
+        assertThrows(SecurityException.class, sink::close);
+        assertThrows(IllegalArgumentException.class, sink::readAsync);
+        assertThrows(IllegalArgumentException.class,
+                () -> ChannelRuntime.SelectSet.of(ChannelRuntime.read(sink)));
+
+        OresFuture<String> hostRead = ChannelRuntime.bridgeReadOutput(sink);
+        assertFalse(hostRead.isDone());
+        assertTrue(sink.tryWrite("one frame"));
+        assertEquals("one frame", hostRead.join());
+
+        // A guest-visible closure attempt never inherits permissions from
+        // whichever carrier happened to complete the host's read future.
+        assertThrows(SecurityException.class,
+                () -> sink.close(new IllegalStateException("guest attempted close")));
+        assertThrows(IllegalArgumentException.class,
+                () -> ChannelRuntime.SelectSet.from(
+                        List.of(ChannelRuntime.read(sink))));
+    }
     @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
