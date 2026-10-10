@@ -10,14 +10,15 @@ parent Oreslang Truffle context. Actor dispatcher pools and logical actor
 memory budgets do not change that.
 
 Existing `ActorMemorySlice` is a quota + actor-checked direct-memory region
-for PRIVATE and UNTRUSTED actors. `ByteBuffer.allocateDirect` stores data
+for PRIVATE, SHARED, and UNTRUSTED actors. `ByteBuffer.allocateDirect` stores data
 outside the ordinary Java heap, but the wrapper, actor state, continuations,
 mailbox queues and code evaluator remain Java objects. Closing a slice
 invalidates the block, but physical native-buffer release can still depend on
 the JVM Cleaner/GC. Do not call it a completely deterministic native heap.
 
-SHARED actors own their ordinary mutable actor state semantically, but may
-also opt into runtime-global `Shared<T>` and `SyncCell<T>` capabilities.
+SHARED actors now also have a separately owner-checked direct-memory slice
+for their mutable state, but may opt into runtime-global `Shared<T>` and
+`SyncCell<T>` capabilities.
 Those are accounted in a shared runtime budget and need a separate, explicit
 lifetime/ownership policy in a native implementation. They do NOT entitle
 the actor to dereference arbitrary other actors' heaps.
