@@ -1403,15 +1403,7 @@ public final class OwnershipChecker {
                 && !callableType.arguments().isEmpty()) {
             int parameterCount = callableType.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
-                for (int i = 0; i < call.arguments().size(); i++) {
-                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
-                    if (containsMutexGuardType(argument.type)) {
-                        throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
-                    }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
-                        throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
-                    }
-                }
+                checkFirstClassBorrowedArguments(call.arguments(), scope);
                 Ast.TypeRef result = callableType.arguments().getLast();
                 return new ValueInfo(result, kindOfType(result), null);
             }
@@ -1425,6 +1417,52 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    /**
+     * First-class Fnc<T,...> arguments are non-consuming read views, even when
+     * they reference move-only data. Keep each named aggregate read-loaned
+     * through the entire left-to-right call argument list, just like a
+     * structural function parameter. Explicit take is not a read-only call.
+     */
+    private void checkFirstClassBorrowedArguments(List<Ast.Expr> arguments, Scope scope) {
+        ArrayList<CallLoan> loans = new ArrayList<>();
+        try {
+            for (Ast.Expr arg : arguments) {
+                if (arg instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("take")) {
+                    throw error("first-class Fnc arguments are read-only views; rt take would move ownership");
+                }
+                ValueInfo argument = checkExpr(arg, scope, false);
+                if (containsMutexGuardType(argument.type)) {
+                    throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
+                }
+                if (argument.kind == ValueKind.MUT_BORROW) {
+                    throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                }
+                if (argument.kind == ValueKind.COPY) continue;
+                Ast.Expr projected = arg;
+                if (arg instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("borrow")
+                        && runtime.arguments().size() == 1) {
+                    projected = runtime.arguments().getFirst();
+                }
+                Ast.Expr root = projectedCallLoanRoot(projected);
+                if (root instanceof Ast.NameExpr name && scope.lookup(name.name()) != null) {
+                    VarState owner = borrowOwner(root, scope);
+                    if (isActorConfinedBorrow(owner)) {
+                        throw error("actor self borrowed capability cannot cross a first-class Fnc call");
+                    }
+                    reserveStateCallLoan(owner, false, loans);
+                }
+            }
+        } finally {
+            for (int i = loans.size() - 1; i >= 0; i--) {
+                CallLoan loan = loans.get(i);
+                if (loan.mutable()) loan.state().mutableBorrowed = false;
+                else loan.state().immutableBorrows--;
+            }
+        }
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
