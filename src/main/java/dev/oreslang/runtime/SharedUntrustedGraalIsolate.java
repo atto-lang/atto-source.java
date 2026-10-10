@@ -8,6 +8,8 @@ import org.graalvm.polyglot.SandboxPolicy;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -36,11 +38,14 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
     private static final long MIN_HEAP = 32L * 1024 * 1024;
     private static final long DEFAULT_HEAP = 256L * 1024 * 1024;
     private static final int SUBMISSION_CAPACITY = 128;
+    private static final int MAX_SOURCE_CHARACTERS = 1_048_576;
     private static final Object GLOBAL_LOCK = new Object();
     private static SharedUntrustedGraalIsolate processDomain;
 
     private final long aggregateHeapLimit;
     private final AtomicReference<Thread> submitCarrier = new AtomicReference<>();
+    private final java.util.Set<CompletableFuture<Void>> pending =
+            ConcurrentHashMap.newKeySet();
     private final Engine engine;
     private final Context guest;
     private final ThreadPoolExecutor submissions;
@@ -131,18 +136,28 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
      */
     public synchronized CompletableFuture<Void> submitSource(String source) {
         Objects.requireNonNull(source, "source");
+        if (source.length() > MAX_SOURCE_CHARACTERS)
+            throw new IllegalArgumentException("untrusted source exceeds entry payload limit");
         if (closed.get()) throw new IllegalStateException("untrusted isolate is closed");
         CompletableFuture<Void> result = new CompletableFuture<>();
-        submissions.execute(() -> {
-            if (result.isCancelled()) return;
-            try {
-                guest.eval(OresLanguage.ID, source);
-                result.complete(null);
-            } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-                if (failure instanceof VirtualMachineError fatal) throw fatal;
-            }
-        });
+        pending.add(result);
+        try {
+            submissions.execute(() -> {
+                try {
+                    if (result.isDone()) return;
+                    guest.eval(OresLanguage.ID, source);
+                    result.complete(null);
+                } catch (Throwable failure) {
+                    result.completeExceptionally(failure);
+                    if (failure instanceof VirtualMachineError fatal) throw fatal;
+                } finally {
+                    pending.remove(result);
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            pending.remove(result);
+            result.completeExceptionally(rejected);
+        }
         return result;
     }
 
@@ -179,6 +194,11 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
                 try {
                     engine.close(true);
                 } finally {
+                    CancellationException canceled = new CancellationException(
+                            "shared untrusted isolate terminated");
+                    for (CompletableFuture<Void> future : pending)
+                        future.completeExceptionally(canceled);
+                    pending.clear();
                     if (processDomain == this) processDomain = null;
                 }
             }
