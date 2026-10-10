@@ -192,7 +192,7 @@ Transport readiness must be tracked separately from carrier-freedom:
 
 | Transport | Status on this branch |
 | --- | --- |
-| HTTP client GET/POST | `HttpClient.sendAsync` and bounded callback-driven admission; both source styles use it |
+| HTTP client GET/POST | `HttpClient.sendAsync` and bounded callback-driven admission; both source styles use it; request and response text capped at 4 MiB UTF-8 bytes |
 | Filesystem / filesystem metadata | Host offload; true async or platform-specific design pending |
 | TCP connect/read/write | Host blocking Socket offload; NIO state machine pending |
 | Stdio/stdin/stdout | Host offload or legacy synchronous facades; nonblocking transport pending |
@@ -202,3 +202,25 @@ The HTTP path is a first migration step, **not** evidence of complete async-only
 I/O, no OS-blocked threads, zero-copy I/O, or Java/LLVM parity. In particular,
 `sendAsync` may still rely on implementation-managed threads for DNS or other
 operations; it avoids `HttpClient.send` on the Oreslang I/O worker.
+
+## Async HTTP quotas and cancellation guarantees
+
+Whole-text HTTP GET/POST requests enforce a 4 MiB UTF-8 request body cap
+**before submission**, and a separate 4 MiB response body cap. The
+`BoundedHttpTextBodySubscriber` enforces response limits for both declared
+`Content-Length` and incrementally delivered chunked/unknown-length bodies,
+and cancels its upstream subscription on overflow. Full-response text still
+consumes memory proportional to the admitted size; a streaming application
+must use a separate backpressured API rather than increase this limit.
+
+Context close cancels the guest transport future, which propagates cancellation
+to the underlying `HttpClient.sendAsync` request and shuts down its per-call
+client. A concurrent close/completion has a single settled `OresFuture`
+outcome. These changes do **not** implement per-actor quotas, true kernel-async
+filesystem operations, or OS-thread-free DNS resolution.
+
+The standalone harness in `athlet-o/athleto-e2e` verifies mirrored Java
+source bytes, bounded admission and completion/close races. It is not a
+substitute for exact-head Maven/GraalVM tests, specifically
+`CooperativeBlockingIoTest`, `BoundedHttpTextBodySubscriberTest`,
+`AsyncNativeIoTest`, and `NativeHttpTest`.
