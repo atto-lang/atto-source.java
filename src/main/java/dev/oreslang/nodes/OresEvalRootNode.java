@@ -1986,7 +1986,12 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && flow.failure() instanceof RuntimeException
+                                        && !(flow.failure() instanceof OresPanic)
+                                        && !(flow.failure() instanceof java.util.concurrent.CancellationException)) {
+                                    // Match synchronous try/catch: panic, cancellation and fatal
+                                    // errors bypass catch; the finally arm still runs.
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
