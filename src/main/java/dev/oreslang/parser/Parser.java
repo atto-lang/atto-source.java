@@ -1565,6 +1565,12 @@ public final class Parser {
             return new Ast.YieldStmt(value, delegated);
         }
         if (match(DEFER)) {
+            // Block form lowers to an immediately-created lexical zero-argument
+            // closure whose BODY runs only when the current scope exits.
+            if (check(LBRACE)) {
+                Ast.LambdaExpr closure = new Ast.LambdaExpr(List.of(), null, parseBlock(), false);
+                return new Ast.DeferStmt(new Ast.CallExpr(closure, List.of()));
+            }
             Ast.Expr expression = parseExpression();
             consumeExpressionStatementTerminator(expression, "defer statement should end with ';'");
             return new Ast.DeferStmt(expression);
