@@ -863,10 +863,15 @@ public final class TypeChecker {
                         "ProxyActor remote contract generic arity mismatch for '"
                         + contract.name() + "'");
             }
-            // Validate actual type parameters, not merely their count.
-            // Runtime contract hashing must operate on resolved nominal
-            // types rather than accepting unknown parameter identifiers.
-            resolve(proxy.remoteContract(), Set.of(), null);
+            // The explicitly named 'conforms to' contract is a declaration
+            // dependency, like 'extends BaseActor', not an ambient actor
+            // runtime import. Never route this through the ordinary actor
+            // lexical namespace guard: that would reject the explicit base
+            // contract even when the proxy cannot execute or obtain a
+            // capability. Type arguments still require independent checking.
+            for (Ast.TypeRef argument : proxy.remoteContract().arguments()) {
+                resolve(argument, Set.of(), null);
+            }
             if (!proxy.serviceKey().matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,127}")
                     || proxy.serviceKey().contains("..")
                     || proxy.serviceKey().contains("//")) {
