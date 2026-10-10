@@ -1144,6 +1144,54 @@ public final class OwnershipChecker {
                 rejectNonFirstClassArgument(arg, scope, "callable argument");
             }
         }
+        if (call.callee() instanceof Ast.MemberExpr factoryCall
+                && factoryCall.receiver() instanceof Ast.NameExpr factory
+                && factory.name().equals("SelectCase")
+                && scope.lookup("SelectCase") == null) {
+            // A SelectCase.await/cancelled argument is an observer handle,
+            // not an ownership transfer of its Future. In contrast, a write
+            // descriptor takes ownership of the outgoing payload at creation,
+            // even if a different select arm eventually wins.
+            switch (factoryCall.member()) {
+                case "await", "cancelled" -> {
+                    if (call.arguments().size() != 1) {
+                        throw error("SelectCase." + factoryCall.member()
+                                + " requires exactly one observed Future");
+                    }
+                    ValueInfo observed = checkExpr(call.arguments().getFirst(), scope, false);
+                    if (isBorrowValue(observed) || containsMutexGuardType(observed.type)) {
+                        throw error("SelectCase." + factoryCall.member()
+                                + " cannot retain a lexical borrow/MutexGuard across select suspension");
+                    }
+                    return new ValueInfo(Ast.TypeRef.simple("SelectCase"), ValueKind.MOVE_ONLY, null);
+                }
+                case "timeout", "read" -> {
+                    for (Ast.Expr argument : call.arguments()) {
+                        ValueInfo observed = checkExpr(argument, scope, false);
+                        if (isBorrowValue(observed) || containsMutexGuardType(observed.type)) {
+                            throw error("SelectCase." + factoryCall.member()
+                                    + " cannot retain borrowed/guard-bearing capabilities");
+                        }
+                    }
+                    return new ValueInfo(Ast.TypeRef.simple("SelectCase"), ValueKind.MOVE_ONLY, null);
+                }
+                case "write" -> {
+                    if (call.arguments().size() != 2) {
+                        throw error("SelectCase.write requires a channel and owned payload");
+                    }
+                    checkExpr(call.arguments().getFirst(), scope, false);
+                    ValueInfo outgoing = checkExpr(call.arguments().get(1), scope, true);
+                    if (isBorrowValue(outgoing) || containsMutexGuardType(outgoing.type)) {
+                        throw error("SelectCase.write cannot retain borrowed/guard-bearing payloads");
+                    }
+                    return new ValueInfo(Ast.TypeRef.simple("SelectCase"), ValueKind.MOVE_ONLY, null);
+                }
+                case "default" -> {
+                    return new ValueInfo(Ast.TypeRef.simple("SelectCase"), ValueKind.COPY, null);
+                }
+                default -> { /* TypeChecker owns the unknown-factory diagnosis. */ }
+            }
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
