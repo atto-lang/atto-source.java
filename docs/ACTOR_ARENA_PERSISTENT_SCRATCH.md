@@ -53,3 +53,18 @@ cancellation, exceptions and FFI is a future compiler/scheduler task.
 3. Differential Java/LLVM ownership and stale-handle tests; more extensive
    fuzz/property tests and native sanitizers.
 4. Physical AOT/isolate execution and full integration performance tests.
+ 
+## Hardened Java hot path and mailbox scopes
+FFM scalar slot reads and writes now use adapted primitive MethodHandle
+`invokeExact` dispatch rather than reflection that allocates varargs and boxes
+primitive longs. Actor owner admission is a direct check rather than repeated
+zero-byte MemoryReservation construction. The actor mailbox loop now checks
+that no ScratchTurn remains open at the end of each synchronous message or
+cooperative continuation segment. If a scope escaped, the actor fails
+closed; termination still retires FFM regions.
+
+Each ScratchTurn still creates a Java wrapper and transient slot handles, and
+its bookkeeping uses managed collections. Therefore *near-zero JVM allocation*
+is an architectural target, not a measured result. Future lowering should use
+primitive handles or specialized inline/native scratch cursors to remove
+remaining per-allocation wrapper allocations; use JFR for proof.
