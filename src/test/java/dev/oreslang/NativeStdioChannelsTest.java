@@ -106,8 +106,8 @@ final class NativeStdioChannelsTest {
                   return;
                 }
                 """, "");
-        assertEquals("hello-world\\nnext\\n", result.stdout());
-        assertEquals("warning\\n", result.stderr());
+        assertEquals("hello-world\nnext\n", result.stdout());
+        assertEquals("warning\n", result.stderr());
     }
 
     @Test
