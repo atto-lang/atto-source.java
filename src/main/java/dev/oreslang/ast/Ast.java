@@ -263,6 +263,23 @@ public final class Ast {
         }
     }
 
+    /**
+     * Declarative remote proxy metadata. This is a compiler-level intent,
+     * not proof of an authenticated network connection or remote actor.
+     */
+    public record ProxyActorSpec(
+            TypeRef remoteContract, String serviceKey, String transportPolicy) {
+        public ProxyActorSpec {
+            java.util.Objects.requireNonNull(remoteContract, "remote contract");
+            if (serviceKey == null || serviceKey.isBlank()) {
+                throw new IllegalArgumentException("proxy service key must not be empty");
+            }
+            if (!java.util.Set.of("auto", "ipc", "tcp", "http2").contains(transportPolicy)) {
+                throw new IllegalArgumentException("invalid proxy transport policy");
+            }
+        }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -273,13 +290,24 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ProxyActorSpec proxySpec) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Preserve existing actor/class construction and serialization APIs. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, null);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
