@@ -161,4 +161,76 @@ final class ActorOwnedGraphArenaTest {
         }
         assertEquals(1, drops.get());
     }
+
+    @Test
+    void untrustedActorStillOwnsItsOwnGraphDomain() throws Exception {
+        AtomicInteger drops = new AtomicInteger();
+        AtomicReference<ActorOwnedGraphArena<Payload>> owned = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch finished = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            // Host-provided test behavior, not evidence of execution inside
+            // a separately provisioned Graal JIT isolate.
+            var actor = runtime.<String>spawnUntrusted(policy -> (mail, context) -> {
+                try {
+                    assertEquals(ActorRuntime.ActorKind.UNTRUSTED, context.kind());
+                    var heap = context.actorOwnedMemory().orElseThrow();
+                    assertEquals(heap, context.privateMemory().orElseThrow());
+                    var arena = heap.<Payload>newGraphArena(2, 2);
+                    var node = arena.add(() -> new Payload(drops));
+                    arena.link(node, node);
+                    assertEquals(1, arena.links(node).size());
+                    owned.set(arena);
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    finished.countDown();
+                }
+            });
+            actor.send("allocate");
+            assertTrue(finished.await(15, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+        }
+
+        assertNotNull(owned.get());
+        assertTrue(owned.get().fullyClosed());
+        assertEquals(1, drops.get());
+    }
+
+    @Test
+    void throwingHostCleanupDoesNotSkipOtherOwnedDrops() throws Exception {
+        AtomicInteger drops = new AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch finished = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
+                try {
+                    var heap = ctx.actorOwnedMemory().orElseThrow();
+                    long before = heap.usedBytes();
+                    var graph = heap.<AutoCloseable>newGraphArena(2, 1);
+                    graph.add(() -> () -> {
+                        drops.incrementAndGet();
+                        throw new IllegalStateException("host cleanup failed");
+                    });
+                    graph.add(() -> drops::incrementAndGet);
+                    graph.close();
+                    assertTrue(graph.fullyClosed());
+                    assertEquals(2, drops.get(), "one failing drop may not skip siblings");
+                    assertTrue(graph.cleanupFailure().isPresent(),
+                            "cleanup failure must be visible to supervisor/telemetry");
+                    assertEquals(before, heap.usedBytes(),
+                            "explicit graph close must refund bounded metadata quota");
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    finished.countDown();
+                }
+            });
+            actor.send("close");
+            assertTrue(finished.await(15, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+        }
+    }
 }
