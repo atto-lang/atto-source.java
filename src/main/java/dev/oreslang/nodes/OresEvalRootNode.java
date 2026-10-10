@@ -6077,6 +6077,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "write" -> (Invokable) stdout::write;
                     case "println" -> (Invokable) stdout::println;
                     case "log" -> (Invokable) stdout::log;
+                    case "log_blocking" -> (Invokable) stdout::log;
                     case "log_async" -> (Invokable) stdout::logAsync;
                     case "logList" -> (Invokable) stdout::logList;
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
