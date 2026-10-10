@@ -1,0 +1,13 @@
+[parse]
+allow_unknown = false
+
+# OresVM's internal diagnostic flags. flags2env supplies CLI/environment
+# resolution; consumers should pass the resolved env map to CoreRuntimeFlags.
+[flags.use_core_mutexes]
+env = "ORES_USE_CORE_MUTEXES"
+aliases = ["use-core-mutexes"]
+type = "bool"
+default = false
+true_aliases = ["true", "1", "yes"]
+false_aliases = ["false", "0", "no"]
+help = "Enable nonblocking actor-turn single-writer contention probes (diagnostic only)."
