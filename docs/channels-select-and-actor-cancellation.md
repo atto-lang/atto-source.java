@@ -520,11 +520,28 @@ cursor; a late winner of an older version cannot change a newer revision's
 rotation. Cases and their evaluated argument values are snapshots, not live
 references to changing source expressions.
 
-These mutators are Java runtime APIs, **not yet** source-level
-`SelectPlan.addCase` syntax. The source `SelectSet.new` constructor remains
-immutable and should be reconstructed on a source-level membership change.
-Source-level typed mutable-plan methods need explicit capability, borrow, and
-generation rules before exposure.
+The same API is now exposed in Oreslang source, restricted to
+**execution-domain-local** plans; a `SelectPlan` is a non-`Copy` mutable
+capability and is rejected at actor-mail transport boundaries:
+
+```ores
+val Channel<int> inbox = Channel.new<int>(1);
+let mut SelectPlan plan = SelectPlan.new([
+  SelectCase.read(inbox)
+]);
+plan.addCase(SelectCase.timeout(100));
+val Future<Option<SelectResult>> pending = nb select from plan;
+plan.replaceCase(0, SelectCase.timeout(0)); // affects future select invocations only
+plan.removeCase(1);
+val int generation = plan.revision;
+```
+
+The source interpreter captures one `SelectSet` snapshot at each
+`select from plan` evaluation; the older `pending` selection stays armed
+against the previous generation. Calls can modify case membership safely
+without re-registering or redirecting existing waiters. A plan is **not**
+a shareable actor-mail payload, and old revisions retain the ownership of
+their previously admitted payloads until their own selection settles.
 
 ## Resource ownership for completed select Futures
 
