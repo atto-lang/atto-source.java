@@ -445,7 +445,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * dependent Future, enqueue a continuation, or release runtime accounting.
      * They must never execute Oreslang guest code directly.</p>
      */
-    void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
+    /**
+     * Trusted runtime completion observer, including compiler-owned nodes in
+     * dev.oreslang.nodes. The callback may only settle another Future or
+     * enqueue scheduler work: it must never execute guest code inline.
+     * This is not an Oreslang/host-interoperability API.
+     */
+    public void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
         whenCompleteRuntimeCancellable(callback);
     }
 
