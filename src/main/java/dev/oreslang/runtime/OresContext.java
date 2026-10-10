@@ -436,7 +436,8 @@ public final class OresContext implements AutoCloseable {
         try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            if (failure == null) failure = asyncFailure;
+            else failure.addSuppressed(asyncFailure);
         }
         try {
             actors.close();
