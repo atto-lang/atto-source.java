@@ -8992,9 +8992,20 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object log(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(String.valueOf(arg));
-            context.output().println();
-            context.output().flush();
+            // One atomic PrintWriter.println prevents async channel pumps from
+            // interleaving guest log arguments into torn JSONL/log records.
+            StringBuilder line = new StringBuilder();
+            for (Object arg : args) line.append(String.valueOf(arg));
+            long started = dev.oreslang.runtime.CorePerf.start();
+            try {
+                context.output().println(line.toString());
+                context.output().flush();
+                if (context.output().checkError())
+                    throw new IllegalStateException("synchronous stdout logging failed");
+            } finally {
+                dev.oreslang.runtime.CorePerf.end(
+                        dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
+            }
             return null;
         }
         private Object logAsync(List<Object> args) {
