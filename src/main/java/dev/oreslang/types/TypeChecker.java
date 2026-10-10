@@ -2812,6 +2812,7 @@ public final class TypeChecker {
                 return switch (member.member()) {
                     case "close" -> new Function(List.of(), Primitive.VOID);
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
+                    case "is_closed_normally" -> new Function(List.of(), Primitive.BOOL);
                     case "stream" -> new Function(List.of(),
                             new Named("ReadableStream", channelType.arguments()));
                     default -> throw new IllegalArgumentException(
