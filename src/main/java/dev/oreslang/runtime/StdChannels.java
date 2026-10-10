@@ -99,6 +99,10 @@ public final class StdChannels implements AutoCloseable {
     private final AtomicBoolean startedOutput = new AtomicBoolean();
     private final AtomicBoolean startedError = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Prevent close() from missing a worker still being published by a starter.
+    // Never hold this lock while closing ChannelRuntime channels or joining workers:
+    // channel admission owns COORDINATOR and would otherwise invert lock order.
+    private final Object lifecycleLock = new Object();
     private volatile Thread inputThread;
     private volatile Thread outputThread;
     private volatile Thread errorThread;
@@ -120,37 +124,63 @@ public final class StdChannels implements AutoCloseable {
     }
 
     private void startInputPumpOnDemand() {
-        if (closed.get()) return;
-        if (startedInput.compareAndSet(false, true)) {
-            Thread worker = Thread.ofPlatform().daemon()
-                    .name("ores-stdio-in").unstarted(this::pumpInput);
-            inputThread = worker;
-            // Shutdown may race with admission; pumpInput checks closed
-            // before touching the host stream, and finalizes the channel.
-            worker.start();
+        synchronized (lifecycleLock) {
+            if (closed.get()) return;
+            if (startedInput.compareAndSet(false, true)) {
+                Thread worker = Thread.ofPlatform().daemon()
+                        .name("ores-stdio-in").unstarted(this::pumpInput);
+                inputThread = worker;
+                try {
+                    worker.start();
+                } catch (RuntimeException | Error failed) {
+                    inputThread = null;
+                    startedInput.set(false);
+                    throw failed;
+                }
+            }
         }
     }
 
     public OutputChannel output() {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.out");
-        if (closed.get()) throw new IllegalStateException("stdio is closed");
-        if (startedOutput.compareAndSet(false, true)) {
-            outputThread = Thread.ofPlatform().daemon().name("ores-stdio-out").start(
-                    () -> pumpOutput(output, context.output(), "stdout"));
+        synchronized (lifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("stdio is closed");
+            if (startedOutput.compareAndSet(false, true)) {
+                Thread worker = Thread.ofPlatform().daemon().name("ores-stdio-out")
+                        .unstarted(() -> pumpOutput(output, context.output(), "stdout"));
+                outputThread = worker;
+                try {
+                    worker.start();
+                } catch (RuntimeException | Error failed) {
+                    outputThread = null;
+                    startedOutput.set(false);
+                    throw failed;
+                }
+            }
+            return output;
         }
-        return output;
     }
 
     public OutputChannel error() {
         // Legacy policy groups output descriptors under STDOUT. Explicit
         // separate STDERR authority can be introduced with a policy migration.
         context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.err");
-        if (closed.get()) throw new IllegalStateException("stdio is closed");
-        if (startedError.compareAndSet(false, true)) {
-            errorThread = Thread.ofPlatform().daemon().name("ores-stdio-err").start(
-                    () -> pumpOutput(error, new PrintWriter(context.env().err(), true), "stderr"));
+        synchronized (lifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("stdio is closed");
+            if (startedError.compareAndSet(false, true)) {
+                Thread worker = Thread.ofPlatform().daemon().name("ores-stdio-err")
+                        .unstarted(() -> pumpOutput(error, new PrintWriter(context.env().err(), true), "stderr"));
+                errorThread = worker;
+                try {
+                    worker.start();
+                } catch (RuntimeException | Error failed) {
+                    errorThread = null;
+                    startedError.set(false);
+                    throw failed;
+                }
+            }
+            return error;
         }
-        return error;
     }
 
     private void pumpInput() {
@@ -234,17 +264,28 @@ public final class StdChannels implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
+        final Thread cancelInput;
+        final Thread drainOutput;
+        final Thread drainError;
+        synchronized (lifecycleLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            // Every admitted starter has published and started its thread.
+            // New starters cannot pass the closed check after this snapshot.
+            cancelInput = inputThread;
+            drainOutput = outputThread;
+            drainError = errorThread;
+        }
+        // Do not acquire the channel COORDINATOR while holding lifecycleLock.
         input.finishFromContext(null);
-        if (inputThread != null) inputThread.interrupt();
+        if (cancelInput != null) cancelInput.interrupt();
         // Context teardown retains descriptor-close authority. A guest alias
         // cannot call close(), including through an ordinary Channel<T> type.
         output.finishFromContext(null);
         error.finishFromContext(null);
         // Bounded close must report an undrained/stuck sink instead of
         // silently claiming writes were flushed when its worker is still alive.
-        joinSink(outputThread, "stdout");
-        joinSink(errorThread, "stderr");
+        joinSink(drainOutput, "stdout");
+        joinSink(drainError, "stderr");
         Throwable failed = failure;
         if (failed != null) throw new IllegalStateException("stdio channel failed", failed);
     }
