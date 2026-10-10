@@ -9102,7 +9102,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("SelectCase.timeout expects integer milliseconds");
             }
             return ChannelRuntime.timeout(
-                    Math.toIntExact(millis.longValue()), java.util.concurrent.TimeUnit.MILLISECONDS);
+                    millis.longValue(), java.util.concurrent.TimeUnit.MILLISECONDS);
         }
 
         private Object defaultCase(List<Object> args) {
