@@ -118,10 +118,9 @@ final class ActorConcurrencyDeclarationTest {
     }
 
     @Test
-    void ordinaryActorsCannotHideAdmissionLimitsAsMutableFields() {
+    void ordinaryActorsExposeOnlyMessageConcurrency() {
         Ast.ClassDecl actor = actor("""
                 define actor Worker as
-                    int requestConcurrency = 1;
                     int messageConcurrency = 1;
                 end
                 """);
@@ -131,14 +130,22 @@ final class ActorConcurrencyDeclarationTest {
         assertTrue(actor.fields().isEmpty());
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                    int requestConcurrency = 1;
                     int messageConcurrency = 1;
                 end
                 """)));
+        for (String illegal : new String[] {
+                "int requestConcurrency = 1;",
+                "int requestConcurrency = 3;"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("define actor Worker as\\n" + illegal + "\\nend"));
+            assertTrue(error.getMessage().contains("ordinary actors expose only messageConcurrency"),
+                    error::getMessage);
+        }
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                    int requestConcurrency = 3;
                     int messageConcurrency = 4;
                 end
                 """)));
