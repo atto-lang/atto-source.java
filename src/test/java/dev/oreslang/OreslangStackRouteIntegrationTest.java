@@ -103,6 +103,59 @@ final class OreslangStackRouteIntegrationTest {
     }
 
     @Test
+    void privateImportedContractIsRejectedByRealLinker() throws Exception {
+        Path main = writeSources(
+                CONTRACT.replace("pub define contract RouteContract as", "define contract RouteContract as"),
+                ROUTE, HANDLERS);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(main));
+        assertTrue(error.getMessage().contains("does not match an exported declaration"), error.getMessage());
+    }
+
+    @Test
+    void importedContractDoesNotAllowInvalidMethodSignature() throws Exception {
+        String bad = ROUTE.replace(
+                "pub fnc post(String request) -> String",
+                "pub fnc post(int request) -> String");
+        Path main = writeSources(CONTRACT, bad, HANDLERS);
+        assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(main));
+    }
+
+    @Test
+    void generatedPublicClientContractImportsAndRunsAcrossFiles() throws Exception {
+        Path src = temp.resolve("client");
+        Files.createDirectories(src.resolve("contracts"));
+        Files.createDirectories(src.resolve("clients"));
+        Files.writeString(src.resolve("contracts/ClientContract.ores"), """
+                // Same public form emitted by the ORESoftware ores-clients-core renderer.
+                pub define contract ClientContract as
+                  fnc get_status(String request_id) => String;
+                end
+                """);
+        Files.writeString(src.resolve("clients/client.ores"), """
+                import contract ClientContract from "../contracts/ClientContract";
+                define module client conforms ClientContract as
+                  pub fnc get_status(String request_id): String { return request_id; }
+                end
+                """);
+        Path main = src.resolve("main.ores");
+        Files.writeString(main, """
+                import module client from "./clients/client";
+                pub routine main(): void {
+                  stdio.stdout.write(client.get_status("ready"));
+                  return;
+                }
+                """);
+        var build = LinkedProgramRunner.validate(main);
+        assertEquals(3, build.units().size());
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), out, new ByteArrayOutputStream());
+        assertEquals("ready", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void missingPostImplementationMustNotPassLinker() throws Exception {
         String missing = ROUTE.replace(
                 "  pub fnc post(String request) -> String { return handlers.post(request); }\n", "");
