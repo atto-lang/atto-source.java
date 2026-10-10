@@ -366,6 +366,24 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
+            // The interpreter currently queues an AST expression and evaluates
+            // it at scope exit. It does NOT capture callee/argument values now.
+            // Therefore an ordinary borrow, rebindable local, or move-only
+            // object could be invalidated before deferred execution.
+            CaptureSet delayed = new CaptureSet();
+            scanExpr(defer.expression(), Set.of(), scope, null, delayed, false);
+            for (Capture capture : delayed.values.values()) {
+                VarState state = capture.source;
+                requireUsable(state, capture.name, capture.write);
+                if (state.kind != ValueKind.COPY || containsBorrowType(state.type)
+                        || state.mutable || state.rebindable
+                        || isActorConfinedBorrow(state)
+                        || containsMutexGuardType(state.type)) {
+                    throw error("defer cannot capture mutable, borrowed, or move-only binding '"
+                            + capture.name
+                            + "' until registration-time capture/lifetime lowering is implemented");
+                }
+            }
             ValueInfo value = checkExpr(defer.expression(), scope, false);
             if (containsMutexGuardType(value.type)) {
                 throw error("defer cannot produce a guard-bearing value");
@@ -849,6 +867,11 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            // An optional/as cast must not launder &T into an apparently owned
+            // Option<U> or U. A runtime class test cannot copy ownership.
+            if (isBorrowValue(source) && !cast.targetType().isBorrow()) {
+                throw error("cast cannot turn a borrowed view into an owned value; use an explicit owned copy");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
@@ -1446,8 +1469,8 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(argument.type)) {
                         throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
                     }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
-                        throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                    if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+                        throw error("first-class Fnc call cannot retain borrowed argument without a scoped call-lifetime contract");
                     }
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
