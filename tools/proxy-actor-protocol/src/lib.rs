@@ -72,6 +72,8 @@ pub enum RouteError {
     AlreadyConnected,
     AuthenticationMismatch,
     NotReady,
+    StaleSession,
+    StaleStream,
     Closing,
     DuplicateStream,
     MissingStream,
@@ -93,6 +95,21 @@ pub enum RouteState {
     Closed,
 }
 
+/// Session capability produced only after authenticated handshake. An IO
+/// callback must retain this exact handle across asynchronous suspension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionHandle { generation: u64, epoch: u64 }
+
+/// Stream incarnation capability; stream IDs can be reused safely only when
+/// callbacks retain the actual handle returned by open_stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamHandle {
+    session: SessionHandle,
+    direction: Direction,
+    id: u64,
+    incarnation: u64,
+}
+
 /// The caller must restrict trusted service names/addresses independently;
 /// routing strings must never be interpolated into OS commands or raw URLs.
 pub struct ProxyRoute {
@@ -107,6 +124,7 @@ pub struct ProxyRoute {
     selected: Option<EndpointLease>,
     highest_generation: Option<u64>,
     session_epoch: u64,
+    next_stream_incarnation: u64,
     streams: BTreeMap<(Direction, u64), StreamWindow>,
 }
 
@@ -129,6 +147,7 @@ impl ProxyRoute {
             selected: None,
             highest_generation: None,
             session_epoch: 0,
+            next_stream_incarnation: 0,
             streams: BTreeMap::new(),
         }
     }
@@ -196,7 +215,7 @@ impl ProxyRoute {
         &mut self,
         generation: u64,
         peer: AuthenticatedPeer,
-    ) -> Result<u64, RouteError> {
+    ) -> Result<SessionHandle, RouteError> {
         if self.state != (RouteState::Connecting { generation }) {
             return Err(RouteError::NotConnecting);
         }
@@ -215,7 +234,7 @@ impl ProxyRoute {
         self.pinned = Some(peer.actor);
         self.session_epoch = self.session_epoch.checked_add(1).ok_or(RouteError::CreditOverflow)?;
         self.state = RouteState::Ready { generation, session_epoch: self.session_epoch };
-        Ok(self.session_epoch)
+        Ok(SessionHandle { generation, epoch: self.session_epoch })
     }
 
     pub fn disconnect(&mut self, generation: u64) -> bool {
@@ -242,14 +261,24 @@ impl ProxyRoute {
         self.streams.clear();
     }
 
+    fn check_session(&self, session: SessionHandle) -> Result<(), RouteError> {
+        match self.state {
+            RouteState::Ready { generation, session_epoch }
+                if session == (SessionHandle { generation, epoch: session_epoch }) => Ok(()),
+            RouteState::Ready { .. } => Err(RouteError::StaleSession),
+            _ => Err(RouteError::NotReady),
+        }
+    }
+
     pub fn open_stream(
         &mut self,
+        session: SessionHandle,
         direction: Direction,
         id: u64,
         maximum_messages: u64,
         maximum_bytes: u64,
-    ) -> Result<(), RouteError> {
-        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
+    ) -> Result<StreamHandle, RouteError> {
+        self.check_session(session)?;
         if maximum_messages == 0 || maximum_bytes == 0
             || maximum_messages > MAX_MESSAGES_PER_STREAM
             || maximum_bytes > MAX_WINDOW_BYTES_PER_STREAM {
@@ -259,27 +288,28 @@ impl ProxyRoute {
         if self.streams.len() >= MAX_STREAMS_PER_PROXY {
             return Err(RouteError::TooManyStreams);
         }
+        let incarnation = self.next_stream_incarnation.checked_add(1)
+            .ok_or(RouteError::CreditOverflow)?;
+        self.next_stream_incarnation = incarnation;
+        let handle = StreamHandle { session, direction, id, incarnation };
         self.streams.insert((direction, id), StreamWindow {
+            handle,
             maximum_messages,
             maximum_bytes,
             available_messages: 0,
             available_bytes: 0,
             next_sequence: 0,
         });
-        Ok(())
+        Ok(handle)
     }
 
-    pub fn grant_credit(
-        &mut self,
-        direction: Direction,
-        stream_id: u64,
-        messages: u64,
-        bytes: u64,
-    ) -> Result<(), RouteError> {
-        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
+    pub fn grant_credit(&mut self, stream: StreamHandle,
+        messages: u64, bytes: u64) -> Result<(), RouteError> {
+        self.check_session(stream.session)?;
         if messages == 0 && bytes == 0 { return Err(RouteError::InvalidCredit); }
-        let w = self.streams.get_mut(&(direction, stream_id))
-                .ok_or(RouteError::MissingStream)?;
+        let w = self.streams.get_mut(&(stream.direction, stream.id))
+            .ok_or(RouteError::MissingStream)?;
+        if w.handle != stream { return Err(RouteError::StaleStream); }
         let next_messages = w.available_messages.checked_add(messages)
                 .ok_or(RouteError::CreditOverflow)?;
         let next_bytes = w.available_bytes.checked_add(bytes)
@@ -294,16 +324,12 @@ impl ProxyRoute {
 
     /// Admission consumes one message credit and the exact payload byte size.
     /// It never claims processing/durability acknowledgement.
-    pub fn admit_data(
-        &mut self,
-        direction: Direction,
-        stream_id: u64,
-        sequence: u64,
-        payload_bytes: u64,
-    ) -> Result<(), RouteError> {
-        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
-        let w = self.streams.get_mut(&(direction, stream_id))
-                .ok_or(RouteError::MissingStream)?;
+    pub fn admit_data(&mut self, stream: StreamHandle,
+        sequence: u64, payload_bytes: u64) -> Result<(), RouteError> {
+        self.check_session(stream.session)?;
+        let w = self.streams.get_mut(&(stream.direction, stream.id))
+            .ok_or(RouteError::MissingStream)?;
+        if w.handle != stream { return Err(RouteError::StaleStream); }
         if sequence != w.next_sequence { return Err(RouteError::DuplicateOrStaleSequence); }
         if payload_bytes > w.maximum_bytes { return Err(RouteError::OversizeFrame); }
         if w.available_messages == 0 || payload_bytes > w.available_bytes {
@@ -316,14 +342,18 @@ impl ProxyRoute {
         Ok(())
     }
 
-    pub fn finish_stream(&mut self, direction: Direction, id: u64) -> Result<(), RouteError> {
-        if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
-        self.streams.remove(&(direction, id)).ok_or(RouteError::MissingStream)?;
+    pub fn finish_stream(&mut self, stream: StreamHandle) -> Result<(), RouteError> {
+        self.check_session(stream.session)?;
+        let existing = self.streams.get(&(stream.direction, stream.id))
+            .ok_or(RouteError::MissingStream)?;
+        if existing.handle != stream { return Err(RouteError::StaleStream); }
+        self.streams.remove(&(stream.direction, stream.id));
         Ok(())
     }
 }
 
 struct StreamWindow {
+    handle: StreamHandle,
     maximum_messages: u64,
     maximum_bytes: u64,
     available_messages: u64,
@@ -334,6 +364,46 @@ struct StreamWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // These convenience methods are test-only. Transport adapters must keep
+    // the original callback handles and use the capability-bound public API.
+    impl ProxyRoute {
+        fn test_session(&self) -> SessionHandle {
+            match self.state {
+                RouteState::Ready { generation, session_epoch } =>
+                    SessionHandle { generation, epoch: session_epoch },
+                _ => SessionHandle { generation: 0, epoch: 0 },
+            }
+        }
+        fn test_handle(&self, direction: Direction, id: u64) -> StreamHandle {
+            self.streams.get(&(direction, id)).map(|w| w.handle).unwrap_or(
+                StreamHandle { session: self.test_session(), direction, id, incarnation: 0 })
+        }
+        fn test_confirm_handshake(&mut self, generation: u64, peer: AuthenticatedPeer)
+            -> Result<u64, RouteError> {
+            self.confirm_handshake(generation, peer).map(|h| h.epoch)
+        }
+        fn test_open_stream(&mut self, direction: Direction, id: u64,
+            messages: u64, bytes: u64) -> Result<(), RouteError> {
+            let session = self.test_session();
+            self.open_stream(session, direction, id, messages, bytes).map(|_| ())
+        }
+        fn test_grant_credit(&mut self, direction: Direction, id: u64,
+            messages: u64, bytes: u64) -> Result<(), RouteError> {
+            let handle = self.test_handle(direction, id);
+            self.grant_credit(handle, messages, bytes)
+        }
+        fn test_admit_data(&mut self, direction: Direction, id: u64,
+            sequence: u64, bytes: u64) -> Result<(), RouteError> {
+            let handle = self.test_handle(direction, id);
+            self.admit_data(handle, sequence, bytes)
+        }
+        fn test_finish_stream(&mut self, direction: Direction, id: u64)
+            -> Result<(), RouteError> {
+            let handle = self.test_handle(direction, id);
+            self.finish_stream(handle)
+        }
+    }
 
     fn actor(incarnation: u64) -> RemoteActorId {
         RemoteActorId {
@@ -366,7 +436,7 @@ mod tests {
     fn connected() -> ProxyRoute {
         let mut proxy = route();
         assert_eq!(proxy.begin_connect(lease(1, 1), 20), Ok(1));
-        assert_eq!(proxy.confirm_handshake(1, AuthenticatedPeer {
+        assert_eq!(proxy.test_confirm_handshake(1, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Ok(1));
         proxy
@@ -376,17 +446,17 @@ mod tests {
     fn handshake_requires_authenticated_actor_identity() {
         let mut proxy = route();
         assert_eq!(proxy.begin_connect(lease(1, 10), 20), Ok(10));
-        assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
+        assert_eq!(proxy.test_confirm_handshake(10, AuthenticatedPeer {
             actor: actor(2), authority: "trusted-worker".into(),
         }), Err(RouteError::AuthenticationMismatch));
-        assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
+        assert_eq!(proxy.test_confirm_handshake(10, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Err(RouteError::NotConnecting));
         assert_eq!(proxy.begin_connect(lease(1, 11), 20), Ok(11));
-        assert_eq!(proxy.confirm_handshake(10, AuthenticatedPeer {
+        assert_eq!(proxy.test_confirm_handshake(10, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Err(RouteError::NotConnecting));
-        assert_eq!(proxy.confirm_handshake(11, AuthenticatedPeer {
+        assert_eq!(proxy.test_confirm_handshake(11, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Ok(1));
     }
@@ -423,7 +493,7 @@ mod tests {
         assert_eq!(p.begin_connect(lease(2, 2), 21), Err(RouteError::ActorReplaced));
         assert_eq!(p.begin_connect(lease(1, 1), 21), Err(RouteError::StaleGeneration));
         assert_eq!(p.begin_connect(lease(1, 2), 21), Ok(2));
-        assert_eq!(p.confirm_handshake(2, AuthenticatedPeer {
+        assert_eq!(p.test_confirm_handshake(2, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Ok(2));
         assert!(!p.disconnect(1)); // old transport callback is fenced
@@ -443,51 +513,51 @@ mod tests {
     #[test]
     fn bounded_window_preserves_sequence_and_rejects_overproduction() {
         let mut p = connected();
-        assert_eq!(p.open_stream(Direction::Forward, 42, 2, 100), Ok(()));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 0, 1), Err(RouteError::WindowExceeded));
-        assert_eq!(p.grant_credit(Direction::Forward, 42, 2, 60), Ok(()));
-        assert_eq!(p.grant_credit(Direction::Forward, 42, 1, 50), Err(RouteError::WindowExceeded));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 0, 40), Ok(()));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 0, 20), Err(RouteError::DuplicateOrStaleSequence));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 1, 40), Err(RouteError::WindowExceeded));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 1, 20), Ok(()));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 2, 0), Err(RouteError::WindowExceeded));
-        assert_eq!(p.grant_credit(Direction::Forward, 42, 1, 80), Ok(()));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 2, 101), Err(RouteError::OversizeFrame));
-        assert_eq!(p.admit_data(Direction::Forward, 42, 2, 80), Ok(()));
-        assert_eq!(p.finish_stream(Direction::Forward, 42), Ok(()));
-        assert_eq!(p.finish_stream(Direction::Forward, 42), Err(RouteError::MissingStream));
+        assert_eq!(p.test_open_stream(Direction::Forward, 42, 2, 100), Ok(()));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 0, 1), Err(RouteError::WindowExceeded));
+        assert_eq!(p.test_grant_credit(Direction::Forward, 42, 2, 60), Ok(()));
+        assert_eq!(p.test_grant_credit(Direction::Forward, 42, 1, 50), Err(RouteError::WindowExceeded));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 0, 40), Ok(()));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 0, 20), Err(RouteError::DuplicateOrStaleSequence));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 1, 40), Err(RouteError::WindowExceeded));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 1, 20), Ok(()));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 2, 0), Err(RouteError::WindowExceeded));
+        assert_eq!(p.test_grant_credit(Direction::Forward, 42, 1, 80), Ok(()));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 2, 101), Err(RouteError::OversizeFrame));
+        assert_eq!(p.test_admit_data(Direction::Forward, 42, 2, 80), Ok(()));
+        assert_eq!(p.test_finish_stream(Direction::Forward, 42), Ok(()));
+        assert_eq!(p.test_finish_stream(Direction::Forward, 42), Err(RouteError::MissingStream));
     }
 
     #[test]
     fn forward_and_reverse_have_independent_windows_and_sequences() {
         let mut p = connected();
-        assert_eq!(p.open_stream(Direction::Forward, 9, 1, 5), Ok(()));
-        assert_eq!(p.open_stream(Direction::Reverse, 9, 1, 8), Ok(()));
-        assert_eq!(p.open_stream(Direction::Forward, 9, 1, 5), Err(RouteError::DuplicateStream));
-        assert_eq!(p.grant_credit(Direction::Forward, 9, 1, 5), Ok(()));
-        assert_eq!(p.grant_credit(Direction::Reverse, 9, 1, 8), Ok(()));
-        assert_eq!(p.admit_data(Direction::Forward, 9, 0, 5), Ok(()));
-        assert_eq!(p.admit_data(Direction::Reverse, 9, 0, 8), Ok(()));
-        assert_eq!(p.admit_data(Direction::Forward, 9, 1, 0), Err(RouteError::WindowExceeded));
-        assert_eq!(p.finish_stream(Direction::Forward, 9), Ok(()));
-        assert_eq!(p.finish_stream(Direction::Reverse, 9), Ok(()));
+        assert_eq!(p.test_open_stream(Direction::Forward, 9, 1, 5), Ok(()));
+        assert_eq!(p.test_open_stream(Direction::Reverse, 9, 1, 8), Ok(()));
+        assert_eq!(p.test_open_stream(Direction::Forward, 9, 1, 5), Err(RouteError::DuplicateStream));
+        assert_eq!(p.test_grant_credit(Direction::Forward, 9, 1, 5), Ok(()));
+        assert_eq!(p.test_grant_credit(Direction::Reverse, 9, 1, 8), Ok(()));
+        assert_eq!(p.test_admit_data(Direction::Forward, 9, 0, 5), Ok(()));
+        assert_eq!(p.test_admit_data(Direction::Reverse, 9, 0, 8), Ok(()));
+        assert_eq!(p.test_admit_data(Direction::Forward, 9, 1, 0), Err(RouteError::WindowExceeded));
+        assert_eq!(p.test_finish_stream(Direction::Forward, 9), Ok(()));
+        assert_eq!(p.test_finish_stream(Direction::Reverse, 9), Ok(()));
     }
 
     #[test]
     fn enforces_stream_and_credit_caps_before_admission() {
         let mut p = connected();
-        assert_eq!(p.open_stream(Direction::Forward, 0,
+        assert_eq!(p.test_open_stream(Direction::Forward, 0,
             MAX_MESSAGES_PER_STREAM + 1, 1), Err(RouteError::InvalidCredit));
-        assert_eq!(p.open_stream(Direction::Forward, 0,
+        assert_eq!(p.test_open_stream(Direction::Forward, 0,
             1, MAX_WINDOW_BYTES_PER_STREAM + 1), Err(RouteError::InvalidCredit));
         for id in 0..MAX_STREAMS_PER_PROXY as u64 {
-            assert_eq!(p.open_stream(Direction::Forward, id, 1, 1), Ok(()));
+            assert_eq!(p.test_open_stream(Direction::Forward, id, 1, 1), Ok(()));
         }
-        assert_eq!(p.open_stream(Direction::Reverse, 0, 1, 1),
+        assert_eq!(p.test_open_stream(Direction::Reverse, 0, 1, 1),
             Err(RouteError::TooManyStreams));
-        assert_eq!(p.finish_stream(Direction::Forward, 0), Ok(()));
-        assert_eq!(p.open_stream(Direction::Reverse, 0, 1, 1), Ok(()));
+        assert_eq!(p.test_finish_stream(Direction::Forward, 0), Ok(()));
+        assert_eq!(p.test_open_stream(Direction::Reverse, 0, 1, 1), Ok(()));
     }
 
     #[test]
@@ -495,11 +565,49 @@ mod tests {
         let mut p = route();
         assert_eq!(p.begin_connect(lease(1, 4), 10), Ok(4));
         p.start_drain();
-        assert_eq!(p.confirm_handshake(4, AuthenticatedPeer {
+        assert_eq!(p.test_confirm_handshake(4, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }), Err(RouteError::NotConnecting));
         assert_eq!(p.begin_connect(lease(1, 5), 10), Err(RouteError::Closing));
         p.close();
-        assert_eq!(p.open_stream(Direction::Forward, 1, 1, 100), Err(RouteError::NotReady));
+        assert_eq!(p.test_open_stream(Direction::Forward, 1, 1, 100), Err(RouteError::NotReady));
     }
+    #[test]
+    fn callbacks_from_disconnected_session_cannot_mutate_reused_stream_id() {
+        let mut p = connected();
+        let old_session = p.test_session();
+        let old_stream = p.open_stream(old_session, Direction::Forward, 42, 2, 32).unwrap();
+        p.grant_credit(old_stream, 1, 32).unwrap();
+        assert!(p.disconnect(1));
+        assert_eq!(p.begin_connect(lease(1, 2), 20), Ok(2));
+        let new_session = p.confirm_handshake(2, AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        }).unwrap();
+        let new_stream = p.open_stream(new_session, Direction::Forward, 42, 2, 32).unwrap();
+        assert_ne!(old_stream, new_stream);
+        assert_eq!(p.open_stream(old_session, Direction::Reverse, 9, 1, 1),
+                   Err(RouteError::StaleSession));
+        assert_eq!(p.grant_credit(old_stream, 1, 32), Err(RouteError::StaleSession));
+        assert_eq!(p.admit_data(old_stream, 0, 5), Err(RouteError::StaleSession));
+        assert_eq!(p.finish_stream(old_stream), Err(RouteError::StaleSession));
+        assert_eq!(p.grant_credit(new_stream, 1, 32), Ok(()));
+        assert_eq!(p.admit_data(new_stream, 0, 32), Ok(()));
+    }
+
+    #[test]
+    fn finished_stream_id_reuse_never_accepts_old_callbacks() {
+        let mut p = connected();
+        let session = p.test_session();
+        let first = p.open_stream(session, Direction::Forward, 7, 1, 10).unwrap();
+        assert_eq!(p.finish_stream(first), Ok(()));
+        let second = p.open_stream(session, Direction::Forward, 7, 1, 10).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(p.grant_credit(first, 1, 10), Err(RouteError::StaleStream));
+        assert_eq!(p.admit_data(first, 0, 1), Err(RouteError::StaleStream));
+        assert_eq!(p.finish_stream(first), Err(RouteError::StaleStream));
+        assert_eq!(p.grant_credit(second, 1, 10), Ok(()));
+        assert_eq!(p.admit_data(second, 0, 10), Ok(()));
+        assert_eq!(p.finish_stream(second), Ok(()));
+    }
+
 }
