@@ -434,10 +434,54 @@ This transformation is permitted only when evaluating the case expressions has
 no required per-iteration observable behavior and the referenced channel/value
 bindings are stable. Otherwise the compiler must keep the original lowering.
 
-Dynamic selection can explicitly build a plan after constructing its runtime
-case list. Mutating the source list afterward does not mutate the plan; create a
-new plan for a changed case set. A later versioned dynamic-plan builder may
-support incremental add/remove/rebind without changing this snapshot contract.
+Two reusable plan types are available on the Java reference backend:
+
+- `SelectPlan.new(cases)` freezes its initial case descriptors, useful when
+  the same `select from plan` is executed repeatedly. Mutating an original
+  source collection does not mutate this immutable plan.
+- `DynamicSelectPlan.new()` maintains an insertion-ordered, keyed table of
+  cases. `put(key, SelectCase.read(channel))` adds or replaces a case;
+  `remove(key)` stops arming that case on **future** executions. `size()`
+  and `version()` expose the current builder state.
+
+Example (case expressions are fixed here, not automatically hoisted by the
+compiler):
+
+```ores
+val DynamicSelectPlan plan = DynamicSelectPlan.new();
+plan.put("inbox", SelectCase.read(inbox));
+plan.put("control", SelectCase.read(control));
+
+val Option<SelectResult> first = select from plan;
+plan.remove("control");
+val Option<SelectResult> next = try select from plan;
+```
+
+The Java API additionally exposes
+`DynamicSelectPlan<K>.selectKeyedAsync(policy)` and
+`trySelectKeyed(policy)`, returning `PlannedResult<K>` with the
+**snapshot version**, **stable case key**, and normal `SelectResult`. Use
+those when concurrent edits could make numeric indexes ambiguous. The source
+language currently returns ordinary `SelectResult` (whose index is relative
+to the selection's snapshot).
+
+Mutation is atomic with respect to taking a snapshot. Already-registered
+selections remain tied to their **old** snapshots and are not implicitly
+cancelled when a key is removed or rebound. Cancelling an operation still
+unregisters its losers through the existing channel coordinator. Mutations
+invalidate the cached descriptors only; they never reuse a pending waiter
+registration, and fairness state persists across snapshot revisions.
+Selecting with zero cases fails fast; at most one default is permitted.
+
+**Performance boundary:** plans avoid rebuilding immutable case metadata
+on every source-level `select from plan` iteration. Each invocation still
+allocates a fresh select registration, per-case registrations and an order
+array, and runs the existing global arbitration logic. There is not yet an
+automatic static-select hoisting pass or a demonstrated throughput/latency
+speedup over unplanned static select. A compiler may hoist only when expression
+evaluation is side-effect-free, bindings stable, and actor-local ownership
+preserved. Plans are actor-domain-local capabilities and must not be sent
+through actor mailboxes.
 
 ## Cancellation
 
