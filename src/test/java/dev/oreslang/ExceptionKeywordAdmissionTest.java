@@ -15,7 +15,7 @@ final class ExceptionKeywordAdmissionTest {
                 Token.Type.THROW, Token.Type.RAISE, Token.Type.PANIC, Token.Type.RECOVER
         };
         for (int i = 0; i < spellings.length; i++) {
-            assertEquals(expected[i], new Lexer(spellings[i]).lex().getFirst().type(),
+            assertEquals(expected[i], new Lexer(spellings[i]).scan().getFirst().type(),
                     spellings[i] + " must not be silently treated as a local identifier");
         }
     }
