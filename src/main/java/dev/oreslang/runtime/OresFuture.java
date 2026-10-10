@@ -550,10 +550,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     CompletionStage<T> asCompletionStage() {
         CompletableFuture<T> bridge = new CompletableFuture<>();
-        whenCompleteRuntime((value, failure) -> {
-            if (failure == null) bridge.complete(value);
-            else bridge.completeExceptionally(failure);
-        });
+        RuntimeWaiterRegistration<T> registration = whenCompleteRuntimeCancellable(
+                (value, failure) -> {
+                    if (failure == null) bridge.complete(value);
+                    else bridge.completeExceptionally(failure);
+                });
+        // The host owns the bridge, not the shared Ores producer. If a host
+        // cancels or otherwise settles its bridge early, detach the runtime
+        // waiter so a permanently pending producer cannot retain the bridge.
+        bridge.whenComplete((value, failure) -> registration.detach());
         return bridge;
     }
 
