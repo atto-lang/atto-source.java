@@ -198,9 +198,14 @@ public final class ActorTransportAdmission implements AutoCloseable {
                 messages.clear();
                 finishRequestLocked();
             }
-            for (PendingMessage p : abandoned)
-                p.future.failFromRuntime(new IllegalStateException("request lease ended"));
-            publishCompletions();
+            try {
+                for (PendingMessage p : abandoned)
+                    p.future.failFromRuntime(new IllegalStateException("request lease ended"));
+            } finally {
+                // A hostile or buggy internal callback must not strand a
+                // promoted request's Future behind the release path.
+                publishCompletions();
+            }
         }
     }
 
