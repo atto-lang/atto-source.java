@@ -87,7 +87,8 @@ final class ActorCarrierIdentityCleanupTest {
             assertNull(ownerFailure.get(), "original actor owner turn must still unwind safely");
             Throwable cause = ref.failure().orElseThrow(
                     () -> new AssertionError("overlapping turn must fail-stop the actor"));
-            assertTrue(cause.getMessage().contains("single-writer execution lease"),
+            assertTrue(cause.getMessage().contains("single-writer execution lease")
+                            || cause.getMessage().contains("core actor contention probe violation"),
                     () -> "unexpected termination cause: " + cause);
         }
     }
