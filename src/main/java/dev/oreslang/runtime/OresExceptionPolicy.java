@@ -1,0 +1,44 @@
+package dev.oreslang.runtime;
+
+import java.util.concurrent.CancellationException;
+
+/** Shared exceptional-exit precedence for both synchronous and suspended frames. */
+public final class OresExceptionPolicy {
+    private OresExceptionPolicy() { }
+
+    /** Host-fatal > cancellation > panic > raise > ordinary throw. */
+    private static int priority(Throwable failure) {
+        if (failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError) return 5;
+        if (failure instanceof ActorRuntime.ActorCancellationSignal
+                || failure instanceof CancellationException) return 4;
+        if (failure instanceof OresPanic) return 3;
+        if (failure instanceof OresRaised) return 2;
+        return 1;
+    }
+
+    /**
+     * Select a dominant failure while preserving the losing error as suppressed.
+     * A throw in cleanup cannot convert a pending panic or cancellation into a
+     * catchable ordinary exception. No exception is swallowed.
+     */
+    public static Throwable combine(Throwable pending, Throwable cleanup) {
+        if (pending == null) return cleanup;
+        if (cleanup == null || cleanup == pending) return pending;
+        if (priority(cleanup) > priority(pending)) {
+            cleanup.addSuppressed(pending);
+            return cleanup;
+        }
+        pending.addSuppressed(cleanup);
+        return pending;
+    }
+
+    /** Rethrow at an explicit unwind boundary; never wrap away the signal type. */
+    public static void rethrow(Throwable failure) {
+        if (failure == null) return;
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        throw new IllegalStateException("unexpected checked guest failure", failure);
+    }
+}
