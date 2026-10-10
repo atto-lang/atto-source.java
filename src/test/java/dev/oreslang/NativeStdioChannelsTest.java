@@ -225,8 +225,8 @@ final class NativeStdioChannelsTest {
                   }
                   return;
                 }
-                """, "red\\nblue\\n");
-        assertEquals("red\\nblue\\n", result.stdout());
+                """, "red\nblue\n");
+        assertEquals("red\nblue\n", result.stdout());
     }
 
     @Test
@@ -238,8 +238,8 @@ final class NativeStdioChannelsTest {
                   }
                   return;
                 }
-                """, "hello\\n");
-        assertEquals("hello\\n", result.stdout());
+                """, "hello\n");
+        assertEquals("hello\n", result.stdout());
     }
 
     @Test
@@ -251,8 +251,8 @@ final class NativeStdioChannelsTest {
                   return;
                 }
                 """, "");
-        assertEquals("copied\\n", result.stdout());
-        assertEquals("copied\\n", result.stderr());
+        assertEquals("copied\n", result.stdout());
+        assertEquals("copied\n", result.stderr());
     }
 
     @Test
@@ -260,8 +260,8 @@ final class NativeStdioChannelsTest {
         for (String operation : new String[]{
                 "readch stdio.out", "readch stdio.err",
                 "readch process.stdout", "readch process.stderr",
-                "writech stdio.in, \\"x\\"",
-                "writech process.stdin, \\"x\\""
+                "writech stdio.in, \"x\"",
+                "writech process.stdin, \"x\""
         }) {
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(
