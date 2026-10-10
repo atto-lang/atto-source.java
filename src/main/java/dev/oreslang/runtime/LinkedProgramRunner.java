@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.TargetAdmission;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.interop.MixedInteropBridge;
@@ -58,6 +59,23 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             IsolatePolicy policy,
             PermissionCheckMode permissionCheckMode) throws IOException {
+        return validate(entryFile, environment, policy, permissionCheckMode, null, Set.of());
+    }
+
+    /**
+     * Validate the exact loader-resolved closure, optionally enforcing a
+     * portable target contract before any execution or source codegen.
+     */
+    public static IncrementalCompiler.BuildResult validate(
+            Path entryFile,
+            Map<String, String> environment,
+            IsolatePolicy policy,
+            PermissionCheckMode permissionCheckMode,
+            String targetEnvironment,
+            Set<String> grantedTargetCapabilities) throws IOException {
+        if (targetEnvironment == null && !grantedTargetCapabilities.isEmpty()) {
+            throw new IllegalArgumentException("target capabilities require a target environment");
+        }
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -79,6 +97,10 @@ public final class LinkedProgramRunner {
         }
 
         Map<String, String> sources = oresSources(units);
+        if (targetEnvironment != null) {
+            TargetAdmission.validate(unitId(entry), sources, importResolutions,
+                    targetEnvironment, grantedTargetCapabilities);
+        }
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
