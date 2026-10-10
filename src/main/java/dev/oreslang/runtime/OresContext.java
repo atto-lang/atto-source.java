@@ -426,11 +426,7 @@ public final class OresContext implements AutoCloseable {
     public void close() {
         nativeIo.close();
         http.close();
-        // Drain accepted async records before any VM/carrier teardown.
-        // Timeout/error must be observable rather than silently discarding logs.
         RuntimeException stdoutFailure = null;
-        try { asyncStdout.close(); }
-        catch (RuntimeException e) { stdoutFailure = e; }
         RuntimeException failure = null;
         try {
             asyncRuntime.close();
@@ -443,6 +439,10 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = actorFailure;
             else failure.addSuppressed(actorFailure);
         }
+        // Producers have stopped; drain accepted messages while the VM
+        // and output stream are still alive, before carrier teardown.
+        try { asyncStdout.close(); }
+        catch (RuntimeException e) { stdoutFailure = e; }
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
