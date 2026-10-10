@@ -73,6 +73,11 @@ public final class StdChannels implements AutoCloseable {
     private volatile Thread errorThread;
     private volatile Throwable failure;
 
+    private synchronized void recordFailure(Throwable error) {
+        if (failure == null) failure = error;
+        else if (failure != error) failure.addSuppressed(error);
+    }
+
     public StdChannels(OresContext context) {
         this.context = context;
     }
@@ -126,12 +131,14 @@ public final class StdChannels implements AutoCloseable {
             Throwable root = OresFuture.unwrap(failed);
             if (!(root instanceof ChannelRuntime.ChannelClosedException ended
                     && ended.getCause() == null) && !closed.get()) {
+                recordFailure(root);
                 input.close(root);
             }
         } catch (ChannelRuntime.ChannelClosedException ignored) {
             // A clean channel close was requested by its owner.
         } catch (Throwable err) {
             if (!closed.get()) {
+                recordFailure(err);
                 input.close(err);
             }
         } finally {
@@ -180,7 +187,7 @@ public final class StdChannels implements AutoCloseable {
         } catch (Throwable err) {
             // A sink failure after graceful close was initiated is still a
             // real I/O failure and must be reported to the context owner.
-            failure = err;
+            recordFailure(err);
             channel.close(err);
         } finally {
             BRIDGE.remove();
@@ -199,18 +206,26 @@ public final class StdChannels implements AutoCloseable {
         // cannot call close(), including through an ordinary Channel<T> type.
         output.finishFromContext(null);
         error.finishFromContext(null);
-        joinQuietly(outputThread);
-        joinQuietly(errorThread);
+        // Bounded close must report an undrained/stuck sink instead of
+        // silently claiming writes were flushed when its worker is still alive.
+        joinSink(outputThread, "stdout");
+        joinSink(errorThread, "stderr");
         Throwable failed = failure;
         if (failed != null) throw new IllegalStateException("stdio channel failed", failed);
     }
 
-    private static void joinQuietly(Thread worker) {
+    private void joinSink(Thread worker, String descriptor) {
         if (worker == null || worker == Thread.currentThread()) return;
         try {
             worker.join(2_000L);
+            if (worker.isAlive()) {
+                recordFailure(new IllegalStateException(
+                        descriptor + " sink did not finish within the 2-second shutdown budget"));
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            recordFailure(new IllegalStateException(
+                    descriptor + " sink shutdown interrupted", interrupted));
         }
     }
 }
