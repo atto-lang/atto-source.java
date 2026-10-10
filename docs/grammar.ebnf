@@ -216,6 +216,9 @@ select_arm      = select_arm_keyword "readch" expression ":"
                   [ binding_kind IDENT ] { statement }
                 | select_arm_keyword "writech" expression "," expression ":"
                   { statement } ;
+(* Individual select arms may not be prefixed with "nb" or "try":
+   the enclosing select_wait_mode controls the entire atomic selection.
+   This also applies to binding-first read arms. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
 select_default  = "default" ":" { statement } ;
