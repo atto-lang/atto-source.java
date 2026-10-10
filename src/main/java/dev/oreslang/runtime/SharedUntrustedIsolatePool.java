@@ -100,7 +100,7 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
      */
     public final class Group implements AutoCloseable {
         private final Context context;
-        private boolean groupClosed;
+        private volatile boolean groupClosed;
         private Group(Context context) { this.context = context; }
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
