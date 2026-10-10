@@ -5798,6 +5798,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     Ast.ClassDecl actorClass =
                             requireLocalActorClass(created.type().name());
+                    // Defense in depth: a stale or bypassed type-check result
+                    // must not create a local actor pretending to be a remote one.
+                    if (actorClass.proxySpec() != null) {
+                        throw new IllegalStateException(
+                                "ProxyActor requires authenticated remote transport; "
+                                + "local source-actor spawn is forbidden");
+                    }
                     ActorRuntime.ActorKind runtimeKind =
                             switch (actorClass.actorKind()) {
                                 case NONE -> throw new AssertionError(
