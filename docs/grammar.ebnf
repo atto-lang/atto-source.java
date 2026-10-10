@@ -51,11 +51,16 @@ actor_callable_decl
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
+                  [ actor_builtin_base ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
-actor_body      = "{" { actor_member } "}"
-                | { actor_member } "end" ;
+actor_builtin_base = "from" "serial" "actor" ;
+(* A builtin serial actor base carries final scheduling and lifecycle
+   primitives. on_start/receive are overridable hooks; ordinary actor-to-actor
+   inheritance uses 'extends Parent'. *)
+actor_body      = [ "as" ] "{" { actor_member } "}"
+                | [ "as" ] { actor_member } "end" ;
 actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
