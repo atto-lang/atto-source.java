@@ -23,6 +23,7 @@ public final class GpuBufferFence implements AutoCloseable {
         final Identity identity;
         final long bytes;
         Status status = Status.IDLE;
+        boolean backendQuiescent = true;
         long sequence;
         State(Identity identity, long bytes) {
             this.identity = Objects.requireNonNull(identity);
@@ -60,6 +61,7 @@ public final class GpuBufferFence implements AutoCloseable {
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
         if (state.status != Status.IDLE) throw new IllegalStateException("device buffer not idle");
         if (state.sequence == Long.MAX_VALUE) throw new IllegalStateException("device fence sequence overflow");
+        state.backendQuiescent = false;
         state.status = Status.IN_FLIGHT;
         return new Ticket(state.identity.allocationGeneration(), ++state.sequence);
     }
@@ -73,6 +75,7 @@ public final class GpuBufferFence implements AutoCloseable {
             throw new IllegalStateException("stale or mismatched device event");
         }
         state.status = success ? Status.IDLE : Status.POISONED;
+        state.backendQuiescent = true;
     }
 
     /** Cancel requires device synchronization; do not reuse or free prematurely. */
@@ -86,11 +89,24 @@ public final class GpuBufferFence implements AutoCloseable {
         state.status = Status.POISONED;
     }
 
+    /** A cancelled kernel may still be running until its device fence completes. */
+    public synchronized void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
+        active();
+        if (!state.identity.equals(caller) || ticket == null
+                || ticket.generation() != state.identity.allocationGeneration()
+                || ticket.sequence() != state.sequence || state.status != Status.POISONED
+                || state.backendQuiescent) {
+            throw new IllegalStateException("invalid cancelled-device completion");
+        }
+        state.backendQuiescent = true;
+    }
+
     /** After backend confirms device quiescence and releases the opaque handle. */
     public synchronized void retireAfterBackendRelease(Identity caller) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
-        if (state.status == Status.IN_FLIGHT) throw new IllegalStateException("device command still in flight");
+        if (state.status == Status.IN_FLIGHT || !state.backendQuiescent)
+            throw new IllegalStateException("device command still in flight or awaiting cancelled fence");
         state.status = Status.CLOSED;
     }
 
