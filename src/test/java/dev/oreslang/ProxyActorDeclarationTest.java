@@ -11,7 +11,7 @@ final class ProxyActorDeclarationTest {
 
     private static final String DECLARATION = """
             define contract RemoteTransformer as
-                pub fnc transform(int value): int;
+                fnc transform(int value) => int;
             end
 
             define proxy actor TransformProxy
