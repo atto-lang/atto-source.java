@@ -34,6 +34,42 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void firstClassFncReadLoanBlocksLaterOwnershipTake() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        fnc bad(): int {
+                          let mut Box box = new Box();
+                          val Fnc<Box, Box, int> read = |first, second| -> {
+                            return first.value + second.value;
+                          };
+                          return read(box, rt take box);
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow")
+                        || error.getMessage().contains("rt take"), error.getMessage());
+    }
+
+    @Test
+    void firstClassFncReadLoanEndsBeforeLaterOwnerMove() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc consume(Box value): void { return; }
+                fnc ok(): void {
+                  let mut Box box = new Box();
+                  val Fnc<Box, int> read = |value| -> { return value.value; };
+                  read(box);
+                  consume(box);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void storedRtBorrowBlocksMutationUntilItsScopeEnds() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
