@@ -6373,25 +6373,29 @@ public final class OresEvalRootNode extends RootNode {
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
                     case "get_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_blocking", () -> http.getText(values));
+                        return context.nativeIo().submitNonblocking(context,
+                                dev.oreslang.runtime.RuntimePermissions.Permission.NET,
+                                "http.get_text_blocking", () -> http.getTextAsync(values));
                     };
                     case "get_text" -> (Invokable) http::getText;
                     case "get_text_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_async", () -> http.getText(values));
+                        return context.nativeIo().submitNonblocking(context,
+                                dev.oreslang.runtime.RuntimePermissions.Permission.NET,
+                                "http.get_text_async", () -> http.getTextAsync(values));
                     };
                     case "post_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_blocking", () -> http.postText(values));
+                        return context.nativeIo().submitNonblocking(context,
+                                dev.oreslang.runtime.RuntimePermissions.Permission.NET,
+                                "http.post_text_blocking", () -> http.postTextAsync(values));
                     };
                     case "post_text" -> (Invokable) http::postText;
                     case "post_text_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_async", () -> http.postText(values));
+                        return context.nativeIo().submitNonblocking(context,
+                                dev.oreslang.runtime.RuntimePermissions.Permission.NET,
+                                "http.post_text_async", () -> http.postTextAsync(values));
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
@@ -8973,6 +8977,16 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record HttpFacade(OresContext context) {
+        private java.util.concurrent.CompletableFuture<String> getTextAsync(List<Object> args) {
+            return NativeIo.httpGetTextAsync(context,
+                    requireStringArg(args, "http.get_text_async"));
+        }
+        private java.util.concurrent.CompletableFuture<String> postTextAsync(List<Object> args) {
+            requireTwo(args, "http.post_text_async");
+            return NativeIo.httpPostTextAsync(context,
+                    requireString(args.get(0), "http.post_text_async url"),
+                    requireString(args.get(1), "http.post_text_async body"));
+        }
         private Object getText(List<Object> args) {
             return NativeIo.httpGetText(context, requireStringArg(args, "http.get_text"));
         }
