@@ -647,7 +647,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isolatedUntrustedReady(long id) {
-            return isolatedUntrustedRef(id).ready().isDone();
+            ActorRuntime.ActorRef<Object> actor = isolatedUntrustedRef(id);
+            return actor.ready().isDone() && actor.failure().isEmpty();
         }
 
         private boolean isolatedUntrustedDone(long id) {
