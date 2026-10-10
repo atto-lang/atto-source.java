@@ -82,11 +82,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                     "nonblocking I/O transport returned null future");
             nonblocking.put(result, transport);
             transport.whenComplete((value, failure) -> {
+                boolean contextClosed;
                 synchronized (AsyncNativeIo.this) {
+                    contextClosed = closed;
                     pending.remove(result);
                     nonblocking.remove(result);
                 }
-                if (failure != null) {
+                // A context close wins over transport cancellation to retain
+                // one stable error contract for all admitted I/O operations.
+                if (contextClosed) {
+                    result.failFromRuntime(new IllegalStateException("I/O context closed"));
+                } else if (failure != null) {
                     Throwable cause = failure instanceof CompletionException completion
                             && completion.getCause() != null ? completion.getCause() : failure;
                     SourceBoundaryTrace.record(cause, "native:io", operation, "I/O");
