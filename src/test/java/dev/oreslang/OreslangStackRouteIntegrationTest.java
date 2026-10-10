@@ -53,6 +53,16 @@ final class OreslangStackRouteIntegrationTest {
             end
             """;
 
+    /**
+     * A private cross-org CI mirror supplies the exact three dummy-app Git blobs
+     * under ../oreslang-dummy-api/src. The source repository retains equivalent
+     * embedded fixtures so its tests do not depend on external private access.
+     */
+    private static String exactMirrorFixture(String relative, String embedded) throws Exception {
+        Path mirrored = Path.of("../oreslang-dummy-api/src").resolve(relative).normalize();
+        return Files.isRegularFile(mirrored) ? Files.readString(mirrored) : embedded;
+    }
+
     private Path writeSources(String contract, String route, String handlers) throws Exception {
         Path src = temp.resolve("src");
         Files.createDirectories(src.resolve("contracts"));
@@ -76,7 +86,10 @@ final class OreslangStackRouteIntegrationTest {
 
     @Test
     void realCompilerAndJitExecuteImportedGetPostContract() throws Exception {
-        Path main = writeSources(CONTRACT, ROUTE, HANDLERS);
+        Path main = writeSources(
+                exactMirrorFixture("contracts/RouteContract.ores", CONTRACT),
+                exactMirrorFixture("routes/rest/route.ores", ROUTE),
+                exactMirrorFixture("routes/rest/handlers.ores", HANDLERS));
         var build = LinkedProgramRunner.validate(main);
         assertEquals(4, build.units().size(), "all four real Oreslang compilation units must link");
 
