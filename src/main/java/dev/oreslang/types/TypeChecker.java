@@ -2209,6 +2209,10 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "self." + member.member() + "() is a zero-argument inherited actor-core method");
                     }
+                    if (member.member().equals("get_done_signal")) {
+                        throw new IllegalArgumentException(
+                                "actor cannot call self.get_done_signal(): its own completion cannot settle before finalization; observe through an ActorRef in a supervisor");
+                    }
                     return inheritedActorSignalResult();
                 }
                 if (actorSelf && (member.member().equals("on_start")
