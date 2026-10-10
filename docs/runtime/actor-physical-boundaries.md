@@ -150,6 +150,32 @@ may take out *all* untrusted actors together. No intra-domain hostile-code
 security separation is promised. This is intentionally **not** one isolate
 per actor. Untrusted native/FFI/host reflection remains denied.
 
+### Reproducible Native Image gate
+
+Build with a GraalVM distribution that matches the Maven Truffle/Polyglot
+artifacts (currently **GraalVM 25.3.4.1**, not a generic GraalVM JDK 25.0
+image). The `native-isolate` profile supplies
+`com.oracle.svm.truffle.PolyglotIsolateGuestFeature`, and the image must
+include the `ores` language implementation. This is a custom polyglot
+language isolate; it is not provided by the standard JS/Python/Wasm isolate
+Maven dependencies.
+
+```sh
+mvn -B -Pnative-isolate -Dnative.image.optimization=-Ob -DskipTests package
+# During local smoke tests only; engine.IsolateLibrary is experimental.
+mvn -B -Dtest=SharedUntrustedGraalIsolateTest \
+  -Dores.untrusted.isolate.library="$(realpath target/liboresvm.so)" \
+  -Dores.untrusted.require-native-isolate=true test
+```
+
+The positive smoke MUST run the guest source and await its future. A test
+which only observes the expected error `No native isolate library ... [ores]`
+is insufficient and does not certify the physical boundary. A release must
+bundle/register the native language-isolate resource using Graal's supported
+language artifact discovery; the explicitly configured `IsolateLibrary`
+property is a test/developer override, **not** the recommended production
+distribution format.
+
 ## Physical heap backend decision
 
 For PRIVATE/isolated actors that require a physically separate worker, start
