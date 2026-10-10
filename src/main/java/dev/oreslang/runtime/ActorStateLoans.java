@@ -103,24 +103,28 @@ public final class ActorStateLoans implements AutoCloseable {
             if (publishing) return;
             publishing = true;
         }
-        try {
-            for (;;) {
-                Runnable completion;
-                synchronized (monitor) {
-                    completion = completions.pollFirst();
-                    if (completion == null) {
-                        publishing = false;
-                        return;
-                    }
-                }
-                completion.run();
-            }
-        } finally {
-            // Future completion is runtime-owned and cannot invoke source code.
-            // Preserve liveness even if a future implementation throws here.
+        Throwable firstFailure = null;
+        for (;;) {
+            Runnable completion;
             synchronized (monitor) {
-                if (publishing) publishing = false;
+                completion = completions.pollFirst();
+                if (completion == null) {
+                    publishing = false;
+                    break;
+                }
             }
+            try {
+                completion.run();
+            } catch (Throwable failure) {
+                // A broken completion must not strand every later FIFO grant.
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure != null) {
+            if (firstFailure instanceof Error fatal) throw fatal;
+            if (firstFailure instanceof RuntimeException failure) throw failure;
+            throw new IllegalStateException("actor state loan completion failed", firstFailure);
         }
     }
 
