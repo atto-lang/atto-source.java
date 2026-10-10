@@ -48,6 +48,45 @@ final class DynamicSelectOptionLanguageTest {
         assertEquals("true:7:true:9", run(program));
     }
 
+    @Test
+    void dynamicSelectCanAwaitCompletedFutureAndExposeWinningOperation() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> channel = Channel.new<int>(1);
+                  writech channel, 9;
+                  val Future<Option<SelectResult>> ready =
+                      nb select first from [SelectCase.read(channel)];
+                  val SelectSet mixed = SelectSet.new([
+                    SelectCase.await(ready),
+                    SelectCase.timeout(1000)
+                  ]);
+                  val Option<SelectResult> winner = select first from mixed;
+                  stdio.stdout.write(winner.unwrap().operation);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("await", run(program));
+    }
+
+    @Test
+    void dynamicSelectZeroDeadlineWinsBeforeAnUnreadyChannel() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> channel = Channel.new<int>(1);
+                  val SelectSet choices = SelectSet.new([
+                    SelectCase.read(channel),
+                    SelectCase.timeout(0)
+                  ]);
+                  val Option<SelectResult> winner = try select first from choices;
+                  stdio.stdout.write(winner.unwrap().operation);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("timeout", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "select-option.ores")
