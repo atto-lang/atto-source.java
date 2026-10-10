@@ -455,6 +455,50 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void asyncCallCannotRetainCallerBorrowAfterFutureReturns() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        pub async fnc inspect(borrow Box value): int {
+                          return value.value;
+                        }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          val future = inspect(rt borrow box);
+                          rt take box;
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().contains("async")
+                        && rejected.getMessage().toLowerCase().contains("borrow"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void asyncStructuralCallCannotOutliveItsNamedOwner() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        pub async fnc inspect(structural Box value): int {
+                          return value.value;
+                        }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          val future = inspect(box);
+                          rt take box;
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().contains("async")
+                        && rejected.getMessage().contains("structural"),
+                rejected.getMessage());
+    }
+
+    @Test
     void cannotImplicitlyMoveNonCopyFieldOrIndexedStorage() {
         for (String program : java.util.List.of(
                 """
@@ -469,7 +513,7 @@ final class PointerlessFncOwnershipTest {
                 """,
                 """
                 fnc bad(): void {
-                  let Array<Box> values = new Array<Box>();
+                  let mut Array<Box> values = new Array<Box>();
                   values.add(new Box());
                   consume(values[0]);
                   return;
