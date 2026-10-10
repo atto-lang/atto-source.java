@@ -412,9 +412,15 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
-            if (selected.mode() != Ast.WaitMode.IMMEDIATE
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                // The mailbox lane can yield while waiting for a winner.
+                // Ordinary lexical borrows cannot span this suspension, even
+                // though the winning arm completes before the outer code resumes.
+                checkSuspensionBorrows(scope, "select");
+            } else if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
-                throw error("cannot suspend or arm nb select while holding a MutexGuard");
+                // An armed callback can re-enter the same actor on a later turn.
+                throw error("cannot arm nb select while holding a MutexGuard");
             }
 
             // Case operands are evaluated once when the selection is armed.
@@ -956,9 +962,11 @@ public final class OwnershipChecker {
             return awaitedValue;
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
-            if (channelOp.mode() != Ast.WaitMode.IMMEDIATE
+            if (channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "readch/writech");
+            } else if (channelOp.mode() == Ast.WaitMode.NONBLOCKING
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
-                throw error("cannot suspend or register a channel waiter while holding a MutexGuard");
+                throw error("cannot register a channel waiter while holding a MutexGuard");
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
             Ast.TypeRef element = channelElementType(channel.type);
@@ -991,9 +999,11 @@ public final class OwnershipChecker {
             return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
-            if (selected.mode() != Ast.WaitMode.IMMEDIATE
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "select from cases");
+            } else if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
-                throw error("cannot suspend or register dynamic select while holding a MutexGuard");
+                throw error("cannot register dynamic select while holding a MutexGuard");
             }
             checkExpr(selected.cases(), scope, false);
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
