@@ -8,6 +8,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -38,6 +40,22 @@ final class SharedRouteContractInteropTest {
               fnc post(String request) => String;
             end
             """;
+
+    /** Git blob of the reviewed public Oreslang RouteContract.ores in PR #70. */
+    private static final String REVIEWED_CONTRACT_BLOB =
+            "5bfd8552d4c6cc5bd369f43d81a7004ba01c2d45";
+
+    @Test
+    void copiedContractSourceIsExactlyTheReviewedGitBlob() throws Exception {
+        byte[] body = CONTRACT.getBytes(StandardCharsets.UTF_8);
+        byte[] prefix = ("blob " + body.length + "\\0").getBytes(StandardCharsets.UTF_8);
+        byte[] toHash = new byte[prefix.length + body.length];
+        System.arraycopy(prefix, 0, toHash, 0, prefix.length);
+        System.arraycopy(body, 0, toHash, prefix.length, body.length);
+        assertEquals(REVIEWED_CONTRACT_BLOB,
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(toHash)),
+                "embedded contract has drifted from ORESoftware/ores-interfaces PR #70");
+    }
 
     private Path source(String name, String body) throws Exception {
         Path root = temp.resolve("routes");
