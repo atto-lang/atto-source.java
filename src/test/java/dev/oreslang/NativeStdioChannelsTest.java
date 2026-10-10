@@ -329,7 +329,7 @@ final class NativeStdioChannelsTest {
         Output result = run("""
                 pub routine main(): void {
                   val WritableTee mirrored = stdio.out.tee(stdio.err);
-                  mirrored.write("copied\\n");
+                  await mirrored.write("copied\\n");
                   return;
                 }
                 """, "");
