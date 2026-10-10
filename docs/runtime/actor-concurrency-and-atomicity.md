@@ -166,6 +166,5 @@ cross-isolation behavior.
 
 The current parser/type-checker accept protocol (1,1) declarations,
 reject protocol (3,4) for execution, reject ordinary actor
-`requestConcurrency` outright, and
-and preserve actor configuration through AST transformation. The next
+`requestConcurrency` outright, and preserve actor configuration through AST transformation. The next
 execution backend must not silently treat (3,4) as (1,1).
