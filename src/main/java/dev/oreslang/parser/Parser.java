@@ -273,7 +273,7 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
-            if (modifiers.shared || modifiers.untrusted || modifiers.critical) {
+            if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             if (match(CONTRACT)) {
@@ -328,7 +328,7 @@ public final class Parser {
 
             Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
             if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                    || modifiers.isStatic || modifiers.isAbstract) {
+                    || modifiers.isStatic || modifiers.isAbstract || modifiers.critical) {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
@@ -343,7 +343,7 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted || modifiers.critical) {
+            if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
@@ -357,7 +357,7 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted || modifiers.critical) {
+            if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
@@ -385,7 +385,7 @@ public final class Parser {
     }
 
     private Ast.ActorKind resolveActorKind(Token actorToken, boolean isolated, Modifiers modifiers) {
-        if (isolated && (modifiers.shared || modifiers.untrusted || modifiers.critical)) {
+        if (isolated && (modifiers.shared || modifiers.untrusted)) {
             throw error(
                     actorToken,
                     "'shared/untrusted isoactor' is contradictory; use either shared actor, untrusted actor, or isoactor");
@@ -510,7 +510,7 @@ public final class Parser {
             if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
-            if (mods.shared || mods.untrusted || mods.critical) throw error(peek(), "actor-kind modifiers are not permitted on class members");
+            if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
@@ -628,7 +628,7 @@ public final class Parser {
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
         if (modifiers.async || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
-                || modifiers.isAbstract) {
+                || modifiers.isAbstract || modifiers.critical) {
             throw error(actorToken,
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
@@ -723,7 +723,7 @@ public final class Parser {
 
     private void validateActorMethodModifiers(Modifiers modifiers) {
         if (modifiers.generator || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted || modifiers.critical) {
+                || modifiers.shared || modifiers.untrusted) {
             throw error(peek(), "actor methods do not accept generator, nlex, abstract, shared, or untrusted modifiers");
         }
     }
