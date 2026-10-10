@@ -16,6 +16,7 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -173,6 +174,25 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatus(entryFile, policy, permissions, permissionCheckMode,
+                executionProfile, allowedHostClasses, environment, null, out, err);
+    }
+
+    /**
+     * Embedder-selected standard input. An ordinary LinkedProgramRunner call
+     * never inherits ambient System.in: the CLI must opt in explicitly.
+     */
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            InputStream in,
+            OutputStream out,
+            OutputStream err) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -213,6 +233,7 @@ public final class LinkedProgramRunner {
                         effectiveHostClasses,
                         permissions,
                         permissionCheckMode);
+                if (in != null) builder.in(nonClosingInput(in));
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
 
@@ -291,6 +312,20 @@ public final class LinkedProgramRunner {
      * standard streams. Always present host-selected output as an explicit,
      * non-closing redirection while preserving the caller-owned destination.
      */
+    /**
+     * The embedding host owns stdin (often a shell pipe or terminal).
+     * Closing an Oreslang context must not close the host's shared descriptor.
+     * The adapter keeps blocking reads on the stdio bridge worker, never on
+     * an actor/root execution carrier.
+     */
+    private static InputStream nonClosingInput(InputStream source) {
+        return new java.io.FilterInputStream(source) {
+            @Override public void close() {
+                // Process/embedding caller owns the underlying InputStream.
+            }
+        };
+    }
+
     private static OutputStream forwardingStream(OutputStream target) {
         return new OutputStream() {
             @Override public void write(int value) throws IOException {
