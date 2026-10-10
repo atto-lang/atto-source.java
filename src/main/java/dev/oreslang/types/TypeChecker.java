@@ -840,6 +840,23 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        Ast.ActorConcurrency concurrency = klass.actorConcurrency();
+        if (klass.actorKind() == Ast.ActorKind.NONE
+                && concurrency.transport() != Ast.ActorTransport.GENERIC) {
+            throw new IllegalArgumentException("only actors may declare a transport concurrency policy");
+        }
+        // The VM currently holds one logical actor-state lease across await.
+        // Do not admit a concurrency policy the ActorCell scheduler cannot
+        // enforce merely because a configuration literal type-checks.
+        if (concurrency.requestConcurrency() > 1 || concurrency.messageConcurrency() > 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name() + "' requests concurrency ("
+                            + concurrency.requestConcurrency() + ","
+                            + concurrency.messageConcurrency() + ") but the current ActorRuntime "
+                            + "enforces one logical receive at a time across await/rt cooperate; "
+                            + "parallel handlers require a new per-request/per-message admission "
+                            + "scheduler plus exclusive state loans. Refusing unsafe configuration.");
+        }
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
