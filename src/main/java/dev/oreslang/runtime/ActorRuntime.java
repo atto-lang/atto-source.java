@@ -6177,19 +6177,18 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
-            currentActor.set(this);
-            CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
             boolean turnActive = false;
             ActorTurnContentionProbe.Scope contentionScope = null;
             try {
-                // A diagnostic CAS must run BEFORE the normal lifecycle lease:
-                // an overlapping contender is observed, never parked/serialized.
+                // Never give a rejected carrier guest actor authority. Both
+                // the independent witness and mandatory lease must admit the
+                // turn before publishing any actor-local ThreadLocal identity.
                 if (contentionProbe != null) contentionScope = contentionProbe.enter();
-                // Admission may throw on a single-writer lease violation.
-                // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
                 if (!turnActive) return;
+                currentActor.set(this);
+                CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
+                        ActorRuntime.this, ref.id(), kind, policy, executionDomain));
 
                 if (kind == ActorKind.UNTRUSTED) {
                     turnStartedWallNanos = System.nanoTime();
@@ -6363,17 +6362,24 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 try {
-                    // Guest execution has unwound; release the independent
-                    // witness before the lifecycle lease permits another turn.
-                    if (contentionScope != null) contentionScope.close();
+                    // The guest and final cleanup have unwound. Withdraw
+                    // actor-local authority before making the contention
+                    // witness available to another carrier. This also keeps
+                    // host-side retirement hooks outside the guest actor scope.
+                    try {
+                        CURRENT_ACTOR_EXECUTION.remove();
+                    } finally {
+                        currentActor.remove();
+                    }
                 } finally {
                     try {
-                        if (turnActive) endTurn();
+                        // The independent probe must still be held until
+                        // actor authority is fully withdrawn.
+                        if (contentionScope != null) contentionScope.close();
                     } finally {
-                        // Neither probe nor endTurn failures may strand
-                        // actor authority on a reused carrier.
-                        CURRENT_ACTOR_EXECUTION.remove();
-                        currentActor.remove();
+                        // The mandatory lifecycle lease remains authoritative,
+                        // including when the probe's release fails.
+                        if (turnActive) endTurn();
                     }
                 }
                 // scheduled/finalization/rescheduling belong to runBatch(),
