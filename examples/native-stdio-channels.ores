@@ -1,18 +1,22 @@
-// No stdio/process/Observable imports: built-in namespaces and native prelude.
+// Standard namespaces are global, no imports necessary.
+// process.stdin === stdio.in === stdin.in by identity.
+// process.stdout === stdio.out; process.stderr === stdio.err.
+
 pub gen* read_stdin(): Iterator<String> {
-  for const line of process.stdin {
+  for const line of stdin.in.stream() {
     yield line;
   }
   return;
 }
 
 pub routine main(): void {
-  // Both names refer to one context-owned descriptor:
-  // process.stdin === stdio.in === stdin.in.
-  val ReadableStream<String> input = stdin.in.stream();
-  for const line of input {
-    writech stdio.out, line + "\n";
+  // Observable is a native Oreslang prelude module, not a Java observable.
+  // Each element is pulled only as the downstream iterator requests it.
+  for const message of Observable.from_ch(process.stdin) {
+    Stdio.println_blocking(message);
   }
-  writech process.stderr, "stdin closed\n";
+  Stdio.flush_blocking();
+  Stdio.eprintln_blocking("stdin closed");
+  Stdio.err_flush_blocking();
   return;
 }
