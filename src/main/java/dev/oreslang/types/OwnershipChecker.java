@@ -1673,7 +1673,10 @@ public final class OwnershipChecker {
             else if (source instanceof Ast.IndexExpr indexed) source = indexed.receiver();
             else break;
         }
-        if (!(source instanceof Ast.NameExpr)) return;
+        if (!(source instanceof Ast.NameExpr name)) return;
+        // Module/namespace fields do not name lexical owners. Their access
+        // is controlled by the linker/runtime, not an invented local loan.
+        if (scope.lookup(name.name()) == null) return;
         VarState owner = borrowOwner(source, scope);
         boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
         if (owner.kind == ValueKind.IMM_BORROW || owner.kind == ValueKind.MUT_BORROW
