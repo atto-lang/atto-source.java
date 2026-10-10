@@ -607,8 +607,43 @@ public final class ChannelRuntime {
         }
     }
 
+    private static final int MAX_PENDING_STDIO_GUEST_OPERATIONS = 128;
+
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
+
+        // Rendezvous capacity bounds accepted frames but not pending nb writes.
+        // Apply a hard, pre-admission quota so an unawaited stream of writes
+        // cannot accumulate arbitrarily many registrations. Do this BEFORE
+        // registering any case, otherwise an error could leak a partial select.
+        if (!StdChannels.isBridgeCurrent()) {
+            java.util.IdentityHashMap<Channel<?>, Integer> pending =
+                    new java.util.IdentityHashMap<>();
+            for (SelectCase candidate : selection.set.cases) {
+                if (candidate instanceof WriteCase<?> write
+                        && write.channel() instanceof StdChannels.OutputChannel) {
+                    pending.merge(write.channel(), 1, Integer::sum);
+                } else if (candidate instanceof ReadCase<?> read
+                        && read.channel() instanceof StdChannels.InputChannel) {
+                    pending.merge(read.channel(), 1, Integer::sum);
+                }
+            }
+            for (var entry : pending.entrySet()) {
+                Channel<?> channel = entry.getKey();
+                SelectOperation direction = channel instanceof StdChannels.InputChannel
+                        ? SelectOperation.READ : SelectOperation.WRITE;
+                int existing = 0;
+                for (CaseRegistration waiter : channel.registrations) {
+                    if (waiter.operation() == direction) existing++;
+                }
+                if (existing + entry.getValue() > MAX_PENDING_STDIO_GUEST_OPERATIONS) {
+                    throw new java.util.concurrent.RejectedExecutionException(
+                            "stdio channel pending admission limit exceeded ("
+                                    + MAX_PENDING_STDIO_GUEST_OPERATIONS + ")");
+                }
+            }
+        }
+
         selection.registered = true;
         ACTIVE.add(selection);
 
