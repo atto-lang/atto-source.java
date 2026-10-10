@@ -22,6 +22,7 @@ public final class CriticalGate {
         private boolean requested;
         private boolean granted;
         private boolean closed;
+        private Thread synchronousOwner;
 
         private Ticket() { }
 
@@ -51,8 +52,18 @@ public final class CriticalGate {
 
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
         public void enterSync() {
+            synchronized (CriticalGate.this) {
+                if (owner != null && owner.synchronousOwner == Thread.currentThread()) {
+                    throw new IllegalStateException("recursive synchronous critical acquisition would deadlock");
+                }
+            }
             OresFuture<Void> ready = enterAsync();
-            if (ready.isDone()) return;
+            if (ready.isDone()) {
+                synchronized (CriticalGate.this) {
+                    synchronousOwner = Thread.currentThread();
+                }
+                return;
+            }
             if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
                 close();
                 throw new IllegalStateException(
@@ -70,6 +81,7 @@ public final class CriticalGate {
                     }
                 }
                 if (closed && !granted) throw new CancellationException("critical ticket was cancelled");
+                synchronousOwner = Thread.currentThread();
             }
         }
 
@@ -91,6 +103,7 @@ public final class CriticalGate {
             synchronized (CriticalGate.this) {
                 if (closed) return;
                 closed = true;
+                synchronousOwner = null;
                 if (owner == this) {
                     owner = null;
                     while (!waiters.isEmpty()) {
