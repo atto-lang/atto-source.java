@@ -679,6 +679,17 @@ public final class ChannelRuntime {
             selection.registrations.add(registration);
             channelOf(selectCase).registrations.add(registration);
         }
+
+        // Descriptor handles are inert until a real read is registered.
+        // This includes readch, channel iteration, and dynamic select, not
+        // just InputChannel.readAsync(). The startup thread acquires the
+        // coordinator only after this registration transaction releases it.
+        for (SelectCase readCase : selection.set.cases) {
+            if (readCase instanceof ReadCase<?> reader
+                    && reader.channel() instanceof StdChannels.InputChannel stdin) {
+                stdin.activateReadDemand();
+            }
+        }
     }
 
     private static void unregisterLocked(SelectRegistration selection) {
