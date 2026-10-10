@@ -2086,6 +2086,10 @@ public final class OresEvalRootNode extends RootNode {
                                     runChannelForOfIteration(t, loop, env, source, continuation);
                                     return;
                                 }
+                                if (iterable instanceof GeneratorRuntime.Generator<?> generator) {
+                                    runSuspendableGeneratorForOf(t, loop, env, generator, continuation);
+                                    return;
+                                }
                                 Iterable<?> values = iterableValues(iterable, env);
                                 runForOfIteration(
                                         t,
@@ -2721,6 +2725,49 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(resumed, SourceFlow.throwing(resumeError));
                             } else {
                                 runChannelForOfIteration(resumed, loop, env, channel, continuation);
+                            }
+                        });
+                    }
+                });
+            });
+        }
+
+        /**
+         * A normal (non-async) Oreslang generator can still suspend internally
+         * on readch. Pull it asynchronously and admit the body only after the
+         * completion is delivered on an OresScheduler turn.
+         */
+        private void runSuspendableGeneratorForOf(
+                SourceTask task,
+                Ast.ForOfStmt loop,
+                Env env,
+                GeneratorRuntime.Generator<?> generator,
+                SourceFlowCont continuation) {
+            task.suspend(generator.nextStepAsync(), (t, value, failure) -> {
+                if (failure != null) {
+                    finishSourceIterable(t, generator, SourceFlow.throwing(failure), continuation);
+                    return;
+                }
+                GeneratorRuntime.Step<?> step = (GeneratorRuntime.Step<?>) value;
+                if (step.done()) {
+                    finishSourceIterable(t, generator, SourceFlow.normal(), continuation);
+                    return;
+                }
+                Env iteration = new Env(env);
+                iteration.define(loop.bindingName(), step.value(), loop.bindingKind());
+                runBlock(t, loop.body(), iteration, (t2, flow) -> {
+                    if (flow.kind() == SourceFlowKind.BREAK) {
+                        finishSourceIterable(t2, generator, SourceFlow.normal(), continuation);
+                    } else if (flow.kind() == SourceFlowKind.RETURN
+                            || flow.kind() == SourceFlowKind.THROW) {
+                        finishSourceIterable(t2, generator, flow, continuation);
+                    } else {
+                        t2.scheduleLoopContinuation(env, (resumed, ignored, resumeFailure) -> {
+                            if (resumeFailure != null) {
+                                finishSourceIterable(resumed, generator,
+                                        SourceFlow.throwing(resumeFailure), continuation);
+                            } else {
+                                runSuspendableGeneratorForOf(resumed, loop, env, generator, continuation);
                             }
                         });
                     }
