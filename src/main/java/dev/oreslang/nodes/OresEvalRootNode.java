@@ -6355,6 +6355,10 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "Channel.is_closed");
                         return channel.isClosed();
                     };
+                    case "is_closed_normally" -> (Invokable) args -> {
+                        requireZero(args, "Channel.is_closed_normally");
+                        return channel.isClosedNormally();
+                    };
                     case "stream" -> (Invokable) args -> {
                         requireZero(args, "Channel.stream");
                         if (!(channel instanceof dev.oreslang.runtime.ProcessChannels.ConsoleChannel<?> console)
