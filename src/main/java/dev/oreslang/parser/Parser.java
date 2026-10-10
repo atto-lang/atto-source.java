@@ -757,11 +757,29 @@ public final class Parser {
             Ast.ActorConcurrencySpec policy, boolean declaredSerial) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
+
+        // This is a builtin actor superclass, not a class reference. The
+        // runtime supplies its final lifecycle and exclusive scheduling
+        // behavior; only its documented hooks are overridable.
+        Ast.BuiltinActorBase builtinBase = null;
+        if (match(FROM)) {
+            if (declaredSerial) {
+                throw error(previous(), "serial actor already selects the builtin serial base");
+            }
+            consumeContextualIdentifier("serial",
+                    "actor 'from' currently supports only the builtin 'serial actor' base");
+            consume(ACTOR, "builtin actor base must be spelled 'from serial actor'");
+            if (actorKind != Ast.ActorKind.SHARED) {
+                throw error(previous(), "builtin serial actor base currently requires a SHARED actor");
+            }
+            builtinBase = Ast.BuiltinActorBase.SERIAL;
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
+        boolean asStyle = match(AS);
         boolean braceStyle = match(LBRACE);
-        if (!braceStyle) match(AS);
+        if (!asStyle && !braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
@@ -798,8 +816,8 @@ public final class Parser {
                     messageDeclared = true;
                     messageConcurrency = value;
                 }
-                if (declaredSerial && value != 1) {
-                    throw error(raw, "serial actor requires requestConcurrency = 1 and messageConcurrency = 1");
+                if ((declaredSerial || builtinBase == Ast.BuiltinActorBase.SERIAL) && value != 1) {
+                    throw error(raw, "serial actor base requires requestConcurrency = 1 and messageConcurrency = 1");
                 }
                 continue;
             }
@@ -840,13 +858,13 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         Ast.ActorConcurrencySpec configured =
-                policy == null && !requestDeclared && !messageDeclared ? null
+                policy == null && builtinBase == null && !requestDeclared && !messageDeclared ? null
                 : new Ast.ActorConcurrencySpec(
                         policy == null ? "actor" : policy.protocol(),
                         requestConcurrency, messageConcurrency);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces,
-                fields, null, methods, null, configured);
+                fields, null, methods, null, configured, builtinBase);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
