@@ -105,7 +105,7 @@ public final class TargetAdmission {
             Ast.Program program = Parser.parse(source);
             for (Ast.ImportDecl imported : program.imports()) {
                 if (ImportRules.isJavaPath(imported.path())) {
-                    if (!(target.equals("server") || target.equals("desktop"))
+                    if (!Set.of("server", "desktop").containsAll(own.targets())
                             || !own.requires().contains("interop.java")) {
                         throw new IllegalArgumentException(unit + " imports Java host code '"
                                 + imported.path() + "' without supported environment and interop.java");
