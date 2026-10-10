@@ -17,7 +17,13 @@ public final class OresCompiler {
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
-        program = TypeChecker.checkTypes(program);
+        return analyze(program, java.util.Map.of());
+    }
+
+    /** Linked-file admission with explicitly resolved public module contracts. */
+    public static Ast.Program analyze(
+            Ast.Program program, java.util.Map<String, Ast.InterfaceDecl> importedContracts) {
+        program = TypeChecker.checkTypes(program, importedContracts);
         OwnershipChecker.check(program);
         return program;
     }
