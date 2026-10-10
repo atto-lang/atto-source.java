@@ -46,11 +46,21 @@ public final class Types {
         public Record(Map<String, Type> members) { this(members, false); }
     }
 
+    /**
+     * Callable identity provenance is part of function subtyping and structural
+     * contracts. NO_IDENTITY promises only a result type; RECEIVER_IDENTITY
+     * returns the captured receiver; nonnegative values identify argument slots.
+     * Parameter renaming does not alter the ABI.
+     */
     public record Function(
             List<Type> parameters,
             List<Boolean> mutableParameters,
             boolean async,
-            Type result) implements Type {
+            Type result,
+            int identitySource) implements Type {
+        public static final int NO_IDENTITY = -2;
+        public static final int RECEIVER_IDENTITY = -1;
+
         public Function {
             parameters = List.copyOf(parameters);
             mutableParameters = List.copyOf(mutableParameters);
@@ -58,15 +68,21 @@ public final class Types {
                 throw new IllegalArgumentException(
                         "function parameter mutability metadata must match parameter arity");
             }
+            if (identitySource < NO_IDENTITY || identitySource >= parameters.size()) {
+                throw new IllegalArgumentException("invalid callable identity-source slot " + identitySource);
+            }
+        }
+
+        public Function(List<Type> parameters, List<Boolean> mutableParameters, boolean async, Type result) {
+            this(parameters, mutableParameters, async, result, NO_IDENTITY);
         }
 
         /**
-         * Source-level Fnc<...> types and built-in callables have no mutable
-         * parameters and are synchronous unless a declaration explicitly says
-         * otherwise.
+         * Source-level Fnc<...> types and built-in callables have no identity
+         * provenance unless their declarations explicitly promise it.
          */
         public Function(List<Type> parameters, Type result) {
-            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result);
+            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result, NO_IDENTITY);
         }
     }
 
@@ -168,6 +184,8 @@ public final class Types {
             // Keep it invariant: callers and implementations must agree exactly
             // on which arguments may be mutated.
             if (!source.mutableParameters().equals(target.mutableParameters())) return false;
+            if (target.identitySource() != Function.NO_IDENTITY
+                    && source.identitySource() != target.identitySource()) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!isAssignable(target.parameters().get(i), source.parameters().get(i))) return false;
             }
