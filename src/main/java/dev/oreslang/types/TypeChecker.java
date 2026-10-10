@@ -849,7 +849,42 @@ public final class TypeChecker {
             "stop", "cancel", "end", "endWithCleanup",
             "get_ready_signal", "get_done_signal");
 
+    private boolean inheritsBuiltinSerialActor(
+            Ast.ClassDecl klass, Set<Ast.ClassDecl> visiting) {
+        if (!visiting.add(klass)) return false;
+        if (klass.builtinActorBase() == Ast.BuiltinActorBase.SERIAL) return true;
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null && inheritsBuiltinSerialActor(parent, visiting)) return true;
+        }
+        return false;
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        if (inheritsBuiltinSerialActor(klass, new HashSet<>())) {
+            if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null
+                    || (klass.concurrencySpec() != null
+                        && !klass.concurrencySpec().serial())) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name()
+                        + "' cannot weaken the SHARED/serial scheduling contract of "
+                        + "its builtin serial actor ancestry");
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (FINAL_BUILTIN_ACTOR_METHODS.contains(method.name())) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot override final builtin actor "
+                            + "method '" + method.name() + "'");
+                }
+            }
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (FINAL_BUILTIN_ACTOR_METHODS.contains(field.name())) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot shadow final builtin actor "
+                            + "member '" + field.name() + "'");
+                }
+            }
+        }
         if (klass.builtinActorBase() == Ast.BuiltinActorBase.SERIAL) {
             if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null
                     || klass.concurrencySpec() == null
