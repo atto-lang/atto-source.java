@@ -74,6 +74,63 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void awaitSpawnYieldsAnInitializedActorRefInsteadOfWaitingForTermination() throws Exception {
+        String program = """
+                define actor Worker as
+                  let int initialized;
+
+                  on_start(): void {
+                    self.initialized = 123;
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    if self.initialized == 123; do
+                      self.send("ready");
+                    fi
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("work");
+                  val output = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(output.value);
+                  await worker.done;
+                  return;
+                }
+                """;
+
+        assertEquals("ready", run(program, "await-source-actor-spawn.ores"));
+    }
+
+    @Test
+    void awaitSpawnPropagatesOnStartFailure() throws Exception {
+        String program = """
+                define actor Worker as
+                  val int required;
+
+                  on_start(): void {
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("cannot-send");
+                  return;
+                }
+                """;
+        PolyglotException failure = assertThrows(
+                PolyglotException.class,
+                () -> run(program, "await-source-actor-startup-failure.ores"));
+        assertTrue(failure.getMessage().contains("did not initialize field 'required'"),
+                failure.getMessage());
+    }
+
+    @Test
     void sharedActorsReuseCodeWithoutSharingMutableActorState() throws Exception {
         String program = """
                 define actor Counter as
