@@ -2816,6 +2816,12 @@ public final class TypeChecker {
                 return switch (member.member()) {
                     case "close" -> new Function(List.of(), Primitive.VOID);
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
+                    case "stream" -> new Function(
+                            List.of(),
+                            new Named("ReadableStream", List.of(channelType.arguments().getFirst())));
+                    case "tee" -> new Function(
+                            List.of(new Named("Channel", List.of(Primitive.STRING))),
+                            new Named("WritableTee", List.of()));
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
                 };
