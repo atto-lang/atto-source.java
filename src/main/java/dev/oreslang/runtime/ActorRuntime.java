@@ -358,6 +358,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
+    /** Runtime-root CONTROL inbox survives child and parent actor termination. */
+    private final SupervisorFailureLane supervisorFailures;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
 
     /**
@@ -420,6 +422,7 @@ public final class ActorRuntime implements AutoCloseable {
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        this.supervisorFailures = new SupervisorFailureLane(dispatcherConfig.maxActors());
         ExecutorService privatePool = null;
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
@@ -452,7 +455,49 @@ public final class ActorRuntime implements AutoCloseable {
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
+    private static SupervisorFailureLane.ActorKey supervisorKey(ActorId id) {
+        // UUIDs are never recycled by this runtime. Generation zero is the
+        // canonical incarnation of an ActorId, including after retirement.
+        return new SupervisorFailureLane.ActorKey(id.value().toString(), 0L);
+    }
+
+    /** Only typed guest effects may be classified as throw/raise/panic. */
+    private static SupervisorFailureLane.Kind supervisorFailureKind(Throwable cause) {
+        if (cause instanceof GuestFailureSignal signal) return signal.kind();
+        if (cause instanceof CancellationException
+                || cause instanceof ActorCancellationSignal) {
+            return SupervisorFailureLane.Kind.CANCEL;
+        }
+        return SupervisorFailureLane.Kind.HOST_FAILURE;
+    }
+
     /**
+     * Host/root-supervisor-only CONTROL poll, independent of any user mailbox.
+     * In-flight events persist until ack or retry. No parent guest handler is
+     * executed on a child's carrier or on this polling call.
+     */
+    public Optional<SupervisorFailureLane.Failure> pollSupervisionFailure() {
+        requireSupervisorContext("poll actor supervisor CONTROL events");
+        return supervisorFailures.poll();
+    }
+
+    public void acknowledgeSupervisionFailure(SupervisorFailureLane.ActorKey child) {
+        requireSupervisorContext("acknowledge actor supervisor CONTROL events");
+        supervisorFailures.ack(child);
+    }
+
+    public void retrySupervisionFailure(SupervisorFailureLane.ActorKey child) {
+        requireSupervisorContext("retry actor supervisor CONTROL events");
+        supervisorFailures.retry(child);
+    }
+
+    public int pendingSupervisionFailures() {
+        requireSupervisorContext("inspect actor supervisor CONTROL events");
+        return supervisorFailures.pendingCount();
+    }
+
+    /**
+     * Physical carrier implementation
      * Physical carrier implementation currently backing actor turns.
      *
      * <p>This is diagnostic/control-plane information only. Actor identity is
@@ -3460,7 +3505,12 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<M> ref = new ActorRef<>(id, kind);
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
+            boolean supervisionReserved = false;
             try {
+                // Admission is atomic with respect to actor visibility: a child
+                // never runs without a pre-reserved terminal CONTROL slot.
+                supervisorFailures.reserve(supervisorKey(id));
+                supervisionReserved = true;
                 cell = new ActorCell<>(
                         ref,
                         kind,
@@ -3491,6 +3541,7 @@ public final class ActorRuntime implements AutoCloseable {
                 return ref;
             } catch (RuntimeException | Error failure) {
                 if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (supervisionReserved) supervisorFailures.retireGracefully(supervisorKey(id));
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -5936,6 +5987,17 @@ public final class ActorRuntime implements AutoCloseable {
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
+            SupervisorFailureLane.ActorKey supervised = supervisorKey(ref.id());
+            if (terminal == null) {
+                supervisorFailures.retireGracefully(supervised);
+            } else {
+                String type = terminal.getClass().getSimpleName();
+                String message = terminal.getMessage();
+                String summary = type + (message == null ? "" : ": " + message);
+                String parentId = parent == null ? "" : parent.ref.id().value().toString();
+                supervisorFailures.publish(new SupervisorFailureLane.Failure(
+                        supervised, supervisorFailureKind(terminal), summary, parentId));
+            }
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
                 // readiness rejection. Only a graceful stop-before-ready has
