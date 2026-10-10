@@ -48,10 +48,11 @@ final class SharedRouteContractInteropTest {
     @Test
     void copiedContractSourceIsExactlyTheReviewedGitBlob() throws Exception {
         byte[] body = CONTRACT.getBytes(StandardCharsets.UTF_8);
-        byte[] prefix = ("blob " + body.length + "\\0").getBytes(StandardCharsets.UTF_8);
-        byte[] toHash = new byte[prefix.length + body.length];
-        System.arraycopy(prefix, 0, toHash, 0, prefix.length);
-        System.arraycopy(body, 0, toHash, prefix.length, body.length);
+        byte[] header = ("blob " + body.length).getBytes(StandardCharsets.UTF_8);
+        byte[] toHash = new byte[header.length + 1 + body.length];
+        System.arraycopy(header, 0, toHash, 0, header.length);
+        toHash[header.length] = 0;
+        System.arraycopy(body, 0, toHash, header.length + 1, body.length);
         assertEquals(REVIEWED_CONTRACT_BLOB,
                 HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(toHash)),
                 "embedded contract has drifted from ORESoftware/ores-interfaces PR #70");
