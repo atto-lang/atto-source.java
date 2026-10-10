@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -133,6 +134,8 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
 
     private final Set<TrackedCleanup> tracked = ConcurrentHashMap.newKeySet();
     private final Set<TrackedCleanup> retryableFailures = ConcurrentHashMap.newKeySet();
+    /** FIFO retry rotation: failing hooks cannot monopolize maintenance ticks. */
+    private final ConcurrentLinkedQueue<TrackedCleanup> retryQueue = new ConcurrentLinkedQueue<>();
     private final Map<Object, Set<TrackedCleanup>> trackedByDomain = new ConcurrentHashMap<>();
     private final Set<Object> retiredDomains = ConcurrentHashMap.newKeySet();
     private final ReferenceQueue<Object> referenceQueue = new ReferenceQueue<>();
@@ -327,14 +330,16 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         int cleanupFailures = 0;
 
         if (requestedDomain == null) {
-            // Weakly-consistent concurrent iterators avoid allocating a full
-            // snapshot of potentially thousands of registrations per tick.
-            for (TrackedCleanup entry : retryableFailures) {
-                if (inspected >= maxEntriesToInspect) break;
-                // Stale retry notifications still cost time to scan. Charge
-                // them against the same quantum as live registrations.
-                inspected++;
-                if (!tracked.contains(entry)) {
+            // Fair maintenance: at most one quarter of each sweep can be
+            // consumed by failing callbacks. Rotate them FIFO rather than
+            // repeatedly re-checking the same hash-set prefix.
+            int retryBudget = Math.max(1, maxEntriesToInspect / 4);
+            for (int attempts = 0; attempts < retryBudget
+                    && inspected < maxEntriesToInspect; attempts++) {
+                TrackedCleanup entry = retryQueue.poll();
+                if (entry == null) break;
+                inspected++; // stale handles also consume a work quantum
+                if (!tracked.contains(entry) || entry.cleaned.get()) {
                     retryableFailures.remove(entry);
                     continue;
                 }
@@ -342,20 +347,31 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                     if (entry.tryClean()) {
                         cleanedCount++;
                         removeTracked(entry);
+                    } else if (tracked.contains(entry) && !entry.cleaned.get()) {
+                        retryQueue.offer(entry);
                     }
                 } catch (VirtualMachineError | ThreadDeath fatal) {
                     throw fatal;
                 } catch (Throwable cleanupFailure) {
+                    retryQueue.offer(entry);
                     cleanupFailures++;
                 }
             }
 
-            while (inspected < maxEntriesToInspect) {
+            // Reserve maintenance work for retired actor domains, even if
+            // the ReferenceQueue is saturated by dead or stale objects.
+            int referenceQuota = retiredDomains.isEmpty()
+                    ? maxEntriesToInspect
+                    : Math.max(1, maxEntriesToInspect / 2);
+            int referenceInspected = 0;
+            while (inspected < maxEntriesToInspect
+                    && referenceInspected < referenceQuota) {
                 TrackedCleanup entry = (TrackedCleanup) referenceQueue.poll();
                 if (entry == null) break;
                 // A closed handle may enqueue later; stale reference-queue
                 // notifications must not bypass the background work budget.
                 inspected++;
+                referenceInspected++;
                 if (!tracked.contains(entry)) continue;
                 try {
                     if (entry.tryClean()) {
@@ -441,7 +457,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private void retainRetry(TrackedCleanup entry) {
         synchronized (lifecycleLock) {
             if (!closed.get() && tracked.contains(entry) && !entry.cleaned.get()) {
-                retryableFailures.add(entry);
+                if (retryableFailures.add(entry)) retryQueue.offer(entry);
             }
         }
     }
@@ -516,6 +532,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         synchronized (lifecycleLock) {
             tracked.clear();
             retryableFailures.clear();
+            retryQueue.clear();
             trackedByDomain.clear();
             retiredDomains.clear();
             while (referenceQueue.poll() != null) { /* drain */ }
