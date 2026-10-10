@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.util.concurrent.CompletableFuture;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -219,6 +220,49 @@ public final class NativeIo {
 
     public static String httpPostText(OresContext context, String rawUri, String body) {
         return httpText(context, "POST", rawUri, body);
+    }
+
+    /** Real asynchronous HTTP transport for both explicit-await and implicit
+     * _blocking suspension. Never send() or wait for HTTP completion on an
+     * Oreslang carrier or one of the native I/O offload workers.
+     * The network permission is checked before any request is submitted.
+     */
+    public static CompletableFuture<String> httpGetTextAsync(OresContext context, String rawUri) {
+        return httpTextAsync(context, "GET", rawUri, null);
+    }
+
+    public static CompletableFuture<String> httpPostTextAsync(
+            OresContext context, String rawUri, String body) {
+        return httpTextAsync(context, "POST", rawUri, body);
+    }
+
+    private static CompletableFuture<String> httpTextAsync(
+            OresContext context, String method, String rawUri, String body) {
+        URI uri = checkedHttpUri(rawUri);
+        String endpoint = networkEndpoint(uri);
+        context.requirePermission(RuntimePermissions.Permission.NET, endpoint,
+                "http." + method.toLowerCase(java.util.Locale.ROOT));
+        HttpRequest.Builder request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(30));
+        if ("POST".equals(method)) {
+            request.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        } else {
+            request.GET();
+        }
+        // Never follow redirects to a destination outside the admitted grant.
+        HttpClient client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .connectTimeout(Duration.ofSeconds(15))
+                .build();
+        try {
+            return client.sendAsync(request.build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                    .thenApply(HttpResponse::body)
+                    .whenComplete((value, failure) -> client.shutdown());
+        } catch (RuntimeException failure) {
+            client.shutdownNow();
+            throw failure;
+        }
     }
 
     private static String httpText(
