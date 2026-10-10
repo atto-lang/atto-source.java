@@ -223,6 +223,49 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void throwingHostSubscriptionCancelDoesNotBreakWinnerOrSubsequentSelections()
+            throws Exception {
+        var cancellationAttempted = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.Flow.Publisher<Integer> malicious = subscriber ->
+                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                    @Override public void request(long n) { subscriber.onNext(21); }
+                    @Override public void cancel() {
+                        cancellationAttempted.countDown();
+                        throw new IllegalStateException("foreign cancel hook threw");
+                    }
+                });
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malicious))
+                .selectAsync();
+        assertEquals(21, selected.get(5, java.util.concurrent.TimeUnit.SECONDS).value());
+        assertTrue(cancellationAttempted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        ChannelRuntime.Channel<Integer> next = new ChannelRuntime.Channel<>(1);
+        assertTrue(next.tryWrite(42));
+        assertEquals(42, ChannelRuntime.SelectSet.of(ChannelRuntime.read(next))
+                .selectAsync().join().value());
+    }
+
+    @Test
+    void duplicateOnSubscribeNeverReplacesOriginalSubscription() throws Exception {
+        var firstCancelled = new java.util.concurrent.CountDownLatch(1);
+        var extraCancelled = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.Flow.Publisher<Integer> malformed = subscriber -> {
+            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                @Override public void request(long n) { }
+                @Override public void cancel() { firstCancelled.countDown(); }
+            });
+            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                @Override public void request(long n) { throw new AssertionError("must not request"); }
+                @Override public void cancel() { extraCancelled.countDown(); }
+            });
+        };
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malformed))
+                .selectAsync();
+        assertTrue(extraCancelled.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(selected.cancel(false));
+        assertTrue(firstCancelled.await(5, java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    @Test
     void observableEmptyCompletionFailsSelectRatherThanHanging() throws Exception {
         java.util.concurrent.Flow.Publisher<Integer> empty = subscriber ->
                 subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
