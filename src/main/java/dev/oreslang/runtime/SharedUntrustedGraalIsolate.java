@@ -61,8 +61,23 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
             // Engine is created exactly once for the entire untrusted actor
             // domain. Do not configure spawnIsolate or engine memory limits
             // on a per-actor Context.Builder.
-            created = Engine.newBuilder(OresLanguage.ID)
-                    .sandbox(SandboxPolicy.UNTRUSTED)
+            Engine.Builder engineBuilder = Engine.newBuilder(OresLanguage.ID)
+                    .sandbox(SandboxPolicy.UNTRUSTED);
+            // Explicit library paths are an embedder-only bootstrap/test
+            // override. Do not resolve the location from guest-controlled
+            // source, environment variables or actor message payloads.
+            String isolateLibrary = System.getProperty("ores.untrusted.isolate.library");
+            if (isolateLibrary != null && !isolateLibrary.isBlank()) {
+                java.nio.file.Path library = java.nio.file.Path.of(isolateLibrary)
+                        .toAbsolutePath().normalize();
+                if (!java.nio.file.Files.isRegularFile(library)) {
+                    throw new IllegalStateException(
+                            "configured Oreslang isolate library is not a regular file: " + library);
+                }
+                engineBuilder.allowExperimentalOptions(true)
+                        .option("engine.IsolateLibrary", library.toString());
+            }
+            created = engineBuilder
                     // The sandbox forbids ambient host stdio even before
                     // the first Context is built. Per-Context output streams
                     // are configured separately by IsolatePolicy.
