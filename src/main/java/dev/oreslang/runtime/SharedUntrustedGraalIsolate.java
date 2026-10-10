@@ -63,6 +63,12 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
             // on a per-actor Context.Builder.
             created = Engine.newBuilder(OresLanguage.ID)
                     .sandbox(SandboxPolicy.UNTRUSTED)
+                    // The sandbox forbids ambient host stdio even before
+                    // the first Context is built. Per-Context output streams
+                    // are configured separately by IsolatePolicy.
+                    .in(java.io.InputStream.nullInputStream())
+                    .out(java.io.OutputStream.nullOutputStream())
+                    .err(java.io.OutputStream.nullOutputStream())
                     .spawnIsolate(true)
                     .option("engine.MaxIsolateMemory", isolateHeapBytes + "B")
                     .build();
