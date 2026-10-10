@@ -388,7 +388,26 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public enum HeapIsolationRequirement {
         ALLOW_SHARED_JVM,
-        REQUIRE_INDEPENDENT_COLLECTOR
+        REQUIRE_INDEPENDENT_COLLECTOR;
+
+        public static HeapIsolationRequirement fromApplicationArguments(String[] args) {
+            Objects.requireNonNull(args, "application arguments");
+            HeapIsolationRequirement requirement = ALLOW_SHARED_JVM;
+            boolean seen = false;
+            for (String arg : args) {
+                if (!arg.startsWith("--ores-actor-heaps=")) continue;
+                if (seen) throw new IllegalArgumentException(
+                        "duplicate --ores-actor-heaps setting");
+                seen = true;
+                requirement = switch (arg.substring("--ores-actor-heaps=".length())) {
+                    case "shared-jvm" -> ALLOW_SHARED_JVM;
+                    case "independent" -> REQUIRE_INDEPENDENT_COLLECTOR;
+                    default -> throw new IllegalArgumentException(
+                            "actor heap mode must be shared-jvm or independent");
+                };
+            }
+            return requirement;
+        }
     }
 
     private final HeapIsolationRequirement heapIsolationRequirement;
