@@ -255,10 +255,24 @@ public final class NativeIo {
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
         try {
-            return client.sendAsync(request.build(),
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-                    .thenApply(HttpResponse::body)
-                    .whenComplete((value, failure) -> client.shutdown());
+            CompletableFuture<HttpResponse<String>> requestFuture = client.sendAsync(
+                    request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            // A derived CompletableFuture does not propagate cancel() upstream.
+            // Use an explicit completion bridge so closing the owning context
+            // aborts the underlying transport rather than only the guest future.
+            CompletableFuture<String> guestFuture = new CompletableFuture<>();
+            requestFuture.whenComplete((response, failure) -> {
+                if (failure == null) guestFuture.complete(response.body());
+                else guestFuture.completeExceptionally(failure);
+                client.shutdown();
+            });
+            guestFuture.whenComplete((ignored, failure) -> {
+                if (guestFuture.isCancelled()) {
+                    requestFuture.cancel(true);
+                    client.shutdownNow();
+                }
+            });
+            return guestFuture;
         } catch (RuntimeException failure) {
             client.shutdownNow();
             throw failure;
