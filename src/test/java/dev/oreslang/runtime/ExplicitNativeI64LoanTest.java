@@ -18,8 +18,10 @@ final class ExplicitNativeI64LoanTest {
         AtomicReference<ExplicitNativeI64Region.Loan> outstanding = new AtomicReference<>();
         AtomicReference<Throwable> failure = new AtomicReference<>();
         CountDownLatch ready = new CountDownLatch(1);
+        AtomicReference<ActorRuntime> retainedRuntime = new AtomicReference<>();
 
         try (ActorRuntime runtime = new ActorRuntime()) {
+            retainedRuntime.set(runtime);
             var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
                 try {
                     var memory = ctx.actorOwnedMemory().orElseThrow();
@@ -42,6 +44,8 @@ final class ExplicitNativeI64LoanTest {
         }
 
         assertNotNull(region.get());
+        assertEquals(16, retainedRuntime.get().privateMemoryBytes(),
+                "physically pinned native bytes must survive actor quota teardown");
         assertTrue(region.get().closed(), "actor termination fences native reads");
         assertFalse(region.get().physicallyClosed(),
                 "FFM scope must not close before outstanding loan is released");
@@ -55,6 +59,8 @@ final class ExplicitNativeI64LoanTest {
         outstanding.get().close(); // double-close safe
         assertEquals(0, region.get().activeLoans());
         assertTrue(region.get().physicallyClosed());
+        assertEquals(0, retainedRuntime.get().privateMemoryBytes(),
+                "last native loan completion refunds the aggregate runtime budget");
     }
 
     @Test
@@ -83,6 +89,7 @@ final class ExplicitNativeI64LoanTest {
                     second.close();
                     assertTrue(region.physicallyClosed());
                     assertEquals(baseline, heap.usedBytes());
+                    assertEquals(baseline, ctx.runtime().privateMemoryBytes());
                 } catch (Throwable error) {
                     failure.set(error);
                 } finally { done.countDown(); }
