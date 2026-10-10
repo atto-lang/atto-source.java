@@ -3270,7 +3270,9 @@ public final class TypeChecker {
             }
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException("actor '" + klass.name()
-                        + "' cannot be constructed with new; actor instances must be created through the actor runtime");
+                        + "' cannot be constructed with new outside spawn; "
+                        + "use 'spawn " + klass.name() + "()' or 'spawn new " + klass.name()
+                        + "()'. Standalone actor specs are not implemented yet");
             }
 
             Named nominal;
