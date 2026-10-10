@@ -1623,6 +1623,23 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Wait for the next failed direct child on an independent supervisor
+         * CONTROL lane. A live actor may observe only its own children; host
+         * supervisors may observe any parent they own. One pending reader is
+         * admitted per parent, so a competing consumer cannot steal a notice.
+         */
+        public OresFuture<ActorFailureNotice> nextChildFailure() {
+            requireCallerRuntimeAffinity("observe child failures");
+            ActorCell<?> parent = actors.get(id);
+            if (parent == null) throw new IllegalStateException("actor is no longer registered");
+            ActorCell<?> caller = currentActor.get();
+            if (caller != null && caller != parent) {
+                throw new SecurityException("only the parent actor may await child failures");
+            }
+            return parent.nextChildFailure();
+        }
+
+        /**
          * Actor initialization barrier. Accessing ready starts an unstarted
          * actor on its own dispatcher, even if no first message was sent.
          * Constructor/factory failures complete this Future exceptionally.
@@ -5681,6 +5698,12 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
+        // Bounded by the number of directly owned children (itself bounded by
+        // the global actor limit), never by normal user mailbox capacity.
+        // Exactly one terminal notice is admitted for each child identity.
+        private final ArrayDeque<ActorFailureNotice> childFailureControl = new ArrayDeque<>();
+        private final Set<ActorId> reportedChildFailures = new java.util.HashSet<>();
+        private OresFuture<ActorFailureNotice> childFailureWaiter;
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -5856,6 +5879,41 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 return hasQueuedWorkLocked();
             }
+        }
+
+        private OresFuture<ActorFailureNotice> nextChildFailure() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) {
+                    throw new IllegalStateException("cannot observe failures of a terminated parent actor");
+                }
+                if (childFailureWaiter != null) {
+                    throw new IllegalStateException("only one pending child-failure reader is allowed");
+                }
+                ActorFailureNotice next = childFailureControl.pollFirst();
+                if (next != null) return OresFuture.completed(next);
+                childFailureWaiter = new OresFuture<>(() -> false, () -> { });
+                return childFailureWaiter;
+            }
+        }
+
+        private void enqueueChildFailure(ActorFailureNotice notice) {
+            OresFuture<ActorFailureNotice> pending = null;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || !children.stream()
+                        .anyMatch(child -> child.ref.id().equals(notice.actorId()))) return;
+                if (!reportedChildFailures.add(notice.actorId())) return;
+                if (childFailureWaiter != null) {
+                    pending = childFailureWaiter;
+                    childFailureWaiter = null;
+                } else {
+                    // A child can fail once. With only direct children admitted
+                    // this cannot exceed dispatcherConfig.maxActors() slots.
+                    childFailureControl.addLast(notice);
+                }
+            }
+            // Never execute a Future completion under either actor's lifecycle
+            // lock, and never enter parent guest code on the failed carrier.
+            if (pending != null) pending.completeFromRuntime(notice);
         }
 
         private boolean hasQueuedWorkLocked() {
@@ -6464,8 +6522,19 @@ public final class ActorRuntime implements AutoCloseable {
                     && !(cause instanceof ActorCancelledException)
                     && !(cause instanceof ActorCancellationSignal)
                     && ref.terminationCause.get() == cause) {
-                ref.failureNoticeFuture.completeFromRuntime(failureNotice(ref.id(), cause));
+                ActorFailureNotice notice = failureNotice(ref.id(), cause);
+                ref.failureNoticeFuture.completeFromRuntime(notice);
+                if (parent != null) parent.enqueueChildFailure(notice);
             }
+
+            OresFuture<ActorFailureNotice> abandoned;
+            synchronized (lifecycleLock) {
+                abandoned = childFailureWaiter;
+                childFailureWaiter = null;
+                childFailureControl.clear();
+                reportedChildFailures.clear();
+            }
+            if (abandoned != null) abandoned.failFromRuntime(terminated(ref));
 
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
