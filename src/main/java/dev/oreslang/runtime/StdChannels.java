@@ -59,8 +59,13 @@ public final class StdChannels implements AutoCloseable {
         // start the OS reader only when an actual receive is registered.
         void activateReadDemand() { owner.startInputPumpOnDemand(); }
 
+        void requireGuestRead() {
+            owner.requireGuestCapability(IsolatePolicy.Capability.STDIN, "stdio.in.readch");
+        }
+
         @Override
         public java.util.Optional<String> tryRead() {
+            requireGuestRead();
             activateReadDemand();
             return super.tryRead();
         }
@@ -78,7 +83,24 @@ public final class StdChannels implements AutoCloseable {
 
     /** Process-owned writable descriptor; the context retains close authority. */
     public static final class OutputChannel extends ChannelRuntime.Channel<String> {
-        private OutputChannel() { super(0); }
+        private final StdChannels owner;
+        private final String descriptor;
+
+        // Retained for the isolated descriptor-bridge unit tests.
+        private OutputChannel() { this(null, "stdio.out"); }
+
+        private OutputChannel(StdChannels owner, String descriptor) {
+            super(0);
+            this.owner = owner;
+            this.descriptor = descriptor;
+        }
+
+        void requireGuestWrite() {
+            if (owner != null) {
+                owner.requireGuestCapability(IsolatePolicy.Capability.STDOUT,
+                        descriptor + ".writech");
+            }
+        }
 
         @Override
         public void close() { close(null); }
@@ -93,8 +115,8 @@ public final class StdChannels implements AutoCloseable {
 
     private final OresContext context;
     private final InputChannel input = new InputChannel(this);
-    private final OutputChannel output = new OutputChannel();
-    private final OutputChannel error = new OutputChannel();
+    private final OutputChannel output = new OutputChannel(this, "stdio.out");
+    private final OutputChannel error = new OutputChannel(this, "stdio.err");
     private final AtomicBoolean startedInput = new AtomicBoolean();
     private final AtomicBoolean startedOutput = new AtomicBoolean();
     private final AtomicBoolean startedError = new AtomicBoolean();
@@ -115,6 +137,16 @@ public final class StdChannels implements AutoCloseable {
 
     public StdChannels(OresContext context) {
         this.context = context;
+    }
+
+    private void requireGuestCapability(IsolatePolicy.Capability capability, String operation) {
+        if (context != null) {
+            context.requireCapability(capability, operation);
+        } else {
+            // Null context only occurs in isolated host-side test fixtures.
+            IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+            if (actorPolicy != null) actorPolicy.require(capability, operation);
+        }
     }
 
     public InputChannel input() {

@@ -325,4 +325,43 @@ final class ActorCapabilityIsolationTest {
     }
 
 
+
+    @Test
+    void retainedStdioHandlesCannotLaunderDescriptorAuthorityIntoRestrictedActors() throws Exception {
+        // Test process-owned descriptors without starting any I/O workers.
+        StdChannels channels = new StdChannels(null);
+        var outField = StdChannels.class.getDeclaredField("output");
+        outField.setAccessible(true);
+        var inField = StdChannels.class.getDeclaredField("input");
+        inField.setAccessible(true);
+        StdChannels.OutputChannel stdout =
+                (StdChannels.OutputChannel) outField.get(channels);
+        StdChannels.InputChannel stdin =
+                (StdChannels.InputChannel) inField.get(channels);
+
+        IsolatePolicy restricted = IsolatePolicy.developer().withoutCapabilities(
+                IsolatePolicy.Capability.STDIN, IsolatePolicy.Capability.STDOUT);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(restricted, factoryContext ->
+                    (message, turn) -> {
+                        assertThrows(SecurityException.class,
+                                () -> stdout.writeAsync("forbidden"));
+                        assertThrows(SecurityException.class,
+                                () -> ChannelRuntime.SelectSet.of(
+                                        ChannelRuntime.write(stdout, "forbidden")));
+                        assertThrows(SecurityException.class,
+                                () -> ChannelRuntime.SelectSet.from(
+                                        java.util.List.of(ChannelRuntime.read(stdin))));
+                        assertThrows(SecurityException.class, stdin::tryRead);
+                        turn.self().stop();
+                    });
+
+            actor.send("check");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(),
+                    "restricted actor could use a retained stdio descriptor: "
+                            + actor.failure());
+        }
+    }
 }

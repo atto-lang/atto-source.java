@@ -386,6 +386,16 @@ public final class ChannelRuntime {
                             && writer.channel() instanceof StdChannels.InputChannel) {
                         throw new IllegalArgumentException("stdio input is a read-only channel");
                     }
+                    // Handles can outlive their creating actor. Check the
+                    // caller's live authority even for cached or upcast refs.
+                    if (selected instanceof ReadCase<?> reader
+                            && reader.channel() instanceof StdChannels.InputChannel input) {
+                        input.requireGuestRead();
+                    }
+                    if (selected instanceof WriteCase<?> writer
+                            && writer.channel() instanceof StdChannels.OutputChannel output) {
+                        output.requireGuestWrite();
+                    }
                 }
             }
             this.fairCursor.set(initialFairCursor);
@@ -674,6 +684,16 @@ public final class ChannelRuntime {
             java.util.IdentityHashMap<Channel<?>, Integer> pending =
                     new java.util.IdentityHashMap<>();
             for (SelectCase candidate : selection.set.cases) {
+                // A cached SelectSet can be reused from a different actor.
+                // Admission must recheck the current actor's authority.
+                if (candidate instanceof ReadCase<?> read
+                        && read.channel() instanceof StdChannels.InputChannel input) {
+                    input.requireGuestRead();
+                }
+                if (candidate instanceof WriteCase<?> write
+                        && write.channel() instanceof StdChannels.OutputChannel output) {
+                    output.requireGuestWrite();
+                }
                 if (candidate instanceof WriteCase<?> write
                         && write.channel() instanceof StdChannels.OutputChannel) {
                     // All guest writes (including dynamically built selects)
