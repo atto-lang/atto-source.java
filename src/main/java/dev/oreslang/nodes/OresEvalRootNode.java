@@ -4454,7 +4454,7 @@ public final class OresEvalRootNode extends RootNode {
         // panic, process-exit or VM-fatal signals into a guest catch binding.
         private boolean isGuestCatchable(Throwable failure) {
             return failure instanceof RuntimeException
-                    && !(failure instanceof OresPanic)
+                    && !(failure instanceof dev.oreslang.runtime.GuestFailureSignal)
                     && !(failure instanceof java.util.concurrent.CancellationException);
         }
 
@@ -4464,8 +4464,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresPanic panic) {
-                throw panic;
+            } catch (dev.oreslang.runtime.GuestFailureSignal signal) {
+                throw signal;
             } catch (java.util.concurrent.CancellationException cancelled) {
                 throw cancelled;
             } catch (RuntimeException ordinaryFailure) {
@@ -4818,7 +4818,7 @@ public final class OresEvalRootNode extends RootNode {
                 try { executeBlock(tried.body(), env, true); }
                 catch (TailCallSignal signal) { throw signal; }
                 catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresPanic panic) { throw panic; }
+                catch (dev.oreslang.runtime.GuestFailureSignal signal) { throw signal; }
                 catch (java.util.concurrent.CancellationException cancelled) { throw cancelled; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
