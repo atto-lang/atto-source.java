@@ -45,7 +45,7 @@ final class LinkedProgramStdinTest {
                 wasClosed = true;
             }
         }
-        HostInput suppliedStdin = new HostInput("one\\n\\ntwo");
+        HostInput suppliedStdin = new HostInput("one\n\ntwo");
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         IsolatePolicy policy = IsolatePolicy.developer();
@@ -61,7 +61,7 @@ final class LinkedProgramStdinTest {
                 out,
                 err);
         assertEquals(0, result.exitStatus());
-        assertEquals("[one]\\n[]\\n[two]\\n", out.toString(StandardCharsets.UTF_8));
+        assertEquals("[one]\n[]\n[two]\n", out.toString(StandardCharsets.UTF_8));
         assertFalse(suppliedStdin.wasClosed,
                 "Oreslang Context.close must never close embedding caller's stdin");
     }
