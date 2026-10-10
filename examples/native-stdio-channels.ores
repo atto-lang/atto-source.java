@@ -1,20 +1,18 @@
-import module Stdio from "std/stdio";
-import module Observable from "std/observable";
-
-// The input channel holds zero messages. Backpressure travels to the
-// writer's pending Future and eventually to the OS shell-pipe buffer.
+// No stdio/process/Observable imports: built-in namespaces and native prelude.
 pub gen* read_stdin(): Iterator<String> {
-  for const line of stdio.in {
+  for const line of process.stdin {
     yield line;
   }
   return;
 }
 
 pub routine main(): void {
-  // Observable.from_ch is lazy, pull-based and single-consumer.
-  for const message of Observable.from_ch(stdio.stdin) {
-    Stdio.println_blocking(message);
+  // Both names refer to one context-owned descriptor:
+  // process.stdin === stdio.in === stdin.in.
+  val ReadableStream<String> input = stdin.in.stream();
+  for const line of input {
+    writech stdio.out, line + "\n";
   }
-  Stdio.eprintln_blocking("stdin closed");
+  writech process.stderr, "stdin closed\n";
   return;
 }
