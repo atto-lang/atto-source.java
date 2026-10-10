@@ -1276,6 +1276,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function) {
+            if (function.suspends()) return true;
             return functionContainsPotentialSuspension(
                     function,
                     java.util.Collections.newSetFromMap(
@@ -1453,7 +1454,7 @@ public final class OresEvalRootNode extends RootNode {
                             if (method.name().equals(member.member())
                                     && method.arity() == call.arguments().size()
                                     && seen.add(method)) {
-                                if (method.async()) return true;
+                                if (method.async() || method.suspends()) return true;
                                 for (Ast.Stmt statement : method.body()) {
                                     if (statementContainsPotentialSuspension(statement, seen)) return true;
                                 }
@@ -1471,7 +1472,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (target != null) {
                         // Creating a generator activation does not pull or await it.
                         if (target.generator()) return false;
-                        return target.async()
+                        return target.async() || target.suspends()
                                 || target.actorKind() != Ast.ActorKind.NONE
                                 || (!target.async()
                                         && functionContainsPotentialSuspension(
@@ -4501,6 +4502,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean methodContainsPotentialSuspension(
                 Ast.MethodDecl method) {
+            if (method.suspends()) return true;
             for (Ast.Stmt stmt : method.body()) {
                 if (statementContainsPotentialSuspension(
                         stmt,
