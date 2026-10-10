@@ -90,7 +90,7 @@ final class NativeStdioChannelsTest {
                   stdio.stdout.write(eof.is_none());
                   return;
                 }
-                """, "one\\n");
+                """, "one\n");
         assertEquals("one:true", result.stdout());
     }
 
