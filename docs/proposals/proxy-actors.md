@@ -1,6 +1,6 @@
 # ProxyActor: actor identity across process and machine boundaries
 
-Status: **design contract / not an executable Oreslang feature** (2026-10-10).
+Status: **declarative parser + fail-closed spawn admission; not a running remote proxy** (2026-10-10).
 This document proposes a source-level proxy actor declaration, compiler contracts,
 and a native transport protocol. No existing ActorRef network/Ipc backend may be
 represented as providing these guarantees until corresponding CI and fault tests
@@ -25,8 +25,8 @@ define contract Transformer as
     pub async fnc transform(Data input): ResultData;
 end
 
-// Declaration: no user-written receive/forward/reverse implementation needed.
-// Parser, type checker, resolver and backend work are still required.
+// Declarative parsing is supported, but spawning is rejected until the
+// authenticated resolver and native transport backend have been wired.
 define proxy actor TransformProxy
     conforms to Transformer
     discover "workers.transform.v1"
@@ -49,7 +49,7 @@ deployment policy and security boundary. The user may constrain it to
 This proposed grammar intentionally preserves `|>` for eager function application
 and `pipe` for actor-stream topology.
 
-`spawn TransformProxy()` should return `ActorRef<TransformProxy>` immediately.
+`spawn TransformProxy()` will return `ActorRef<TransformProxy>` immediately when the native backend lands; today this expression is rejected statically.
 `await ref.ready` settles only after local proxy initialization,
 endpoint discovery, authenticated remote handshaking, actor identity/contract
 version negotiation, and stream-credit setup. It should not mean that an
@@ -189,8 +189,8 @@ silently extended across process or machine boundaries.
 
 1. Actor `StreamStage<I,O>` typed ports, local `pipe` graph and bounded
    suspension-aware mailbox/output credit path.
-2. Proxy declaration parsing and contract hash generation; compile-time
-   validation of available discovery/transport policies.
+2. Proxy declaration parsing (**initial syntax supported**) followed by
+   contract hash generation and enforced service/transport policy validation.
 3. A native in-process fake transport and deterministic lifecycle/credit
    protocol model (prefer Rust or Oreslang, not a new Java userland API).
 4. Unix domain IPC backend with same-host worker integration tests.
