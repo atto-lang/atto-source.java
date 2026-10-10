@@ -17,6 +17,9 @@ import java.util.Map;
  */
 final class IdentityReturnChecker {
     private final Map<String, List<Callable>> functions = new HashMap<>();
+    // Runtime lexical module bindings take precedence over a similarly named
+    // module/function namespace. Keep that resolution visible to the prover.
+    private final Map<String, java.util.Set<String>> moduleValueBindings = new HashMap<>();
     private final Map<String, Ast.ClassDecl> qualifiedClasses = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> qualifiedInterfaces = new HashMap<>();
     private final java.util.Set<String> importedCallables = new java.util.HashSet<>();
@@ -60,6 +63,10 @@ final class IdentityReturnChecker {
         }
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FieldDecl field) {
+                    checker.moduleValueBindings.computeIfAbsent(
+                            module.name(), unused -> new java.util.HashSet<>()).add(field.name());
+                }
                 if (decl instanceof Ast.FunctionDecl function) {
                     checker.functions.computeIfAbsent(function.name(), unused -> new ArrayList<>())
                             .add(new Callable(module.name(), function));
@@ -595,6 +602,11 @@ final class IdentityReturnChecker {
         }
     }
 
+    private boolean moduleValueShadows(String module, String symbol) {
+        return module != null
+                && moduleValueBindings.getOrDefault(module, java.util.Set.of()).contains(symbol);
+    }
+
     private boolean proves(Ast.Expr expression, Scope scope, String module) {
         if (expression instanceof Ast.NameExpr name) {
             return Boolean.TRUE.equals(scope.get(name.name()));
@@ -615,7 +627,9 @@ final class IdentityReturnChecker {
         Ast.FunctionDecl callee = null;
         if (call.callee() instanceof Ast.NameExpr name
                 && !scope.contains(name.name())
-                && !importedCallables.contains(name.name())) {
+                && !importedCallables.contains(name.name())
+                && !moduleValueShadows(module, name.name())
+                && !classNames.contains(name.name())) {
             List<Callable> matches = functions.getOrDefault(name.name(), List.of());
             List<Callable> sameModule = matches.stream().filter(
                     c -> c.module().equals(module) && c.function().parameters().size() == call.arguments().size()).toList();
@@ -626,6 +640,7 @@ final class IdentityReturnChecker {
                 && member.receiver() instanceof Ast.NameExpr namespace
                 && !scope.contains(namespace.name())
                 && !importedNamespaces.contains(namespace.name())
+                && !moduleValueShadows(module, namespace.name())
                 && !classNames.contains(namespace.name())) {
             List<Callable> matches = functions.getOrDefault(member.member(), List.of());
             List<Callable> exact = matches.stream().filter(
