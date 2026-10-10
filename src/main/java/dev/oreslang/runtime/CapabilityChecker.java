@@ -33,6 +33,8 @@ public final class CapabilityChecker {
     private final Set<Object> typeExpansionStack =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final PermissionCheckMode permissionCheckMode;
+    /** Caller context matters: even shared actors cannot trigger JVM-wide GC. */
+    private int actorExecutionDepth;
 
     private CapabilityChecker(Ast.Program program, PermissionCheckMode permissionCheckMode) {
         this.permissionCheckMode = permissionCheckMode;
@@ -108,7 +110,7 @@ public final class CapabilityChecker {
                 require(effective, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
             }
             checkCallableTypes(fn.parameters(), fn.returnType(), effective);
-            checkStatements(fn.body(), effective);
+            checkActorStatements(fn.body(), effective, fn.actorKind() != Ast.ActorKind.NONE);
         } finally {
             callableStack.remove(fn);
         }
@@ -176,7 +178,8 @@ public final class CapabilityChecker {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
                     }
                     checkCallableTypes(fn.parameters(), fn.returnType(), actorPolicy);
-                    checkStatements(fn.body(), actorPolicy);
+                    checkActorStatements(fn.body(), actorPolicy,
+                            fn.actorKind() != Ast.ActorKind.NONE);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     IsolatePolicy actorPolicy = actorPolicy(klass.actorKind(), policy);
                     if (klass.actorKind() == Ast.ActorKind.SHARED) {
@@ -186,12 +189,16 @@ public final class CapabilityChecker {
                     for (Ast.TypeRef iface : klass.interfaces()) checkType(iface, actorPolicy);
                     for (Ast.FieldDecl field : klass.fields()) {
                         checkType(field.type(), actorPolicy);
-                        if (field.initializer() != null) checkExpr(field.initializer(), actorPolicy);
+                        if (field.initializer() != null) {
+                            checkActorInitializer(field.initializer(), actorPolicy,
+                                    klass.actorKind() != Ast.ActorKind.NONE);
+                        }
                     }
                     for (Ast.MethodDecl method : klass.methods()) {
                         checkType(method.explicitReceiverType(), actorPolicy);
                         checkCallableTypes(method.parameters(), method.returnType(), actorPolicy);
-                        checkStatements(method.body(), actorPolicy);
+                        checkActorStatements(method.body(), actorPolicy,
+                                klass.actorKind() != Ast.ActorKind.NONE);
                     }
                 } else if (declaration instanceof Ast.InterfaceDecl iface) {
                     for (Ast.TypeRef parent : iface.parents()) checkType(parent, policy);
@@ -290,6 +297,26 @@ public final class CapabilityChecker {
             } finally {
                 typeExpansionStack.remove(klass);
             }
+        }
+    }
+
+    private void checkActorStatements(
+            List<Ast.Stmt> statements, IsolatePolicy policy, boolean actor) {
+        if (actor) actorExecutionDepth++;
+        try {
+            checkStatements(statements, policy);
+        } finally {
+            if (actor) actorExecutionDepth--;
+        }
+    }
+
+    private void checkActorInitializer(
+            Ast.Expr expression, IsolatePolicy policy, boolean actor) {
+        if (actor) actorExecutionDepth++;
+        try {
+            checkExpr(expression, policy);
+        } finally {
+            if (actor) actorExecutionDepth--;
         }
     }
 
@@ -440,7 +467,14 @@ public final class CapabilityChecker {
                 if (path.equals("std.process.exit") || path.equals("process.exit")) require(policy, IsolatePolicy.Capability.PROCESS_EXIT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
-                if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
+                if (path.equals("process.gc") || path.startsWith("process.gc.")) {
+                    if (actorExecutionDepth > 0) {
+                        throw new SecurityException(
+                                "actor code cannot request process.gc(): "
+                                + "the JVM heap is shared; use actor.gc() for actor-local cleanup");
+                    }
+                    require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
+                }
                 if (path.equals("SharedMutex") || path.startsWith("SharedMutex.")) require(policy, IsolatePolicy.Capability.SHARED_MEMORY, path);
                 if (path.startsWith("network.") || path.startsWith("net.") || path.startsWith("http.")) {
                     require(policy, IsolatePolicy.Capability.NETWORK, path);
