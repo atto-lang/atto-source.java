@@ -52,6 +52,21 @@ final class AsyncStdioDeferTest {
     }
 
     @Test
+    void inlineDeferredLambdaCanAwaitAndUseEagerCapturedArguments() throws Exception {
+        String result = run("""
+                pub async routine main(): void {
+                  let String x = "registered";
+                  defer (|saved| -> {
+                    await stdio.flush_async_logs();
+                    stdio.stdout.log_async(saved);
+                  })(x);
+                  x = "changed";
+                }
+                """);
+        assertEquals("registered\\n", result);
+    }
+
+    @Test
     void inlineDeferredLambdaCannotStoreBorrowArgument() {
         String program = """
                 pub routine main(): void {
