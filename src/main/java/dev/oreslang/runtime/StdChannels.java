@@ -126,19 +126,19 @@ public final class StdChannels implements AutoCloseable {
             Throwable root = OresFuture.unwrap(failed);
             if (!(root instanceof ChannelRuntime.ChannelClosedException ended
                     && ended.getCause() == null) && !closed.get()) {
-                failure = root;
                 input.close(root);
             }
         } catch (ChannelRuntime.ChannelClosedException ignored) {
             // A clean channel close was requested by its owner.
         } catch (Throwable err) {
             if (!closed.get()) {
-                failure = err;
                 input.close(err);
             }
         } finally {
+            // Close while bridge authority is still held; guest aliases
+            // never obtain the privilege to close this descriptor.
+            input.finishFromContext(null);
             BRIDGE.remove();
-            input.close();
         }
     }
 
