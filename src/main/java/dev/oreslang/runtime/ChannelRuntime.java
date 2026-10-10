@@ -994,6 +994,16 @@ public final class ChannelRuntime {
                     progressed = true;
                     break;
                 }
+                if (chosen.selectCase instanceof WriteCase<?> outgoing
+                        && outgoing.exhausted()) {
+                    commitFailureLocked(chosen,
+                            new IllegalStateException(
+                                    "select write payload was already transferred; "
+                                            + "replace the WriteCase for another send"),
+                            completions);
+                    progressed = true;
+                    break;
+                }
                 Channel<?> channel = chosen.channel();
 
                 if (chosen.operation() == SelectOperation.READ) {
@@ -1049,6 +1059,13 @@ public final class ChannelRuntime {
                     }
 
                     if (channel.capacity > channel.buffer.size()) {
+                        if (!((WriteCase<?>) chosen.selectCase).claimCommit()) {
+                            commitFailureLocked(chosen,
+                                    new IllegalStateException("select write payload already transferred"),
+                                    completions);
+                            progressed = true;
+                            break;
+                        }
                         @SuppressWarnings("unchecked")
                         Channel<Object> writable =
                                 (Channel<Object>) channel;
@@ -1080,6 +1097,9 @@ public final class ChannelRuntime {
                     findRegistration(selection, index);
             if (registration == null) continue;
             if (externalReadyLocked(registration)) return registration;
+            if (selectCase instanceof WriteCase<?> write && write.exhausted()) {
+                return registration;
+            }
             if (!(selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>)) continue;
 
             Channel<?> channel = registration.channel();
@@ -1129,6 +1149,8 @@ public final class ChannelRuntime {
                 || registration.selectCase instanceof WriteCase<?>)) {
             return externalReadyLocked(registration);
         }
+        if (registration.selectCase instanceof WriteCase<?> write
+                && write.exhausted()) return true;
         Channel<?> channel = registration.channel();
 
         if (registration.operation() == SelectOperation.READ) {
@@ -1227,6 +1249,12 @@ public final class ChannelRuntime {
             return;
         }
 
+        if (!((WriteCase<?>) writer.selectCase).claimCommit()) {
+            commitFailureLocked(writer,
+                    new IllegalStateException("select write payload already transferred"),
+                    completions);
+            return;
+        }
         Object value = writer.writeValue();
 
         reader.selection.decided = true;
