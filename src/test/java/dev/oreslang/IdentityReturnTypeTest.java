@@ -387,6 +387,49 @@ final class IdentityReturnTypeTest {
                 """, "identity-bearing");
     }
 
+    @Test void transitiveInterfaceRedeclarationCannotWeakenIdentity() {
+        rejects("""
+                define interface GrandParent as
+                  fnc same(): this;
+                end
+                define interface Parent extends GrandParent as
+                end
+                define interface Child extends Parent as
+                  fnc same(): self;
+                end
+                """, "cannot weaken inherited identity contract");
+    }
+
+    @Test void inheritedModuleContractCannotLoseIdentity() {
+        rejects("""
+                define class T as
+                end
+                define contract BaseContract as
+                  fnc relay(T value): value;
+                end
+                define contract ChildContract extends BaseContract as
+                end
+                define module Implementation conforms ChildContract as
+                  pub fnc relay(T v): T { return new T(); }
+                end
+                """, "cannot weaken contract identity return");
+    }
+
+    @Test void inheritedModuleContractPreservesIdentityBySlot() {
+        accepts("""
+                define class T as
+                end
+                define contract BaseContract as
+                  fnc relay(T value): value;
+                end
+                define contract ChildContract extends BaseContract as
+                end
+                define module Implementation conforms ChildContract as
+                  pub fnc relay(T v): v { return v; }
+                end
+                """);
+    }
+
     @Test void shadowedAliasDoesNotProveIdentity() {
         rejects("""
                 define module m
