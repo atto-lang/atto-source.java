@@ -688,6 +688,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId owner;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
+        /** Native FFM allocations still physically live, even after actor exit. */
+        private final AtomicLong retainedNativeBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
         private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
@@ -813,7 +815,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (sliceClosed.get()) throw new IllegalStateException("actor heap retired");
                 MemoryReservation reservation = reserve(Math.multiplyExact((long) slots, 8),
-                        "actor-owned FFM i64 region");
+                        "actor-owned FFM i64 region", true);
                 try {
                     AtomicReference<ExplicitNativeI64Region> registered = new AtomicReference<>();
                     ExplicitNativeI64Region region = new ExplicitNativeI64Region(slots,
@@ -838,9 +840,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private synchronized MemoryReservation reserve(long bytes, String purpose) {
+            return reserve(bytes, purpose, false);
+        }
+
+        private synchronized MemoryReservation reserve(
+                long bytes, String purpose, boolean retainPhysicalNativeBytes) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
+            if (bytes == 0) return new MemoryReservation(this, 0, false);
 
             long current = usedBytes.get();
             long next;
@@ -861,8 +868,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             reservePrivateRuntimeBytes(bytes, owner, purpose);
-            usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+            // A retired actor must not refund native bytes that a pending
+            // FFM loan still physically pins. Atomic add cannot overwrite a
+            // concurrent completion-thread release.
+            usedBytes.addAndGet(bytes);
+            if (retainPhysicalNativeBytes) retainedNativeBytes.addAndGet(bytes);
+            return new MemoryReservation(this, bytes, retainPhysicalNativeBytes);
         }
 
         private ActorCell<?> requireCurrentOwner() {
@@ -872,6 +883,23 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor memory slice may only be reserved by its owning actor");
             }
             return cell;
+        }
+
+        /** Native loan completion may occur on a different carrier after
+         * this actor's memory slice has closed. Keep the aggregate budget
+         * charged until FFM physical close actually succeeds. */
+        private void releasePhysicalNative(long bytes) {
+            if (bytes == 0) return;
+            synchronized (memoryBudgetLock) {
+                long remainingNative = retainedNativeBytes.addAndGet(-bytes);
+                long remainingHeap = usedBytes.addAndGet(-bytes);
+                if (remainingNative < 0 || remainingHeap < 0) {
+                    retainedNativeBytes.addAndGet(bytes);
+                    usedBytes.addAndGet(bytes);
+                    throw new IllegalStateException("actor native budget accounting underflow");
+                }
+                releasePrivateRuntimeBytes(bytes, owner);
+            }
         }
 
         private synchronized void release(long bytes) {
@@ -911,8 +939,16 @@ public final class ActorRuntime implements AutoCloseable {
             explicitNativeI64Regions.clear();
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            synchronized (memoryBudgetLock) {
+                long bytes = usedBytes.get();
+                long pinned = retainedNativeBytes.get();
+                if (pinned > bytes) {
+                    throw new IllegalStateException("physically pinned native memory exceeds actor accounting");
+                }
+                usedBytes.set(pinned);
+                long released = bytes - pinned;
+                if (released != 0) releasePrivateRuntimeBytes(released, owner);
+            }
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -1041,9 +1077,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final long bytes;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private MemoryReservation(ActorMemorySlice slice, long bytes) {
+        private final boolean physicalNative;
+
+        private MemoryReservation(ActorMemorySlice slice, long bytes, boolean physicalNative) {
             this.slice = Objects.requireNonNull(slice);
             this.bytes = bytes;
+            this.physicalNative = physicalNative;
         }
 
         public ActorId owner() { return slice.owner(); }
@@ -1051,7 +1090,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            if (released.compareAndSet(false, true)) slice.release(bytes);
+            if (released.compareAndSet(false, true)) {
+                if (physicalNative) slice.releasePhysicalNative(bytes);
+                else slice.release(bytes);
+            }
         }
     }
 
