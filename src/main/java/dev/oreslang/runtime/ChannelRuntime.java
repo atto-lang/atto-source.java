@@ -8,13 +8,16 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Flow;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Oreslang-owned channel and atomic select substrate.
@@ -54,7 +57,8 @@ public final class ChannelRuntime {
         DEFAULT,
         AWAIT,
         CANCELLED,
-        TIMEOUT
+        TIMEOUT,
+        OBSERVE
     }
 
     public record SelectResult(
@@ -225,7 +229,7 @@ public final class ChannelRuntime {
     }
 
     public sealed interface SelectCase permits ReadCase, WriteCase, DefaultCase,
-            AwaitCase, CancelCase, TimeoutCase { }
+            AwaitCase, CancelCase, TimeoutCase, ObserveCase { }
 
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
         public ReadCase {
@@ -262,6 +266,11 @@ public final class ChannelRuntime {
         }
     }
 
+    /** Each selection owns its own one-shot reactive subscription. */
+    public record ObserveCase<T>(Flow.Publisher<T> publisher) implements SelectCase {
+        public ObserveCase { Objects.requireNonNull(publisher, "publisher"); }
+    }
+
     public static <T> ReadCase<T> read(Channel<T> channel) {
         return new ReadCase<>(channel);
     }
@@ -280,6 +289,11 @@ public final class ChannelRuntime {
 
     public static CancelCase cancelled(OresFuture<?> signal) {
         return new CancelCase(signal);
+    }
+
+    /** Select the next emitted value; unsubscribe as soon as any case wins. */
+    public static <T> ObserveCase<T> observeOnce(Flow.Publisher<T> publisher) {
+        return new ObserveCase<>(publisher);
     }
 
     public static TimeoutCase timeout(long delay, TimeUnit unit) {
@@ -485,11 +499,96 @@ public final class ChannelRuntime {
         }
     }
 
+    /** Flow-compatible single-value adapter; no guest code runs in callbacks. */
+    private static final class OncePublisher<T> implements Flow.Subscriber<T> {
+        private static final Flow.Subscription STOPPED = new Flow.Subscription() {
+            @Override public void request(long count) { }
+            @Override public void cancel() { }
+        };
+        private final Flow.Publisher<T> publisher;
+        private final OresFuture<T> result = new OresFuture<>();
+        private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
+        private final AtomicBoolean terminal = new AtomicBoolean();
+        private final AtomicBoolean started = new AtomicBoolean();
+
+        private OncePublisher(Flow.Publisher<T> publisher) {
+            this.publisher = publisher;
+        }
+
+        private void start() {
+            if (!started.compareAndSet(false, true) || terminal.get()) return;
+            // Foreign subscribe implementations may block or invoke onNext
+            // synchronously. Never execute them on an actor's native carrier.
+            Thread.ofVirtual().name("ores-select-observable-once").start(() -> {
+                if (terminal.get()) return;
+                try {
+                    publisher.subscribe(this);
+                } catch (Throwable failure) {
+                    onError(failure);
+                }
+            });
+        }
+
+        private void stop() {
+            terminal.set(true);
+            Flow.Subscription prior = subscription.getAndSet(STOPPED);
+            if (prior != null && prior != STOPPED) {
+                // A foreign cancel hook is arbitrary code; it may block/reenter.
+                Thread.ofVirtual().name("ores-select-unsubscribe").start(prior::cancel);
+            }
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription next) {
+            Objects.requireNonNull(next, "subscription");
+            if (!subscription.compareAndSet(null, next)) {
+                Thread.ofVirtual().start(next::cancel);
+                return;
+            }
+            if (terminal.get()) {
+                stop();
+                return;
+            }
+            try {
+                next.request(1);
+            } catch (Throwable failure) {
+                onError(failure);
+            }
+        }
+
+        @Override
+        public void onNext(T item) {
+            if (!terminal.compareAndSet(false, true)) return;
+            stop();
+            if (item == null) result.failFromRuntime(new NullPointerException(
+                    "observable emitted null; use Option<T>"));
+            else result.completeFromRuntime(item);
+        }
+
+        @Override
+        public void onError(Throwable failure) {
+            if (!terminal.compareAndSet(false, true)) return;
+            stop();
+            result.failFromRuntime(failure == null
+                    ? new NullPointerException("observable failed with null")
+                    : failure);
+        }
+
+        @Override
+        public void onComplete() {
+            if (!terminal.compareAndSet(false, true)) return;
+            stop();
+            result.failFromRuntime(new java.util.NoSuchElementException(
+                    "observable completed without emitting a value"));
+        }
+    }
+
     private static final class CaseRegistration {
         private final SelectRegistration selection;
         private final int index;
         private final SelectCase selectCase;
         private final long ticket;
+        private OncePublisher<?> oneShot;
 
         private CaseRegistration(
                 SelectRegistration selection,
@@ -514,6 +613,7 @@ public final class ChannelRuntime {
             if (selectCase instanceof AwaitCase<?>) return SelectOperation.AWAIT;
             if (selectCase instanceof CancelCase) return SelectOperation.CANCELLED;
             if (selectCase instanceof TimeoutCase) return SelectOperation.TIMEOUT;
+            if (selectCase instanceof ObserveCase<?>) return SelectOperation.OBSERVE;
             return SelectOperation.DEFAULT;
         }
 
@@ -533,6 +633,7 @@ public final class ChannelRuntime {
         private final long startNanos = System.nanoTime();
         private final ArrayList<OresFuture.RuntimeWaiterRegistration<?>> observers = new ArrayList<>();
         private final ArrayList<ScheduledFuture<?>> alarms = new ArrayList<>();
+        private final ArrayList<OncePublisher<?>> oneShots = new ArrayList<>();
         private boolean decided;
         private boolean registered;
         private boolean armingExternal;
@@ -553,6 +654,14 @@ public final class ChannelRuntime {
             this.future = new OresFuture<>(
                     this::cancelAdmission,
                     () -> { });
+            // Selection settlement is published only AFTER the coordinator
+            // unlocks. Subscription.cancel() is external code and MUST NOT
+            // execute in a channel arbitration critical section.
+            this.future.whenCompleteRuntime((ignored, failure) -> {
+                for (OncePublisher<?> subscription : List.copyOf(oneShots)) {
+                    subscription.stop();
+                }
+            });
         }
 
         private boolean cancelAdmission() {
@@ -598,6 +707,7 @@ public final class ChannelRuntime {
         /** Install only after initial channel arbitration/default handling. */
         private void armExternal() {
             ArrayList<Runnable> completions = new ArrayList<>();
+            ArrayList<OncePublisher<?>> toSubscribe = new ArrayList<>();
             COORDINATOR.lock();
             try {
                 if (decided || !registered) return;
@@ -607,7 +717,15 @@ public final class ChannelRuntime {
                     OresFuture<?> observed = candidate instanceof AwaitCase<?> awaited
                             ? awaited.future()
                             : candidate instanceof CancelCase cancelled ? cancelled.signal() : null;
-                    if (observed != null) {
+                    if (candidate instanceof ObserveCase<?> observe) {
+                        OncePublisher<?> bridge = new OncePublisher<>(observe.publisher());
+                        CaseRegistration ownedCase = findRegistration(this, index);
+                        ownedCase.oneShot = bridge;
+                        oneShots.add(bridge);
+                        toSubscribe.add(bridge);
+                        observers.add(bridge.result.whenCompleteRuntimeCancellable(
+                                (value, failure) -> externalReady()));
+                    } else if (observed != null) {
                         OresFuture.RuntimeWaiterRegistration<?> registration =
                                 observed.whenCompleteRuntimeCancellable((value, failure) -> externalReady());
                         observers.add(registration);
@@ -635,6 +753,9 @@ public final class ChannelRuntime {
                 COORDINATOR.unlock();
             }
             runCompletions(completions);
+            // Flow subscribe is arbitrary external code; never run it under
+            // COORDINATOR or directly on an actor/supervisor carrier.
+            for (OncePublisher<?> subscription : toSubscribe) subscription.start();
         }
 
         private void externalReady() {
@@ -736,6 +857,16 @@ public final class ChannelRuntime {
                 if (chosen.selectCase instanceof TimeoutCase) {
                     commitSingleLocked(chosen,
                             new SelectResult(chosen.index, SelectOperation.TIMEOUT, null), completions);
+                    progressed = true;
+                    break;
+                }
+                if (chosen.selectCase instanceof ObserveCase<?>) {
+                    Object terminal = chosen.oneShot.result.runtimeTerminalStateOrNull();
+                    Throwable failure = OresFuture.runtimeTerminalFailure(terminal);
+                    if (failure != null) commitFailureLocked(chosen, failure, completions);
+                    else commitSingleLocked(chosen,
+                            new SelectResult(chosen.index, SelectOperation.OBSERVE,
+                                    OresFuture.runtimeTerminalValue(terminal)), completions);
                     progressed = true;
                     break;
                 }
@@ -913,6 +1044,9 @@ public final class ChannelRuntime {
         if (item instanceof TimeoutCase timeout) {
             return Math.max(0L, System.nanoTime() - registration.selection.startNanos)
                     >= timeout.delayNanos();
+        }
+        if (item instanceof ObserveCase<?>) {
+            return registration.oneShot != null && registration.oneShot.result.isDone();
         }
         return false;
     }
