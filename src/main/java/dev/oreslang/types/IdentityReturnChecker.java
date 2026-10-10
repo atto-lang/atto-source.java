@@ -22,6 +22,8 @@ final class IdentityReturnChecker {
     private final java.util.Set<String> importedCallables = new java.util.HashSet<>();
     private final java.util.Set<String> importedNamespaces = new java.util.HashSet<>();
     private final java.util.Set<String> classNames = new java.util.HashSet<>();
+    private final Map<Ast.ClassDecl, String> classModules = new java.util.IdentityHashMap<>();
+    private final Map<Ast.InterfaceDecl, String> interfaceModules = new java.util.IdentityHashMap<>();
 
     private record Callable(String module, Ast.FunctionDecl function) { }
 
@@ -64,8 +66,10 @@ final class IdentityReturnChecker {
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     checker.qualifiedClasses.put(module.name() + "." + klass.name(), klass);
                     checker.classNames.add(klass.name());
+                    checker.classModules.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     checker.qualifiedInterfaces.put(module.name() + "." + iface.name(), iface);
+                    checker.interfaceModules.put(iface, module.name());
                 }
             }
         }
@@ -221,17 +225,25 @@ final class IdentityReturnChecker {
         return candidates.size() == 1 ? candidates.getFirst() : null;
     }
 
+    private String classModule(Ast.ClassDecl declaration, String fallback) {
+        return classModules.getOrDefault(declaration, fallback);
+    }
+
+    private String interfaceModule(Ast.InterfaceDecl declaration, String fallback) {
+        return interfaceModules.getOrDefault(declaration, fallback);
+    }
+
     private void collectClassInterfaces(
             String module, Ast.ClassDecl klass, java.util.Set<Ast.InterfaceDecl> interfaces,
             java.util.Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return;
         for (Ast.TypeRef declared : klass.interfaces()) {
-            Ast.InterfaceDecl iface = resolveInterface(module, declared.name());
-            if (iface != null) collectInterfaceParents(module, iface, interfaces);
+            Ast.InterfaceDecl iface = resolveInterface(classModule(klass, module), declared.name());
+            if (iface != null) collectInterfaceParents(interfaceModule(iface, module), iface, interfaces);
         }
         for (Ast.TypeRef ref : klass.parents()) {
-            Ast.ClassDecl parent = resolveClass(module, ref.name());
-            if (parent != null) collectClassInterfaces(module, parent, interfaces, seen);
+            Ast.ClassDecl parent = resolveClass(classModule(klass, module), ref.name());
+            if (parent != null) collectClassInterfaces(classModule(parent, module), parent, interfaces, seen);
         }
     }
 
@@ -239,8 +251,8 @@ final class IdentityReturnChecker {
             String module, Ast.InterfaceDecl iface, java.util.Set<Ast.InterfaceDecl> seen) {
         if (!seen.add(iface)) return;
         for (Ast.TypeRef ref : iface.parents()) {
-            Ast.InterfaceDecl parent = resolveInterface(module, ref.name());
-            if (parent != null) collectInterfaceParents(module, parent, seen);
+            Ast.InterfaceDecl parent = resolveInterface(interfaceModule(iface, module), ref.name());
+            if (parent != null) collectInterfaceParents(interfaceModule(parent, module), parent, seen);
         }
     }
 
@@ -254,9 +266,9 @@ final class IdentityReturnChecker {
             }
         }
         for (Ast.TypeRef ref : klass.parents()) {
-            Ast.ClassDecl parent = resolveClass(module, ref.name());
+            Ast.ClassDecl parent = resolveClass(classModule(klass, module), ref.name());
             if (parent == null) continue;
-            Ast.MethodDecl found = findEffectiveMethod(module, parent, name, arity, seen);
+            Ast.MethodDecl found = findEffectiveMethod(classModule(parent, module), parent, name, arity, seen);
             if (found != null) return found;
         }
         return null;
@@ -297,26 +309,11 @@ final class IdentityReturnChecker {
     }
 
     private void collectAncestors(String module, Ast.ClassDecl klass, java.util.Set<Ast.ClassDecl> seen) {
+        String declaringModule = classModule(klass, module);
         for (Ast.TypeRef parent : klass.parents()) {
-            Ast.ClassDecl ancestor = qualifiedClasses.get(parent.name());
-            if (ancestor == null) ancestor = qualifiedClasses.get(module + "." + parent.name());
-            if (ancestor == null) {
-                java.util.List<Ast.ClassDecl> candidates = qualifiedClasses.entrySet().stream()
-                        .filter(e -> e.getKey().endsWith("." + parent.name()))
-                        .map(Map.Entry::getValue)
-                        .distinct()
-                        .toList();
-                if (candidates.size() == 1) ancestor = candidates.getFirst();
-            }
+            Ast.ClassDecl ancestor = resolveClass(declaringModule, parent.name());
             if (ancestor != null && seen.add(ancestor)) {
-                String ownerModule = module;
-                for (Map.Entry<String, Ast.ClassDecl> entry : qualifiedClasses.entrySet()) {
-                    if (entry.getValue() == ancestor) {
-                        ownerModule = entry.getKey().substring(0, entry.getKey().lastIndexOf('.'));
-                        break;
-                    }
-                }
-                collectAncestors(ownerModule, ancestor, seen);
+                collectAncestors(classModule(ancestor, declaringModule), ancestor, seen);
             }
         }
     }
