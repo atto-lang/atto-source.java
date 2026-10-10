@@ -2,6 +2,9 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -296,6 +299,48 @@ final class ActorTurnContentionProbeTest {
             assertEquals(0, leakedMarkerCount.get(),
                     "delegated actor carrier or guest authority survived after its turn");
             assertNull(executorFailure.get());
+            assertEquals(0, runtime.coreContentionViolationCount());
+        }
+    }
+
+    @Test
+    void nestedGuestTurnCannotOverwriteOrEraseTheExecutingActor() throws Exception {
+        AtomicLong rejectedNestedEntry = new AtomicLong();
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 16, 16);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(), config,
+                ActorRuntime.TurnExecutor.direct(), ActorRuntime.ControlDispatcher.unavailable(),
+                new CoreRuntimeFlags(true))) {
+            var actor = runtime.<Integer>spawnShared(() -> (value, context) -> {
+                assertEquals(context.self().id(), ActorRuntime.currentActorId().orElseThrow());
+                try {
+                    // Deliberately bypass the scheduler and invoke the actor's
+                    // private turn entry again on the *same* executing carrier.
+                    Field field = ActorRuntime.class.getDeclaredField("actors");
+                    field.setAccessible(true);
+                    Object cell = ((Map<?, ?>) field.get(context.runtime())).get(context.self().id());
+                    assertNotNull(cell);
+                    Method entry = cell.getClass().getDeclaredMethod("runBatchEntered");
+                    entry.setAccessible(true);
+                    InvocationTargetException nested = assertThrows(
+                            InvocationTargetException.class, () -> entry.invoke(cell));
+                    assertInstanceOf(IllegalStateException.class, nested.getCause());
+                    assertTrue(nested.getCause().getMessage().contains("nested actor guest turn"));
+                    rejectedNestedEntry.incrementAndGet();
+                } catch (ReflectiveOperationException unexpected) {
+                    throw new AssertionError("fault injection failed", unexpected);
+                }
+
+                // A rejected nested turn must not steal the parent turn's
+                // authority or accidentally release the original probe.
+                assertTrue(ActorRuntime.isActorCarrierThread());
+                assertTrue(ActorRuntime.inActorExecution());
+                assertEquals(context.self().id(), ActorRuntime.currentActorId().orElseThrow());
+                context.self().stop();
+            });
+            actor.send(1);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "original actor failed: " + actor.failure());
+            assertEquals(1, rejectedNestedEntry.get());
             assertEquals(0, runtime.coreContentionViolationCount());
         }
     }
