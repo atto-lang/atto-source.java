@@ -1121,7 +1121,10 @@ actor mailbox boundary, or turn an actor reference into an ordinary object.
 Passing an aggregate to a `structural T` parameter creates a call-scoped
 read loan instead of moving it. Calls such as `read(container.inner)` retain
 the lexical aggregate root while later arguments are evaluated, so moving or
-exclusively borrowing `container` as a later argument is rejected. Instance
+exclusively borrowing `container` as a later argument is rejected.
+First-class `Fnc<T,...>` arguments are also read-only call loans: a later
+argument cannot `rt take` a value passed to an earlier argument; those loans
+end at call return. Instance
 method receivers are also loaned through argument evaluation, and these loans
 release when the synchronous call finishes. An explicit `rt borrow mut`
 cannot be silently downgraded to a structural read-only parameter.
