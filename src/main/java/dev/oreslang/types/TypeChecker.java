@@ -371,7 +371,7 @@ public final class TypeChecker {
                             trappedSignature.parameters(),
                             trappedSignature.mutableParameters(),
                             trappedSignature.async(),
-                            trapResult(true, trappedSignature.result()));
+                            trapWrappedCallType(true, fn.async(), trappedSignature.result()));
                 }
 
                 // Only concretely reifiable fnc declarations become raw
@@ -450,9 +450,6 @@ public final class TypeChecker {
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         if (fn.trapped()) {
-            if (fn.async()) {
-                throw new IllegalArgumentException("async trap callables are not enabled until the trap boundary spans every await");
-            }
             if (fn.generator()) {
                 throw new IllegalArgumentException("trap generators are not enabled until the trap boundary spans generator suspension");
             }
@@ -1988,7 +1985,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                    return callableResult(target.async(), target.generator(), trapResult(target.trapped(), result));
                 }
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
@@ -2025,7 +2022,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
+                    return callableResult(target.async(), target.generator(), trapResult(target.trapped(), result));
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
@@ -5962,6 +5959,21 @@ public final class TypeChecker {
         return trapped ? new Named("Option", List.of(result)) : result;
     }
 
+    /**
+     * A trapped async callable returns Future<Option<T>>, never Option<Future<T>>.
+     * The option is created by the resumed source task before its future settles.
+     */
+    private Type trapWrappedCallType(boolean trapped, boolean async, Type result) {
+        if (!trapped) return result;
+        if (!async) return trapResult(true, result);
+        if (!(result instanceof Named future)
+                || !future.name().equals("Future")
+                || future.arguments().size() != 1) {
+            throw new IllegalStateException("async trap requires a Future<T> callable result");
+        }
+        return new Named("Future", List.of(trapResult(true, future.arguments().getFirst())));
+    }
+
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
         Function raw = functionType(
                 fn.parameters(),
@@ -5975,7 +5987,7 @@ public final class TypeChecker {
                 raw.parameters(),
                 raw.mutableParameters(),
                 raw.async(),
-                trapResult(true, raw.result()));
+                trapWrappedCallType(true, fn.async(), raw.result()));
     }
 
     private Type generatorYieldType(boolean async, Type declared) {
