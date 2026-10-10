@@ -1124,6 +1124,17 @@ equivalent. A structural call rejects `rt take value` (ownership transfer)
 and `rt borrow mut value` (unnecessary mutable authority). Call-scoped loans
 last through evaluation of all arguments, preventing a later argument from
 moving or mutably borrowing the same owner; they end after the call.
+A structural field/index projection such as `read(container.inner)` also loans the
+named aggregate root: `call(container.inner, rt take container)` is rejected,
+including nested projections. An instance-method receiver is evaluated before
+its explicit arguments and remains loaned during their evaluation; neither a
+by-value argument nor an exclusive borrow may invalidate that receiver. A
+borrowed structural/lexical view does not own its nested move-only fields or
+array elements: returning, storing or transferring such a child as an owned
+value is rejected, while reading Copy fields remains valid. These conservative
+loans cover the whole named root rather than claiming independent field-level
+alias precision; native HTTP exchange ownership and multirequest actor re-entry
+still require separate runtime capability and scheduler proof.
 Ordinary owned `T` parameters remain by-value and move non-`Copy` values;
 use `borrow T` or `borrow mut T` when borrowing is part of the API contract.
 
