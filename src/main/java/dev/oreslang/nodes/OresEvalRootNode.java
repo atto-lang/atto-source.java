@@ -6062,7 +6062,13 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
-                    case "println" -> (Invokable) stdio::println;
+                    case "println" , "println_blocking" -> (Invokable) stdio::println;
+                    case "println_async" -> (Invokable) stdio::printlnAsync;
+                    case "flush_async_logs" -> (Invokable) args -> {
+                        context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.flush_async_logs");
+                        requireZero(args, "stdio.flush_async_logs");
+                        return context.asyncStdio().flushAsync();
+                    };
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin" -> new StdinFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
@@ -6071,9 +6077,12 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof StdoutFacade stdout) {
                 return switch (name) {
                     case "write" -> (Invokable) stdout::write;
-                    case "println" -> (Invokable) stdout::println;
-                    case "log" -> (Invokable) stdout::log;
+                    case "println", "println_blocking" -> (Invokable) stdout::println;
+                    case "println_async" -> (Invokable) stdout::printlnAsync;
+                    case "log", "log_blocking" -> (Invokable) stdout::log;
+                    case "log_async" -> (Invokable) stdout::logAsync;
                     case "logList" -> (Invokable) stdout::logList;
+                    case "logList_async" -> (Invokable) stdout::logListAsync;
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
@@ -8922,6 +8931,15 @@ public final class OresEvalRootNode extends RootNode {
         private Object println(List<Object> args) {
             return emitStdout(context, args, "stdio.println", true);
         }
+        private Object printlnAsync(List<Object> args) {
+            return emitStdoutAsync(context, args, "stdio.println_async", true);
+        }
+    }
+    private static Object emitStdoutAsync(OresContext context, List<Object> args, String operation, boolean newline) {
+        context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
+        requireOne(args, operation);
+        String text = String.valueOf(args.getFirst());
+        return context.asyncStdio().logAsync(newline ? text + "\n" : text);
     }
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
@@ -8946,6 +8964,21 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object println(List<Object> args) {
             return emitStdout(context, args, "stdio.stdout.println", true);
+        }
+        private Object printlnAsync(List<Object> args) {
+            return emitStdoutAsync(context, args, "stdio.stdout.println_async", true);
+        }
+        private Object logAsync(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.log_async");
+            StringBuilder message = new StringBuilder();
+            for (Object arg : args) message.append(String.valueOf(arg));
+            message.append('\n');
+            return context.asyncStdio().logAsync(message.toString());
+        }
+        private Object logListAsync(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.logList_async");
+            requireOne(args, "stdio.stdout.logList_async");
+            return logAsync(expandArgumentSequence(args.getFirst(), "stdio.stdout.logList_async"));
         }
         private Object log(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
