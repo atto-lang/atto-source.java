@@ -502,6 +502,32 @@ The compiler must not blindly hoist side-effectful channel/value expressions
 from a static select. The LLVM parity gate remains intentionally closed until
 native syntax, runtime registration, differential tests, and benchmarks exist.
 
+### Borrow and ownership rules for reusable plans
+
+Source-level `SelectCase` and `SelectSet` descriptors are **move-only**
+even when the referenced `Channel<T>` is a copyable, execution-domain-local
+handle. Copying a descriptor could otherwise duplicate a write case that
+retains a move-only value.
+
+`SelectCase.read(channel)` retains an owned/copyable channel handle, not
+a lexical `&Channel<T>` borrow. `SelectCase.write(channel, value)` additionally
+requires a **Copy** payload: a reusable write case may be selected more than
+once, so sending the same owned mutable object repeatedly would violate
+ownership. Use ordinary `writech` or a per-iteration static select when
+transferring a move-only payload.
+
+`SelectSet.new(cases)` takes ownership of its case collection, does not
+retain a borrowed collection, and cannot be copied afterward. Selecting
+*from* an existing set only observes it; the operation does not move the
+set, so repeated selects in a loop remain supported. Each pending
+registration freezes its case set; mutating or replacing a plan must not
+retroactively change the retained operands or capture borrowed locals.
+
+These compile-time guarantees are separate from the Java host-facing
+`ChannelRuntime.SelectCase` record API, which cannot enforce Oreslang's
+source ownership rules on arbitrary Java objects. LLVM support remains
+gated pending matching typed ownership and runtime behavior.
+
 ## Cancellation
 
 Oreslang does not require Go-style `context.Context` propagation through every
