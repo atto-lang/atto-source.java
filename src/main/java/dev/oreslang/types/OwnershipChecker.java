@@ -1492,6 +1492,11 @@ public final class OwnershipChecker {
                     releaseCallLoans(loans);
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
+                if (result.name().equals("Future")
+                        || result.name().equals("Awaitable")) {
+                    throw error("first-class Fnc returning asynchronous work cannot "
+                            + "use call-scoped read borrows without a task-lifetime effect contract");
+                }
                 return new ValueInfo(result, kindOfType(result), null);
             }
         }
@@ -1499,6 +1504,10 @@ public final class OwnershipChecker {
         // Unknown host/dynamic callables remain conservative and consuming.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
+            if (isBorrowValue(argument)) {
+                throw error("unknown/host callable cannot retain borrowed arguments "
+                        + "without a verified lifetime and no-escape signature");
+            }
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
             }
