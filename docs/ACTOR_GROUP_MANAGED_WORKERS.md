@@ -73,7 +73,11 @@ a source-exposed ActorGroup type are still required for guest-level API parity.
 5. `stopWorkers()` and `close()` operate only on owned workers. A joined
    cooperative member is not silently stopped or given lifecycle authority.
    A committed stop request fences `releaseWorker()`: lifecycle ownership
-   cannot be transferred after shutdown has been admitted.
+   cannot be transferred after shutdown has been admitted. During
+   `group.close()`, runtime-wide ownership remains reserved even after the
+   group has cleared its worker references, until the worker's finalization
+   removes the reservation. This closes the re-adoption window between
+   group-close admission and the actual stop request.
 6. Cancellation/stop before ready fails the readiness barrier. `done` is a
    distinct finalization signal. Shutdown/await must not block a carrier.
    `workersDone()` observes a worker snapshot while a group is open; after
