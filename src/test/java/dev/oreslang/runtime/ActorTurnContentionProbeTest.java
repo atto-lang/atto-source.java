@@ -184,4 +184,56 @@ final class ActorTurnContentionProbeTest {
             assertTrue(actor.failure().orElseThrow().getMessage().contains("contention probe"));
         }
     }
+
+    @Test
+    void retiredActorHookNeverReceivesGuestActorAuthority() throws Exception {
+        AtomicLong hookCalls = new AtomicLong();
+        AtomicReference<Throwable> leakedAuthority = new AtomicReference<>();
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 16, 16);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(), config,
+                ActorRuntime.TurnExecutor.direct(), ActorRuntime.ControlDispatcher.unavailable(),
+                new CoreRuntimeFlags(true))) {
+            runtime.setActorExitHook(domain -> {
+                hookCalls.incrementAndGet();
+                if (ActorRuntime.inActorExecution()
+                        || ActorRuntime.currentActorId().isPresent()
+                        || ActorRuntime.currentActorKind() != null
+                        || ActorRuntime.currentActorPolicy() != null
+                        || ActorRuntime.currentActorExecutionDomain() != null) {
+                    leakedAuthority.set(new AssertionError(
+                            "host actor-retirement hook inherited guest actor execution authority"));
+                }
+            });
+            var actor = runtime.<Integer>spawnShared(() -> (value, context) -> {
+                assertTrue(ActorRuntime.inActorExecution(),
+                        "guest must retain actor authority while executing its turn");
+                assertEquals(context.self().id(), ActorRuntime.currentActorId().orElseThrow());
+                context.self().stop();
+            });
+            actor.send(1);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, hookCalls.get(), "actor execution-domain retirement must be once-only");
+            assertNull(leakedAuthority.get());
+            assertEquals(0, runtime.coreContentionViolationCount());
+        }
+    }
+
+    @Test
+    void duplicateScopeReleaseCannotReleaseTheNextOwner() {
+        AtomicLong violations = new AtomicLong();
+        var probe = new ActorTurnContentionProbe(ActorRuntime.ActorId.create(), violations);
+        var oldScope = probe.enter();
+        oldScope.close();
+        try (var nextScope = probe.enter()) {
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    oldScope::close);
+            assertTrue(failure.getMessage().contains("release violation"));
+            assertEquals(1, violations.get());
+            assertThrows(IllegalStateException.class, probe::enter,
+                    "stale scope release must not release or steal the active turn");
+        }
+        try (var ignored = probe.enter()) {
+            assertEquals(2, violations.get());
+        }
+    }
 }
