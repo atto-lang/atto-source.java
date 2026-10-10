@@ -462,7 +462,7 @@ final class ChannelSelectSyntaxTest {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> OwnershipChecker.check(Parser.parse("""
                         define actor Worker as
-                          pub let int counter = 0;
+                          let int counter = 0;
                           receive(ActorMail<int> mail): void {
                             val Channel<int> input = Channel.new<int>(1);
                             val alias = rt borrow self;
@@ -484,7 +484,7 @@ final class ChannelSelectSyntaxTest {
     void nbSelectCanReenterOnlyCanonicalRuntimeOwnedActorSelf() {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
                 define actor Worker as
-                  pub let int counter = 0;
+                  let int counter = 0;
                   receive(ActorMail<int> mail): void {
                     val Channel<int> input = Channel.new<int>(1);
                     nb select {
