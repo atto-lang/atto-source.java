@@ -1,6 +1,6 @@
 # RFC: first-class actor stream pipelines in Oreslang
 
-Status: **design / executable runtime not implemented**. This RFC documents the proposed contract; it must not be used to claim that `|>` or `ActorStream` compiles today. It is intentionally adjacent to the process-owned `Channel<T>` work in draft core PR #540.
+Status: **graph design / executable runtime not implemented**. Actor connection uses the **infix `pipe` keyword**. Eager functional `|>` belongs to independent draft compiler PR #542, not to this graph RFC; `ActorStream` does not execute yet. This RFC remains adjacent to the process-owned `Channel<T>` work in draft core PR #540.
 
 ## Decision
 
@@ -23,7 +23,7 @@ end
 pub fnc connect_streams(): ActorStream<String, Record> {
   const parser = spawn Parse();         // returns ActorRef<Parse> immediately
   const normalize = spawn Normalize();  // returns ActorRef<Normalize>
-  return parser |> normalize;
+  return parser pipe normalize;
 }
 
 // Pipeline handle is returned before actors are necessarily ready.
@@ -35,21 +35,21 @@ pub async routine main(): void {
 }
 ```
 
-`|>` is parsed as a **pipeline composition operator** when the operands have stream-capable actor or ActorStream types. This is *not* an overload of integer bitwise `|`, and should not silently reinterpret existing `a |> f` ordinary function-forwarding syntax if adopted later. The compiler must reject an ordinary `ActorRef<T>` that has no declared StreamOperator input/output contract.
+`pipe` is reserved **as an infix stream connection operator**, never as an overload of eager functional `|>`. Draft compiler PR #542 introduces parsing and fail-closed type checking for infix `pipe`, without claiming graph execution. Since userland already names local variables `pipe`, the spelling is contextual to infix position rather than globally forbidding those identifiers. The compiler must reject an ordinary `ActorRef<T>` that has no declared StreamOperator input/output contract.
 
 ### Proposed typing
 
-- `ActorRef<A>` where `A : StreamOperator<I,M>` |> `ActorRef<B>` where `B : StreamOperator<M,O>` gives `ActorStream<I,O>`.
-- `ActorStream<I,M> |> ActorRef<B : StreamOperator<M,O>>` gives `ActorStream<I,O>`, left associatively.
-- `ActorStream<I,M> |> ActorStream<M,O>` gives `ActorStream<I,O>` only if both endpoints are movable/exclusively attachable.
+- `ActorRef<A>` where `A : StreamOperator<I,M>` pipe `ActorRef<B>` where `B : StreamOperator<M,O>` gives `ActorStream<I,O>`.
+- `ActorStream<I,M> pipe ActorRef<B : StreamOperator<M,O>>` gives `ActorStream<I,O>`, left associatively.
+- `ActorStream<I,M> pipe ActorStream<M,O>` gives `ActorStream<I,O>` only if both endpoints are movable/exclusively attachable.
 - Mismatched middle types `M != N` are a **compile-time error**. No implicit JSON/Any serialization or unsafe casts.
 - A graph owns and disposes intermediate channel connections. A stage endpoint is consumed exactly once; reuse across pipelines requires an explicit supported `broadcast` / `merge` / `zip` operator.
-- Actors may expose ordinary mailbox methods independently. Only an explicitly declared stream input/output is used by `|>`.
+- Actors may expose ordinary mailbox methods independently. Only an explicitly declared stream input/output is used by `pipe`.
 
 ### Startup, execution, flow control
 
 1. `spawn` returns the actor ref without awaiting startup. No user-visible blocking occurs in construction.
-2. `a |> b` builds a typed graph, reserves both endpoint capabilities, and creates a **bounded** link; it returns an ActorStream handle synchronously.
+2. `a pipe b` builds a typed graph, reserves both endpoint capabilities, and creates a **bounded** link; it returns an ActorStream handle synchronously.
 3. Internal CONTROL scheduling begins stage initialization. `pipeline.ready : Future<void>` resolves once *all* stage ready barriers succeed and the edges are attached; if any stage fails or is cancelled, it fails and the graph cleans up.
 4. A stage pulls its typed input through `await readch` and writes through `await nb writech`. Waiting releases the carrier via the existing suspension engine. No worker/thread is dedicated to every edge.
 5. No unbounded implicit pending-write registry. The graph applies byte/message quotas and bounded outstanding write futures in addition to channel buffer capacity. Input type conformance and actor-domain transfer permission are checked *before enqueue*.
@@ -67,12 +67,12 @@ pub async routine main(): void {
 
 ### Grammar and implementation stages
 
-1. Add a distinct `PIPE_FORWARD` token for `|>` (longest-match before `|` and `>`), at lower precedence than logical expressions and above conditional/assignment, left associative. Add parser and formatter round-trip tests, including bitwise `|`, union types, and pipe lambdas.
+1. Use contextual infix `pipe` for typed ActorStream graph composition. Draft #542 separately adds a distinct `VALUE_PIPE` token for eager `|>` calls; both operators parse left-associatively below logical expressions and above conditional/assignment. Test bitwise `|`, type unions, lambda delimiters, and pre-existing identifiers named `pipe`.
 2. Specify source `StreamOperator<I,O>` declarations/trait conformance and actor-local port ownership. Add negative compiler tests for generic mismatch, missing stream contract, duplicate endpoints, wrong actor kind, crossing untrusted capability domains, recursive cycles, and unbounded fanout.
 3. Introduce `ActorStream<I,O>` VM graph capabilities with typed ports, `ready`/`done` futures, cancellation and bounded drain. Integrate existing ActorRef lifecycle rather than creating a scheduler.
-4. Build a real end-to-end test: spawn Parse and Normalize without await, connect with `|>`, submit 10k records with slow consumer, assert values/order, max outstanding registrations, worker/carrier liveness, EOF/failure distinction, and no orphaned actors.
+4. Build a real end-to-end test: spawn Parse and Normalize without await, connect with `pipe`, submit 10k records with slow consumer, assert values/order, max outstanding registrations, worker/carrier liveness, EOF/failure distinction, and no orphaned actors.
 5. Validate JVM, native AOT/hybrid, isolate-mode and hot-reload generation switching with a downstream REST/CLI pipeline.
 
 ### Avoid premature semantic claims
 
-The *current* compiler: accepts `spawn ActorType()`, but does not admit actor constructor parameters. ActorRef `ready`/ `done` are Futures; `send` is currently void and is not a stream flow-control acknowledgement. The lexer/parser do **not** recognize `|>` at present. The new source proposal should remain a separate draft implementation stack until a real compiler/VM graph exists.
+The *current* compiler: accepts `spawn ActorType()`, but does not admit actor constructor parameters. ActorRef `ready`/ `done` are Futures; `send` is currently void and is not a stream flow-control acknowledgement. Draft #542 recognizes `|>` as eager function piping and recognizes contextual `pipe` while intentionally rejecting it in the type checker. A real typed `ActorStream` graph runtime remains separate work; nothing in this RFC makes it executable.
