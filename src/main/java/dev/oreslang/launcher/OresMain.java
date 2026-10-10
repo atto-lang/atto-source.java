@@ -205,7 +205,7 @@ public final class OresMain {
         }
 
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
-        LinkedProgramRunner.run(
+        int exitStatus = LinkedProgramRunner.runWithExitStatus(
                 path,
                 policy,
                 permissions,
@@ -214,7 +214,8 @@ public final class OresMain {
                 allowedHostClasses,
                 System.getenv(),
                 System.out,
-                System.err);
+                System.err).exitStatus();
+        if (exitStatus != 0) System.exit(exitStatus);
     }
 
     private static boolean parsePermissionFlag(
