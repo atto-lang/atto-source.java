@@ -28,7 +28,25 @@ import java.util.List;
  * Guest code never receives Java IO/HTTP/socket objects.</p>
  */
 public final class NativeIo {
+    // Match the 4 MiB whole-text HTTP quota in bounded transport PR #487.
+    // Stream/chunked APIs will need separate byte and per-actor budgets.
+    static final int MAX_HTTP_TEXT_BYTES = 4 * 1024 * 1024;
     private NativeIo() { }
+
+    private static byte[] checkedHttpRequestBody(String body) {
+        java.util.Objects.requireNonNull(body, "HTTP request body");
+        // Avoid allocating a large intermediate array for clearly oversized input.
+        if (body.length() > MAX_HTTP_TEXT_BYTES) {
+            throw new IllegalArgumentException("HTTP request exceeds "
+                    + MAX_HTTP_TEXT_BYTES + " UTF-8 bytes");
+        }
+        byte[] encoded = body.getBytes(StandardCharsets.UTF_8);
+        if (encoded.length > MAX_HTTP_TEXT_BYTES) {
+            throw new IllegalArgumentException("HTTP request exceeds "
+                    + MAX_HTTP_TEXT_BYTES + " UTF-8 bytes");
+        }
+        return encoded;
+    }
 
     public static String readText(OresContext context, String rawPath) {
         Path path = canonicalExistingPath(rawPath);
@@ -245,7 +263,7 @@ public final class NativeIo {
         HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(30));
         if ("POST".equals(method)) {
-            request.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+            request.POST(HttpRequest.BodyPublishers.ofByteArray(checkedHttpRequestBody(body)));
         } else {
             request.GET();
         }
@@ -256,15 +274,20 @@ public final class NativeIo {
                 .build();
         try {
             CompletableFuture<HttpResponse<String>> requestFuture = client.sendAsync(
-                    request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    request.build(), info -> new BoundedHttpTextBodySubscriber(
+                            MAX_HTTP_TEXT_BYTES,
+                            info.headers().firstValueAsLong("content-length").orElse(-1L)));
             // A derived CompletableFuture does not propagate cancel() upstream.
             // Use an explicit completion bridge so closing the owning context
             // aborts the underlying transport rather than only the guest future.
             CompletableFuture<String> guestFuture = new CompletableFuture<>();
             requestFuture.whenComplete((response, failure) -> {
-                if (failure == null) guestFuture.complete(response.body());
-                else guestFuture.completeExceptionally(failure);
-                client.shutdown();
+                try {
+                    if (failure == null) guestFuture.complete(response.body());
+                    else guestFuture.completeExceptionally(failure);
+                } finally {
+                    client.shutdown();
+                }
             });
             guestFuture.whenComplete((ignored, failure) -> {
                 if (guestFuture.isCancelled()) {
