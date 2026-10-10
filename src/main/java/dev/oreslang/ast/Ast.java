@@ -521,7 +521,15 @@ public final class Ast {
             if (value == null) throw new IllegalArgumentException("yield requires a value");
         }
     }
-    public record ExprStmt(Expr expression) implements Stmt { }
+    /** Discarding a channel result is explicit: do readch / do nb readch. */
+    public record ExprStmt(Expr expression, boolean discardChannelResult) implements Stmt {
+        public ExprStmt(Expr expression) { this(expression, false); }
+        public ExprStmt {
+            if (discardChannelResult && !(expression instanceof ChannelOpExpr)) {
+                throw new IllegalArgumentException("do channel requires a channel operation");
+            }
+        }
+    }
     public record DeferStmt(Expr expression) implements Stmt { }
 
     public record BlockStmt(List<Stmt> body) implements Stmt {

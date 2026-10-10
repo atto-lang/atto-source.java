@@ -1469,7 +1469,18 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            if (expression.discardChannelResult()
+                    && expression.expression() instanceof Ast.ChannelOpExpr operation
+                    && operation.mode() == Ast.WaitMode.NONBLOCKING
+                    && currentActorKind == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "do nb readch/writech requires an actor execution domain: "
+                        + "discarded asynchronous operations must be cancelled on actor stop");
+            }
+            typeOf(expression.expression(), env, generics, self);
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {

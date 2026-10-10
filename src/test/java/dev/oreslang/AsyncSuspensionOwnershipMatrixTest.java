@@ -293,22 +293,83 @@ final class AsyncSuspensionOwnershipMatrixTest {
     }
 
     @Test
-    void DiscardOnlyDoReadchFormsStayRejectedUntilSpecified() {
-        // The frontend currently supports do select / do nb select only.
-        // A discarded nb readch Future needs an explicit cancel/drop contract
-        // before any new 'do' spelling can safely register such a read.
-        for (String statement : new String[]{
-                "do readch ch;", "do nb readch ch;",
-                "do writech ch, 1;", "do nb writech ch, 2;"
+    void DoBlockingReadAndWriteAreResultDiscardingSuspensionPoints() {
+        for (String operation : new String[]{
+                "do readch ch;", "do writech ch, 1;"
         }) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse("""
-                            fnc unsupported(): void {
-                              val Channel<int> ch = Channel.new<int>(1);
-                              %s
-                              return;
-                            }
-                            """.formatted(statement)), statement);
+            reject("""
+                    fnc bad(): void {
+                      val Channel<int> ch = Channel.new<int>(1);
+                      val Bar owner = new Bar();
+                      val view = rt borrow owner;
+                      %s
+                      stdio.println(view.value);
+                      return;
+                    }
+                    """.formatted(operation), "cannot readch/writech while an ordinary borrow is live");
+        }
+    }
+
+    @Test
+    void DoNbReadAndWriteAreActorScopedWithoutCallerSuspension() {
+        accept("""
+                actor fnc good(): void {
+                  val Channel<int> ch = Channel.new<int>(1);
+                  val Bar owner = new Bar();
+                  val view = rt borrow owner;
+                  do nb readch ch;
+                  do nb writech ch, 1;
+                  stdio.println(view.value);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void DoNbOperationsCannotDetachOutsideActorLifetime() {
+        for (String op : new String[]{
+                "do nb readch ch;", "do nb writech ch, 1;"
+        }) {
+            reject("""
+                    fnc bad(): void {
+                      val Channel<int> ch = Channel.new<int>(1);
+                      %s
+                      return;
+                    }
+                    """.formatted(op), "requires an actor execution domain");
+        }
+    }
+
+    @Test
+    void DoNbWriteStillTransfersPayloadAndRejectsBorrow() {
+        reject("""
+                actor fnc bad(): void {
+                  val Channel<Bar> ch = Channel.new<Bar>(1);
+                  val Bar owner = new Bar();
+                  do nb writech ch, rt borrow owner;
+                  return;
+                }
+                """, "writech cannot transport a borrowed reference");
+    }
+
+    @Test
+    void DoChannelFormsRetainExplicitDisposalAstMarker() {
+        for (String source : new String[]{
+                "do readch ch;", "do nb readch ch;",
+                "do writech ch, 7;", "do nb writech ch, 8;"
+        }) {
+            var program = Parser.parse("""
+                    actor fnc check(): void {
+                      val Channel<int> ch = Channel.new<int>(2);
+                      %s
+                      return;
+                    }
+                    """.formatted(source));
+            var declaration = (dev.oreslang.ast.Ast.FunctionDecl)
+                    program.modules().getFirst().declarations().getFirst();
+            var stmt = (dev.oreslang.ast.Ast.ExprStmt) declaration.body().get(1);
+            assertTrue(stmt.discardChannelResult(), source);
+            assertTrue(stmt.expression() instanceof dev.oreslang.ast.Ast.ChannelOpExpr, source);
         }
     }
     @Test

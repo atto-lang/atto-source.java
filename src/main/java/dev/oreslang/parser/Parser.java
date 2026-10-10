@@ -1495,6 +1495,27 @@ public final class Parser {
                     + "dynamic 'select from cases' produces a result and "
                     + "has no callback arms to handle discarded reads");
         }
+        // A 'do' channel statement discards a read/write result, never the
+        // operation itself. Blocking reads still suspend; nonblocking reads
+        // remain actor-owned registrations until completion or actor stop.
+        if (check(DO) && (checkNext(READCH) || checkNext(WRITECH)
+                || (checkNext(NB) && current + 2 < tokens.size()
+                    && (tokens.get(current + 2).type() == READCH
+                        || tokens.get(current + 2).type() == WRITECH)))) {
+            advance();
+            Ast.WaitMode mode = match(NB)
+                    ? Ast.WaitMode.NONBLOCKING
+                    : Ast.WaitMode.BLOCKING;
+            Ast.Expr value;
+            if (match(READCH)) {
+                value = parseChannelOperation(Ast.ChannelOperation.READ, mode);
+            } else {
+                consume(WRITECH, "do channel requires readch or writech");
+                value = parseChannelOperation(Ast.ChannelOperation.WRITE, mode);
+            }
+            consumeExpressionStatementTerminator(value, "do channel statement should end with ';'");
+            return new Ast.ExprStmt(value, true);
+        }
         if (looksLikeImmediateChannelExpression()) {
             Ast.Expr expression = parseExpression();
             consumeStatementTerminator("channel probe expression should end with ';'");
