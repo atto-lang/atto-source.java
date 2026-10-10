@@ -92,8 +92,9 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
-                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
+                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
                     continue;
                 }
                 if (modifiers.shared) {
@@ -270,8 +271,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
-                return parseDefinedActorClass(previous(), modifiers, annotations);
+                return parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix);
             }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
@@ -616,10 +618,53 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
+    private record ActorPrefix(Ast.ActorTransport transport, boolean serial) {
+        private static final ActorPrefix DEFAULT =
+                new ActorPrefix(Ast.ActorTransport.GENERIC, false);
+    }
+
+    /**
+     * Contextual actor-only modifiers preserve ordinary variables named
+     * "serial", "http", "tcp", "websocket" in unrelated grammar positions.
+     * Recognizes both "define http actor" and "define serial http actor".
+     */
+    private ActorPrefix parseActorPrefix() {
+        boolean serial = false;
+        Ast.ActorTransport transport = Ast.ActorTransport.GENERIC;
+        boolean recognized = false;
+        for (;;) {
+            if (matchContextualIdentifier("serial")) {
+                if (serial) throw error(previous(), "duplicate serial actor modifier");
+                serial = true;
+                recognized = true;
+            } else if (matchContextualIdentifier("http")) {
+                if (transport != Ast.ActorTransport.GENERIC)
+                    throw error(previous(), "actor cannot have multiple transport kinds");
+                transport = Ast.ActorTransport.HTTP;
+                recognized = true;
+            } else if (matchContextualIdentifier("tcp")) {
+                if (transport != Ast.ActorTransport.GENERIC)
+                    throw error(previous(), "actor cannot have multiple transport kinds");
+                transport = Ast.ActorTransport.TCP;
+                recognized = true;
+            } else if (matchContextualIdentifier("websocket")
+                    || matchContextualIdentifier("ws")) {
+                if (transport != Ast.ActorTransport.GENERIC)
+                    throw error(previous(), "actor cannot have multiple transport kinds");
+                transport = Ast.ActorTransport.WEBSOCKET;
+                recognized = true;
+            } else break;
+        }
+        if (recognized && !check(ACTOR) && !check(ISOACTOR))
+            throw error(peek(), "serial/http/tcp/websocket modifiers require an actor declaration");
+        return new ActorPrefix(transport, serial);
+    }
+
     private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
-            List<Ast.Annotation> annotations) {
+            List<Ast.Annotation> annotations,
+            ActorPrefix prefix) {
         modifiers = mergeModifiers(modifiers, parseModifiers());
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
@@ -630,7 +675,7 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        return parseActorClass(kind, modifiers.visibility, prefix);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -656,6 +701,11 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -666,10 +716,47 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        int requestConcurrency = 1;
+        int messageConcurrency = 1;
+        boolean declaredRequestConcurrency = false;
+        boolean declaredMessageConcurrency = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isContextualIdentifier("int") && current + 1 < tokens.size()
+                    && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
+                        || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
+                if (prefix.transport() == Ast.ActorTransport.GENERIC)
+                    throw error(peek(), "requestConcurrency/messageConcurrency require an http/tcp/websocket actor");
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.generator || mods.isStatic || mods.isAbstract
+                        || mods.shared || mods.untrusted || mods.structural
+                        || mods.nonLexical || mods.trapped)
+                    throw error(peek(), "actor concurrency declarations cannot use modifiers or annotations");
+                advance(); // int is a contextual type name
+                String property = consume(IDENT, "expected actor concurrency property").lexeme();
+                consume(EQUAL, "actor concurrency configuration requires a constant initializer");
+                Token value = consume(INT, "actor concurrency must be a positive integer literal");
+                int count;
+                try {
+                    count = Integer.parseInt(value.lexeme().replace("_", ""));
+                } catch (NumberFormatException overflow) {
+                    throw error(value, "actor concurrency limit exceeds the supported int range");
+                }
+                if (count < 1) throw error(value, "actor concurrency must be >= 1");
+                consume(SEMICOLON, "actor concurrency configuration requires ';'");
+                if (property.equals("requestConcurrency")) {
+                    if (declaredRequestConcurrency) throw error(value, "duplicate requestConcurrency");
+                    requestConcurrency = count;
+                    declaredRequestConcurrency = true;
+                } else {
+                    if (declaredMessageConcurrency) throw error(value, "duplicate messageConcurrency");
+                    messageConcurrency = count;
+                    declaredMessageConcurrency = true;
+                }
+                continue;
+            }
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
@@ -704,8 +791,12 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
+        if (prefix.serial() && (requestConcurrency != 1 || messageConcurrency != 1)) {
+            throw error(previous(), "serial actors require requestConcurrency = 1 and messageConcurrency = 1");
+        }
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
