@@ -155,6 +155,33 @@ final class BorrowedContinuationBoundaryTest {
     }
 
     @Test
+    void classFieldCannotHideNestedBorrowInOption() {
+        reject(BOX + """
+                define class UnsafeHolder as
+                  pub val Option<&Box> reference = None;
+                end
+                """, "cannot store a borrowed reference");
+    }
+
+    @Test
+    void unusedAsyncBorrowSignatureIsStillRejected() {
+        reject(BOX + """
+                async fnc unsafe(&Box input): int {
+                  return input.value;
+                }
+                """, "cannot borrow across an async/generator lifetime");
+    }
+
+    @Test
+    void ownedAsyncSignatureRemainsLegal() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
+                async fnc safe(Box input): int {
+                  return input.value;
+                }
+                """)));
+    }
+
+    @Test
     void asyncResultMustNotExposeBorrowedReference() {
         reject(BOX + """
                 async fnc identity(&Box box): &Box {
