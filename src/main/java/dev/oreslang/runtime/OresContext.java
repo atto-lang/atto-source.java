@@ -34,8 +34,8 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
-    private final AsyncStdoutLog asyncStdout;
-    public AsyncStdoutLog asyncStdout() { return asyncStdout; }
+    private final ProcessChannels processChannels;
+    public ProcessChannels processChannels() { return processChannels; }
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
@@ -79,7 +79,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
-        this.asyncStdout = new AsyncStdoutLog(this.output, 8192);
+        this.processChannels = new ProcessChannels(this, this.input, this.output, new PrintWriter(env.err(), true));
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
@@ -441,7 +441,7 @@ public final class OresContext implements AutoCloseable {
         }
         // Producers have stopped; drain accepted messages while the VM
         // and output stream are still alive, before carrier teardown.
-        try { asyncStdout.close(); }
+        try { processChannels.close(); }
         catch (RuntimeException e) { stdoutFailure = e; }
         try {
             vm.close();
