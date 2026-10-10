@@ -134,7 +134,7 @@ public final class ProcessChannels implements AutoCloseable {
         return barrier;
     }
 
-    private static void drain(ConsoleChannel<String> source,
+    private void drain(ConsoleChannel<String> source,
                               PrintWriter target, Map<String, CompletableFuture<Void>> barriers) {
         try {
             for (;;) {
