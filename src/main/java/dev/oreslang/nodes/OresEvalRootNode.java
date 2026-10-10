@@ -6066,9 +6066,9 @@ public final class OresEvalRootNode extends RootNode {
                     case "flush_async_logs" -> (Invokable) args -> { requireZero(args, "stdio.flush_async_logs"); stdio.context().requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.flush_async_logs"); return dev.oreslang.runtime.OresFuture.from(stdio.context().processChannels().flushAsyncLogs()); };
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin" -> new StdinFacade(stdio.context());
-                    case "out" -> stdio.context().processChannels().stdout();
-                    case "err" -> stdio.context().processChannels().stderr();
-                    case "in" -> stdio.context().processChannels().stdin();
+                    case "out" -> { stdio.context().requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.out"); yield stdio.context().processChannels().stdout(); }
+                    case "err" -> { stdio.context().requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.err"); yield stdio.context().processChannels().stderr(); }
+                    case "in" -> { stdio.context().requireCapability(IsolatePolicy.Capability.STDIN, "stdio.in"); yield stdio.context().processChannels().stdin(); }
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
             }
@@ -6332,9 +6332,9 @@ public final class OresEvalRootNode extends RootNode {
                     case "share_readonly" -> (Invokable) process::shareReadonly;
                     case "gc" -> (Invokable) process::gc;
                     case "exit" -> (Invokable) process::exit;
-                    case "stdout" -> process.context().processChannels().stdout();
-                    case "stderr" -> process.context().processChannels().stderr();
-                    case "stdin" -> process.context().processChannels().stdin();
+                    case "stdout" -> { process.context().requireCapability(IsolatePolicy.Capability.STDOUT, "process.stdout"); yield process.context().processChannels().stdout(); }
+                    case "stderr" -> { process.context().requireCapability(IsolatePolicy.Capability.STDOUT, "process.stderr"); yield process.context().processChannels().stderr(); }
+                    case "stdin" -> { process.context().requireCapability(IsolatePolicy.Capability.STDIN, "process.stdin"); yield process.context().processChannels().stdin(); }
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
@@ -6365,9 +6365,7 @@ public final class OresEvalRootNode extends RootNode {
                                 || console.direction() != dev.oreslang.runtime.ProcessChannels.Direction.READ)
                             throw new IllegalArgumentException("stream() requires a readable process channel");
                         console.checkGuestRead();
-                        @SuppressWarnings("unchecked")
-                        ChannelRuntime.Channel<Object> typed = (ChannelRuntime.Channel<Object>) channel;
-                        return new dev.oreslang.runtime.ChannelReadableStream<>(typed);
+                        return context.processChannels().stdinStream();
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
