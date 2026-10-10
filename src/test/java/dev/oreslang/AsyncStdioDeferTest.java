@@ -30,7 +30,7 @@ final class AsyncStdioDeferTest {
     void inlineSelfInvokingDeferCapturesArgumentsAtRegistration() throws Exception {
         String result = run("""
                 pub routine main(): void {
-                  let x = "old";
+                  let String x = "old";
                   defer (|saved| -> {
                     stdio.stdout.log(saved);
                   })(x);
@@ -61,9 +61,8 @@ final class AsyncStdioDeferTest {
                   })(rt borrow owned);
                 }
                 """;
-        TypeChecker.check(Parser.parse(program));
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> OwnershipChecker.check(Parser.parse(program)));
+                () -> TypeChecker.check(Parser.parse(program)));
         assertTrue(error.getMessage().contains("defer cannot retain borrowed"));
     }
 
