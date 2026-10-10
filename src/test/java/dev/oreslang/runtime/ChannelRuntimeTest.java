@@ -298,6 +298,19 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void asynchronousNullSubscriptionFailsSelectInsteadOfStrandingWaiters()
+            throws Exception {
+        java.util.concurrent.Flow.Publisher<Integer> malformed = subscriber ->
+                Thread.ofVirtual().start(() -> subscriber.onSubscribe(null));
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malformed))
+                .selectAsync();
+        var error = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> selected.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(error.getCause() instanceof NullPointerException);
+        assertTrue(error.getCause().getMessage().contains("null subscription"));
+    }
+
+    @Test
     void observableEmptyCompletionFailsSelectRatherThanHanging() throws Exception {
         java.util.concurrent.Flow.Publisher<Integer> empty = subscriber ->
                 subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
