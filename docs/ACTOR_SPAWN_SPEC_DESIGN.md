@@ -97,7 +97,7 @@ w.set_concurrency(6);
 val worker = spawn w;
 ```
 
-For a readonly binding, offer an **immutable copying** builder rather
+For a readonly binding, offer a **functional consuming** builder rather
 than weakening `const` semantics:
 
 ```ores
@@ -105,8 +105,9 @@ const w = new Worker().with_concurrency(6);
 val worker = spawn w;
 ```
 
-`with_concurrency(...)` returns a **different** `ActorSpec<Worker>`;
-it does not mutate its receiver. `set_concurrency(...)` returns
+`with_concurrency(...)` consumes its original temporary/spec and returns
+a **new** `ActorSpec<Worker>` value; it does not mutate the receiver and
+does not duplicate one-shot spawn authority. `set_concurrency(...)` returns
 `void` and mutates only an unspawned, uniquely owned spec. Both are
 runtime builtins on `ActorSpec`, not overridable actor instance methods
 or arbitrary user-defined `Worker.set_concurrency`. This distinction
