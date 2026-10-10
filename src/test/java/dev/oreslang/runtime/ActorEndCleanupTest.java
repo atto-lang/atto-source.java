@@ -110,14 +110,21 @@ final class ActorEndCleanupTest {
                                                 "cleanup failed");
                                     }));
 
-            ref.ready().join();
+            ref.getReadySignal().getAwaited().join();
+            var doneSignal = ref.getDoneSignal();
             ref.send("go");
 
             java.util.concurrent.CompletionException failed =
                     assertThrows(
                             java.util.concurrent.CompletionException.class,
-                            () -> ref.done().join());
+                            () -> doneSignal.getAwaited().join());
             assertEquals("cleanup failed", failed.getCause().getMessage());
+            var lateFailure = assertThrows(
+                    java.util.concurrent.CompletionException.class,
+                    () -> ref.getDoneSignal().getAwaited().join());
+            assertSame(failed.getCause(), lateFailure.getCause(),
+                    "late subscribers see the exact original cleanup failure");
+            assertSame(doneSignal, ref.getDoneSignal());
             assertFalse(ref.isAlive());
             assertEquals(
                     "cleanup failed",
