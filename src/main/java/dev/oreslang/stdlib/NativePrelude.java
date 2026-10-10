@@ -28,7 +28,7 @@ public final class NativePrelude {
                 || source.matches("(?s).*\\bWritableTee\\b.*")
                 || source.matches("(?s).*\\.stream\\s*\\(.*")
                 || source.matches("(?s).*\\.tee\\s*\\(.*");
-        boolean needStdio = source.matches("(?s).*\\\\bStdio\\\\b.*");
+        boolean needStdio = source.matches("(?s).*\\bStdio\\b.*");
         if (!needObservable && !needStreams && !needStdio) return program;
 
         Set<String> present = new HashSet<>();
