@@ -40,9 +40,12 @@ OresFuture<ActorRuntime.ActorRef<String>> pending = group.spawnWorkerReady(
 // Adopt the ActorRef returned by ordinary spawn, including a ref that
 // has already finished its on_start readiness barrier.
 group.manage(existingWorker);
-group.workerRefs(); // manager-only snapshot
-group.stopWorkers(); // asynchronous stop request; does not park carriers
-group.close();       // fences admissions and stops owned workers only
+group.workerRefs();        // manager-only snapshot
+group.workerCount();       // managed workers (not all cooperative members)
+group.workersDone();       // Future<Void>, snapshot-wide nonblocking drain
+group.releaseWorker(worker); // relinquish ownership without stopping worker
+group.stopWorkers();       // asynchronous stop request; does not park carriers
+group.close();             // fences admissions and stops owned workers only
 ```
 
 The source language currently supports `spawn`, `await spawn`, and
@@ -55,12 +58,16 @@ a source-exposed ActorGroup type are still required for guest-level API parity.
 1. Admission and group close serialize on the group authority lock. Group
    ownership cannot appear after close is published.
 2. Actor callers may manage only self or structured descendants; host
-   supervisors may explicitly adopt any actor in their own runtime.
+   supervisors may explicitly adopt any actor in their own runtime. Exactly
+   one group may hold lifecycle ownership of a worker at a time, even though
+   multiple cooperative memberships are allowed.
    Cross-runtime handles are rejected.
 3. An actor constructor failing before readiness propagates the same failure
    through `ready`/`await spawn` and later `done`.
 4. The group drops managed references on actor retirement, including startup
    failures; `close()` drops remaining refs and requests nonblocking stops.
+   `releaseWorker()` permits explicit ownership handoff while leaving
+   cooperative membership unchanged.
 5. `stopWorkers()` and `close()` operate only on owned workers. A joined
    cooperative member is not silently stopped or given lifecycle authority.
 6. Cancellation/stop before ready fails the readiness barrier. `done` is a
@@ -72,7 +79,8 @@ a source-exposed ActorGroup type are still required for guest-level API parity.
 
 - Expose typed ActorGroup worker-management operations to native Oreslang
   source and statically enforce ownership + capability rules there.
-- Add optional fail-fast/restart supervision policy, graceful shutdown deadline
-  and `allDone()` aggregation with explicit timeout/cancellation semantics.
+- Add optional fail-fast/restart supervision policy and graceful shutdown
+  deadlines. The current `workersDone()` aggregates a fixed worker snapshot,
+  not dynamically spawned workers after the call or nested grandchildren.
 - Run full Java integration regression/CI on the branch head, and differential
   native source-to-runtime tests once LLVM source actors are lowered.
