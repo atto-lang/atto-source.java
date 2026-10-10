@@ -108,7 +108,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
-                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -1843,17 +1843,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             if (binary.operator().equals("pipe")) {
-                Type lhs = typeOf(binary.left(), env, generics, self);
-                Type rhs = typeOf(binary.right(), env, generics, self);
-                StreamPorts from = streamPortsForPipeOperand(lhs, "left");
-                StreamPorts into = streamPortsForPipeOperand(rhs, "right");
-                if (from.output() == Primitive.VOID || into.input() == Primitive.VOID)
-                    throw new IllegalArgumentException(
-                            "pipe cannot attach stages through a void output/input port");
-                if (!from.output().equals(into.input()))
-                    throw new IllegalArgumentException(
-                            "pipe port type mismatch: producer emits " + from.output()
-                            + " but consumer requires " + into.input());
+                checkPipeTopology(binary, env, generics, self);
                 // Still fail closed: the current actor mailbox send() is void
                 // and lacks awaitable bounded admission. Do not silently spawn
                 // actors or build an unbackpressured bridge.
@@ -4159,6 +4149,25 @@ public final class TypeChecker {
         return new StreamPorts(input, output);
     }
 
+    private StreamPorts checkPipeTopology(
+            Ast.Expr expression, Env env, Set<String> generics, Type self) {
+        if (expression instanceof Ast.BinaryExpr binary
+                && binary.operator().equals("pipe")) {
+            StreamPorts from = checkPipeTopology(binary.left(), env, generics, self);
+            StreamPorts into = checkPipeTopology(binary.right(), env, generics, self);
+            if (from.output() == Primitive.VOID || into.input() == Primitive.VOID)
+                throw new IllegalArgumentException(
+                        "pipe cannot attach stages through a void output/input port");
+            if (!from.output().equals(into.input()))
+                throw new IllegalArgumentException(
+                        "pipe port type mismatch: producer emits " + from.output()
+                        + " but consumer requires " + into.input());
+            return new StreamPorts(from.input(), into.output());
+        }
+        return streamPortsForPipeOperand(
+                typeOf(expression, env, generics, self), "stage");
+    }
+
     private StreamPorts streamPortsForPipeOperand(Type value, String side) {
         Type type = receiverDispatchType(deref(value));
         if (!(type instanceof Named named))
@@ -4467,6 +4476,7 @@ public final class TypeChecker {
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
@@ -4551,7 +4561,8 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")
+                || named.name().equals("ActorStream") || named.name().equals("StreamOperator")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -7077,6 +7088,16 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of());
             }
+            case "ActorStream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2)
+                    throw new IllegalArgumentException(
+                            "ActorStream<I,O> requires two explicit endpoint types");
+                yield new Named("ActorStream", List.of(
+                        resolve(ref.arguments().get(0), generics, self),
+                        resolve(ref.arguments().get(1), generics, self)));
+            }
+            case "StreamOperator" -> throw new IllegalArgumentException(
+                    "StreamOperator<I,O> is a reserved actor implements marker, not a runtime value type");
             case "ActorMail", "ActorOutput", "ActorOutputStream" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
