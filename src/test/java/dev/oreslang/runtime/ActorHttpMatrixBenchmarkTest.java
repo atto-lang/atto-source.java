@@ -95,7 +95,7 @@ final class ActorHttpMatrixBenchmarkTest {
             for (int index = 0; index < ACTORS; index++) {
                 var arena = new AtomicReference<ActorArena>();
                 var slot = new AtomicReference<ExplicitNativeI64Region.Slot>();
-                var factory = (java.util.function.Supplier<ActorRuntime.ActorBehavior<Long>>) () -> (mail, ctx) -> {
+                var factory = (java.util.function.Supplier<ActorRuntime.Behavior<Long>>) () -> (mail, ctx) -> {
                     try {
                         if (mail == 0L) {
                             ActorArena nativeArena = ctx.actorOwnedMemory().orElseThrow().newActorArena(2, 2);
