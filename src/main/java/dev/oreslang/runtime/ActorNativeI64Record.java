@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -31,7 +32,7 @@ public final class ActorNativeI64Record implements AutoCloseable {
             Map<String, ExplicitNativeI64Region.Slot> fields) {
         this.typeName = typeName;
         this.region = region;
-        this.fields = Map.copyOf(fields);
+        this.fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
     }
 
     static ActorNativeI64Record allocate(ActorRuntime.ActorMemorySlice memory,
