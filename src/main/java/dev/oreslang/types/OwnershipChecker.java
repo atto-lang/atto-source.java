@@ -82,6 +82,13 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        // A deferred callable's own signature must be safe even when unused:
+        // checking only call sites misses exported functions and callbacks.
+        requireDeferredOwnedParameters(fn.parameters(), fn.async() || fn.generator(),
+                "function " + fn.name());
+        if ((fn.async() || fn.generator()) && containsBorrowType(fn.returnType())) {
+            throw error("async/generator result cannot expose borrowed references without a scoped lifetime");
+        }
         Scope scope = new Scope(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -102,7 +109,7 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
-            if (fieldType != null && fieldType.isBorrow()) {
+            if (containsBorrowType(fieldType)) {
                 throw error("field '" + klass.name() + "." + field.name()
                         + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
             }
@@ -130,6 +137,11 @@ public final class OwnershipChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            requireDeferredOwnedParameters(method.parameters(), method.async(),
+                    "method " + klass.name() + "." + method.name());
+            if (method.async() && containsBorrowType(method.returnType())) {
+                throw error("async method result cannot expose borrowed references without a scoped lifetime");
+            }
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
