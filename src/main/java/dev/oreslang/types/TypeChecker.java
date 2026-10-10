@@ -2774,8 +2774,8 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
-                if (member.member().equals("print") || member.member().equals("println")
-                        || member.member().equals("println_blocking")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("print") || member.member().equals("print_blocking")
+                        || member.member().equals("println") || member.member().equals("println_blocking")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("println_async"))
                     return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
                 if (member.member().equals("flush_async_logs"))
@@ -2917,8 +2917,9 @@ public final class TypeChecker {
 
             receiver = receiverDispatchType(unwrapMutexGuard(deref(receiver)));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
-                if (member.member().equals("write") || member.member().equals("println")
-                        || member.member().equals("println_blocking") || member.member().equals("logList")) {
+                if (member.member().equals("write") || member.member().equals("write_blocking")
+                        || member.member().equals("println") || member.member().equals("println_blocking")
+                        || member.member().equals("logList")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
                 if (member.member().equals("println_async") || member.member().equals("logList_async")) {
