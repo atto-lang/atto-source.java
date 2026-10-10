@@ -15,6 +15,37 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresSchedulerTest {
     @Test
+    void pendingHostStageCannotRegisterCallbackBeforeRootCarrierRejectsWait()
+            throws Exception {
+        var registrations = new AtomicInteger();
+        var external = new java.util.concurrent.CompletableFuture<Integer>() {
+            @Override
+            public java.util.concurrent.CompletableFuture<Integer> whenComplete(
+                    java.util.function.BiConsumer<? super Integer, ? super Throwable> callback) {
+                registrations.incrementAndGet();
+                return super.whenComplete(callback);
+            }
+        };
+
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Boolean> denied = scheduler.startSync(() -> {
+                assertThrows(IllegalStateException.class,
+                        () -> AsyncRuntime.await(external));
+                return true;
+            });
+            assertTrue(denied.get(2, TimeUnit.SECONDS));
+            assertEquals(0, registrations.get(),
+                    "rejecting a carrier-blocking host stage must precede callback registration");
+
+            assertTrue(external.complete(42));
+            assertEquals(42, scheduler.startSync(() -> AsyncRuntime.await(external))
+                    .get(2, TimeUnit.SECONDS),
+                    "already settled host stages may be read without carrier parking");
+            assertEquals(1, registrations.get());
+        }
+    }
+
+    @Test
     void pendingHostFutureReadsCannotParkRootSchedulerCarrier() throws Exception {
         OresFuture<Integer> producer = new OresFuture<>();
         try (OresScheduler scheduler = new OresScheduler(1)) {
