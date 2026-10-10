@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.zip.CRC32C;
