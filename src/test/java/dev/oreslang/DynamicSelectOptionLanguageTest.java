@@ -87,6 +87,24 @@ final class DynamicSelectOptionLanguageTest {
         assertEquals("timeout", run(program));
     }
 
+    @Test
+    void mixedCaseFactoriesRejectNonFutureAndNonIntegerTimeoutArguments() {
+        for (String invalid : new String[] {
+                "SelectCase.await(42)",
+                "SelectCase.cancelled(true)",
+                "SelectCase.timeout(\"not milliseconds\")"
+        }) {
+            String source = """
+                    pub fnc main(): void {
+                      val SelectSet cases = SelectSet.new([%s]);
+                      return;
+                    }
+                    """.formatted(invalid);
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+        }
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "select-option.ores")
