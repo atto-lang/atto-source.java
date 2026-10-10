@@ -117,7 +117,7 @@ final class NativeCoreLibraryTest {
     }
 
     @Test
-    void coreImportPathsFailClosedOnTraversalAndUnknownModules() {
+    void coreImportPathsFailClosedOnTraversalAndUnknownModules() throws Exception {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> CoreLibrarySources.unitId("std/../secret"));
