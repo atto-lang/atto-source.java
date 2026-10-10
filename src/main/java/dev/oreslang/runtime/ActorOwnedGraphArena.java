@@ -8,6 +8,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
 
 /**
  * An actor-owned, bounded graph with exactly one owner of each payload.
@@ -79,7 +80,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
 
     private final Object identity = new Object();
     private final Runnable ownerGuard;
-    private final Runnable onRetired;
+    private final Consumer<ActorOwnedGraphArena<T>> onRetired;
     private final Object[] values;
     private final long[] generations;
     private final int[] loans;
@@ -94,7 +95,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
 
     @SuppressWarnings("unchecked")
     ActorOwnedGraphArena(int capacity, int maxEdgesPerNode,
-                         Runnable ownerGuard, Runnable onRetired) {
+                         Runnable ownerGuard, Consumer<ActorOwnedGraphArena<T>> onRetired) {
         if (capacity < 1 || capacity > 65536 || maxEdgesPerNode < 1
                 || (long) capacity * maxEdgesPerNode > 1_000_000L) {
             throw new IllegalArgumentException("bounded graph capacity and degree required");
@@ -234,7 +235,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         uniquePayloads.clear();
         size = 0;
         fullyClosed = true;
-        onRetired.run();
+        onRetired.accept(this);
         return cleanup;
     }
 
