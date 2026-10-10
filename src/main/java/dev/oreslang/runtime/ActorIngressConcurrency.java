@@ -28,6 +28,7 @@ public final class ActorIngressConcurrency implements AutoCloseable {
     private final Map<Long, Connection> connections = new HashMap<>();
     private final Map<Long, Message> ordinaryMessages = new HashMap<>();
     private long lastOrdinarySequence;
+    private long lastOpenedConnectionId;
     private boolean closed;
 
     private ActorIngressConcurrency(Protocol protocol, long incarnation,
@@ -78,19 +79,20 @@ public final class ActorIngressConcurrency implements AutoCloseable {
     }
 
     /**
-     * The broker must assign a non-reused connection ID within this actor
-     * incarnation. Existing active IDs are rejected, never silently merged.
-     * Returning null on exhaustion does not claim a connection ID.
+     * The broker assigns strictly increasing positive connection IDs per actor
+     * incarnation. Old/reused IDs are rejected, including after closing a
+     * prior session. Exhaustion returns null without consuming the next ID.
      */
     public synchronized Connection tryOpenConnection(long connectionId, long actorIncarnation) {
         requireIncarnation(actorIncarnation);
         if (protocol == Protocol.REGULAR) throw new IllegalStateException("regular actors have no connections");
         requireOpen();
-        if (connectionId <= 0) throw new IllegalArgumentException("invalid connection id");
-        if (connections.containsKey(connectionId)) throw new IllegalArgumentException("duplicate connection id");
+        if (connectionId <= lastOpenedConnectionId)
+            throw new IllegalArgumentException("stale or reused connection id");
         if (connections.size() >= maxConnections) return null;
         Connection connection = new Connection(connectionId);
         connections.put(connectionId, connection);
+        lastOpenedConnectionId = connectionId;
         return connection;
     }
 
