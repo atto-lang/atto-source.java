@@ -553,6 +553,33 @@ without re-registering or redirecting existing waiters. A plan is **not**
 a shareable actor-mail payload, and old revisions retain the ownership of
 their previously admitted payloads until their own selection settles.
 
+## Affine ownership of reusable write cases
+
+A `SelectCase.write(channel, value)` descriptor can retain a move-only value,
+so its lifetime differs from a `SelectCase.read` observer. Dynamic select
+sets and reusable plans must not send one mutable object twice just because
+the descriptor was reused:
+
+- Built-in immutable scalar payloads (strings, primitive wrappers,
+  `BigInteger`, `BigDecimal`) are Copy-like and may be sent repeatedly.
+- Other Java/reference payloads have an atomic **one-shot transfer token**.
+  The coordinator claims that token at the same instant as buffered enqueue
+  or unbuffered rendezvous. It cannot be claimed twice even if the descriptor
+  is shared across multiple `SelectSet` objects or plan revisions.
+- A selection that **loses** to another case does not consume its candidate
+  write token; it can be selected on a later invocation.
+- Reusing an already-transferred write descriptor fails closed instead of
+  silently aliasing its payload into a second mailbox. Refresh the case with
+  a new payload via `plan.replaceCase(index, SelectCase.write(...))`.
+- Existing channel reads and default/deadline/Future observers remain freely
+  reusable; mutability belongs to write payload ownership, not observation.
+
+This runtime token is defensive validation in addition to source-level
+non-`Copy` `SelectCase` and `SelectSet` types. A future typed
+`Copy`/`Clone` trait can grant repeatability to additional immutable
+user-defined types; a Java host claiming its custom object is immutable does
+not by itself make that object `Copy`.
+
 ## Resource ownership for completed select Futures
 
 A terminal `OresFuture` now drops its cancellation admission closure on all
