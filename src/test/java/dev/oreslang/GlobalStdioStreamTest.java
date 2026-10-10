@@ -79,7 +79,7 @@ final class GlobalStdioStreamTest {
         var result = run("""
                 pub routine main(): void {
                   val WritableTee tee = stdio.out.tee(stdio.err);
-                  tee.write("paired");
+                  await tee.write("paired");
                   return;
                 }
                 """, "");
