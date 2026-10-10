@@ -3513,6 +3513,27 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Object value,
                 SourceValueCont continuation) {
+            // 'await spawn Worker()' waits for on_start/constructor readiness
+            // and returns the *same* handle, not void and not actor termination.
+            if (value instanceof ActorRuntime.ActorRef<?> ref) {
+                OresFuture<Void> ready = ref.ready();
+                if (ready.isDone()) {
+                    try {
+                        ready.join();
+                        continuation.accept(task, ref, null);
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                    }
+                } else {
+                    task.suspend(
+                            ready,
+                            (t, ignored, failure) ->
+                                    continuation.accept(
+                                            t, failure == null ? ref : null, failure));
+                }
+                return;
+            }
+
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
@@ -5902,6 +5923,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
+                if (value instanceof ActorRuntime.ActorRef<?> ref) {
+                    AsyncRuntime.await(ref.ready());
+                    return ref;
+                }
                 if (value instanceof OresFuture<?> future) {
                     return AsyncRuntime.await(future);
                 }
