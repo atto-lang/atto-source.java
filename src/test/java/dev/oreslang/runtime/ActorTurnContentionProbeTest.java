@@ -236,4 +236,67 @@ final class ActorTurnContentionProbeTest {
             assertEquals(2, violations.get());
         }
     }
+
+    @Test
+    void delegatedTurnExecutorMarksAndRestoresActualActorCarrierOnSuccessAndFailure() throws Exception {
+        AtomicLong guestEntryCount = new AtomicLong();
+        AtomicLong leakedMarkerCount = new AtomicLong();
+        AtomicReference<Throwable> executorFailure = new AtomicReference<>();
+
+        ActorRuntime.TurnExecutor delegatedExecutor = turn -> {
+            Thread delegate = Thread.ofPlatform().start(() -> {
+                try {
+                    assertFalse(ActorRuntime.isActorCarrierThread(),
+                            "a fresh delegate must not inherit a dispatcher thread's carrier marker");
+                    turn.run();
+                } catch (Throwable failure) {
+                    executorFailure.compareAndSet(null, failure);
+                } finally {
+                    if (ActorRuntime.isActorCarrierThread()
+                            || ActorRuntime.inActorExecution()
+                            || ActorRuntime.currentActorId().isPresent()) {
+                        leakedMarkerCount.incrementAndGet();
+                    }
+                }
+            });
+            try {
+                delegate.join(5000);
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(failure);
+            }
+            assertFalse(delegate.isAlive(), "delegated actor turn must not strand its carrier");
+        };
+
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 16, 16);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(), config,
+                delegatedExecutor, ActorRuntime.ControlDispatcher.unavailable(),
+                new CoreRuntimeFlags(true))) {
+            var success = runtime.<Integer>spawnShared(() -> (value, context) -> {
+                assertTrue(ActorRuntime.isActorCarrierThread(),
+                        "actual guest execution thread must be tagged as an actor carrier");
+                guestEntryCount.incrementAndGet();
+                context.self().stop();
+            });
+            success.send(1);
+            assertTrue(success.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(success.failure().isEmpty(), () -> "unexpected failure: " + success.failure());
+
+            var failure = runtime.<Integer>spawnShared(() -> (value, context) -> {
+                assertTrue(ActorRuntime.isActorCarrierThread());
+                guestEntryCount.incrementAndGet();
+                throw new IllegalArgumentException("deliberate guest failure");
+            });
+            failure.send(1);
+            assertTrue(failure.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(failure.failure().isPresent());
+            assertTrue(failure.failure().orElseThrow().getMessage().contains("deliberate guest failure"));
+
+            assertEquals(2, guestEntryCount.get());
+            assertEquals(0, leakedMarkerCount.get(),
+                    "delegated actor carrier or guest authority survived after its turn");
+            assertNull(executorFailure.get());
+            assertEquals(0, runtime.coreContentionViolationCount());
+        }
+    }
 }
