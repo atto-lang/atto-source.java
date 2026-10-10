@@ -25,6 +25,43 @@ class ActorForeignMemoryTest {
     }
 
     @Test
+    void closingFromDifferentCarrierReleasesSharedArena() throws Exception {
+        ActorForeignMemory block = ActorForeignMemory.allocate(128);
+        block.memory().putLong(0, 731L);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread other = new Thread(() -> {
+            try {
+                assertEquals(731L, block.memory().getLong(0));
+                block.close();
+                block.close();
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        });
+        other.start();
+        other.join();
+        assertNull(failure.get(), "shared arena must close from a different carrier");
+        assertThrows(IllegalStateException.class, block::memory);
+    }
+
+    @Test
+    void savedBufferCannotOutliveCloseWhenBackedByFfm() {
+        ActorForeignMemory block = ActorForeignMemory.allocate(32);
+        ByteBuffer saved = block.memory();
+        saved.putInt(0, 42);
+        boolean ffm = block.deterministicReclamation();
+        block.close();
+        if (ffm) {
+            assertThrows(IllegalStateException.class, () -> saved.getInt(0));
+        } else {
+            // Java 21 without FFM has a direct-buffer fallback. The bytes
+            // are zeroed, but the raw saved view cannot be revoked.
+            assertEquals(0, saved.getInt(0));
+        }
+    }
+
+    @Test
     void zeroSizedAllocationHasNoReadableBytes() {
         try (ActorForeignMemory block = ActorForeignMemory.allocate(0)) {
             assertEquals(0, block.memory().capacity());
