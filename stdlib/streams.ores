@@ -18,9 +18,12 @@ pub define class WritableTee as
   val Channel<String> primary;
   val Channel<String> secondary;
 
-  pub async write(String frame): void {
-    await nb writech self.primary, frame;
-    await nb writech self.secondary, frame;
+  // Blocking notation means suspension of the Oreslang continuation,
+  // not occupation of an actor's carrier. Class instance async methods
+  // are not admitted by the compiler yet; no async keyword is needed here.
+  pub write(String frame): void {
+    writech self.primary, frame;
+    writech self.secondary, frame;
     return;
   }
 end
