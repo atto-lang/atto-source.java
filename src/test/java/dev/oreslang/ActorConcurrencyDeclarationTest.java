@@ -237,6 +237,42 @@ final class ActorConcurrencyDeclarationTest {
     }
 
     @Test
+    void actorAdmissionSettingNamesCannotBeInstanceOrStaticMethods() {
+        for (String actorHeader : new String[] {
+                "define actor Worker as",
+                "define serial actor Worker as",
+                "define http actor Worker as"
+        }) {
+            for (String setting : new String[] {
+                    "requestConcurrency", "messageConcurrency"
+            }) {
+                for (String method : new String[] {
+                        setting + "(): int { return 1; }",
+                        "static fnc " + setting + "(): int { return 1; }"
+                }) {
+                    String source = actorHeader + "\n" + method + "\nend";
+                    IllegalArgumentException error = assertThrows(
+                            IllegalArgumentException.class,
+                            () -> TypeChecker.check(Parser.parse(source)), source);
+                    assertTrue(error.getMessage().contains("cannot declare admission setting"),
+                            error::getMessage);
+                }
+            }
+        }
+    }
+
+    @Test
+    void admissionSettingMethodNamesRemainLegalOutsideActors() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Metrics as
+                    pub requestConcurrency(): int { return 1; }
+                    pub messageConcurrency(): int { return 1; }
+                end
+                pub routine main(): void { return; }
+                """)));
+    }
+
+    @Test
     void nonProtocolIdentifiersRemainValid() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc calculate(int serial, int http, int tcp, int websocket): int {
