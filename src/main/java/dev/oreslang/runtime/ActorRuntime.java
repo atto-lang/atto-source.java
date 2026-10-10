@@ -6464,7 +6464,7 @@ public final class ActorRuntime implements AutoCloseable {
                     && !(cause instanceof ActorCancelledException)
                     && !(cause instanceof ActorCancellationSignal)
                     && ref.terminationCause.get() == cause) {
-                ref.failureNoticeFuture.complete(failureNotice(ref.id(), cause));
+                ref.failureNoticeFuture.completeFromRuntime(failureNotice(ref.id(), cause));
             }
 
             // Cancellation removes channel/select waiter registrations before
