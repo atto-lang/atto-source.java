@@ -350,6 +350,37 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void abnormalCloseKeepsFailureTypeMessageAndCause() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
+        java.io.IOException original =
+                new java.io.IOException("stdin line exceeds configured bound");
+        OresFuture<String> pending = channel.readAsync();
+
+        channel.close(original);
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, pending::join);
+        Throwable channelFailure = OresFuture.unwrap(thrown);
+        assertTrue(channelFailure instanceof ChannelRuntime.ChannelClosedException);
+        assertTrue(channelFailure.getMessage().contains("IOException"));
+        assertTrue(channelFailure.getMessage().contains("stdin line exceeds"));
+        assertEquals(original, channelFailure.getCause());
+    }
+
+    @Test
+    void cleanCloseNeverInventsAnIoFailure() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<String> pending = channel.readAsync();
+
+        channel.close();
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, pending::join);
+        Throwable channelFailure = OresFuture.unwrap(thrown);
+        assertTrue(channelFailure instanceof ChannelRuntime.ChannelClosedException);
+        assertEquals("channel is closed", channelFailure.getMessage());
+        assertEquals(null, channelFailure.getCause());
+    }
+
+    @Test
     void closeFailsPendingWaitersAndSelects() {
         ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
         OresFuture<String> read = channel.readAsync();
