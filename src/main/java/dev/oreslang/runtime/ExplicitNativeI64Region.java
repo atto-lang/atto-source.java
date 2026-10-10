@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -72,8 +75,8 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final Object nativeArena;
     private final Object segment;
     private final Object longLayout;
-    private final Method getLong;
-    private final Method putLong;
+    private final MethodHandle getLong;
+    private final MethodHandle putLong;
     private final Method closeArena;
     private final boolean[] live;
     private final int[] slotLoans;
@@ -110,8 +113,17 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
                     .invoke(nativeLong, ByteOrder.LITTLE_ENDIAN);
             this.segment = arenaType.getMethod("allocate", long.class, long.class)
                     .invoke(allocatedArena, Math.multiplyExact((long) slots, 8L), 8L);
-            this.getLong = segmentType.getMethod("get", ofLongType, long.class);
-            this.putLong = segmentType.getMethod("set", ofLongType, long.class, long.class);
+            // Resolve/reshape signatures once. Method.invoke on every slot
+            // access creates a reflective Object[] and boxes long values;
+            // invokeExact keeps primitive i64 reads/writes allocation-free.
+            this.getLong = MethodHandles.publicLookup()
+                    .unreflect(segmentType.getMethod("get", ofLongType, long.class))
+                    .asType(MethodType.methodType(long.class,
+                            Object.class, Object.class, long.class));
+            this.putLong = MethodHandles.publicLookup()
+                    .unreflect(segmentType.getMethod("set", ofLongType, long.class, long.class))
+                    .asType(MethodType.methodType(void.class,
+                            Object.class, Object.class, long.class, long.class));
             this.closeArena = arenaType.getMethod("close");
             this.nativeArena = allocatedArena;
         } catch (ReflectiveOperationException | RuntimeException error) {
@@ -245,16 +257,20 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
     private long get(int index) {
         try {
-            return (long) getLong.invoke(segment, longLayout, (long) index * 8);
-        } catch (ReflectiveOperationException failure) {
+            return (long) getLong.invokeExact(segment, longLayout, (long) index * 8);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
             throw new IllegalStateException("actor native slot read failed", failure);
         }
     }
 
     private void put(int index, long value) {
         try {
-            putLong.invoke(segment, longLayout, (long) index * 8, value);
-        } catch (ReflectiveOperationException failure) {
+            putLong.invokeExact(segment, longLayout, (long) index * 8, value);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
             throw new IllegalStateException("actor native slot write failed", failure);
         }
     }
