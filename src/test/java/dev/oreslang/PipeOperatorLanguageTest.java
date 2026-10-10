@@ -126,6 +126,20 @@ final class PipeOperatorLanguageTest {
     }
 
     @Test
+    void actorPipeNeverOverloadsOrdinaryValueAndFunctionApplication() {
+        Ast.Program program = Parser.parse("""
+                pub routine main(): void {
+                    const bad = 1 pipe 2;
+                    return;
+                }
+                """);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("use '|>' for function application"),
+                error::getMessage);
+    }
+
+    @Test
     void forwardPipeRejectsNonCallableRightHandSide() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
