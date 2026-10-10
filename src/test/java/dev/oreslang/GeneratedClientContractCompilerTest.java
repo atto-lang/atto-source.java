@@ -43,6 +43,18 @@ final class GeneratedClientContractCompilerTest {
     }
 
     @Test
+    void canonicalOresInterfacesRouteContractCompilesAsDeclaration() throws Exception {
+        String contract = Files.readString(Path.of(
+                "contracts/v1/fixtures/ores-interfaces-route-contract.ores"));
+        var parsed = OresCompiler.parseAndTypeCheck(contract);
+        assertEquals(1, parsed.modules().size());
+        assertEquals(Parser.ROOT_MODULE, parsed.modules().get(0).name());
+        assertEquals(1, parsed.modules().get(0).declarations().size());
+        assertInstanceOf(dev.oreslang.ast.Ast.InterfaceDecl.class,
+                parsed.modules().get(0).declarations().get(0));
+    }
+
+    @Test
     void generatedContractIsNotMistakenForAnExecutableClientOrRuntime() throws Exception {
         var checked = OresCompiler.parseAndTypeCheck(Files.readString(GENERATED));
         assertEquals(1, checked.modules().size());
