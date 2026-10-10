@@ -280,6 +280,57 @@ final class SourceActorSpawnExecutionTest {
                 error.getMessage());
     }
 
+    @Test
+    void actorLifecycleMethodsReturnAwaitableFuturesAndRejectPropertyAccess() throws Exception {
+        String valid = """
+                define actor Worker as
+                  receive(ActorMail<String> message): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val initialized = worker.get_ready();
+                  await initialized;
+                  worker.send("finish");
+                  val finalized = worker.get_done();
+                  await finalized;
+                  stdio.stdout.write("finished");
+                  return;
+                }
+                """;
+        assertEquals("finished", run(valid, "source-actor-future-getters.ores"));
+
+        for (String forbidden : java.util.List.of(
+                "await worker.ready;",
+                "await worker.done;",
+                "await worker.get_ready(1);",
+                "await worker.get_done(1);",
+                "await worker.get_ready;",
+                "await worker.get_done;")) {
+            String source = """
+                    define actor Worker as
+                      receive(ActorMail<String> message): void {
+                        self.end();
+                        return;
+                      }
+                    end
+                    pub async routine main(): void {
+                      val worker = spawn Worker();
+                      """ + forbidden + """
+                      
+                      worker.stop();
+                      return;
+                    }
+                    """;
+            assertThrows(PolyglotException.class,
+                    () -> run(source, "source-actor-bad-lifecycle-access.ores"),
+                    forbidden + " must not be accepted");
+        }
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
