@@ -1942,6 +1942,14 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "cannot spawn abstract actor '" + actorClass.name() + "'");
                 }
+                if (actorClass.actorConcurrency().transport() != Ast.ActorTransport.GENERIC) {
+                    throw new IllegalArgumentException(
+                            "actor '" + actorClass.name() + "' is a "
+                                    + actorClass.actorConcurrency().transport()
+                                    + " transport actor; generic spawn has no HTTP/TCP/WebSocket "
+                                    + "request-dispatch adapter yet. Use an explicit transport "
+                                    + "binding once the runtime provides one.");
+                }
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
                             "actor '" + actorClass.name()
