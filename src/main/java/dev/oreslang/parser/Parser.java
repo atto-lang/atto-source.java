@@ -2567,12 +2567,49 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parsePipelines();
         if (!match(QUESTION)) return condition;
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
         Ast.Expr whenFalse = parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    /**
+     * Functional |> is application (with the value inserted as argument zero).
+     * The contextual 'pipe' word is a separate actor-stream composition operator.
+     * Both bind more loosely than arithmetic/logical operators, and associate left.
+     * 'pipe' deliberately remains a legal identifier outside infix position.
+     */
+    private Ast.Expr parsePipelines() {
+        Ast.Expr expr = parseLogicalOr();
+        while (true) {
+            if (match(PIPE_FORWARD)) {
+                Token operator = previous();
+                Ast.Expr target = parseLogicalOr();
+                if (target instanceof Ast.CallExpr call) {
+                    List<Ast.Expr> arguments = new ArrayList<>();
+                    arguments.add(expr);
+                    arguments.addAll(call.arguments());
+                    expr = new Ast.CallExpr(
+                            call.callee(), call.typeArguments(),
+                            call.typeArgumentsPresent(), arguments);
+                } else if (target instanceof Ast.NameExpr
+                        || target instanceof Ast.MemberExpr
+                        || target instanceof Ast.LambdaExpr) {
+                    expr = new Ast.CallExpr(target, List.of(expr));
+                } else {
+                    throw error(operator,
+                            "'|>' expects a callable or a callable invocation on its right; "
+                            + "'pipe' is reserved for actor stream connections");
+                }
+            } else if (matchContextualIdentifier("pipe")) {
+                expr = new Ast.BinaryExpr("pipe", expr, parseLogicalOr());
+            } else {
+                break;
+            }
+        }
+        return expr;
     }
 
     private Ast.Expr parseLogicalOr() {
