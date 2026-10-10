@@ -43,6 +43,8 @@ final class ActorGraphArenaContractTest {
                     assertArrayEquals(new byte[] {8, 9, 10}, arena.read(a));
 
                     arena.remove(a);
+                    assertEquals(0, arena.liveLinks(),
+                            "removal must purge inbound as well as outbound edges");
                     staleRef.set(a);
                     assertThrows(IllegalStateException.class, () -> arena.read(a));
                     var reused = arena.allocate(new byte[] {11, 12, 13});
