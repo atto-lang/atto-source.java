@@ -81,7 +81,7 @@ public final class AsyncStdoutLog implements AutoCloseable {
                     if (writer.checkError()) throw new IllegalStateException("async stdout writer failed");
                 } else if (event instanceof Barrier barrier) {
                     try { flushWriter(); barrier.result().complete(null); }
-                    catch (Throwable failed) { barrier.result().completeExceptionally(failed); throw failed; }
+                    catch (Throwable failed) { barrier.result().completeExceptionally(failed); throw new IllegalStateException("async stdout flush failed", failed); }
                 } else if (event == Stop.INSTANCE) {
                     flushWriter();
                     terminated.complete(null);
