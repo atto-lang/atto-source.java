@@ -30,7 +30,9 @@ actor supports multiple HTTP exchanges on a single long-lived actor.
 Request abort or expiry revokes that exchange without cancelling the reusable
 actor or disturbing its other requests. HTTP listener capacity is released
 once that exchange's transport closes, without waiting for the reusable actor
-to terminate. A dedicated handler retains its original actor-finalization
+to terminate. The runtime tracks outstanding exchanges under one actor-death
+watcher per reusable actor; completed exchanges detach immediately, preventing
+an actor-lived completion-listener leak under sustained traffic. A dedicated handler retains its original actor-finalization
 barrier for admission release. Actor death revokes unfinished exchanges.
 See [typed HTTP/TCP/WS actor envelopes](HTTP_ACTOR_ENVELOPES.md) for the
 proposed source API and remaining compiler/backend work.
