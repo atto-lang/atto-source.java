@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -85,6 +86,22 @@ final class SelectPlanBorrowSafetyTest {
                   return;
                 }
                 """, "reusable SelectCase.write requires a Copy payload");
+    }
+
+    @Test
+    void borrowCheckerAloneRejectsCapturedWriteBorrow() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          val Channel<Array<int>> output = Channel.new<Array<int>>(1);
+                          val Array<int> owned = [1, 2];
+                          val &Array<int> borrowed = rt borrow owned;
+                          val SelectCase write = SelectCase.write(output, borrowed);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("cannot retain a borrowed payload"),
+                error::getMessage);
     }
 
     @Test
