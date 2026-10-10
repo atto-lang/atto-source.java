@@ -362,6 +362,16 @@ public final class Parser {
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
+        // A declaration spelled "pub gen* read_lines(...)" is a generator
+        // function: the gen* marker already identifies its callable kind, so
+        // requiring an additional fnc token adds no useful information.
+        // Keep "pub gen* fnc read_lines(...)" as the explicit equivalent.
+        if (modifiers.generator && check(IDENT) && checkNext(LPAREN)) {
+            if (modifiers.shared || modifiers.untrusted) {
+                throw error(peek(), "shared/untrusted gen* requires an actor declaration");
+            }
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
+        }
         if (match(CONTRACT)) {
             validateOnlyVisibilityModifiers(modifiers, "contracts");
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
