@@ -136,4 +136,65 @@ final class GlobalStdioStreamTest {
                 }
                 """, ""));
     }
+
+    @Test
+    void brokenOutputDescriptorFailsClosedInsteadOfReportingSuccessfulFlush() throws Exception {
+        String code = """
+                pub routine main(): void {
+                  writech stdio.out, "should-fail";
+                  Stdio.flush_blocking();
+                  return;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(code);
+        Source source = Source.newBuilder(OresLanguage.ID, code, "stdout-io-error.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        java.io.OutputStream brokenSink = new java.io.OutputStream() {
+            @Override
+            public void write(int b) throws java.io.IOException {
+                throw new java.io.IOException("intentional-stdout-sink-failure");
+            }
+        };
+        Exception thrown = assertThrows(Exception.class, () -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .in(new ByteArrayInputStream(new byte[0]))
+                    .logHandler(new ByteArrayOutputStream())
+                    .out(brokenSink).err(new ByteArrayOutputStream()).build()) {
+                context.eval(source);
+            }
+        });
+        assertNotNull(thrown);
+    }
+
+    @Test
+    void brokenStderrDescriptorFailsClosedInsteadOfDiscardingFailure() throws Exception {
+        String code = """
+                pub routine main(): void {
+                  writech stdio.err, "should-fail";
+                  Stdio.err_flush_blocking();
+                  return;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(code);
+        Source source = Source.newBuilder(OresLanguage.ID, code, "stderr-io-error.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        java.io.OutputStream brokenSink = new java.io.OutputStream() {
+            @Override
+            public void write(int b) throws java.io.IOException {
+                throw new java.io.IOException("intentional-stderr-sink-failure");
+            }
+        };
+        Exception thrown = assertThrows(Exception.class, () -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .in(new ByteArrayInputStream(new byte[0]))
+                    .logHandler(new ByteArrayOutputStream())
+                    .out(new ByteArrayOutputStream()).err(brokenSink).build()) {
+                context.eval(source);
+            }
+        });
+        assertNotNull(thrown);
+    }
+
 }
