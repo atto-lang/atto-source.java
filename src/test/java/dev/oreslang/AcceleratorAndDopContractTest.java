@@ -47,6 +47,26 @@ final class AcceleratorAndDopContractTest {
     }
 
     @Test
+    void allScalarOffsetsAreUniqueAndBoundedAcrossLayouts() {
+        for (Kind kind : Kind.values()) {
+            for (int fields = 1; fields <= 8; fields++) {
+                for (int rows = 0; rows <= 64; rows++) {
+                    int lanes = kind == Kind.AOSOA ? 4 : 1;
+                    var plan = new DataOrientedLayout.Plan(kind, rows, fields, 4, 16, lanes);
+                    var offsets = new java.util.HashSet<Long>();
+                    for (int row = 0; row < rows; row++) {
+                        for (int field = 0; field < fields; field++) {
+                            long offset = plan.byteOffset(row, field);
+                            assertTrue(offset >= 0 && offset + 4 <= plan.byteLength());
+                            assertTrue(offsets.add(offset), "overlapping scalar offsets");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void rejectsOverflowAndInvalidPowerOfTwoAndLanes() {
         assertThrows(ArithmeticException.class,
                 () -> new DataOrientedLayout.Plan(Kind.AOS, Long.MAX_VALUE, 2, 8, 16, 1));
