@@ -3000,13 +3000,15 @@ public final class Parser {
             return new Ast.NameExpr(previous().lexeme());
         }
         if (match(SPAWN)) {
+            // The optional 'new' is syntactic sugar, NOT eager construction:
+            // spawn Actor(...) and spawn new Actor(...) lower to the exact
+            // same actor-owned allocation operation. No constructor executes
+            // on the caller, and this does not permit bare new Actor(...).
+            match(NEW);
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
-            // Keep actor creation semantically distinct from ordinary class construction.
-            // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
-            // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
             return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
         }
         if (match(NEW)) {
