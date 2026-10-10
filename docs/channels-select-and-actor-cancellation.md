@@ -483,6 +483,35 @@ evaluation is side-effect-free, bindings stable, and actor-local ownership
 preserved. Plans are actor-domain-local capabilities and must not be sent
 through actor mailboxes.
 
+### Linear ownership and generation hardening
+
+Reusable `SelectCase`, `SelectSet`, `SelectPlan`, and
+`DynamicSelectPlan` descriptors are **move-only**, although a
+`Channel<T>` handle remains Copy within its owning execution domain.
+A read case retains a copied channel handle, never a lexical channel
+borrow. A reusable `SelectCase.write(channel, payload)` may execute
+more than once, so its payload must be Copy: borrowed, guard-bearing, and
+move-only values must instead use one-shot `writech` or per-iteration
+static select. `SelectSet.new` and `SelectPlan.new` consume the
+descriptor collection and cannot retain a borrowed source collection.
+
+Plan construction and `select from` now reject typed non-case inputs
+before runtime. Selection borrows a retained set/plan for one operation
+without moving the descriptor, allowing a loop to select repeatedly.
+Mutating a keyed plan replaces its cached snapshot for future invocations
+without retargeting or cancelling already-armed operations.
+
+A selection that wins after its plan generation was replaced cannot
+rotate the fairness cursor of the new generation. A default arm also
+does not consume FAIR rotation credit. Structural mutations are
+serialized and version overflow is rejected. These guarantees cover
+the Java reference runtime; LLVM native support remains fail-closed.
+
+**Hot loading:** a compiler must not cache a plan across a replacement
+of its owning actor/module generation unless it can prove the original
+execution-domain capability and evaluated operands remain valid.
+No automatic plan-hoisting pass is implemented yet.
+
 ## Cancellation
 
 Oreslang does not require Go-style `context.Context` propagation through every
