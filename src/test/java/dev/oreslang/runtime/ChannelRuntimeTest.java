@@ -334,6 +334,64 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void affineWriteDescriptorCannotPublishTheSameMutablePayloadTwice() {
+        ChannelRuntime.Channel<List<Integer>> channel = new ChannelRuntime.Channel<>(2);
+        List<Integer> owned = new java.util.ArrayList<>(List.of(1, 2));
+        ChannelRuntime.WriteCase<List<Integer>> oneShot =
+                ChannelRuntime.write(channel, owned);
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(oneShot);
+
+        assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                plan.selectAsync().join().operation());
+        var duplicate = plan.selectAsync();
+        var failed = assertThrows(java.util.concurrent.CompletionException.class,
+                duplicate::join);
+        assertTrue(failed.getCause().getMessage().contains("already transferred"));
+        assertEquals(1, channel.size());
+        org.junit.jupiter.api.Assertions.assertSame(owned, channel.tryRead().orElseThrow());
+
+        // Publishing a new descriptor revision must not reset the already
+        // transferred token on the old WriteCase instance.
+        plan.replaceCases(List.of(oneShot));
+        assertThrows(java.util.concurrent.CompletionException.class,
+                () -> plan.selectAsync().join());
+        plan.replaceCase(0, ChannelRuntime.write(channel,
+                new java.util.ArrayList<>(List.of(3))));
+        assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                plan.selectAsync().join().operation());
+        assertEquals(List.of(3), channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void scalarWriteCaseCanBeReusedBecauseItsPayloadIsCopySafe() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.write(channel, 17));
+        assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                plan.selectAsync().join().operation());
+        assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                plan.selectAsync().join().operation());
+        assertEquals(17, channel.tryRead().orElseThrow());
+        assertEquals(17, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void losingAffineWriteCaseCanStillWinASeparateLaterSelection() {
+        ChannelRuntime.Channel<List<Integer>> channel = new ChannelRuntime.Channel<>(0);
+        var owned = new java.util.ArrayList<>(List.of(7));
+        var descriptor = ChannelRuntime.write(channel, owned);
+        var set = ChannelRuntime.SelectSet.of(descriptor,
+                ChannelRuntime.timeout(0, java.util.concurrent.TimeUnit.NANOSECONDS));
+        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT, set.selectAsync().join().operation());
+
+        OresFuture<List<Integer>> receiver = channel.readAsync();
+        assertEquals(ChannelRuntime.SelectOperation.WRITE, set.selectAsync().join().operation());
+        org.junit.jupiter.api.Assertions.assertSame(owned, receiver.join());
+        assertThrows(java.util.concurrent.CompletionException.class,
+                () -> set.selectAsync().join());
+    }
+
+    @Test
     void selectPlanMutationDoesNotRetargetAlreadyRegisteredReaders() {
         ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
         ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
