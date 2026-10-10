@@ -58,6 +58,7 @@ public final class ProcessChannels implements AutoCloseable {
         }
 
         private void closeOwned() { super.close((Throwable) null); }
+        private void closeOwned(Throwable failed) { super.close(failed); }
     }
 
     private final ConsoleChannel<String> out;
@@ -167,7 +168,7 @@ public final class ProcessChannels implements AutoCloseable {
             }
             outputFailure.compareAndSet(null, failed);
             // Channel closure wakes pending guest writers/readers.
-            if (!source.isClosed()) source.closeOwned();
+            if (!source.isClosed()) source.closeOwned(failed);
         }
     }
 
@@ -176,8 +177,9 @@ public final class ProcessChannels implements AutoCloseable {
             for (String line; !closing.get() && (line = stdin.readLine()) != null;) {
                 ChannelRuntime.writeForRuntime(in, line).join();
             }
-        } catch (Throwable ignored) {
-            // stdin cancellation/EOF closes the channel; consumers observe EOF.
+        } catch (Throwable failed) {
+            // Real input errors remain errors; VM-initiated shutdown is orderly.
+            if (!closing.get()) in.closeOwned(failed);
         } finally {
             in.closeOwned();
         }
