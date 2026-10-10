@@ -53,9 +53,12 @@ final class SourceActorSpawnExecutionTest {
                   val privateWorker = spawn PrivateWorker();
                   val sandboxed = spawn SandboxedWorker();
 
-                  await shared.ready;
-                  await privateWorker.ready;
-                  await sandboxed.ready;
+                  // A readiness signal is level-triggered and awaitable.
+                  await shared.get_ready_signal();
+                  await privateWorker.get_ready_signal();
+                  await sandboxed.get_ready_signal();
+                  // Late/duplicate waiting must observe the same readiness.
+                  await shared.get_ready_signal();
 
                   shared.send("stop");
                   privateWorker.send("stop");
