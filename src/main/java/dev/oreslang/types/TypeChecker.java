@@ -2808,7 +2808,10 @@ public final class TypeChecker {
                           && (stdioStream.member().equals("in") || stdioStream.member().equals("stdin")))
                         || (stdioName.name().equals("process")
                           && stdioStream.member().equals("stdin")))) {
-                return new Function(List.of(), new Named("Option", List.of(Primitive.STRING)));
+                // Legacy read_line is a suspendable Future<Option<String>>;
+                // readch stdio.in is the preferred no-async channel form.
+                return new Function(List.of(), new Named("Future",
+                        List.of(new Named("Option", List.of(Primitive.STRING)))));
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
