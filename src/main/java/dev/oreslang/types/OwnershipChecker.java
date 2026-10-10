@@ -1492,8 +1492,8 @@ public final class OwnershipChecker {
                     releaseCallLoans(loans);
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
-                if (result.name().equals("Future")
-                        || result.name().equals("Awaitable")) {
+                if ((result.name().equals("Future") || result.name().equals("Awaitable"))
+                        && loans.stream().anyMatch(loan -> !isCopyType(loan.owner().type))) {
                     throw error("first-class Fnc returning asynchronous work cannot "
                             + "use call-scoped read borrows without a task-lifetime effect contract");
                 }
