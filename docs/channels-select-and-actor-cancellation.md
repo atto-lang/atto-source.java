@@ -386,12 +386,82 @@ returns `None` when no case is ready and leaves no registration behind.
 `SelectResult` exposes:
 
 - `index`
-- `operation` (`read`, `write`, or `default`)
-- `value` for a read result
+- `operation` (`read`, `write`, `default`, `await`, `cancelled`,
+  `timeout`, or host-runtime `observe`)
+- `value` for a read, awaited Future or first observed event
 
 The outer `Option` is intentionally part of the language-facing selection
 contract. It also composes uniformly with `trap` and Future APIs; the runtime
 must not flatten nested `Option` values.
+
+## Mixed select: channel + Future + cancellation + deadline
+
+The runtime's **single coordinator** arbitrates all ready cases and commits
+exactly one winner. The source-level dynamic `SelectCase` factory now accepts
+`await(Future<T>)`, `cancelled(Future<T>)` (ready only after that Future
+is cancelled), and `timeout(int milliseconds)`, as well as `read`,
+`write` and `default`.
+
+```ores
+val Channel<int> inbox = Channel.new<int>(8);
+val Future<Option<SelectResult>> work =
+  nb select first from [SelectCase.read(inbox)];
+
+val SelectSet choices = SelectSet.new([
+  SelectCase.await(work),
+  SelectCase.timeout(250)
+]);
+val Option<SelectResult> winning = select first from choices;
+```
+
+`await` selects on either success or terminal error; a failed Future fails the
+selection, preserving the underlying error. Observing a Future does **not**
+grant authority to cancel the producer. A `cancelled` case instead produces
+the operation `cancelled` once its observed signal becomes cancelled.
+Successful settlement of a cancellation-only signal does not select that case.
+`timeout` is a monotonic relative deadline, with zero meaning ready
+immediately; negative intervals are rejected at runtime.
+
+Exactly-once invariants for all case types:
+
+- A channel commit and selection cancellation arbitrate through the same
+  lock; cancelling after a committed channel read/write cannot roll it back.
+- A losing `await`/`cancelled` case removes its Future completion observer,
+  but **never cancels** that independently-owned Future.
+- A losing deadline cancels its scheduled timer (with timer-queue cleanup).
+  Timer threads only trigger arbitration; they cannot execute guest arms.
+- A winning Future or timeout detaches channel registrations without
+  consuming their messages.
+- `try select` checks already-completed Futures and elapsed/zero deadlines
+  but installs neither Future waiters nor timers.
+- Each `SelectPlan` invocation allocates fresh registration/subscription
+  lifetimes; descriptors and the fairness cursor may be reused, not live
+  registrations.
+
+### Observable / reactive `take(1)`
+
+The Java runtime also exposes
+`ChannelRuntime.observeOnce(java.util.concurrent.Flow.Publisher<T>)`.
+It is a dedicated **selection-owned one-shot subscription**: the Publisher
+is subscribed to lazily, only if the selection actually remains pending after
+initial ready/default arbitration; it requests **one event**, publishes at
+most one `observe` result, and unsubscribes on the first value, completion,
+error, cancellation or victory by another case. Empty completion fails with
+`NoSuchElementException`. Subscription and cancel callbacks are isolated
+from the channel coordinator and scheduler's guest carrier.
+
+This is conceptually `Observable.take(1)`, but Oreslang does **not** yet
+offer a first-class source-language `Observable<T>`/subscriber protocol or
+`SelectCase.observe(...)` constructor. Source `SelectCase.await(future)`
+works with a one-shot Future adapter once its ownership/transport semantics
+are defined. Never turn every event in an unbounded Observable into a separate
+select case; the subscription has exactly one winner and cleanup lifetime.
+
+**Current verification status:** these mixed-case changes are committed to
+draft #519, not yet production-tested. The source runner and alternate-org
+mirror have not executed a full exact-head JVM/Graal/native suite. The Java
+`Flow.Publisher` adapter is for trusted host-integrated streams only, not a
+capability that may be smuggled across actor boundaries.
 
 ## Select plans: optional optimization layer
 
