@@ -724,7 +724,10 @@ public final class ActorRuntime implements AutoCloseable {
                 try {
                     ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
                             maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
-                            reservation::close);
+                            retired -> {
+                                ownedGraphs.remove(retired);
+                                reservation.close();
+                            });
                     ownedGraphs.add(graph);
                     return graph;
                 } catch (RuntimeException | Error failure) {
