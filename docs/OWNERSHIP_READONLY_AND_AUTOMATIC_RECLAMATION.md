@@ -49,7 +49,9 @@ argument admission; failed admission releases them as well.
   call-scoped loan: returning `Future<T>` is *not* proof that the callee has
   stopped using those arguments. Async class-method receivers are likewise
   rejected unless they are actor `self` under the mailbox continuation's
-  runtime-controlled lifetime. True task-lifetime loans are deferred.
+  runtime-controlled lifetime. First-class `Fnc` returning async work cannot
+  retain non-`Copy` caller loans; untyped host/dynamic calls cannot consume
+  borrowed values at all. True task-lifetime loans are deferred.
 - Actor `self` is a runtime-scoped capability, not a freely transferable
   `&mut` pointer. Its resumed continuation must re-enter the owning actor
   under the exclusive native carrier lease. **Only the canonical compiler-
