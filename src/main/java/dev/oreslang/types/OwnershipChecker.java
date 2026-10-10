@@ -984,6 +984,26 @@ public final class OwnershipChecker {
                 if (isBorrowValue(payload)) {
                     throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
                 }
+                if (channelOp.callback()) {
+                    // nb cb writech returns to the enclosing actor turn before
+                    // running its callback. Transfer captures now, not when the
+                    // asynchronous writer eventually settles.
+                    CaptureSet captured = new CaptureSet();
+                    scanStatements(channelOp.callbackBody(), Set.of(), scope, null, captured);
+                    validateDeferredCaptures(captured);
+                    Scope callbackScope = deferredSelectArmScope(captured);
+                    int savedLoopDepth = loopDepth;
+                    boolean savedDiscard = discardingSelectReturn;
+                    loopDepth = 0;
+                    discardingSelectReturn = false;
+                    try {
+                        checkBlock(channelOp.callbackBody(), callbackScope, Ast.TypeRef.simple("void"));
+                    } finally {
+                        loopDepth = savedLoopDepth;
+                        discardingSelectReturn = savedDiscard;
+                        callbackScope.close();
+                    }
+                }
                 Ast.TypeRef result = switch (channelOp.mode()) {
                     case BLOCKING -> Ast.TypeRef.simple("void");
                     case NONBLOCKING -> new Ast.TypeRef(
@@ -1968,6 +1988,11 @@ public final class OwnershipChecker {
             if (e.value() != null) {
                 scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
             }
+            // Callback-bearing writes keep their own future activation alive.
+            // Nested deferred callbacks therefore contribute transitive captures.
+            if (e.callback()) {
+                scanStatements(e.callbackBody(), locals, outer, recursiveBinding, captures);
+            }
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) {
             scanExpr(e.cases(), locals, outer, recursiveBinding, captures, false);
@@ -2662,15 +2687,28 @@ public final class OwnershipChecker {
             }
         }
 
+        validateDeferredCaptures(union);
+        return List.copyOf(perArm);
+    }
+
+    private static boolean isDirectActorSelfCapture(Capture capture) {
+        // Caller additionally validates actor confinement. A user-created
+        // alias rooted at self is still an ordinary borrowed local and must
+        // never acquire mailbox self's extended lifetime.
+        return capture.name.equals("self")
+                && capture.source.origin == Origin.PARAM
+                && capture.source.kind == ValueKind.MUT_BORROW;
+    }
+
+    private void validateDeferredCaptures(CaptureSet union) {
         for (Capture capture : union.values.values()) {
             VarState source = capture.source;
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            // self is a runtime-owned actor borrow. The continuation is
-            // guaranteed to re-enter the same actor under its single-turn
-            // execution lease, so this borrow may span the deferred arm.
-            if (isActorConfinedBorrow(source)) continue;
+            // Only the canonical actor self capability can cross actor turns.
+            // Borrowed aliases of self follow ordinary lexical lifetime rules.
+            if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) continue;
 
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
@@ -2699,8 +2737,6 @@ public final class OwnershipChecker {
                 move(source, capture.name);
             }
         }
-
-        return List.copyOf(perArm);
     }
 
     private Scope deferredSelectArmScope(CaptureSet captures) {
@@ -2708,7 +2744,7 @@ public final class OwnershipChecker {
         for (Capture capture : captures.values.values()) {
             VarState source = capture.source;
 
-            if (isActorConfinedBorrow(source)) {
+            if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) {
                 VarState self = new VarState(
                         source.type,
                         false,
