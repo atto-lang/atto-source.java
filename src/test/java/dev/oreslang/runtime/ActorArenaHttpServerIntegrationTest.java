@@ -104,7 +104,9 @@ final class ActorArenaHttpServerIntegrationTest {
                     CompletableFuture<Long> completion = pending.remove(mail);
                     if (completion != null) completion.completeExceptionally(failed);
                     initialized.countDown();
-                    throw failed;
+                    if (failed instanceof Error fatal) throw fatal;
+                    if (failed instanceof RuntimeException runtimeFailure) throw runtimeFailure;
+                    throw new IllegalStateException(failed);
                 }
             });
             worker.send(0L);
@@ -169,7 +171,7 @@ final class ActorArenaHttpServerIntegrationTest {
                     values.add(current);
                 }
                 Collections.sort(values);
-                for (int i = 0; i < total; ++i) assertEquals(i + 1L, values.get(i));
+                for (int i = 0; i < total; ++i) assertEquals(i + 1L, values.get(i).longValue());
                 assertEquals(new Result(200, "42"), request(client, port, "GET", "/health"));
                 assertEquals(new Result(200, "bye"), request(client, port, "GET", "/shutdown"));
                 assertTrue(sawShutdown.get());
