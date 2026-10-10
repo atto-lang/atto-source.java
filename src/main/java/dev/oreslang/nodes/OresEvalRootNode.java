@@ -559,6 +559,12 @@ public final class OresEvalRootNode extends RootNode {
          */
         private void requireSupportedActorExecutionPolicy(Ast.ClassDecl actor) {
             Ast.ActorConcurrency policy = actor.actorConcurrency();
+            if (policy.transport() != Ast.ActorTransport.GENERIC) {
+                throw new SecurityException(
+                        "actor " + actor.name() + " uses a " + policy.transport()
+                                + " transport, but generic ActorRef spawning does not bind "
+                                + "HTTP/TCP/WebSocket requests to actor connection lanes");
+            }
             if (policy.requestConcurrency() != 1 || policy.messageConcurrency() != 1) {
                 throw new SecurityException(
                         "actor " + actor.name() + " declares unsupported parallel execution "
