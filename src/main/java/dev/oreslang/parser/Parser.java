@@ -408,9 +408,6 @@ public final class Parser {
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
-        if (modifiers.trapped && modifiers.async) {
-            throw error(previous(), "async trap fnc/routine is not enabled until trap spans every await suspension");
-        }
         if (modifiers.trapped && modifiers.generator) {
             throw error(previous(), "trap generator fnc/routine is not enabled until trap spans generator suspension");
         }
