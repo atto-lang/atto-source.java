@@ -5628,6 +5628,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
+                if (name.name().equals("stdin")) return new StdinNamespace(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
@@ -6113,6 +6114,12 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
             }
+            if (receiver instanceof StdinNamespace stdin) {
+                return switch (name) {
+                    case "in", "stdin" -> stdin.context().standardChannels().input();
+                    default -> throw new IllegalArgumentException("unknown stdin namespace member " + name);
+                };
+            }
             if (receiver instanceof StdoutFacade stdout) {
                 return switch (name) {
                     case "write" -> (Invokable) stdout::write;
@@ -6393,6 +6400,9 @@ public final class OresEvalRootNode extends RootNode {
                     case "share_readonly" -> (Invokable) process::shareReadonly;
                     case "gc" -> (Invokable) process::gc;
                     case "exit" -> (Invokable) process::exit;
+                    case "stdin" -> process.context().standardChannels().input();
+                    case "stdout" -> process.context().standardChannels().output();
+                    case "stderr" -> process.context().standardChannels().error();
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
@@ -9028,6 +9038,7 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
     private record StdFacade(OresContext context) { }
+    private record StdinNamespace(OresContext context) { }
     private record ProcessFacade(OresContext context) {
         private Object exit(List<Object> args) {
             requireOne(args, "std.process.exit");
