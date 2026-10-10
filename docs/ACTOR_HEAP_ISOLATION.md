@@ -2,6 +2,41 @@
 
 ## Status (2026-10-10)
 
+### Selected deployment topology: trusted AOT + one shared untrusted JIT isolate
+
+**Do not create a Graal isolate for every actor.** The intended topology is
+one trusted AOT-compiled OresVM host runtime for SHARED and PRIVATE/isoactors,
+plus **one separately sandboxed Graal Engine / polyglot isolate for all
+UNTRUSTED actors**. The untrusted engine is free to JIT-compile Oreslang
+within its own isolated JIT and GC, while the trusted host may be an
+AOT-only Native Image. The isolated engine may host multiple actor-group
+Contexts; contexts sharing an Engine share that isolate's physical heap,
+collector, JIT compiler, code cache and limits.
+
+Untrusted actors inside that shared isolate each retain actor-state ownership,
+logical quotas, their own cancellation/supervision epoch, and deterministic
+native actor arenas *when native allocation is actually implemented*.
+**Their tracing GC is NOT per-actor:** collecting untrusted A can affect other
+untrusted actors B/C within the same Graal isolate, but does not invoke
+trusted-host GC. CPU contention, shared-resource pressure, or host-mediated
+calls may still affect latencies. Strict untrusted-tenant separation is a
+different security/performance tier and requires an additional worker
+process/isolate by explicit policy, not by default.
+
+The host's AOT Native Image compilation is distinct from AOT-lowering
+native Oreslang actor functions. Current Java/Graal host AOT build modes
+exist, but full LLVM Oreslang AOT codegen for actors is still unfinished.
+The untrusted isolate must have its own optimizing Truffle runtime and
+Oreslang language-isolate artifact. No compilation-mode CLI switch alone
+can turn an actor into a new physical isolate.
+
+`SharedUntrustedIsolatePool` constructs one shared Engine and a bounded
+number of untrusted group Contexts. This is **hosting infrastructure**, not
+yet a working cross-engine actor router. Existing
+`ActorRuntime.spawnUntrusted` inside the trusted host still runs on
+its parent's JVM heap; production admission must reject that path until
+a data-only supervisor-to-isolate actor dispatch adapter is integrated.
+
 **Do not claim actors have independent physical GC heaps in the Java
 bootstrap runtime.** `shared actor`, `isoactor` / PRIVATE, and `untrusted
 actor` are separate logical actor ownership domains, NOT separate Java
@@ -64,8 +99,10 @@ host / supervisor heap and control plane
   |                  optional separately traced MANAGED subheap
   |-- actor B heap: unique-owned native allocations / arenas
   |                  optional separately traced MANAGED subheap
-  |-- actor C heap: unique-owned native allocations / arenas
-                     optional separately traced MANAGED subheap
+  |-- one UNTRUSTED Graal isolate (separate physical GC + JIT)
+        |-- group context 1: untrusted actors A/B/C with logical heaps
+        |-- group context 2: other untrusted actors with logical heaps
+        +-- ONE isolate collector shared by all group contexts
 ```
 
 Actor heap identity must consist of (runtime/isolate, actor id, generation),
@@ -84,13 +121,14 @@ work is completed or generation-fenced.
   traverse the shared pool as though it owned its allocations. Use handle IDs,
   immutable snapshots and scoped borrows or a separate globally coordinated
   shared-region collector where required.
-- **UNTRUSTED actor**: gets a distinct authenticated heap and hard quotas;
-  avoid same-process untrusted native code without a validated sandbox.
-  Use one isolated VM/engine per actor for per-actor collector independence;
-  stronger hostile-tenant boundaries require a separate worker process with
-  OS memory/address-space limits and capability-restricted IPC. Never claim
-  `spawnUntrusted` on a shared JVM alone provides hostile-code memory
-  isolation.
+- **UNTRUSTED actor**: allocate independently owned mutable actor state
+  and enforce per-actor quotas *inside the single shared untrusted
+  Graal isolate*. One isolate-level collector serves all untrusted actors.
+  The trusted host never directly dereferences those actor heaps. Stronger
+  hostile-tenant boundaries can request separate worker processes, but we
+  do not launch an expensive Graal isolate per ordinary untrusted actor.
+  Never claim `spawnUntrusted` in the bootstrap host is already routed
+  through the shared isolate.
 
 ## GC roots, safety and correctness
 
@@ -131,13 +169,18 @@ Do not report an actor-local *host cleanup sweep* as guest-heap collection.
 JVM collection, enforce actor isolation/quotas, and do not promise independent
 JVM pause behavior.
 
-**Graal dedicated isolate**: build and publish an Oreslang language-isolate
-artifact, select distinct Engines per actor (not one Engine per tenant if
-per-actor isolation is promised), configure max isolate memory/CPU,
-bridge messages through data-only scoped handles, and test that forced
-collection of actor A leaves the host and actor B heaps' counters/liveness
-unchanged. GraalVM's documented `engine.SpawnIsolate` capability is not
-proof this codebase's actor dispatch currently uses it.
+**Graal shared untrusted isolate**: build and publish one Oreslang
+language-isolate artifact, select one explicitly sandboxed `Engine`
+with `spawnIsolate(true)`, and reuse it for bounded untrusted group
+`Context` instances. The host image can be AOT while the guest isolate
+uses its own JIT. The new `SharedUntrustedIsolatePool` is the hosting
+substrate, but a production actor router and physical-isolate tests are still
+needed. Configure a hard pool-wide `engine.MaxIsolateMemory`, soft
+context-specific resource limits, forbid Java interop, and exchange only
+data-only values via a scope-limited protocol. An untrusted isolate's
+GC can affect *other untrusted actors*, but it must not trigger GC of
+the AOT trusted host. Engine sharing is deliberate, not a per-actor GC
+guarantee.
 
 **LLVM OresVM**: lower owner identity, deterministic drop, bounded native
 arena/region allocation, weak generational handles and (where explicitly
@@ -152,13 +195,15 @@ A process crash or memory exhaustion must not corrupt the supervisor.
 
 ## Mandatory end-to-end proof before claiming success
 
-- Spawn all three actor types and inspect actual heap/collector IDs; verify
-  distinct collector domains when the strict policy is selected.
-- Trigger actor A tracing collection under ongoing actor B/host allocations;
-  observe B/host GC counters, wall-clock latency and GC logs before claiming
-  independence. No benchmark can eliminate the possibility of shared CPU
-  contention, but it must establish that B/host **collector activity** was
-  not requested by actor A.
+- Spawn trusted/shared/isolated actors in the trusted AOT host and multiple
+  untrusted actors in the single shared untrusted Engine. Verify physical
+  collector identity is shared among untrusted actors but disjoint from
+  the host, while per-actor ownership and quota identities stay distinct.
+- Trigger untrusted group A collection while trusted host tasks and
+  untrusted group B run; prove host GC counters are unaffected. Other
+  untrusted groups may observe shared-isolate GC pauses; do not assert
+  impossible intra-isolate GC independence. Benchmark AOT trusted p99
+  latency under heavy untrusted JIT + GC activity.
 - Verify all heap roots across `await`, `select`, cancellation, mailbox
   backpressure, hot upgrades, FFI and actor termination.
 - Validate cyclic weak/strong graph handling, generation-checked ABA,
