@@ -426,6 +426,57 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void methodReceiverCannotBeMovedByItsOwnOwnedArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                          pub fnc combine(Box other): int { return self.value; }
+                        end
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          box.combine(box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error.getMessage());
+    }
+
+    @Test
+    void methodReceiverReadLoanRejectsConflictingMutableArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                          pub fnc inspect(borrow mut Box other): int { return self.value; }
+                        end
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          box.inspect(rt borrow mut box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error.getMessage());
+    }
+
+    @Test
+    void methodReceiverReadLoanEndsBeforeSubsequentOwnerMove() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 1;
+                  pub fnc inspect(int other): int { return self.value; }
+                end
+                fnc consume(Box box): void { return; }
+                fnc ok(): void {
+                  let mut Box box = new Box();
+                  box.inspect(2);
+                  consume(box);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void inlineStructuralViewOfInferredStructRunsWithoutMoving() throws Exception {
         String output = run("""
                 fnc inspect(structural {x: String} v): String {
