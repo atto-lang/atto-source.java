@@ -47,6 +47,82 @@ final class CriticalGateTest {
         assertThrows(IllegalStateException.class, owner::enterAsync);
     }
 
+
+    @Test void cancellingPendingAdmissionRetractsQueueEntry() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.newTicket();
+        var cancelled = gate.newTicket();
+        var survivor = gate.newTicket();
+        owner.enterAsync();
+        OresFuture<Void> pending = cancelled.enterAsync();
+        survivor.enterAsync();
+        assertEquals(2, gate.queuedCount());
+        assertTrue(pending.cancel(false));
+        assertTrue(pending.isCancelled());
+        assertEquals(1, gate.queuedCount());
+        owner.close();
+        assertFalse(cancelled.isHeld(), "cancelled ticket must never execute");
+        assertTrue(survivor.isHeld());
+        survivor.close();
+        assertFalse(gate.held());
+    }
+
+    @Test void hostSynchronousWaiterIsWokenByDirectHandoff() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        var first = gate.newTicket();
+        first.enterAsync();
+        var second = gate.newTicket();
+        java.util.concurrent.CountDownLatch completed = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> error =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread host = new Thread(() -> {
+            try {
+                second.enterSync();
+                assertTrue(second.isHeld());
+                second.close();
+            } catch (Throwable failed) {
+                error.set(failed);
+            } finally {
+                completed.countDown();
+            }
+        }, "host-critical-contender");
+        host.start();
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (gate.queuedCount() == 0 && System.nanoTime() < deadline) Thread.yield();
+        assertEquals(1, gate.queuedCount(), "host did not enter waiting queue");
+        first.close();
+        assertTrue(completed.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                "handoff did not wake the waiting host thread");
+        host.join();
+        assertNull(error.get());
+        assertFalse(gate.held());
+    }
+
+    @Test void cancellationRacingHandoffCannotResurrectOrLeakTicket() {
+        for (int n = 0; n < 250; n++) {
+            CriticalGate gate = new CriticalGate();
+            var owner = gate.newTicket();
+            var candidate = gate.newTicket();
+            var following = gate.newTicket();
+            owner.enterAsync();
+            OresFuture<Void> pending = candidate.enterAsync();
+            following.enterAsync();
+            // Either cancellation wins or admission wins; never both.
+            Thread canceller = new Thread(() -> pending.cancel(false));
+            canceller.start();
+            owner.close();
+            try { canceller.join(); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail("unexpected test interruption", e);
+            }
+            if (pending.isCancelled()) assertFalse(candidate.isHeld());
+            if (candidate.isHeld()) candidate.close();
+            if (following.isHeld()) following.close();
+            assertFalse(gate.held(), "orphaned critical owner on iteration " + n);
+            assertEquals(0, gate.queuedCount(), "orphaned waiter on iteration " + n);
+        }
+    }
+
     @Test void gatesAreIndependentAndDoNotShareAStaticProcessLock() {
         CriticalGate a = new CriticalGate(), b = new CriticalGate();
         var first = a.newTicket();
