@@ -56,6 +56,17 @@ final class CriticalGateTest {
         first.close(); second.close();
     }
 
+    @Test void recursiveSyncEntryFailsInsteadOfDeadlockingHostThread() {
+        CriticalGate gate = new CriticalGate();
+        var first = gate.newTicket();
+        first.enterSync();
+        var nested = gate.newTicket();
+        var failure = assertThrows(IllegalStateException.class, nested::enterSync);
+        assertTrue(failure.getMessage().contains("recursive"));
+        assertEquals(0, gate.queuedCount());
+        first.close();
+    }
+
     @Test void contendedSynchronousAttemptOnSchedulerCarrierFailsClosed() throws Exception {
         CriticalGate gate = new CriticalGate();
         var owner = gate.newTicket();
