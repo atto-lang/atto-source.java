@@ -53,17 +53,17 @@ final class SourceActorSpawnExecutionTest {
                   val privateWorker = spawn PrivateWorker();
                   val sandboxed = spawn SandboxedWorker();
 
-                  await shared.ready;
-                  await privateWorker.ready;
-                  await sandboxed.ready;
+                  await shared.get_ready();
+                  await privateWorker.get_ready();
+                  await sandboxed.get_ready();
 
                   shared.send("stop");
                   privateWorker.send("stop");
                   sandboxed.send("stop");
 
-                  await shared.done;
-                  await privateWorker.done;
-                  await sandboxed.done;
+                  await shared.get_done();
+                  await privateWorker.get_done();
+                  await sandboxed.get_done();
 
                   stdio.stdout.write("actors-done");
                   return;
@@ -96,8 +96,8 @@ final class SourceActorSpawnExecutionTest {
                   val left = spawn Counter();
                   val right = spawn Counter();
 
-                  await left.ready;
-                  await right.ready;
+                  await left.get_ready();
+                  await right.get_ready();
 
                   left.send("go");
                   right.send("go");
@@ -109,8 +109,8 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(rightOut.value);
 
-                  await left.done;
-                  await right.done;
+                  await left.get_done();
+                  await right.get_done();
                   return;
                 }
                 """;
@@ -139,7 +139,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   return;
                 }
                 """;
@@ -194,7 +194,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
 
                   // Queue both messages before the first receive cooperates.
                   worker.send("first");
@@ -209,7 +209,7 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(c.value);
 
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;
@@ -244,7 +244,7 @@ final class SourceActorSpawnExecutionTest {
                   worker.send("run");
                   val result = (await worker.outputs.next()).value.unwrap();
                   stdio.stdout.write(result.value);
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;
