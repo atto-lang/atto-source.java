@@ -105,4 +105,83 @@ final class ActorTurnContentionProbeTest {
             assertEquals(0, runtime.coreContentionViolationCount());
         }
     }
+
+    @Test
+    void probeRejectsReleaseFromAnUnrelatedCarrier() throws Exception {
+        AtomicLong violations = new AtomicLong();
+        var probe = new ActorTurnContentionProbe(ActorRuntime.ActorId.create(), violations);
+        var lease = probe.enter();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread wrongCarrier = Thread.ofPlatform().start(() -> {
+            try {
+                lease.close();
+            } catch (Throwable ex) {
+                failure.set(ex);
+            }
+        });
+        wrongCarrier.join(5000);
+        assertFalse(wrongCarrier.isAlive());
+        assertInstanceOf(IllegalStateException.class, failure.get());
+        assertEquals(1, violations.get());
+        lease.close();
+        try (var ignored = probe.enter()) {
+            assertEquals(1, violations.get());
+        }
+    }
+
+    @Test
+    void injectedConcurrentActorTurnTripsRuntimeProbeAndCleansUp() throws Exception {
+        CountDownLatch insideTurn = new CountDownLatch(1);
+        CountDownLatch releaseOwner = new CountDownLatch(1);
+        AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+        ActorRuntime.TurnExecutor adversarial = turn -> {
+            Thread owner = Thread.ofPlatform().start(() -> {
+                try {
+                    turn.run();
+                } catch (Throwable failure) {
+                    ownerFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(insideTurn.await(5, TimeUnit.SECONDS));
+                try {
+                    turn.run(); // fault injection: two carriers, same actor
+                } catch (IllegalStateException expected) {
+                    // The runtime may propagate or supervise the fail-stop.
+                }
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(failure);
+            } finally {
+                releaseOwner.countDown();
+                try {
+                    owner.join(5000);
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+                assertFalse(owner.isAlive());
+            }
+        };
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 16);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(), config, adversarial,
+                ActorRuntime.ControlDispatcher.unavailable(), new CoreRuntimeFlags(true))) {
+            var actor = runtime.<Integer>spawnShared(() -> (value, context) -> {
+                insideTurn.countDown();
+                try {
+                    assertTrue(releaseOwner.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+                context.self().stop();
+            });
+            actor.send(1);
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertNull(ownerFailure.get());
+            assertEquals(1, runtime.coreContentionViolationCount(),
+                    "injected overlapping actor entry must trip the independent witness");
+            assertTrue(actor.failure().orElseThrow().getMessage().contains("contention probe"));
+        }
+    }
 }
