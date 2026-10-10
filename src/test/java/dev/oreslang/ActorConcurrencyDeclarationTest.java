@@ -201,6 +201,42 @@ final class ActorConcurrencyDeclarationTest {
     }
 
     @Test
+    void allNetworkActorKindsMustHaveAdaptersBeforeSpawnOrPipe() {
+        for (String protocol : new String[] {"http", "tcp", "websocket"}) {
+            String declaration = "define " + protocol + " actor Endpoint as\\n"
+                    + "  int requestConcurrency = 1;\\n"
+                    + "  int messageConcurrency = 1;\\nend\\n";
+            for (String spelling : new String[]{
+                    "spawn Endpoint()", "spawn new Endpoint()",
+                    "spawn (new Endpoint())"
+            }) {
+                String source = declaration + "pub routine main(): void {\\n"
+                        + "  val running = " + spelling + ";\\n  return;\\n}";
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(source)),
+                        protocol + " " + spelling);
+                assertTrue(failure.getMessage().contains("request/session adapter"),
+                        failure::getMessage);
+            }
+            String pipe = declaration + """
+                    define actor Sink as
+                      receive(ActorMail<int> mail): void { return; }
+                    end
+                    pub routine main(): void {
+                      val graph = spawn Endpoint() pipe spawn Sink();
+                      return;
+                    }
+                    """;
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(pipe)), protocol);
+            assertTrue(failure.getMessage().contains("request/session adapter"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void nonProtocolIdentifiersRemainValid() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc calculate(int serial, int http, int tcp, int websocket): int {
