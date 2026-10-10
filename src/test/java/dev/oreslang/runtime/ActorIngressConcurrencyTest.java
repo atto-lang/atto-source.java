@@ -37,12 +37,13 @@ class ActorIngressConcurrencyTest {
         for (var protocol : List.of(ActorIngressConcurrency.Protocol.HTTP,
                 ActorIngressConcurrency.Protocol.TCP, ActorIngressConcurrency.Protocol.WS)) {
             try (var budget = ActorIngressConcurrency.network(protocol, 17, 2, 2)) {
-                var a = budget.tryOpenConnection(10, 17);
-                var b = budget.tryOpenConnection(11, 17);
+                var a = budget.tryOpenConnection(17);
+                var b = budget.tryOpenConnection(17);
                 assertNotNull(a);
                 assertNotNull(b);
-                assertNull(budget.tryOpenConnection(12, 17));
-                assertThrows(IllegalArgumentException.class, () -> budget.tryOpenConnection(10, 17));
+                assertNull(budget.tryOpenConnection(17));
+                assertNotEquals(a.id(), b.id(), "the broker must mint unique session identities");
+                assertTrue(b.id() > a.id());
                 assertEquals(2, budget.activeConnections());
 
                 var a1 = a.tryEnter(1, 17);
@@ -67,9 +68,10 @@ class ActorIngressConcurrencyTest {
                 a.close();
                 assertTrue(a2.isClosed());
                 assertEquals(1, budget.activeConnections());
-                assertThrows(IllegalArgumentException.class, () -> budget.tryOpenConnection(10, 17),
-                        "closed connection IDs must not be recycled within one actor incarnation");
-                assertNotNull(budget.tryOpenConnection(12, 17));
+                var c = budget.tryOpenConnection(17);
+                assertNotNull(c);
+                assertTrue(c.id() > b.id(),
+                        "connection IDs cannot be recycled after closing a session");
                 assertThrows(IllegalStateException.class, () -> a.tryEnter(4, 17));
                 b.close();
                 b1.close();
@@ -80,23 +82,23 @@ class ActorIngressConcurrencyTest {
 
     @Test void closeInvalidatesLeasesAndActorIncarnation() {
         var budget = ActorIngressConcurrency.network(ActorIngressConcurrency.Protocol.HTTP, 7, 1, 2);
-        var a = budget.tryOpenConnection(100, 7);
+        var a = budget.tryOpenConnection(7);
         var m = a.tryEnter(1, 7);
-        assertThrows(SecurityException.class, () -> budget.tryOpenConnection(101, 8));
+        assertThrows(SecurityException.class, () -> budget.tryOpenConnection(8));
         budget.close();
         budget.close();
         assertTrue(a.isClosed());
         assertTrue(m.isClosed());
         assertEquals(0, budget.activeConnections());
         assertThrows(IllegalStateException.class, () -> a.tryEnter(2, 7));
-        assertThrows(IllegalStateException.class, () -> budget.tryOpenConnection(102, 7));
+        assertThrows(IllegalStateException.class, () -> budget.tryOpenConnection(7));
         m.close();
         a.close();
     }
 
     @Test void fullBudgetNeverConsumesRejectedSequence() {
         try (var budget = ActorIngressConcurrency.network(ActorIngressConcurrency.Protocol.WS, 4, 1, 1)) {
-            var a = budget.tryOpenConnection(1, 4);
+            var a = budget.tryOpenConnection(4);
             var first = a.tryEnter(1, 4);
             assertNull(a.tryEnter(2, 4));
             first.close();
@@ -112,11 +114,10 @@ class ActorIngressConcurrencyTest {
             CountDownLatch release = new CountDownLatch(1);
             AtomicInteger admitted = new AtomicInteger();
             List<Future<?>> futures = new ArrayList<>();
-            for (int i = 1; i <= 50; i++) {
-                final int id = i;
+            for (int i = 0; i < 50; i++) {
                 futures.add(workers.submit(() -> {
                     start.await();
-                    var conn = budget.tryOpenConnection(id, 66);
+                    var conn = budget.tryOpenConnection(66);
                     if (conn == null) return null;
                     admitted.incrementAndGet();
                     try (conn) {
@@ -152,7 +153,7 @@ class ActorIngressConcurrencyTest {
                 ActorIngressConcurrency.Protocol.HTTP, 1, 0, 1));
         try (var generic = ActorIngressConcurrency.regular(1, 1);
              var http = ActorIngressConcurrency.network(ActorIngressConcurrency.Protocol.HTTP, 2, 1, 1)) {
-            assertThrows(IllegalStateException.class, () -> generic.tryOpenConnection(1, 1));
+            assertThrows(IllegalStateException.class, () -> generic.tryOpenConnection(1));
             assertThrows(IllegalStateException.class, () -> http.tryEnterRegular(1, 2));
         }
     }
