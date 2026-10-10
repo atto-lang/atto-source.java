@@ -100,7 +100,7 @@ public final class OresContext implements AutoCloseable {
                 });
         CorePerf.end(CorePerf.VM_CONTROL_STARTUP, controlPerf);
         if (!vm.started()) {
-            vm.close();
+            try { processChannels.close(); } finally { vm.close(); }
             throw new IllegalStateException(
                     "Oreslang VM startup barrier was not established before context admission");
         }
@@ -129,6 +129,7 @@ public final class OresContext implements AutoCloseable {
             if (actors != null) {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
+            try { processChannels.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
