@@ -139,7 +139,7 @@ final class ActorConcurrencyDeclarationTest {
         }) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
-                    () -> Parser.parse("define actor Worker as\\n" + illegal + "\\nend"));
+                    () -> Parser.parse("define actor Worker as\n" + illegal + "\nend"));
             assertTrue(error.getMessage().contains("ordinary actors expose only messageConcurrency"),
                     error::getMessage);
         }
