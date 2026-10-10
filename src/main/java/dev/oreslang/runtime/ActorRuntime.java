@@ -510,6 +510,38 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Physical placement requirements are not satisfied by an actor-local
+     * Java quota/direct ByteBuffer merely because its ActorId is distinct.
+     * A future native/Graal/process router must make placement decisions
+     * before dispatch and provide independently verified backend evidence.
+     */
+    public enum ActorHeapBacking {
+        OWNER_CHECKED_REGION,
+        DETERMINISTIC_NATIVE_ARENA,
+        INDEPENDENT_GRAAL_ISOLATE,
+        ISOLATED_PROCESS
+    }
+
+    /** Supervisor-side placement admission for the current JVM bootstrap. */
+    public void requireActorHeapBacking(ActorRef<?> ref, ActorHeapBacking backing) {
+        Objects.requireNonNull(backing, "backing");
+        ActorHeapStatus status = heapStatusFor(ref);
+        if (backing == ActorHeapBacking.OWNER_CHECKED_REGION) {
+            if (!status.actorOwnedMemorySlice()) {
+                throw new IllegalStateException("actor has no owner-checked region");
+            }
+            return;
+        }
+        // Neither an actor's Java object graph nor ByteBuffer cleaner is a
+        // deterministic native allocator. The pooled UNTRUSTED Engine is
+        // not itself proof that this actor was actually dispatched to it.
+        throw new IllegalStateException("actor heap backing " + backing
+                + " is not implemented by the bootstrap ActorRuntime: "
+                + "native reclamation and physical isolate placement require "
+                + "verified backend routing");
+    }
+
+    /**
      * Fail closed when callers need per-actor GC isolation. This is not
      * implemented by the shared JVM-backed ActorRuntime; launch the actor in a
      * proven independent isolate/process instead of silently weakening policy.
