@@ -263,6 +263,27 @@ public final class Ast {
         }
     }
 
+    /** Connection-oriented actors have two distinct admission dimensions. */
+    public enum ActorTransport { GENERIC, HTTP, TCP, WEBSOCKET }
+
+    /**
+     * Declarative admission limits are VM policy, NOT mutable actor fields.
+     * The legacy actor scheduler currently implements precisely (1,1).
+     */
+    public record ActorConcurrency(
+            ActorTransport transport, int requestConcurrency, int messageConcurrency) {
+        public ActorConcurrency {
+            java.util.Objects.requireNonNull(transport, "actor transport");
+            if (requestConcurrency < 1 || messageConcurrency < 1) {
+                throw new IllegalArgumentException(
+                        "actor concurrency limits must be positive");
+            }
+        }
+        public static ActorConcurrency serial(ActorTransport transport) {
+            return new ActorConcurrency(transport, 1, 1);
+        }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -273,13 +294,28 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ActorConcurrency actorConcurrency) implements Decl {
         public ClassDecl {
+            actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
+                throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Compatibility constructor for all existing AST/JIT compiler clients. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    ActorConcurrency.serial(ActorTransport.GENERIC));
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
