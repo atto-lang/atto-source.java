@@ -173,8 +173,10 @@ final class ActorSpawnNewSyntaxTest {
                   return;
                 }
                 """;
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("outside spawn"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("spawn new Worker()"), failure.getMessage());
     }
 
     private static String run(String sourceText) throws Exception {
