@@ -1655,6 +1655,14 @@ public final class OwnershipChecker {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
         }
         if (param.structural() && !param.type().isBorrow()) {
+            if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("take")) {
+                throw error(callable + " argument " + position
+                        + " is a read-only structural view; rt take would transfer ownership");
+            }
+            if (arg instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
+                throw error(callable + " argument " + position
+                        + " is a read-only structural view; rt borrow mut is not permitted");
+            }
             ValueInfo argument = checkExpr(arg, scope, false);
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
@@ -1693,6 +1701,10 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (isBorrowValue(argument)) {
+            throw error(callable + " argument " + position
+                    + " is owned by-value; a borrowed view cannot transfer ownership");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
