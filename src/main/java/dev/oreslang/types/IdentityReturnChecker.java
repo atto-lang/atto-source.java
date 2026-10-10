@@ -67,6 +67,142 @@ final class IdentityReturnChecker {
     }
 
     /**
+     * Identity is an ABI-level obligation: an interface implementation cannot
+     * replace the promised original receiver/argument with a compatible object.
+     * The identity source is compared by parameter SLOT, not parameter name,
+     * so implementations remain free to rename formal parameters.
+     */
+    private void verifyInterfaceIdentityContracts(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.InterfaceDecl iface) {
+                    for (Ast.TypeRef parent : iface.parents()) {
+                        Ast.InterfaceDecl ancestor = resolveInterface(module.name(), parent.name());
+                        if (ancestor != null) {
+                            for (Ast.InterfaceMember member : ancestor.members()) {
+                                if (!(member instanceof Ast.InterfaceFunctionDecl inherited)
+                                        || !inherited.returnType().isIdentityReturn()) continue;
+                                for (Ast.InterfaceMember own : iface.members()) {
+                                    if (own instanceof Ast.InterfaceFunctionDecl declared
+                                            && sameSlot(inherited.name(), inherited.parameters().size(),
+                                                        declared.name(), declared.parameters().size())
+                                            && identitySlot(declared.returnType(), declared.parameters())
+                                                != identitySlot(inherited.returnType(), inherited.parameters())) {
+                                        throw new IllegalArgumentException(
+                                                "interface '" + iface.name() + "' cannot weaken inherited identity contract '"
+                                                        + ancestor.name() + "." + inherited.name() + "'");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    java.util.Set<Ast.InterfaceDecl> obligations = java.util.Collections.newSetFromMap(
+                            new java.util.IdentityHashMap<>());
+                    collectClassInterfaces(module.name(), klass, obligations,
+                            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+                    for (Ast.InterfaceDecl iface : obligations) {
+                        for (Ast.InterfaceMember member : iface.members()) {
+                            if (!(member instanceof Ast.InterfaceFunctionDecl fn)
+                                    || !fn.returnType().isIdentityReturn()) continue;
+                            Ast.MethodDecl implementation = findEffectiveMethod(
+                                    module.name(), klass, fn.name(), fn.parameters().size(),
+                                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+                            // Abstract classes may defer an implementation. The eventual
+                            // concrete subclass will be checked against this obligation.
+                            if (implementation == null) continue;
+                            int required = identitySlot(fn.returnType(), fn.parameters());
+                            int provided = identitySlot(implementation);
+                            if (required != provided) {
+                                throw new IllegalArgumentException(
+                                        "class '" + klass.name() + "' cannot weaken interface identity return '"
+                                                + iface.name() + "." + fn.name() + "'");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean sameSlot(String a, int arityA, String b, int arityB) {
+        return a.equals(b) && arityA == arityB;
+    }
+
+    private static int identitySlot(Ast.TypeRef type, List<Ast.Param> parameters) {
+        if (!type.isIdentityReturn()) return Integer.MIN_VALUE;
+        String source = type.identityParameter();
+        if (source.equals("this")) return -1;
+        for (int i = 0; i < parameters.size(); i++) {
+            if (parameters.get(i).name().equals(source)) return i;
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    private Ast.ClassDecl resolveClass(String module, String name) {
+        Ast.ClassDecl local = qualifiedClasses.get(module + "." + name);
+        if (local != null) return local;
+        local = qualifiedClasses.get(name);
+        if (local != null) return local;
+        List<Ast.ClassDecl> candidates = qualifiedClasses.entrySet().stream()
+                .filter(e -> e.getKey().endsWith("." + name))
+                .map(Map.Entry::getValue).distinct().toList();
+        return candidates.size() == 1 ? candidates.getFirst() : null;
+    }
+
+    private Ast.InterfaceDecl resolveInterface(String module, String name) {
+        Ast.InterfaceDecl local = qualifiedInterfaces.get(module + "." + name);
+        if (local != null) return local;
+        local = qualifiedInterfaces.get(name);
+        if (local != null) return local;
+        List<Ast.InterfaceDecl> candidates = qualifiedInterfaces.entrySet().stream()
+                .filter(e -> e.getKey().endsWith("." + name))
+                .map(Map.Entry::getValue).distinct().toList();
+        return candidates.size() == 1 ? candidates.getFirst() : null;
+    }
+
+    private void collectClassInterfaces(
+            String module, Ast.ClassDecl klass, java.util.Set<Ast.InterfaceDecl> interfaces,
+            java.util.Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return;
+        for (Ast.TypeRef declared : klass.interfaces()) {
+            Ast.InterfaceDecl iface = resolveInterface(module, declared.name());
+            if (iface != null) collectInterfaceParents(module, iface, interfaces);
+        }
+        for (Ast.TypeRef ref : klass.parents()) {
+            Ast.ClassDecl parent = resolveClass(module, ref.name());
+            if (parent != null) collectClassInterfaces(module, parent, interfaces, seen);
+        }
+    }
+
+    private void collectInterfaceParents(
+            String module, Ast.InterfaceDecl iface, java.util.Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        for (Ast.TypeRef ref : iface.parents()) {
+            Ast.InterfaceDecl parent = resolveInterface(module, ref.name());
+            if (parent != null) collectInterfaceParents(module, parent, seen);
+        }
+    }
+
+    private Ast.MethodDecl findEffectiveMethod(
+            String module, Ast.ClassDecl klass, String name, int arity,
+            java.util.Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && sameSlot(name, arity, method.name(), method.parameters().size())) {
+                return method;
+            }
+        }
+        for (Ast.TypeRef ref : klass.parents()) {
+            Ast.ClassDecl parent = resolveClass(module, ref.name());
+            if (parent == null) continue;
+            Ast.MethodDecl found = findEffectiveMethod(module, parent, name, arity, seen);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    /**
      * Dynamic dispatch must not replace a guaranteed identity-preserving
      * inherited method with an override that only preserves its nominal
      * or receiver-polymorphic type. Examine the complete ancestor chain.
