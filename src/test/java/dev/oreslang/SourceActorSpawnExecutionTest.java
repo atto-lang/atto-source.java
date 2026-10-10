@@ -268,7 +268,6 @@ final class SourceActorSpawnExecutionTest {
         }) {
             String statement = modifier.isEmpty()
                     ? "define actor Worker as\n"
-                        + "int requestConcurrency = 1;\n"
                         + "int messageConcurrency = 1;\n"
                     : "define serial actor Worker as\n";
             String program = body.replace("actor Worker as\n", statement);
