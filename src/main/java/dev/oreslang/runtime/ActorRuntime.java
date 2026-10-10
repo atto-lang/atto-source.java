@@ -634,12 +634,21 @@ public final class ActorRuntime implements AutoCloseable {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
             MemoryReservation reservation = reserve(bytes, "private actor direct heap");
+            PrivateMemoryBlock block = null;
             try {
-                PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
+                block = new PrivateMemoryBlock(this, reservation, bytes);
                 blocks.add(block);
                 return block;
             } catch (RuntimeException | Error failure) {
-                reservation.close();
+                // If tracking fails after native allocation, do not leave a
+                // live arena orphaned behind a released memory reservation.
+                try {
+                    if (block != null) block.invalidateFromSlice();
+                } catch (RuntimeException | Error cleanupError) {
+                    failure.addSuppressed(cleanupError);
+                } finally {
+                    reservation.close();
+                }
                 throw failure;
             }
         }
@@ -844,9 +853,13 @@ public final class ActorRuntime implements AutoCloseable {
         public synchronized void close() {
             openMemory(); // owner + liveness check before invalidation
             if (!blockClosed.compareAndSet(false, true)) return;
-            zeroAndDetachMemory();
-            slice.unregister(this);
-            reservation.close();
+            try {
+                zeroAndDetachMemory();
+            } finally {
+                // Release accounting even when the off-heap close fails.
+                slice.unregister(this);
+                reservation.close();
+            }
         }
     }
 
