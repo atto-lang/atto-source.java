@@ -494,6 +494,11 @@ public final class ChannelRuntime {
             return current.get().set().cases();
         }
 
+        /** Captures one complete generation for a source-level dynamic select. */
+        public SelectSet snapshot() {
+            return current.get().set();
+        }
+
         /**
          * Appends a descriptor for FUTURE invocations. Pending selections
          * continue observing their original descriptor generation.
