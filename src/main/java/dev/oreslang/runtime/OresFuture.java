@@ -98,7 +98,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
     }
 
-    private final BooleanSupplier cancelAdmission;
+    // Cleared on settlement: a completed Future must not retain the
+    // producer's select/channel/timer admission graph forever.
+    private final AtomicReference<BooleanSupplier> cancelAdmission;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
@@ -121,8 +123,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Guest code never receives the admission capability.</p>
      */
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
-        this.cancelAdmission = Objects.requireNonNull(
-                cancelAdmission, "cancelAdmission");
+        this.cancelAdmission = new AtomicReference<>(Objects.requireNonNull(
+                cancelAdmission, "cancelAdmission"));
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
     }
@@ -428,7 +430,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         if (state.get() != PENDING) return false;
-        if (!cancelAdmission.getAsBoolean()) return false;
+        BooleanSupplier admission = cancelAdmission.get();
+        if (admission == null || !admission.getAsBoolean()) return false;
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
@@ -565,6 +568,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
 
+        // Cancellation authority is useful only while pending. Clear the
+        // callback BEFORE notifying dependents so a permanently retained
+        // settled Future cannot pin the originating SelectRegistration,
+        // its channel cases, payloads, or host Publisher subscriptions.
+        cancelAdmission.set(null);
         RuntimeWaiterRegistration<T> waiter;
         while ((waiter = waiters.poll()) != null) {
             notifyWaiter(waiter, terminal);
