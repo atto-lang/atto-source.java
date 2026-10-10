@@ -1097,7 +1097,9 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
-        if (isBuiltinStdoutCall(call, "log", scope) || isBuiltinStdoutCall(call, "logList", scope)) {
+        if (isBuiltinStdoutCall(call, "log", scope) || isBuiltinStdoutCall(call, "log_blocking", scope)
+                || isBuiltinStdoutCall(call, "log_async", scope)
+                || isBuiltinStdoutCall(call, "logList", scope) || isBuiltinStdoutCall(call, "logList_async", scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 Ast.Expr value = argument instanceof Ast.SpreadExpr spread ? spread.expression() : argument;
                 ValueInfo info = checkExpr(value, scope, false);
@@ -1105,7 +1107,11 @@ public final class OwnershipChecker {
                     throw error("MutexGuard cannot be formatted or logged");
                 }
             }
-            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            boolean asyncLog = isBuiltinStdoutCall(call, "log_async", scope)
+                    || isBuiltinStdoutCall(call, "logList_async", scope);
+            return new ValueInfo(asyncLog
+                    ? new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("void")), false)
+                    : Ast.TypeRef.simple("void"), asyncLog ? ValueKind.MOVE_ONLY : ValueKind.COPY, null);
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
