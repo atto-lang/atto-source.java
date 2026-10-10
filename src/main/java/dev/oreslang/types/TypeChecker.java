@@ -2322,7 +2322,17 @@ public final class TypeChecker {
                             }
                             yield Primitive.BOOL;
                         }
-                        case "ready", "done", "outputs", "id", "kind" ->
+                        case "get_ready", "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
+                        case "ready", "done" -> throw new IllegalArgumentException(
+                                "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
+                        case "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
                                         "ActorRef." + member.member()
                                                 + " is a property and is not callable");
@@ -2822,7 +2832,13 @@ public final class TypeChecker {
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
                 return switch (member.member()) {
-                    case "ready", "done" -> new Named("Future", List.of(Primitive.VOID));
+                    case "get_ready", "get_done" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef." + member.member()
+                                            + " is a method; invoke it with ()");
+                    case "ready", "done" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
                     case "outputs" -> new Named(
                             "ActorOutputStream",
                             List.of(Unknown.INSTANCE));
