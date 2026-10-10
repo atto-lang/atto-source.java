@@ -69,6 +69,7 @@ pub enum RouteError {
     TransportDenied,
     InvalidEndpoint,
     NotConnecting,
+    AlreadyConnected,
     AuthenticationMismatch,
     NotReady,
     Closing,
@@ -142,6 +143,9 @@ impl ProxyRoute {
     ) -> Result<u64, RouteError> {
         if matches!(self.state, RouteState::Draining | RouteState::Closed) {
             return Err(RouteError::Closing);
+        }
+        if matches!(self.state, RouteState::Ready { .. } | RouteState::Connecting { .. }) {
+            return Err(RouteError::AlreadyConnected);
         }
         if lease.expires_at_tick <= now_tick { return Err(RouteError::ExpiredLease); }
         if lease.actor.service != self.service { return Err(RouteError::WrongService); }
@@ -424,6 +428,16 @@ mod tests {
         }), Ok(2));
         assert!(!p.disconnect(1)); // old transport callback is fenced
         assert!(matches!(p.state(), RouteState::Ready { session_epoch: 2, .. }));
+    }
+
+    #[test]
+    fn connected_session_cannot_be_superseded_without_explicit_disconnect() {
+        let mut p = connected();
+        assert_eq!(p.begin_connect(lease(1, 2), 21), Err(RouteError::AlreadyConnected));
+        assert!(matches!(p.state(), RouteState::Ready { generation: 1, .. }));
+        assert!(p.disconnect(1));
+        assert_eq!(p.begin_connect(lease(1, 2), 21), Ok(2));
+        assert_eq!(p.begin_connect(lease(1, 3), 21), Err(RouteError::AlreadyConnected));
     }
 
     #[test]
