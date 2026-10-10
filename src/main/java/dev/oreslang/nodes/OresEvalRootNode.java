@@ -19,6 +19,7 @@ import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresPanic;
 import dev.oreslang.runtime.OresRaised;
+import dev.oreslang.runtime.OresExceptionPolicy;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -1710,7 +1711,8 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.throwing(
+                            OresExceptionPolicy.combine(initialFlow.failure(), failure));
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1738,7 +1740,8 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.throwing(
+                            OresExceptionPolicy.combine(currentFlow.failure(), failure));
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1750,14 +1753,13 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    SourceFlow.throwing(
+                                            OresExceptionPolicy.combine(
+                                                    currentFlow.failure(), failure)),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -4593,7 +4595,7 @@ public final class OresEvalRootNode extends RootNode {
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
-            boolean abnormalExit = false;
+            Throwable original = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
@@ -4601,18 +4603,26 @@ public final class OresEvalRootNode extends RootNode {
             } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
-                abnormalExit = true;
+                original = failure;
                 throw failure;
             } finally {
-                boolean deferredFailure = false;
-                try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
-                } catch (RuntimeException | Error failure) {
-                    deferredFailure = true;
-                    throw failure;
-                } finally {
-                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                Throwable completion = original;
+                // Every registered defer gets its chance to run, even when a
+                // preceding defer fails. A weaker cleanup exception cannot
+                // conceal a panic, raise, cancellation, or fatal unwind.
+                while (!deferred.isEmpty()) {
+                    try {
+                        eval(deferred.pop(), env);
+                    } catch (RuntimeException | Error cleanup) {
+                        completion = OresExceptionPolicy.combine(completion, cleanup);
+                    }
                 }
+                try {
+                    env.releaseMutexGuards(completion != null);
+                } catch (RuntimeException | Error releaseFailure) {
+                    completion = OresExceptionPolicy.combine(completion, releaseFailure);
+                }
+                if (completion != original) OresExceptionPolicy.rethrow(completion);
             }
         }
 
