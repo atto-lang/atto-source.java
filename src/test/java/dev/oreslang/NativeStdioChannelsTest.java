@@ -51,7 +51,7 @@ final class NativeStdioChannelsTest {
     @Test
     void nativeObservableConsumesClosedBufferedChannelExactlyOnce() throws Exception {
         Output result = run("""
-                import module Observable from "std/observable";
+                                 // Observable is a native global prelude module.
                 pub routine main(): void {
                   val Channel<int> numbers = Channel.new<int>(2);
                   writech numbers, 4;
@@ -97,7 +97,7 @@ final class NativeStdioChannelsTest {
     @Test
     void nativeNonBlockingOutputReturnsAnAwaitableAdmissionFuture() throws Exception {
         Output result = run("""
-                import module Stdio from "std/stdio";
+                                 // Stdio is a native global prelude module; no import required.
                 pub async routine main(): void {
                   await Stdio.println("first");
                   await Stdio.eprintln("error");
@@ -111,7 +111,7 @@ final class NativeStdioChannelsTest {
     @Test
     void nativeFormattedLinesAndFlushBarriersPreserveOrdering() throws Exception {
         Output result = run("""
-                import module Stdio from "std/stdio";
+                                 // Stdio is a native global prelude module; no import required.
                 pub routine main(): void {
                   Stdio.println_parts_blocking(["hello", "-", "world"]);
                   Stdio.println_blocking("next");
@@ -128,7 +128,7 @@ final class NativeStdioChannelsTest {
     @Test
     void observableRendezvousPullConsumesSingleElement() throws Exception {
         Output result = run("""
-                import module Observable from "std/observable";
+                                 // Observable is a native global prelude module.
                 pub routine main(): void {
                   val Channel<int> inbox = Channel.new<int>(0);
                   val Future<void> pending = nb writech inbox, 9;
