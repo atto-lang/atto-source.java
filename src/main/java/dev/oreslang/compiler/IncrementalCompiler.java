@@ -104,7 +104,9 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Ast.Program checked = OresCompiler.analyze(
+                    parsed.get(id),
+                    importedModuleContracts(id, parsed, normalizedImportResolutions));
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -125,6 +127,59 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    /**
+     * Resolve explicit public cross-file module-contract imports before per-unit
+     * typechecking. Imports remain source-file scoped; never synthesize an exported
+     * or globally visible contract from another compilation unit.
+     */
+    private static Map<String, Ast.InterfaceDecl> importedModuleContracts(
+            String importer,
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> resolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> importedContracts = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : programs.get(importer).imports()) {
+            if (imported.kind() != Ast.ImportKind.CONTRACT) continue;
+            if (imported.wildcard()) {
+                throw new IllegalArgumentException("wildcard contract imports require explicit names");
+            }
+            String targetId = ImportGraph.resolveImportUnitId(
+                    importer, imported, programs.keySet(), resolutions);
+            if (targetId == null) {
+                throw new IllegalArgumentException(
+                        "module contract import needs an exact resolved source unit: " + imported.path());
+            }
+            Ast.Program target = programs.get(targetId);
+            for (String name : imported.names()) {
+                Ast.InterfaceDecl found = null;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    for (Ast.Decl decl : module.declarations()) {
+                        if (decl instanceof Ast.InterfaceDecl contract
+                                && contract.moduleContract()
+                                && contract.visibility() == Ast.Visibility.PUBLIC
+                                && contract.name().equals(name)) {
+                            if (found != null) {
+                                throw new IllegalArgumentException("ambiguous imported module contract '" + name + "'");
+                            }
+                            found = contract;
+                        }
+                    }
+                }
+                if (found == null) {
+                    throw new IllegalArgumentException("module contract '" + name + "' is not exported");
+                }
+                String visibleName = imported.namespace() == null ? name : imported.namespace();
+                Ast.InterfaceDecl exposed = new Ast.InterfaceDecl(
+                        visibleName, found.visibility(), found.genericParameters(),
+                        found.parents(), found.members(), true);
+                if (importedContracts.putIfAbsent(visibleName, exposed) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate imported module contract name '" + visibleName + "'");
+                }
+            }
+        }
+        return Map.copyOf(importedContracts);
     }
 
     public synchronized void clear() {
