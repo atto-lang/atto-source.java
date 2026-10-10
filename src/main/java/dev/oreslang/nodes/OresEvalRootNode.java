@@ -16,6 +16,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.CriticalGate;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -141,6 +142,11 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
+        // A single code unit owns one file-global critical gate. Imported calls
+        // dispatch back to the declaring evaluator and therefore share it.
+        private final CriticalGate fileCriticalGate = new CriticalGate();
+        private final java.util.concurrent.ConcurrentHashMap<Ast.ClassDecl, CriticalGate> staticCriticalGates =
+                new java.util.concurrent.ConcurrentHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
@@ -856,6 +862,7 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private final CriticalGate.Ticket criticalTicket;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -865,6 +872,7 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.FunctionDecl function,
                     List<?> arguments) {
                 this.function = Objects.requireNonNull(function, "function");
+                this.criticalTicket = function.critical() ? fileCriticalGate.newTicket() : null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
@@ -877,6 +885,8 @@ public final class OresEvalRootNode extends RootNode {
                     List<?> arguments) {
                 this.function = null;
                 this.method = Objects.requireNonNull(method, "method");
+                this.criticalTicket = method.critical()
+                        ? methodGate(method, receiver).newTicket() : null;
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
@@ -888,6 +898,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.receiver = null;
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
+                this.criticalTicket = null;
                 this.arguments = List.of();
             }
 
@@ -913,6 +924,46 @@ public final class OresEvalRootNode extends RootNode {
                 nextStep = null;
 
                 if (resume.initial()) {
+                    if (criticalTicket != null) {
+                        OresFuture<Void> ready = criticalTicket.enterAsync();
+                        if (ready.isDone()) {
+                            startInitialBody();
+                        } else {
+                            suspend(ready, (task, value, failure) -> {
+                                if (failure != null) throw sourceFailure(failure);
+                                task.startInitialBody();
+                            });
+                        }
+                    } else {
+                        startInitialBody();
+                    }                } else {
+                    SourceValueCont continuation = awaitingContinuation;
+                    awaitingContinuation = null;
+                    if (continuation == null) {
+                        throw new IllegalStateException(
+                                "source task resumed without a pending source continuation");
+                    }
+                    continuation.accept(
+                            this,
+                            resume.value(),
+                            resume.failure());
+                }
+
+                // Finish each source loop back-edge iteratively. The unexecuted
+                // callback becomes a heap-owned Cooperate continuation once the
+                // soft quantum expires, with no side effects replayed.
+                drainLoopContinuations();
+                if (nextStep == null) {
+                    throw new IllegalStateException(
+                            "source continuation produced neither Await nor Done");
+                }
+
+                OresScheduler.Step<Object> result = nextStep;
+                nextStep = null;
+                return result;
+            }
+
+            private void startInitialBody() {
                     Env params;
                     if (blockBody != null) {
                         params = initialBlockEnv != null
@@ -962,31 +1013,10 @@ public final class OresEvalRootNode extends RootNode {
                             body,
                             params,
                             this::finishSourceFlow);
-                } else {
-                    SourceValueCont continuation = awaitingContinuation;
-                    awaitingContinuation = null;
-                    if (continuation == null) {
-                        throw new IllegalStateException(
-                                "source task resumed without a pending source continuation");
-                    }
-                    continuation.accept(
-                            this,
-                            resume.value(),
-                            resume.failure());
-                }
+            }
 
-                // Finish each source loop back-edge iteratively. The unexecuted
-                // callback becomes a heap-owned Cooperate continuation once the
-                // soft quantum expires, with no side effects replayed.
-                drainLoopContinuations();
-                if (nextStep == null) {
-                    throw new IllegalStateException(
-                            "source continuation produced neither Await nor Done");
-                }
-
-                OresScheduler.Step<Object> result = nextStep;
-                nextStep = null;
-                return result;
+            private void releaseCriticalOnCompletion(OresFuture<?> completion) {
+                if (criticalTicket != null) criticalTicket.releaseOnCompletion(completion);
             }
 
             private void scheduleLoopContinuation(
@@ -1024,7 +1054,8 @@ public final class OresEvalRootNode extends RootNode {
                         if (!untrusted
                                 && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
                                     || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
-                                && !guardEnv.hasLiveMutexGuards()) {
+                                && !guardEnv.hasLiveMutexGuards()
+                                && (criticalTicket == null || !criticalTicket.isHeld())) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
                             return;
@@ -1121,6 +1152,12 @@ public final class OresEvalRootNode extends RootNode {
             return new RuntimeException(unwrapped);
         }
 
+        private CriticalGate methodGate(Ast.MethodDecl method, OresObject receiver) {
+            if (receiver != null) return receiver.criticalGate;
+            return staticCriticalGates.computeIfAbsent(
+                    declaringClass(method), ignored -> new CriticalGate());
+        }
+
         private OresFuture<Object> startSourceFunctionTask(
                 Ast.FunctionDecl function,
                 List<?> arguments) {
@@ -1135,6 +1172,7 @@ public final class OresEvalRootNode extends RootNode {
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
+            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
@@ -1167,6 +1205,7 @@ public final class OresEvalRootNode extends RootNode {
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
+            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
@@ -4478,13 +4517,15 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, fn.async());
             }
 
+            CriticalGate.Ticket critical = fn.critical() ? fileCriticalGate.newTicket() : null;
+            if (critical != null) critical.enterSync();
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
             bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
             try {
                 // A trap boundary must survive tail-call lowering. Treat it as a
                 // tail barrier so a callee failure cannot escape by replacing
                 // this function's dynamic boundary.
-                executeBlock(fn.body(), env, fn.trapped());
+                executeBlock(fn.body(), env, fn.trapped() || fn.critical());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -4497,6 +4538,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
             } catch (RuntimeException failure) {
                 throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, fn.name(), "function");
+            } finally {
+                if (critical != null) critical.close();
             }
         }
 
@@ -4561,11 +4604,14 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, method.async());
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            CriticalGate.Ticket critical = method.critical()
+                    ? methodGate(method, receiver).newTicket() : null;
+            if (critical != null) critical.enterSync();
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
             try {
-                executeBlock(method.body(), env);
+                executeBlock(method.body(), env, method.critical());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -4575,6 +4621,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("loop control cannot cross a method boundary", signal);
             } catch (RuntimeException failure) {
                 throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, method.name(), "method");
+            } finally {
+                if (critical != null) critical.close();
             }
         }
 
@@ -6882,10 +6930,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
+            CriticalGate.Ticket critical = fn.critical()
+                    ? methodGate(fn, null).newTicket() : null;
+            if (critical != null) critical.enterSync();
             Env env = new Env(null, false, declaringClass(fn));
             bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
             try {
-                executeBlock(fn.body(), env);
+                executeBlock(fn.body(), env, fn.critical());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -6893,6 +6944,8 @@ public final class OresEvalRootNode extends RootNode {
                 return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a static function boundary", signal);
+            } finally {
+                if (critical != null) critical.close();
             }
         }
 
@@ -8652,6 +8705,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject implements OresMutex.SharedState {
+        private final CriticalGate criticalGate = new CriticalGate();
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
