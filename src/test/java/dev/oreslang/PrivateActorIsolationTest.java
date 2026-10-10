@@ -323,12 +323,15 @@ final class PrivateActorIsolationTest {
                         throw expected;
                 }
                 assertTrue(blocks > 0 && blocks <= 1024);
-                assertEquals(blocks, memory.usedBytes());
+                // Active-mail envelope bytes share this budget with native
+                // blocks; the zero-length blocks themselves must still be
+                // charged at least one byte each.
+                assertTrue(memory.usedBytes() >= blocks);
                 context.self().stop();
             });
             actor.send("exhaust");
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
-            assertTrue(actor.failure().isEmpty());
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure().orElse(null));
             assertEquals(0L, runtime.privateMemoryBytes());
         }
     }
