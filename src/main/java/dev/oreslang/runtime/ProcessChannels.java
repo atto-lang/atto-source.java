@@ -34,13 +34,13 @@ public final class ProcessChannels implements AutoCloseable {
             this.name = name;
         }
 
-        void checkGuestRead() {
+        public void checkGuestRead() {
             owner.requireCapability(capability, name + ".readch");
             if (direction != Direction.READ)
                 throw new IllegalArgumentException(name + " is a write-only channel");
         }
 
-        void checkGuestWrite() {
+        public void checkGuestWrite() {
             owner.requireCapability(capability, name + ".writech");
             if (direction != Direction.WRITE)
                 throw new IllegalArgumentException(name + " is a read-only channel");
