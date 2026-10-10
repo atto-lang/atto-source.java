@@ -266,6 +266,80 @@ final class IdentityReturnTypeTest {
                 """, "identity return rebind");
     }
 
+    @Test void interfaceParameterIdentityIsEnforcedOnImplementations() {
+        rejects("""
+                define class T as
+                end
+                define interface IdentityApi as
+                  fnc relay(T v): v;
+                end
+                define class Bad implements IdentityApi as
+                  pub relay(T value): T { return new T(); }
+                end
+                """, "cannot weaken interface identity return");
+    }
+
+    @Test void interfaceIdentityAcceptsDifferentParameterNames() {
+        accepts("""
+                define class T as
+                end
+                define interface IdentityApi as
+                  fnc relay(T value): value;
+                end
+                define class Good implements IdentityApi as
+                  pub relay(T input): input { return input; }
+                end
+                """);
+    }
+
+    @Test void interfaceThisIdentityCannotBeWeakened() {
+        rejects("""
+                define interface IdentityApi as
+                  fnc same(): this;
+                end
+                define class Bad implements IdentityApi as
+                  pub same(): self { return self; }
+                end
+                """, "cannot weaken interface identity return");
+    }
+
+    @Test void interfaceReceiverIdentityCanBeImplemented() {
+        accepts("""
+                define interface IdentityApi as
+                  fnc same(): this;
+                end
+                define class Good implements IdentityApi as
+                  pub same(): this { return self; }
+                end
+                """);
+    }
+
+    @Test void inheritedInterfaceIdentityCannotBeWeakened() {
+        rejects("""
+                define class T as
+                end
+                define interface BaseApi as
+                  fnc relay(T v): v;
+                end
+                define interface ExtendedApi extends BaseApi as
+                end
+                define class Bad implements ExtendedApi as
+                  pub relay(T input): T { return new T(); }
+                end
+                """, "cannot weaken interface identity return");
+    }
+
+    @Test void extendedInterfaceCannotRedeclareWeakerIdentity() {
+        rejects("""
+                define interface BaseApi as
+                  fnc same(): this;
+                end
+                define interface SubApi extends BaseApi as
+                  fnc same(): self;
+                end
+                """, "cannot weaken inherited identity contract");
+    }
+
     @Test void shadowedAliasDoesNotProveIdentity() {
         rejects("""
                 define module m
