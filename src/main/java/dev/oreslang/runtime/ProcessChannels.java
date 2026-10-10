@@ -82,7 +82,7 @@ public final class ProcessChannels implements AutoCloseable {
         this.out = new ConsoleChannel<>(owner, "process.stdout",
                 IsolatePolicy.Capability.STDOUT, Direction.WRITE, 8192);
         this.err = new ConsoleChannel<>(owner, "process.stderr",
-                IsolatePolicy.Capability.STDERR, Direction.WRITE, 8192);
+                IsolatePolicy.Capability.STDOUT, Direction.WRITE, 8192);
         this.in = new ConsoleChannel<>(owner, "process.stdin",
                 IsolatePolicy.Capability.STDIN, Direction.READ, 64);
         this.outWorker = Thread.ofPlatform().daemon(true)
