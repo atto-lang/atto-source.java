@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -23,7 +22,7 @@ import java.nio.ByteOrder;
 final class ActorForeignMemory implements AutoCloseable {
     private final ByteBuffer memory;
     private final AutoCloseable arena;
-    private boolean closed;
+    private volatile boolean closed;
 
     private ActorForeignMemory(ByteBuffer memory, AutoCloseable arena) {
         this.memory = memory.order(ByteOrder.LITTLE_ENDIAN);
@@ -75,26 +74,38 @@ final class ActorForeignMemory implements AutoCloseable {
         return arena != null;
     }
 
-    ByteBuffer memory() {
+    synchronized ByteBuffer memory() {
         if (closed) throw new IllegalStateException("actor native region is closed");
         return memory;
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (closed) return;
+        // Mark closed before teardown; no new private-block operation can
+        // obtain this memory, even if clearing it or closing the arena fails.
         closed = true;
-        // Zero while the FFM scope is live. MemorySegment/ByteBuffer checks
-        // enforce liveness after arena.close on supported JDKs.
-        ByteBuffer copy = memory.duplicate();
-        copy.clear();
-        while (copy.hasRemaining()) copy.put((byte) 0);
+        Throwable failure = null;
+        try {
+            ByteBuffer copy = memory.duplicate();
+            copy.clear();
+            while (copy.hasRemaining()) copy.put((byte) 0);
+        } catch (Throwable zeroizationFailure) {
+            failure = zeroizationFailure;
+        }
+        // Closing the Arena must be attempted even if zeroization fails:
+        // otherwise a failed write could permanently leak native memory.
         if (arena != null) {
             try {
                 arena.close();
-            } catch (Exception failure) {
-                throw new IllegalStateException("cannot close actor native arena", failure);
+            } catch (Throwable closeFailure) {
+                if (failure != null) failure.addSuppressed(closeFailure);
+                else failure = closeFailure;
             }
         }
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure != null)
+            throw new IllegalStateException("cannot close actor native arena", failure);
     }
 }
