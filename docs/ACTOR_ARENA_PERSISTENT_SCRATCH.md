@@ -74,3 +74,13 @@ or any new allocator metadata; native data allocation is performed only when
 the region opens, while Java `Slot` handle wrappers are still created on
 allocate. The regression suite stresses 8,192 allocate/drop/reuse cycles
 and verifies generation monotonicity and immediate stale-handle rejection.
+ 
+## Allocation measurement (non-certifying)
+`ActorArenaAllocationProbeTest` uses HotSpot/GraalVM per-thread allocation
+accounting (`com.sun.management.ThreadMXBean`) for 250,000 *paired*
+native scalar read/write operations after 50,000 warmups, on a real admitted
+actor carrier. It records Java heap bytes per operation pair. The result
+excludes actor startup, wrapper creation, native arena admission, message
+envelopes, FFM region shutdown, and JIT compilation not completed during
+warmup; it is only a targeted allocation regression signal. Use JFR/GC logs,
+native RSS and end-to-end latency benchmarks before claiming near-zero GC.
