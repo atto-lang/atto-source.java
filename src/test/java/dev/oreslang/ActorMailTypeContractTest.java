@@ -34,6 +34,39 @@ final class ActorMailTypeContractTest {
     }
 
     @Test
+    void actorLifecycleSignalsAreAwaitableButDoNotAcceptArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<String> m): void { self.end(); }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready_signal();
+                  worker.send("start");
+                  await worker.get_done_signal();
+                  return;
+                }
+                """)));
+
+        for (String method : new String[] {"get_ready_signal", "get_done_signal"}) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Worker as
+                              receive(ActorMail<String> m): void { return; }
+                            end
+                            pub async routine main(): void {
+                              val worker = spawn Worker();
+                              await worker.%s(1);
+                              return;
+                            }
+                            """.formatted(method))));
+            assertTrue(error.getMessage().contains("expects no arguments"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void actorRefSendMustMatchReceivePayload() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
