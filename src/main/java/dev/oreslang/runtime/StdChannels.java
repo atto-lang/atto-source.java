@@ -26,7 +26,22 @@ public final class StdChannels implements AutoCloseable {
      * any Oreslang alias to shut down the ambient process input.
      */
     public static final class InputChannel extends ChannelRuntime.Channel<String> {
-        private InputChannel() { super(0); }
+        private final StdChannels owner;
+
+        private InputChannel(StdChannels owner) {
+            super(0);
+            this.owner = owner;
+        }
+
+        // Creating a descriptor handle, ReadableStream, or Observable is pure:
+        // start the OS reader only when an actual receive is registered.
+        void activateReadDemand() { owner.startInputPumpOnDemand(); }
+
+        @Override
+        public java.util.Optional<String> tryRead() {
+            activateReadDemand();
+            return super.tryRead();
+        }
 
         @Override
         public void close() { close(null); }
@@ -61,7 +76,7 @@ public final class StdChannels implements AutoCloseable {
     }
 
     private final OresContext context;
-    private final InputChannel input = new InputChannel();
+    private final InputChannel input = new InputChannel(this);
     private final OutputChannel output = new OutputChannel();
     private final OutputChannel error = new OutputChannel();
     private final AtomicBoolean startedInput = new AtomicBoolean();
@@ -85,10 +100,19 @@ public final class StdChannels implements AutoCloseable {
     public InputChannel input() {
         context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.in");
         if (closed.get()) throw new IllegalStateException("stdio is closed");
-        if (startedInput.compareAndSet(false, true)) {
-            inputThread = Thread.ofPlatform().daemon().name("ores-stdio-in").start(this::pumpInput);
-        }
         return input;
+    }
+
+    private void startInputPumpOnDemand() {
+        if (closed.get()) return;
+        if (startedInput.compareAndSet(false, true)) {
+            Thread worker = Thread.ofPlatform().daemon()
+                    .name("ores-stdio-in").unstarted(this::pumpInput);
+            inputThread = worker;
+            // Shutdown may race with admission; pumpInput checks closed
+            // before touching the host stream, and finalizes the channel.
+            worker.start();
+        }
     }
 
     public OutputChannel output() {
