@@ -4520,9 +4520,9 @@ public final class OresEvalRootNode extends RootNode {
 
             CriticalGate.Ticket critical = fn.critical() ? fileCriticalGate.newTicket() : null;
             if (critical != null) critical.enterSync();
-            Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
-            bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
             try {
+                Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
+                bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
                 // A trap boundary must survive tail-call lowering. Treat it as a
                 // tail barrier so a callee failure cannot escape by replacing
                 // this function's dynamic boundary.
@@ -4608,10 +4608,10 @@ public final class OresEvalRootNode extends RootNode {
             CriticalGate.Ticket critical = method.critical()
                     ? methodGate(method, receiver).newTicket() : null;
             if (critical != null) critical.enterSync();
-            Env env = new Env(null, false, declaringClass(method));
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            bindCallableArguments(env, method.parameters(), args, "method " + method.name());
             try {
+                Env env = new Env(null, false, declaringClass(method));
+                if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
+                bindCallableArguments(env, method.parameters(), args, "method " + method.name());
                 executeBlock(method.body(), env, method.critical());
                 return null;
             } catch (TailCallSignal signal) {
@@ -6934,9 +6934,9 @@ public final class OresEvalRootNode extends RootNode {
             CriticalGate.Ticket critical = fn.critical()
                     ? methodGate(fn, null).newTicket() : null;
             if (critical != null) critical.enterSync();
-            Env env = new Env(null, false, declaringClass(fn));
-            bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
             try {
+                Env env = new Env(null, false, declaringClass(fn));
+                bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
                 executeBlock(fn.body(), env, fn.critical());
                 return null;
             } catch (TailCallSignal signal) {
