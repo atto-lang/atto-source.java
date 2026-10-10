@@ -3140,13 +3140,18 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
-            if (awaitedType instanceof Named named
-                    && named.name().equals("Future")
-                    && named.arguments().size() == 1) {
-                return named.arguments().getFirst();
+            if (awaitedType instanceof Named named) {
+                if (named.name().equals("Future") && named.arguments().size() == 1) {
+                    return named.arguments().getFirst();
+                }
+                // Awaiting ActorRef means awaiting initialization, never joining
+                // termination. The expression retains its ActorRef<T> type.
+                if (named.name().equals("ActorRef") && named.arguments().size() == 1) {
+                    return awaitedType;
+                }
             }
             throw new IllegalArgumentException(
-                    "await requires Future<T>; got " + awaitedType);
+                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
