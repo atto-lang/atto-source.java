@@ -121,6 +121,12 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // Unknown or unconstrained generic values cannot manufacture a
+        // dependent-return guarantee, including one nested inside an interface
+        // shape or callable signature. Ordinary dynamic nominal values retain
+        // their existing gradual-typing compatibility.
+        if (from == Unknown.INSTANCE && requiresIdentityProof(to)) return false;
+        if (from instanceof Generic && requiresIdentityProof(to)) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -193,6 +199,32 @@ public final class Types {
         }
 
         return numericWidening(from, to);
+    }
+
+    private static boolean requiresIdentityProof(Type type) {
+        if (type instanceof Function function) {
+            if (function.identitySource() != Function.NO_IDENTITY) return true;
+            for (Type parameter : function.parameters()) {
+                if (requiresIdentityProof(parameter)) return true;
+            }
+            return requiresIdentityProof(function.result());
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(Types::requiresIdentityProof);
+        }
+        if (type instanceof Borrow borrow) return requiresIdentityProof(borrow.target());
+        if (type instanceof SelfType self) return requiresIdentityProof(self.bound());
+        if (type instanceof ListType list) return requiresIdentityProof(list.element());
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(Types::requiresIdentityProof);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(Types::requiresIdentityProof);
+        }
+        if (type instanceof Named named) {
+            return named.arguments().stream().anyMatch(Types::requiresIdentityProof);
+        }
+        return false;
     }
 
     private static boolean numericWidening(Type from, Type to) {
