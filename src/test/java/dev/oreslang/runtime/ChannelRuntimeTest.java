@@ -199,6 +199,60 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void mixedFutureAndChannelRaceNeverConsumesLosingChannelValue() throws Exception {
+        try (var producers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int attempt = 0; attempt < 200; attempt++) {
+                ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+                OresFuture<Integer> future = new OresFuture<>();
+                var selected = ChannelRuntime.SelectSet.of(
+                        ChannelRuntime.read(channel), ChannelRuntime.await(future),
+                        ChannelRuntime.timeout(2, java.util.concurrent.TimeUnit.SECONDS))
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var produceChannel = producers.submit(() -> {
+                    start.await();
+                    channel.writeAsync(11).join();
+                    return true;
+                });
+                var produceFuture = producers.submit(() -> {
+                    start.await();
+                    future.completeFromRuntime(22);
+                    return true;
+                });
+                start.countDown();
+                var winner = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                assertTrue(produceChannel.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertTrue(produceFuture.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertEquals(0, future.pendingRuntimeWaiterCount());
+                assertEquals(22, future.join());
+                if (winner.operation() == ChannelRuntime.SelectOperation.READ) {
+                    assertEquals(11, winner.value());
+                    assertTrue(channel.tryRead().isEmpty());
+                } else if (winner.operation() == ChannelRuntime.SelectOperation.AWAIT) {
+                    assertEquals(22, winner.value());
+                    assertEquals(11, channel.tryRead().orElseThrow());
+                } else {
+                    throw new AssertionError("unexpected winner " + winner.operation());
+                }
+            }
+        }
+    }
+
+    @Test
+    void cancelBeforeDeadlineRemovesFutureObserverWithoutCancellingProducer() {
+        OresFuture<Integer> producer = new OresFuture<>();
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer),
+                ChannelRuntime.timeout(30, java.util.concurrent.TimeUnit.SECONDS))
+                .selectAsync();
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(selected.cancel(false));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isCancelled());
+        assertThrows(CancellationException.class, selected::join);
+    }
+
+    @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         assertTrue(channel.tryWrite(1));
