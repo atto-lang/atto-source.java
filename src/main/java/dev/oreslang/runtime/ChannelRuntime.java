@@ -243,9 +243,22 @@ public final class ChannelRuntime {
         }
 
         private ChannelClosedException closedFailure() {
+            // Clean close is a normal EOF for iterators. Abnormal close MUST
+            // retain an identifiable error across Truffle's polyglot exception
+            // boundary, which may suppress Java getCause() in guest-visible
+            // envelopes. Preserve the cause object for host diagnostics too.
+            if (closeCause == null) return new ChannelClosedException("channel is closed");
+            String detail = closeCause.getClass().getSimpleName();
+            String message = closeCause.getMessage();
+            if (message != null && !message.isBlank()) {
+                // Bound diagnostics: untrusted host exception messages must
+                // never produce unlimited error text or multiline log injection.
+                String bounded = message.replace('\\r', ' ').replace('\\n', ' ');
+                detail += ": " + bounded.substring(0, Math.min(bounded.length(), 160));
+            }
             ChannelClosedException failure =
-                    new ChannelClosedException("channel is closed");
-            if (closeCause != null) failure.initCause(closeCause);
+                    new ChannelClosedException("channel failed: " + detail);
+            failure.initCause(closeCause);
             return failure;
         }
 
