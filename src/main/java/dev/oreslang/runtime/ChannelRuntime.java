@@ -530,8 +530,12 @@ public final class ChannelRuntime {
                 new ArrayList<>();
         private final int defaultIndex;
         private final OresFuture<SelectResult> future;
+        private final long startNanos = System.nanoTime();
+        private final ArrayList<OresFuture.RuntimeWaiterRegistration<?>> observers = new ArrayList<>();
+        private final ArrayList<ScheduledFuture<?>> alarms = new ArrayList<>();
         private boolean decided;
         private boolean registered;
+        private boolean armingExternal;
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
@@ -588,6 +592,51 @@ public final class ChannelRuntime {
                 COORDINATOR.unlock();
             }
             runCompletions(completions);
+            if (!immediateOnly) armExternal();
+        }
+
+        /** Install only after initial channel arbitration/default handling. */
+        private void armExternal() {
+            ArrayList<Runnable> completions = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (decided || !registered) return;
+                armingExternal = true;
+                for (int index : order) {
+                    SelectCase candidate = set.cases.get(index);
+                    OresFuture<?> observed = candidate instanceof AwaitCase<?> awaited
+                            ? awaited.future()
+                            : candidate instanceof CancelCase cancelled ? cancelled.signal() : null;
+                    if (observed != null) {
+                        OresFuture.RuntimeWaiterRegistration<?> registration =
+                                observed.whenCompleteRuntimeCancellable((value, failure) -> externalReady());
+                        observers.add(registration);
+                    } else if (candidate instanceof TimeoutCase timeout && timeout.delayNanos() > 0) {
+                        long elapsed = Math.max(0L, System.nanoTime() - startNanos);
+                        long remaining = Math.max(0L, timeout.delayNanos() - elapsed);
+                        alarms.add(TimeoutClock.EXECUTOR.schedule(
+                                this::externalReady, remaining, TimeUnit.NANOSECONDS));
+                    }
+                }
+                armingExternal = false;
+                // Includes completions racing with observer registration.
+                pumpLocked(completions);
+            } finally {
+                armingExternal = false;
+                COORDINATOR.unlock();
+            }
+            runCompletions(completions);
+        }
+
+        private void externalReady() {
+            ArrayList<Runnable> completions = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (!decided && registered && !armingExternal) pumpLocked(completions);
+            } finally {
+                COORDINATOR.unlock();
+            }
+            runCompletions(completions);
         }
 
         private Optional<SelectResult> tryNow() {
@@ -616,7 +665,9 @@ public final class ChannelRuntime {
             CaseRegistration registration =
                     new CaseRegistration(selection, index, selectCase);
             selection.registrations.add(registration);
-            channelOf(selectCase).registrations.add(registration);
+            if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
+                channelOf(selectCase).registrations.add(registration);
+            }
         }
     }
 
@@ -626,9 +677,18 @@ public final class ChannelRuntime {
         ACTIVE.remove(selection);
         for (CaseRegistration registration :
                 List.copyOf(selection.registrations)) {
-            registration.channel().registrations.remove(registration);
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                registration.channel().registrations.remove(registration);
+            }
         }
         selection.registrations.clear();
+        for (OresFuture.RuntimeWaiterRegistration<?> observer : selection.observers) {
+            observer.detach();
+        }
+        selection.observers.clear();
+        for (ScheduledFuture<?> alarm : selection.alarms) alarm.cancel(false);
+        selection.alarms.clear();
     }
 
     /**
@@ -648,6 +708,28 @@ public final class ChannelRuntime {
                         preferredCommittableCaseLocked(selection);
                 if (chosen == null) continue;
 
+                if (chosen.selectCase instanceof AwaitCase<?> awaited) {
+                    Object terminal = awaited.future().runtimeTerminalStateOrNull();
+                    Throwable failure = OresFuture.runtimeTerminalFailure(terminal);
+                    if (failure != null) commitFailureLocked(chosen, failure, completions);
+                    else commitSingleLocked(chosen,
+                            new SelectResult(chosen.index, SelectOperation.AWAIT,
+                                    OresFuture.runtimeTerminalValue(terminal)), completions);
+                    progressed = true;
+                    break;
+                }
+                if (chosen.selectCase instanceof CancelCase) {
+                    commitSingleLocked(chosen,
+                            new SelectResult(chosen.index, SelectOperation.CANCELLED, null), completions);
+                    progressed = true;
+                    break;
+                }
+                if (chosen.selectCase instanceof TimeoutCase) {
+                    commitSingleLocked(chosen,
+                            new SelectResult(chosen.index, SelectOperation.TIMEOUT, null), completions);
+                    progressed = true;
+                    break;
+                }
                 Channel<?> channel = chosen.channel();
 
                 if (chosen.operation() == SelectOperation.READ) {
@@ -733,6 +815,8 @@ public final class ChannelRuntime {
             CaseRegistration registration =
                     findRegistration(selection, index);
             if (registration == null) continue;
+            if (externalReadyLocked(registration)) return registration;
+            if (!(selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>)) continue;
 
             Channel<?> channel = registration.channel();
             if (registration.operation() == SelectOperation.READ) {
@@ -777,6 +861,10 @@ public final class ChannelRuntime {
     }
 
     private static boolean basicReadyLocked(CaseRegistration registration) {
+        if (!(registration.selectCase instanceof ReadCase<?>
+                || registration.selectCase instanceof WriteCase<?>)) {
+            return externalReadyLocked(registration);
+        }
         Channel<?> channel = registration.channel();
 
         if (registration.operation() == SelectOperation.READ) {
@@ -805,6 +893,17 @@ public final class ChannelRuntime {
                 continue;
             }
             return true;
+        }
+        return false;
+    }
+
+    private static boolean externalReadyLocked(CaseRegistration registration) {
+        SelectCase item = registration.selectCase;
+        if (item instanceof AwaitCase<?> awaited) return awaited.future().isDone();
+        if (item instanceof CancelCase cancelled) return cancelled.signal().isCancelled();
+        if (item instanceof TimeoutCase timeout) {
+            return Math.max(0L, System.nanoTime() - registration.selection.startNanos)
+                    >= timeout.delayNanos();
         }
         return false;
     }
