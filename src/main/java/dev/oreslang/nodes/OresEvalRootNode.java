@@ -144,7 +144,7 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
         // A single code unit owns one file-global critical gate. Imported calls
         // dispatch back to the declaring evaluator and therefore share it.
-        private final CriticalGate fileCriticalGate = new CriticalGate();
+        private final CriticalGate fileCriticalGate = OresMutex.criticalGate();
         private final java.util.concurrent.ConcurrentHashMap<Ast.ClassDecl, CriticalGate> staticCriticalGates =
                 new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -1164,7 +1164,7 @@ public final class OresEvalRootNode extends RootNode {
         private CriticalGate methodGate(Ast.MethodDecl method, OresObject receiver) {
             if (receiver != null) return receiver.criticalGate;
             return staticCriticalGates.computeIfAbsent(
-                    declaringClass(method), ignored -> new CriticalGate());
+                    declaringClass(method), ignored -> OresMutex.criticalGate());
         }
 
         private OresFuture<Object> startSourceFunctionTask(
@@ -8714,7 +8714,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject implements OresMutex.SharedState {
-        private final CriticalGate criticalGate = new CriticalGate();
+        private final CriticalGate criticalGate = OresMutex.criticalGate();
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
