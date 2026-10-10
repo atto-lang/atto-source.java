@@ -68,6 +68,54 @@ final class ActorGroupManagedWorkersTest {
     }
 
     @Test
+    void exactlyOneGroupOwnsLifecycleAndExplicitHandoffDoesNotStopTheWorker()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup first = runtime.createActorGroup();
+            ActorRuntime.ActorGroup second = runtime.createActorGroup();
+            ActorRuntime.ActorRef<String> worker = runtime.spawnShared(
+                    () -> (message, turn) -> { });
+            first.manage(worker);
+            assertThrows(IllegalStateException.class, () -> second.manage(worker));
+            assertEquals(1, first.workerCount());
+            assertEquals(0, second.workerCount());
+
+            assertTrue(first.releaseWorker(worker));
+            assertFalse(first.releaseWorker(worker));
+            second.manage(worker);
+            first.close();
+            assertTrue(worker.isAlive(), "ownership handoff must not stop worker");
+            second.close();
+            worker.done().get(5, TimeUnit.SECONDS);
+            assertFalse(worker.isAlive());
+        }
+    }
+
+    @Test
+    void groupDoneBarrierWaitsForSnapshotAndIsNotCancelledByObservers()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<String> left = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    ctx -> (message, turn) -> { });
+            ActorRuntime.ActorRef<String> right = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    ctx -> (message, turn) -> { });
+
+            OresFuture<Void> allDone = group.workersDone();
+            assertFalse(allDone.isDone());
+            assertFalse(allDone.cancel(false), "observer cannot cancel worker drain");
+            group.stopWorkers();
+            allDone.get(5, TimeUnit.SECONDS);
+            left.done().get(5, TimeUnit.SECONDS);
+            right.done().get(5, TimeUnit.SECONDS);
+            assertEquals(0, group.workerCount());
+            assertTrue(group.workersDone().isDone(), "empty group settles immediately");
+        }
+    }
+
+    @Test
     void failedInitializationRejectsReadySpawnAndReleasesGroupReference() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
