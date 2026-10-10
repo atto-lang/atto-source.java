@@ -1205,6 +1205,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.async()) rejectAsyncBorrowedParameters(signature.parameters(), "function " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
@@ -1218,6 +1219,8 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.async()) rejectAsyncBorrowedParameters(signature.parameters(),
+                        "function " + namespace.name() + "." + qualified.member());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
@@ -1432,6 +1435,14 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
+                if (method.async()) {
+                    rejectAsyncBorrowedParameters(signature.parameters(),
+                            "method " + target.owner().name() + "." + method.name());
+                    if (!isRootedAtActorSelf(member.receiver(), scope)) {
+                        throw error("async method receiver needs a proven owned task lifetime; "
+                                + "ordinary borrowed class receivers cannot outlive the caller");
+                    }
+                }
                 checkArguments(call.arguments(), signature.parameters(), scope,
                         "method " + method.name(), member.receiver(),
                         AnnotationExpander.isGeneratedFromJsonSetter(method)
@@ -1573,6 +1584,16 @@ public final class OwnershipChecker {
             return new ValueInfo(receiverType, kindOfType(receiverType), null);
         }
         return new ValueInfo(okType, kindOfType(okType), null);
+    }
+
+    private void rejectAsyncBorrowedParameters(List<Ast.Param> params, String callable) {
+        for (Ast.Param param : params) {
+            if (param.structural() || param.type().isBorrow()) {
+                throw error("async " + callable + " cannot retain borrowed/structural argument '"
+                        + param.name() + "' after returning a Future; "
+                        + "use owned data or an explicit task-lifetime loan contract");
+            }
+        }
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
