@@ -253,7 +253,7 @@ public final class ChannelRuntime {
             if (message != null && !message.isBlank()) {
                 // Bound diagnostics: untrusted host exception messages must
                 // never produce unlimited error text or multiline log injection.
-                String bounded = message.replace('\\r', ' ').replace('\\n', ' ');
+                String bounded = message.replace('\r', ' ').replace('\n', ' ');
                 detail += ": " + bounded.substring(0, Math.min(bounded.length(), 160));
             }
             ChannelClosedException failure =
