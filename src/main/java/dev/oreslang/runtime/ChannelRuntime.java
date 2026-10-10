@@ -156,10 +156,14 @@ public final class ChannelRuntime {
                         value = readAsync().join();
                         buffered = true;
                         return true;
-                    } catch (ChannelClosedException closed) {
-                        if (closed.getCause() != null) throw closed;
-                        finished = true;
-                        return false;
+                    } catch (java.util.concurrent.CompletionException error) {
+                        Throwable cause = OresFuture.unwrap(error);
+                        if (cause instanceof ChannelClosedException closed
+                                && closed.getCause() == null) {
+                            finished = true;
+                            return false;
+                        }
+                        throw error;
                     }
                 }
 
@@ -318,6 +322,18 @@ public final class ChannelRuntime {
                         "select requires at least one case");
             }
             this.cases = List.copyOf(cases);
+            if (!StdChannels.isBridgeCurrent()) {
+                for (SelectCase selected : this.cases) {
+                    if (selected instanceof ReadCase<?> reader
+                            && reader.channel() instanceof StdChannels.OutputChannel) {
+                        throw new IllegalArgumentException("stdio output is a write-only channel");
+                    }
+                    if (selected instanceof WriteCase<?> writer
+                            && writer.channel() instanceof StdChannels.InputChannel) {
+                        throw new IllegalArgumentException("stdio input is a read-only channel");
+                    }
+                }
+            }
             this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
