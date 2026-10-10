@@ -900,6 +900,11 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                if (consuming && valueKind != ValueKind.COPY
+                        && rootedAtBorrowedView(member.receiver(), scope)) {
+                    throw error("cannot move a field out of a borrowed structural/lexical view; "
+                            + "copy an immutable value or transfer ownership from an owned aggregate");
+                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -913,6 +918,12 @@ public final class OwnershipChecker {
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
+                    }
+                    if (consuming && fieldKind != ValueKind.COPY
+                            && rootedAtBorrowedView(member.receiver(), scope)) {
+                        throw error("cannot move field '" + member.member()
+                                + "' from a borrowed structural/lexical view; "
+                                + "owned results require an owned source");
                     }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
@@ -931,6 +942,9 @@ public final class OwnershipChecker {
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
+            }
+            if (consuming && elementKind != ValueKind.COPY && rootedAtBorrowedView(indexed.receiver(), scope)) {
+                throw error("cannot move an indexed value out of a borrowed structural/lexical view");
             }
             return new ValueInfo(elementType, elementKind, null);
         }
@@ -1610,6 +1624,16 @@ public final class OwnershipChecker {
             return projectedCallLoanRoot(indexed.receiver());
         }
         return null;
+    }
+
+    /** A borrowed aggregate grants access to its members, not ownership of them. */
+    private boolean rootedAtBorrowedView(Ast.Expr expression, Scope scope) {
+        Ast.Expr root = projectedCallLoanRoot(expression);
+        if (!(root instanceof Ast.NameExpr name)) return false;
+        VarState state = scope.lookup(name.name());
+        return state != null
+                && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                    || state.type.isBorrow());
     }
 
     private void checkArgument(
