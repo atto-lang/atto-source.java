@@ -11,6 +11,7 @@ import java.util.Enumeration;
 import java.net.URL;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Loads Oreslang-owned core-library source from packaged resources.
@@ -26,11 +27,18 @@ public final class CoreLibrarySources {
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
+    // Closed registry: a classpath resource must never create an unapproved
+    // stdlib module. Update deliberately when adding a new native .ores module.
+    private static final Set<String> PACKAGED_SOURCES = Set.of("core.ores", "testing.ores");
 
     private CoreLibrarySources() { }
 
     public static boolean isCoreImport(String importPath) {
         return importPath != null && importPath.startsWith(IMPORT_PREFIX);
+    }
+
+    public static Set<String> packagedSourcePaths() {
+        return PACKAGED_SOURCES;
     }
 
     public static String unitId(String importPath) {
@@ -39,6 +47,10 @@ public final class CoreLibrarySources {
 
     public static String source(String importPath) throws IOException {
         String relative = canonicalRelativePath(importPath);
+        if (!PACKAGED_SOURCES.contains(relative)) {
+            throw new IllegalArgumentException(
+                    "unknown Oreslang core-library module: " + importPath);
+        }
         String resource = RESOURCE_PREFIX + relative;
         ClassLoader loader = CoreLibrarySources.class.getClassLoader();
         // Packaged stdlib is compiler authority, not ambient classpath policy.

@@ -109,3 +109,12 @@ application .ores
   legacy IncludeResources regex.
 - Host-side native library tests exercise the loader. Complete GraalVM/Native
   Image integration is a separate executable validation gate.
+
+## Compiler-owned module registry
+
+The loader keeps an explicit closed list of approved packaged `.ores` modules.
+A resource added to an application classpath under `dev/oreslang/std/`
+cannot invent a new `std/*` import. When adding a standard-library module,
+update the loader registry together with the native Oreslang source.
+The JUnit source/registry equality test rejects both forgotten registration
+and stale registry entries.

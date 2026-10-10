@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -73,6 +75,11 @@ final class NativeCoreLibraryTest {
                     .sorted()
                     .toList();
             assertFalse(modules.isEmpty(), "native-first stdlib must contain Oreslang modules");
+            Set<String> actual = modules.stream()
+                    .map(path -> root.relativize(path).toString().replace('\\\\', '/'))
+                    .collect(Collectors.toSet());
+            assertEquals(actual, CoreLibrarySources.packagedSourcePaths(),
+                    "every packaged .ores file must be explicitly registered and vice versa");
 
             for (Path module : modules) {
                 String source = Files.readString(module);
@@ -226,5 +233,6 @@ final class NativeCoreLibraryTest {
         assertEquals(CoreLibrarySources.source("std/core"),
                 CoreLibrarySources.source("std/core.ores"));
         assertTrue(CoreLibrarySources.source("std/testing").contains("define module testing"));
+        assertFalse(CoreLibrarySources.packagedSourcePaths().contains("phantom.ores"));
     }
 }
