@@ -1490,6 +1490,10 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
+            throw error(peek(), "exception control statement '" + peek().lexeme()
+                    + "' requires typed exception effects and unwinding; not implemented yet");
+        }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
