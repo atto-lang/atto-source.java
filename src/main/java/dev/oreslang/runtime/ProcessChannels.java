@@ -20,6 +20,10 @@ public final class ProcessChannels implements AutoCloseable {
     public enum Direction { READ, WRITE }
 
     public static final class ConsoleChannel<T> extends ChannelRuntime.Channel<T> {
+        private static final int MAX_CHUNK_UTF8_BYTES = 65_536;
+        private static final int MAX_PENDING_WRITES = 8192;
+        private final java.util.concurrent.atomic.AtomicInteger pendingWrites =
+                new java.util.concurrent.atomic.AtomicInteger();
         private final OresContext owner;
         private final IsolatePolicy.Capability capability;
         private final Direction direction;
@@ -61,18 +65,45 @@ public final class ProcessChannels implements AutoCloseable {
             return super.readAsync();
         }
 
-        @Override public boolean tryWrite(T value) {
+        /** Limit both queued and suspended record sizes at the console boundary. */
+        public void checkGuestPayload(Object value) {
             checkGuestWrite();
+            if (!(value instanceof String chunk))
+                throw new IllegalArgumentException(name + " accepts only String chunks");
+            validateChunk(chunk);
+        }
+
+        private static void validateChunk(String chunk) {
+            if (chunk.length() > MAX_CHUNK_UTF8_BYTES
+                    || chunk.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_CHUNK_UTF8_BYTES)
+                throw new IllegalArgumentException("console channel chunk exceeds 65536 UTF-8 bytes");
+        }
+
+        @Override public boolean tryWrite(T value) {
+            checkGuestPayload(value);
             return super.tryWrite(value);
         }
 
         @Override public OresFuture<Void> writeAsync(T value) {
-            checkGuestWrite();
-            return super.writeAsync(value);
+            checkGuestPayload(value);
+            int active = pendingWrites.incrementAndGet();
+            if (active > MAX_PENDING_WRITES) {
+                pendingWrites.decrementAndGet();
+                throw new IllegalStateException(name + " pending writes quota exceeded");
+            }
+            try {
+                OresFuture<Void> future = super.writeAsync(value);
+                future.whenCompleteRuntime((ignored, error) -> pendingWrites.decrementAndGet());
+                return future;
+            } catch (RuntimeException | Error failure) {
+                pendingWrites.decrementAndGet();
+                throw failure;
+            }
         }
 
         /** VM-only console record submission; does not grant guest write access. */
         private boolean writeOwned(T value) {
+            if (value instanceof String chunk) validateChunk(chunk);
             return super.tryWrite(value);
         }
 
@@ -198,9 +229,12 @@ public final class ProcessChannels implements AutoCloseable {
                 CompletableFuture<Void> barrier = barriers == null ? null : barriers.remove(chunk);
                 if (barrier != null) {
                     target.flush();
-                    if (target.checkError())
-                        barrier.completeExceptionally(new IllegalStateException("stdout flush failed"));
-                    else barrier.complete(null);
+                    if (target.checkError()) {
+                        IllegalStateException failure = new IllegalStateException("console output flush failed");
+                        barrier.completeExceptionally(failure);
+                        throw failure;
+                    }
+                    barrier.complete(null);
                 } else {
                     target.print(chunk);
                     if (target.checkError()) throw new IllegalStateException("console output failed");
