@@ -154,7 +154,7 @@ final class PipeOperatorLanguageTest {
                 """);
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(program));
-        assertTrue(error.getMessage().contains("use '|>' for function application"),
+        assertTrue(error.getMessage().contains("pipe stage operand must be a typed actor stage/graph"),
                 error::getMessage);
     }
 
