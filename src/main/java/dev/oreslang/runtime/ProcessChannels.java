@@ -268,12 +268,12 @@ public final class ProcessChannels implements AutoCloseable {
                 if (line.isEmpty()) return null;
                 break;
             }
-            if (value == '\\n') break;
+            if (value == '\n') break;
             if (line.length() >= 65_536)
                 throw new java.io.IOException("stdin line exceeds 65536 characters");
             line.append((char) value);
         }
-        if (!line.isEmpty() && line.charAt(line.length() - 1) == '\\r')
+        if (!line.isEmpty() && line.charAt(line.length() - 1) == '\r')
             line.setLength(line.length() - 1);
         String chunk = line.toString();
         if (chunk.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 65_536)
