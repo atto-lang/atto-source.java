@@ -715,7 +715,13 @@ public final class ChannelRuntime {
 
         @Override
         public void onSubscribe(Flow.Subscription next) {
-            Objects.requireNonNull(next, "subscription");
+            // Malformed foreign publishers may deliver this asynchronously,
+            // outside the subscribe() call's exception boundary. Throwing here
+            // would strand the selection if no other arm can become ready.
+            if (next == null) {
+                onError(new NullPointerException("publisher supplied null subscription"));
+                return;
+            }
             if (!subscription.compareAndSet(null, next)) {
                 // A Publisher that sends onSubscribe twice violates Flow's
                 // contract. If it repeats the exact same Subscription object,
