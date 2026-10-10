@@ -38,6 +38,9 @@ import java.util.Set;
 public final class LinkedProgramRunner {
     private LinkedProgramRunner() { }
 
+    /** Host-owned exit status: embedding callers must never be forcibly terminated. */
+    public record RunResult(IncrementalCompiler.BuildResult build, int exitStatus) { }
+
     /** Parses/type-checks the reachable Ores graph and javac-checks mixed Java source. */
     public static IncrementalCompiler.BuildResult validate(Path entryFile) throws IOException {
         return validate(entryFile, System.getenv());
@@ -144,6 +147,31 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatus(entryFile, policy, permissions, permissionCheckMode,
+                executionProfile, allowedHostClasses, environment, out, err).build();
+    }
+
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            ExecutionProfile profile,
+            OutputStream out,
+            OutputStream err) throws IOException {
+        return runWithExitStatus(entryFile, policy,
+                RuntimePermissions.fromCapabilities(policy.capabilities()),
+                PermissionCheckMode.COMPILE, profile, Set.of(), System.getenv(), out, err);
+    }
+
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -166,6 +194,7 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
+        int exitStatus = 0;
         String entryId = unitId(entry);
         MixedSourceUnit entryUnit = units.get(entryId);
         if (entryUnit == null) throw new IllegalStateException("entry source unit was not collected: " + entryId);
@@ -233,7 +262,7 @@ public final class LinkedProgramRunner {
                         } else {
                             Value entryPoint = parsedUnits.get(entryId);
                             if (entryPoint == null) throw new IllegalStateException("entry unit was not linked: " + entryId);
-                            entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
+                            exitStatus = requireExitStatus(entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND));
                         }
                     }
                 }
@@ -241,7 +270,19 @@ public final class LinkedProgramRunner {
                 currentThread.setContextClassLoader(previousLoader);
             }
         }
-        return build;
+        return new RunResult(build, exitStatus);
+    }
+
+    private static int requireExitStatus(Value value) {
+        if (value == null || value.isNull()) return 0;
+        if (!value.fitsInInt()) {
+            throw new IllegalArgumentException("Oreslang main() exit status must be an int");
+        }
+        int code = value.asInt();
+        if (code < 0 || code > 255) {
+            throw new IllegalArgumentException("Oreslang process exit status must be in 0..255: " + code);
+        }
+        return code;
     }
 
     /**

@@ -101,7 +101,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
@@ -1696,6 +1696,7 @@ public final class TypeChecker {
                 return local.type();
             }
             if (name.name().equals("stdio")
+                    || name.name().equals("std")
                     || name.name().equals("process")
                     || name.name().equals("actor")
                     || name.name().equals("fs")
@@ -2744,6 +2745,19 @@ public final class TypeChecker {
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
+            }
+            if (member.receiver() instanceof Ast.NameExpr stdName && stdName.name().equals("std")
+                    && env.lookup("std") == null && member.member().equals("process")) {
+                return new Named("process", List.of());
+            }
+            if (member.member().equals("exit")
+                    && ((member.receiver() instanceof Ast.NameExpr processName
+                             && processName.name().equals("process") && env.lookup("process") == null)
+                        || (member.receiver() instanceof Ast.MemberExpr namespace
+                             && namespace.member().equals("process")
+                             && namespace.receiver() instanceof Ast.NameExpr root
+                             && root.name().equals("std") && env.lookup("std") == null))) {
+                return new Function(List.of(Primitive.INT), Primitive.VOID);
             }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
