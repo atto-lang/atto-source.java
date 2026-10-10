@@ -65,4 +65,43 @@ final class LinkedProgramStdinTest {
         assertFalse(suppliedStdin.wasClosed,
                 "Oreslang Context.close must never close embedding caller's stdin");
     }
+
+    @Test
+    @Timeout(30)
+    void embedderWithoutInputAuthorityNeverInheritsSystemIn() throws Exception {
+        Path source = workspace.resolve("no-authority.ores");
+        Files.writeString(source, """
+                pub routine main(): void {
+                  for const line of process.stdin {
+                    writech process.stdout, "leaked:" + line + "\\n";
+                  }
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        IsolatePolicy policy = IsolatePolicy.developer();
+        java.io.InputStream previous = System.in;
+        try {
+            // A hostile ambient JVM stream must not implicitly enter the
+            // isolated Oreslang context. CLI passthrough requires opt-in.
+            System.setIn(new ByteArrayInputStream(
+                    "do-not-leak\\n".getBytes(StandardCharsets.UTF_8)));
+            LinkedProgramRunner.RunResult result = LinkedProgramRunner.runWithExitStatus(
+                    source,
+                    policy,
+                    RuntimePermissions.fromCapabilities(policy.capabilities()),
+                    PermissionCheckMode.COMPILE,
+                    ExecutionProfile.parse("jit", "linux"),
+                    Set.of(),
+                    Map.of(),
+                    out,
+                    err);
+            assertEquals(0, result.exitStatus());
+            assertEquals("", out.toString(StandardCharsets.UTF_8));
+        } finally {
+            System.setIn(previous);
+        }
+    }
+
 }
