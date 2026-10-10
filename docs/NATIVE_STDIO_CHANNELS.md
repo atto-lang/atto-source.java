@@ -1,5 +1,30 @@
 # Native Oreslang stdin/stdout/stderr channels — implementation review
 
+## Global descriptor aliases and source-task generator pulls
+
+The input aliases `process.stdin`, `stdio.stdin`, `stdio.in`, and
+`stdin.in` refer to **one exact context-owned channel object**. Similarly
+`process.stdout === stdio.out` and
+`process.stderr === stdio.err === stdio.stderr`.
+
+The global `Observable` and `Stdio` names, plus the native
+`ReadableStream<T>` and `WritableTee` types, are supplied by
+packaged Oreslang source without requiring import declarations.
+`stdin.in.stream()` creates a pull-based native `ReadableStream<String>`;
+`stdio.out.tee(stdio.err)` creates an explicit composed writer, **not**
+a tap on all future writes to the global descriptor.
+
+Ambient stdio channels are **process-owned**. They cannot be closed by
+guest code through `.close()`, including aliases typed as `Channel<T>`.
+A normal user-created channel retains ordinary close authority.
+
+The source-task interpreter drives synchronous `gen*` pulls through
+`nextStepAsync()` on an Oreslang Future. A root/actor execution turn
+resumes when the value is ready rather than waiting in `Iterator.hasNext()`.
+The compatibility generator producer still runs on a runtime-owned virtual
+thread, not a native state-machine generator frame. Its channel iterator
+uses interruptible reads that cancel registrations when interrupted.
+
 ## Source-facing contract
 
 - `stdio.in` and `stdio.stdin` return the **same** context-owned, read-only
@@ -16,8 +41,7 @@
 - `pub gen* read_stdin` can iterate stdin and yield without `async`.
 
 ```oreslang
-import module Stdio from "std/stdio";
-import module Observable from "std/observable";
+// No imports: Stdio and Observable are native global/prelude namespaces.
 
 pub gen* read_stdin(): Iterator<String> {
   for const line of stdio.stdin {
@@ -61,8 +85,7 @@ than inventing a working `...args` function declaration.
 
 Older `stdio.println` and `stdio.stdout.write` APIs remain in the
 compatibility facade; they have not been silently changed to the new
-asynchronous channel semantics. Import `Stdio` to select the new native
-Oreslang library.
+asynchronous channel semantics. Use the native global `Stdio` namespace directly; no import is required.
 
 ## Input backpressure and errors
 
