@@ -283,6 +283,7 @@ argument_list   = expression { "," expression } ;
 primary         = literal
                 | callable_name
                 | "self"
+                | actor_spawn_expr
                 | "new" type_ref "(" [ argument_list ] ")"
                 | lambda
                 | tuple_literal
@@ -291,6 +292,13 @@ primary         = literal
                 | inferred_struct_literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
+
+(* Immediate actor construction; all three forms lower to one
+   RuntimeCallExpr("spawn", [NewExpr(...)]). Actor constructor arguments are
+   parsed but rejected until actor-owned constructor lowering is implemented.
+   Bare 'new Actor()' does not create an ActorSpec yet. *)
+actor_spawn_expr= "spawn" [ "new" ] type_ref "(" [ argument_list ] ")"
+                | "spawn" "(" "new" type_ref "(" [ argument_list ] ")" ")" ;
 
 lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
