@@ -3975,8 +3975,15 @@ public final class OresEvalRootNode extends RootNode {
                                                             values,
                                                             env);
                                             boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
+                                                    invocationDeclaresAsync(invocation);
+                                            // read_line is a sequential stdin
+                                            // effect returning Option<String>,
+                                            // not a Future-valued API. Like
+                                            // readch, it suspends this guest turn.
+                                            if (receiver instanceof dev.oreslang.runtime.StdChannels.InputChannel
+                                                    && member.member().equals("read_line")) {
+                                                declaredFuture = false;
+                                            }
                                             completeSourceInvocation(
                                                     t2,
                                                     invocation,
