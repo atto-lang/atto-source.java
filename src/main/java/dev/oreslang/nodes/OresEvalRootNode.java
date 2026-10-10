@@ -17,6 +17,8 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.OresPanic;
+import dev.oreslang.runtime.OresRaised;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -1989,6 +1991,7 @@ public final class OresEvalRootNode extends RootNode {
                                 if (flow.kind() == SourceFlowKind.THROW
                                         && flow.failure() instanceof RuntimeException
                                         && !(flow.failure() instanceof OresPanic)
+                                        && !(flow.failure() instanceof OresRaised)
                                         && !(flow.failure() instanceof java.util.concurrent.CancellationException)) {
                                     // Match synchronous try/catch: panic, cancellation and fatal
                                     // errors bypass catch; the finally arm still runs.
@@ -4460,8 +4463,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresPanic panic) {
-                throw panic;
+            } catch (OresPanic | OresRaised escaped) {
+                throw escaped;
             } catch (java.util.concurrent.CancellationException cancelled) {
                 throw cancelled;
             } catch (RuntimeException ordinaryFailure) {
@@ -4814,7 +4817,8 @@ public final class OresEvalRootNode extends RootNode {
                 try { executeBlock(tried.body(), env, true); }
                 catch (TailCallSignal signal) { throw signal; }
                 catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresPanic panic) { throw panic; }
+                catch (OresPanic | OresRaised escaped) { throw escaped; }
+                catch (java.util.concurrent.CancellationException cancelled) { throw cancelled; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
@@ -8825,9 +8829,6 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
-    }
-    private static final class OresPanic extends RuntimeException {
-        private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
