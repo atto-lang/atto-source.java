@@ -76,7 +76,7 @@ public final class ChannelRuntime {
      * <p>Null is deliberately rejected because Oreslang has no standalone null
      * value. Use Option<T> or an explicit signal/unit value instead.</p>
      */
-    public static final class Channel<T> implements AutoCloseable {
+    public static class Channel<T> implements AutoCloseable, Iterable<T> {
         private final int capacity;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
@@ -128,6 +128,48 @@ public final class ChannelRuntime {
             @SuppressWarnings("unchecked")
             T value = (T) result.get().value();
             return Optional.of(value);
+        }
+
+        /**
+         * Pull-based native-language iteration. Only a runtime virtual carrier
+         * may park in hasNext; scheduler-owned guest turns use suspendable
+         * channel-iteration lowering instead. A clean close ends iteration;
+         * an I/O failure is never silently converted to EOF.
+         */
+        @Override
+        public java.util.Iterator<T> iterator() {
+            return new java.util.Iterator<>() {
+                private boolean finished;
+                private boolean buffered;
+                private T value;
+
+                @Override
+                public boolean hasNext() {
+                    if (finished) return false;
+                    if (buffered) return true;
+                    if (ActorRuntime.inActorExecution()
+                            || OresScheduler.current() != null) {
+                        throw new IllegalStateException(
+                                "channel iterator cannot park an actor/root carrier; use suspendable for-of");
+                    }
+                    try {
+                        value = readAsync().join();
+                        buffered = true;
+                        return true;
+                    } catch (ChannelClosedException closed) {
+                        if (closed.getCause() != null) throw closed;
+                        finished = true;
+                        return false;
+                    }
+                }
+
+                @Override
+                public T next() {
+                    if (!hasNext()) throw new java.util.NoSuchElementException();
+                    buffered = false;
+                    return value;
+                }
+            };
         }
 
         /** Runtime-only drain of committed mailbox values, including after close. */
