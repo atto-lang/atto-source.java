@@ -99,6 +99,49 @@ public final class TypeChecker {
         return new TypeCheckResult(program, checker.warnings);
     }
 
+    /**
+     * Imported module contracts are admitted only after the linked source
+     * graph has independently proven the exact public export and resolution.
+     * The borrowed declarations are registered for semantic type-checking
+     * without re-executing or copying the foreign module into this code unit.
+     */
+    public record ImportedModuleContract(String declaringModule, Ast.InterfaceDecl declaration) { }
+
+    public static Ast.Program checkTypesWithImportedModuleContracts(
+            Ast.Program program,
+            Map<String, ImportedModuleContract> linkedContracts) {
+        if (linkedContracts == null) {
+            throw new IllegalArgumentException("linked module contracts cannot be null");
+        }
+        program = AnnotationExpander.expand(program);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+        for (Map.Entry<String, ImportedModuleContract> entry : linkedContracts.entrySet()) {
+            String name = entry.getKey();
+            ImportedModuleContract imported = entry.getValue();
+            if (name == null || imported == null || imported.declaration() == null
+                    || imported.declaringModule() == null
+                    || !name.equals(imported.declaration().name())
+                    || !imported.declaration().moduleContract()
+                    || imported.declaration().visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("invalid linked public module contract: " + name);
+            }
+            boolean declaredImport = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.CONTRACT && !use.wildcard()
+                            && use.names().contains(name));
+            if (!declaredImport || checker.interfaces.containsKey(name)
+                    || checker.ambiguousInterfaces.contains(name)) {
+                throw new IllegalArgumentException(
+                        "linked module contract was not uniquely imported: " + name);
+            }
+            checker.interfaces.put(name, imported.declaration());
+            checker.interfaceOwners.put(imported.declaration(), imported.declaringModule());
+        }
+        checker.validate(program);
+        return program;
+    }
+
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(

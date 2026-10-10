@@ -3,6 +3,8 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -104,7 +106,23 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            final Ast.Program checked;
+            try {
+                Map<String, TypeChecker.ImportedModuleContract> linkedContracts =
+                        linkedModuleContracts(id, parsed.get(id), parsed, normalizedImportResolutions);
+                if (linkedContracts.isEmpty()) {
+                    checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+                } else {
+                    // Preserve the per-unit AST and ownership proof. Only explicit,
+                    // public imported contract declarations enter the type environment.
+                    checked = TypeChecker.checkTypesWithImportedModuleContracts(
+                            Parser.parse(normalized.get(id)), linkedContracts);
+                    OwnershipChecker.check(checked);
+                }
+            } catch (IllegalArgumentException badSource) {
+                throw new IllegalArgumentException(
+                        "Oreslang source unit '" + id + "': " + badSource.getMessage(), badSource);
+            }
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -125,6 +143,44 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    private static Map<String, TypeChecker.ImportedModuleContract> linkedModuleContracts(
+            String unitId,
+            Ast.Program importer,
+            Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, TypeChecker.ImportedModuleContract> contracts = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : importer.imports()) {
+            if (imported.kind() != Ast.ImportKind.CONTRACT || imported.wildcard()) continue;
+            String sourceId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, parsed.keySet(), importResolutions);
+            if (sourceId == null) continue; // package resolver owns non-relative imports
+            Ast.Program source = parsed.get(sourceId);
+            for (String name : imported.names()) {
+                TypeChecker.ImportedModuleContract resolved = null;
+                for (Ast.ModuleDecl owner : source.modules()) {
+                    for (Ast.Decl declaration : owner.declarations()) {
+                        if (declaration instanceof Ast.InterfaceDecl contract
+                                && contract.moduleContract()
+                                && contract.visibility() == Ast.Visibility.PUBLIC
+                                && contract.name().equals(name)) {
+                            if (resolved != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous imported module contract '" + name + "'");
+                            }
+                            resolved = new TypeChecker.ImportedModuleContract(owner.name(), contract);
+                        }
+                    }
+                }
+                if (resolved == null || contracts.putIfAbsent(name, resolved) != null) {
+                    throw new IllegalArgumentException(
+                            "missing or duplicate public linked contract '" + name
+                                    + "' in source unit '" + unitId + "'");
+                }
+            }
+        }
+        return Map.copyOf(contracts);
     }
 
     public synchronized void clear() {
