@@ -86,6 +86,26 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void cachesDescriptorsUntilMutationWithoutReusingPendingOperations() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("reader", ChannelRuntime.read(channel));
+        var before = plan.selectSetSnapshot();
+        assertSame(before, plan.selectSetSnapshot(), "repeated selection should reuse descriptor snapshot");
+
+        var pending = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        plan.put("reader", ChannelRuntime.read(channel));
+        var after = plan.selectSetSnapshot();
+        assertNotSame(before, after, "mutation must publish a new immutable descriptor");
+        assertSame(after, plan.selectSetSnapshot());
+        assertEquals(1, before.cases().size());
+
+        channel.tryWrite(77);
+        assertEquals("reader", pending.join().key());
+        assertEquals(77, pending.join().selection().value());
+    }
+
+    @Test
     void rejectsSecondDefaultAtomicallyAndKeepsPreviousSnapshot() {
         var channel = new ChannelRuntime.Channel<String>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
