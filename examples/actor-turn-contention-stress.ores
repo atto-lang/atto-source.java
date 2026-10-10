@@ -1,0 +1,62 @@
+// Host-carrier stress proof: two independent Oreslang actors each receive 128
+// asynchronous messages while the diagnostic single-writer witness is enabled.
+// This does not use a Java-side actor simulation.
+define actor SharedCounter as
+  let int count;
+
+  on_start(): void {
+    self.count = 0;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    self.count = self.count + 1;
+    if self.count == 128; do
+      self.send("shared-done");
+      self.end();
+    fi
+    return;
+  }
+end
+
+define isoactor IsolatedCounter as
+  let int count;
+
+  on_start(): void {
+    self.count = 0;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    self.count = self.count + 1;
+    if self.count == 128; do
+      self.send("isolated-done");
+      self.end();
+    fi
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val shared = spawn SharedCounter();
+  val isolated = spawn IsolatedCounter();
+
+  await shared.ready;
+  await isolated.ready;
+
+  for let i = 0; i < 128; i++ do
+    shared.send("tick");
+    isolated.send("tick");
+  done
+
+  val sharedOutput = (await shared.outputs.next()).value.unwrap();
+  val isolatedOutput = (await isolated.outputs.next()).value.unwrap();
+
+  stdio.stdout.write(sharedOutput.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(isolatedOutput.value);
+
+  await shared.done;
+  await isolated.done;
+  return;
+}
