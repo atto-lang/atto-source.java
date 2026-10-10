@@ -28,7 +28,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private final List<Barrier> barriers = new ArrayList<>();
     private final Semaphore wake = new Semaphore(0);
     private final PrintWriter writer;
-    private final Thread drain;
+    private Thread drain;
     private long submitted;
     private long completed;
     private boolean accepting = true;
@@ -36,8 +36,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
 
     public AsyncStdioLogs(PrintWriter writer) {
         this.writer = java.util.Objects.requireNonNull(writer, "writer");
-        this.drain = Thread.ofPlatform().name("ores-stdio-async-drain")
-                .daemon(true).start(this::runDrain);
+        // Lazily start only for contexts that actually emit async logs.
     }
 
     /**
@@ -59,6 +58,16 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 throw new IllegalStateException("async stdio queue is full (1024 records)");
             }
             submitted = next;
+            if (drain == null) {
+                try {
+                    drain = Thread.ofPlatform().name("ores-stdio-async-drain")
+                            .daemon(true).unstarted(this::runDrain);
+                    drain.start();
+                } catch (RuntimeException | Error startFailure) {
+                    failPending(startFailure);
+                    throw new IllegalStateException("async stdio worker failed to start", startFailure);
+                }
+            }
             wake.release();
             return completion;
         }
@@ -146,14 +155,20 @@ public final class AsyncStdioLogs implements AutoCloseable {
      * flushed by software.
      */
     @Override public void close() {
-        synchronized (lock) { accepting = false; wake.release(); }
+        Thread worker;
+        synchronized (lock) {
+            accepting = false;
+            worker = drain;
+            if (worker != null) wake.release();
+        }
+        if (worker == null) return;
         try {
-            drain.join(CLOSE_TIMEOUT_MILLIS);
+            worker.join(CLOSE_TIMEOUT_MILLIS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("interrupted while flushing async stdio", interrupted);
         }
-        if (drain.isAlive()) {
+        if (worker.isAlive()) {
             throw new IllegalStateException("async stdio drain exceeded 5000ms shutdown deadline; logs may be incomplete");
         }
         synchronized (lock) {
