@@ -851,6 +851,10 @@ public final class TypeChecker {
             "stop", "cancel", "end", "endWithCleanup",
             "get_ready_signal", "get_done_signal");
 
+    /** Compiler admission metadata must not be exposed as guest callable actor members. */
+    private static final Set<String> RESERVED_ACTOR_ADMISSION_SETTINGS = Set.of(
+            "requestConcurrency", "messageConcurrency");
+
     private boolean inheritsBuiltinSerialActor(
             Ast.ClassDecl klass, Set<Ast.ClassDecl> visiting) {
         if (!visiting.add(klass)) return false;
@@ -1049,6 +1053,11 @@ public final class TypeChecker {
                 }
             }
             for (String name : effectiveInstanceMethodNames) {
+                if (RESERVED_ACTOR_ADMISSION_SETTINGS.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot declare admission setting '"
+                            + name + "' as a local or inherited method");
+                }
                 if (FINAL_BUILTIN_ACTOR_METHODS.contains(name)) {
                     throw new IllegalArgumentException(
                             "actor '" + klass.name()
@@ -1057,6 +1066,11 @@ public final class TypeChecker {
                 }
             }
             for (Ast.MethodDecl method : klass.methods()) {
+                if (RESERVED_ACTOR_ADMISSION_SETTINGS.contains(method.name())) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot declare admission setting '"
+                            + method.name() + "' as a method");
+                }
                 if (method.isStatic() && FINAL_BUILTIN_ACTOR_METHODS.contains(method.name())) {
                     throw new IllegalArgumentException(
                             "actor '" + klass.name()
