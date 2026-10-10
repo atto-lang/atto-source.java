@@ -18,11 +18,16 @@ public final class CriticalGate {
     private Ticket owner;
 
     public final class Ticket implements AutoCloseable {
-        private final OresFuture<Void> admitted = new OresFuture<>();
+        // Cancellation of a pending admission retracts its queue slot. A granted
+        // admission is already settled and therefore cannot be cancelled.
+        private final OresFuture<Void> admitted = new OresFuture<>(this::close);
         private boolean requested;
         private boolean granted;
         private boolean closed;
         private Thread synchronousOwner;
+        // Only host/embedder synchronous callers may wait on a physical thread.
+        // Per-ticket signaling avoids waking every queued host thread.
+        private java.util.concurrent.CountDownLatch synchronousWaiter;
 
         private Ticket() { }
 
@@ -58,29 +63,40 @@ public final class CriticalGate {
                 }
             }
             OresFuture<Void> ready = enterAsync();
-            if (ready.isDone()) {
-                synchronized (CriticalGate.this) {
-                    synchronousOwner = Thread.currentThread();
-                }
-                return;
-            }
             if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
-                close();
-                throw new IllegalStateException(
-                        "contended synchronous critical call would block an actor/scheduler carrier; declare suspend critical and await it");
+                // Never park a scheduler/actor worker. The source compiler must
+                // lower contended calls to suspendable continuations instead.
+                synchronized (CriticalGate.this) {
+                    if (!granted || closed) {
+                        close();
+                        throw new IllegalStateException(
+                                "contended synchronous critical call would block an actor/scheduler carrier; declare suspend critical and await it");
+                    }
+                    synchronousOwner = Thread.currentThread();
+                    return;
+                }
+            }
+            java.util.concurrent.CountDownLatch signal = null;
+            synchronized (CriticalGate.this) {
+                if (!granted && !closed) {
+                    synchronousWaiter = new java.util.concurrent.CountDownLatch(1);
+                    signal = synchronousWaiter;
+                }
+            }
+            if (signal != null) {
+                try {
+                    signal.await();
+                } catch (InterruptedException interrupted) {
+                    close();
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "interrupted while waiting for critical section", interrupted);
+                }
             }
             synchronized (CriticalGate.this) {
-                while (!granted && !closed) {
-                    try {
-                        CriticalGate.this.wait();
-                    } catch (InterruptedException interrupted) {
-                        close();
-                        Thread.currentThread().interrupt();
-                        throw new IllegalStateException(
-                                "interrupted while waiting for critical section", interrupted);
-                    }
+                if (closed || !granted) {
+                    throw new CancellationException("critical ticket was cancelled");
                 }
-                if (closed && !granted) throw new CancellationException("critical ticket was cancelled");
                 synchronousOwner = Thread.currentThread();
             }
         }
@@ -100,10 +116,12 @@ public final class CriticalGate {
         @Override
         public void close() {
             Ticket wake = null;
+            java.util.concurrent.CountDownLatch cancelledWaiter = null;
             synchronized (CriticalGate.this) {
                 if (closed) return;
                 closed = true;
                 synchronousOwner = null;
+                cancelledWaiter = synchronousWaiter;
                 if (owner == this) {
                     owner = null;
                     while (!waiters.isEmpty()) {
@@ -117,12 +135,19 @@ public final class CriticalGate {
                 } else {
                     waiters.remove(this);
                 }
-                CriticalGate.this.notifyAll();
             }
+            if (cancelledWaiter != null) cancelledWaiter.countDown();
             if (!admitted.isDone()) {
                 admitted.failFromRuntime(new CancellationException("critical ticket released"));
             }
-            if (wake != null) wake.admitted.completeFromRuntime(null);
+            if (wake != null) {
+                wake.admitted.completeFromRuntime(null);
+                java.util.concurrent.CountDownLatch signal;
+                synchronized (CriticalGate.this) {
+                    signal = wake.synchronousWaiter;
+                }
+                if (signal != null) signal.countDown();
+            }
         }
     }
 
