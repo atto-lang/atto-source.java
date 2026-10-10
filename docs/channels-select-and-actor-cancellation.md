@@ -502,7 +502,13 @@ Mutating a keyed plan replaces its cached snapshot for future invocations
 without retargeting or cancelling already-armed operations.
 
 A selection that wins after its plan generation was replaced cannot
-rotate the fairness cursor of the new generation. A default arm also
+rotate the fairness cursor of the new generation. Every mutation publishes
+a separate atomic fairness cursor, preserving its previous position at the
+generation boundary. Winning selections update only the captured generation;
+they never acquire the mutable plan monitor while holding the global channel
+coordinator. Selection case order is sampled **inside** serialized admission,
+not ahead of the lock, so simultaneous ready cases rotate deterministically
+under contention. A default arm also
 does not consume FAIR rotation credit. Structural mutations are
 serialized and version overflow is rejected. These guarantees cover
 the Java reference runtime; LLVM native support remains fail-closed.
