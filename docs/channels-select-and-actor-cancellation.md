@@ -536,6 +536,16 @@ plan.removeCase(1);
 val int generation = plan.revision;
 ```
 
+SelectCase and SelectSet descriptors are non-`Copy`, even when a
+particular case only reads a channel: a generic `SelectCase` can contain a
+unique move-only write payload, so implicit copying would permit a descriptor
+to transport the same owned value twice. Source-level repeated `select from
+set` operations *borrow* the descriptor and are allowed; transferring the
+same descriptor by value to two independent plan owners is rejected. A
+`SelectPlan` is also move-only and actor-local. The channel handles inside
+these descriptors remain local, synchronizable channel capabilities and must
+not become actor-mail payloads.
+
 The source interpreter captures one `SelectSet` snapshot at each
 `select from plan` evaluation; the older `pending` selection stays armed
 against the previous generation. Calls can modify case membership safely
