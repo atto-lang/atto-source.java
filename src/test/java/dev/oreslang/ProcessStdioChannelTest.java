@@ -77,6 +77,54 @@ final class ProcessStdioChannelTest {
             """, "", new ByteArrayOutputStream(), new ByteArrayOutputStream()));
     }
 
+    @Test void directAndSelectOperationsCannotBypassConsoleDirection() {
+        for (String statement : new String[] {
+                "readch stdio.out;",
+                "try readch process.stderr;",
+                "nb readch stdio.out;",
+                "writech stdio.in, \\"bad\\";",
+                "try writech process.stdin, \\"bad\\";",
+                "nb writech stdio.in, \\"bad\\";",
+                "val c = SelectCase.read(process.stdout);",
+                "val c = SelectCase.write(process.stdin, \\"bad\\");"
+        }) {
+            String program = "pub async routine main(): void { " + statement + " return; }";
+            assertThrows(Exception.class, () -> run(program, "hello\\n",
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream()), statement);
+        }
+    }
+
+    @Test void flushBarrierAlsoIncludesStderr() throws Exception {
+        var output = new ByteArrayOutputStream();
+        var error = new ByteArrayOutputStream();
+        run("""
+            pub async routine main(): void {
+                await nb writech process.stderr, "before";
+                await stdio.flush_async_logs();
+                return;
+            }
+            """, "", output, error);
+        assertEquals("before", error.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void oversizedStdoutChunkIsRejected() {
+        String huge = "X".repeat(65_537);
+        String program = "pub async routine main(): void { writech stdio.out, \\""
+                + huge + "\\"; return; }";
+        assertThrows(Exception.class, () -> run(program, "",
+                new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+    }
+
+    @Test void oversizedStdinLineIsAnErrorNotOrdinaryEof() {
+        assertThrows(Exception.class, () -> run("""
+            pub routine main(): void {
+                val input = readch stdio.in;
+                return;
+            }
+            """, "A".repeat(65_537) + "\\n",
+                new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+    }
+
     @Test void aliasesTypeCheckAsChannelsAndExposeReadableStream() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
             pub async routine main(): void {
