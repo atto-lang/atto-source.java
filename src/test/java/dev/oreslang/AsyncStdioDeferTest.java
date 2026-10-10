@@ -63,7 +63,7 @@ final class AsyncStdioDeferTest {
                   x = "changed";
                 }
                 """);
-        assertEquals("registered\\n", result);
+        assertEquals("registered\n", result);
     }
 
     @Test
