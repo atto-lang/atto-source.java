@@ -219,6 +219,11 @@ public final class Ast {
                     trapped, actorKind, genericParameters, parameters, returnType, annotations, body);
         }
 
+        /** Compile-time effect: file/code-unit critical lane, not JVM thread affinity. */
+        public boolean critical() {
+            return annotations.stream().anyMatch(a -> a.name().equals("$critical"));
+        }
+
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -427,6 +432,11 @@ public final class Ast {
                           List<Annotation> annotations, List<Stmt> body) {
             this(name, visibility, isStatic, isAbstract, async, false, structural,
                     explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
+        }
+
+        /** Critical instance method shares a gate with all critical methods on self. */
+        public boolean critical() {
+            return annotations.stream().anyMatch(a -> a.name().equals("$critical"));
         }
 
         public MethodDecl {
