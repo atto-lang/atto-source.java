@@ -2064,8 +2064,14 @@ public final class ActorRuntime implements AutoCloseable {
             // A closed group's worker map is intentionally empty. Never
             // return an immediately successful empty snapshot while teardown
             // of its former workers is still in progress.
-            if (groupClosed.get()) return closedWorkersDone;
-            List<ActorRef<?>> snapshot = List.copyOf(workers.values());
+            final List<ActorRef<?>> snapshot;
+            synchronized (authorityLock) {
+                // Atomic with closeFromRuntime(): never report a successful
+                // empty snapshot while a concurrent close detached workers
+                // that have not finished finalizing.
+                if (groupClosed.get()) return closedWorkersDone;
+                snapshot = List.copyOf(workers.values());
+            }
             OresFuture<Void> result = new OresFuture<>(() -> false, () -> { });
             if (snapshot.isEmpty()) {
                 result.completeFromRuntime(null);
