@@ -2,6 +2,8 @@
 
 **Status (2026-10-07): actor declarations, source `spawn Actor()` execution, `ActorRef<Actor>`, actor-local `on_start()`, typed mailbox dispatch, bounded parent-facing outputs, `self.send`, `self.end`/`self.endWithCleanup`, ready/done lifecycle barriers, actor-only lexical dependency boundaries, and same-OresVM immutable shared-code images are implemented and regression-tested. Stream merge/`for await` integration remains a separate acceptance gate.**
 
+**Proposed follow-up, NOT implemented:** [ActorSpec construction, actor-side constructors, and pre-spawn per-instance concurrency](ACTOR_SPAWN_SPEC_DESIGN.md) proposes `val w = new Worker(); w.set_concurrency(6); val running = spawn w;`. Current parser continues to require `spawn Worker()`; `new Worker()` as an actor spec, actor `constructor(...)`, and `spawn w` are not yet supported. The actor-wide single-writer execution lease remains fixed regardless of configured in-flight handler limits.
+
 The existing `ActorRuntime` already has `ActorRef.send/stop/cancel/forceCancel`,
 bounded channel-backed mailboxes, actor identity, child supervision, and
 `rt cooperate` continuation support. The Java `ActorMail<Out>` record is
