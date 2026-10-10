@@ -167,6 +167,106 @@ class NativeHttpTest {
         }
     }
 
+    @Test void oneLongLivedActorStreamsDistinctResponsesAndReleasesEachAdmission() throws Exception {
+        String output = run("""
+            define actor Reused as
+              receive(ActorMail<String> mail): void {
+                if mail.value == "stop"; do
+                  self.end();
+                  return;
+                fi
+                val exchange = http.claim(mail.value);
+                await exchange.start(200, "text/plain");
+                await exchange.write(exchange.target);
+                await exchange.write("::");
+                await exchange.write(exchange.request_id);
+                await exchange.finish();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val actor = spawn Reused();
+              await actor.ready;
+
+              val first = await server.accept();
+              val firstDone = first.completion;
+              actor.send(first.move_to(actor));
+              stdio.println(await firstDone);
+              stdio.println(server.active);
+
+              val second = await server.accept();
+              val secondDone = second.completion;
+              actor.send(second.move_to(actor));
+              stdio.println(await secondDone);
+              stdio.println(server.active);
+
+              actor.send("stop");
+              await actor.done;
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+            HttpResponse<String> first = request(port, "GET", "/first", "");
+            HttpResponse<String> second = request(port, "GET", "/second", "");
+            assertEquals(200, first.statusCode());
+            assertEquals(200, second.statusCode());
+            assertTrue(first.body().startsWith("/first::"), first.body());
+            assertTrue(second.body().startsWith("/second::"), second.body());
+            assertNotEquals(first.body(), second.body(), "each exchange must keep its own request identity");
+        });
+        assertTrue(output.contains("200\n0\n200\n0"), output);
+    }
+
+    @Test void abortingOneRequestNeverCancelsReusableActorOrAnotherRequest() throws Exception {
+        String output = run("""
+            define actor Reused as
+              receive(ActorMail<String> mail): void {
+                if mail.value == "stop"; do
+                  self.end();
+                  return;
+                fi
+                val exchange = http.claim(mail.value);
+                if exchange.target == "/abort"; do
+                  exchange.abort();
+                  return;
+                fi
+                await exchange.respond(200, "text/plain", exchange.target);
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val actor = spawn Reused();
+              await actor.ready;
+
+              val first = await server.accept();
+              val firstDone = first.completion;
+              actor.send(first.move_to(actor));
+              stdio.println(await firstDone);
+
+              val second = await server.accept();
+              val secondDone = second.completion;
+              actor.send(second.move_to(actor));
+              stdio.println(await secondDone);
+              stdio.println(server.active);
+
+              actor.send("stop");
+              await actor.done;
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+            assertEquals(500, request(port, "GET", "/abort", "").statusCode());
+            HttpResponse<String> second = request(port, "GET", "/alive", "");
+            assertEquals(200, second.statusCode());
+            assertEquals("/alive", second.body());
+        });
+        assertTrue(output.contains("500\n200\n0"), output);
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
