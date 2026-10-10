@@ -1385,7 +1385,12 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
-                return loop.asyncIteration() || expressionContainsPotentialSuspension(loop.iterable(), seen)
+                // Built-in stdin iterators are potentially suspending even
+                // without an explicit readch in source. Route the enclosing
+                // function to SourceTask so it releases its guest carrier.
+                return loop.asyncIteration()
+                        || isProcessInputChannelExpr(loop.iterable())
+                        || expressionContainsPotentialSuspension(loop.iterable(), seen)
                         || loop.body().stream().anyMatch(
                                 nested ->
                                         statementContainsPotentialSuspension(nested, seen));
@@ -1419,6 +1424,17 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        private static boolean isProcessInputChannelExpr(Ast.Expr expr) {
+            if (!(expr instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr root)) return false;
+            return switch (root.name()) {
+                case "stdio", "stdin" ->
+                        member.member().equals("in") || member.member().equals("stdin");
+                case "process" -> member.member().equals("stdin");
+                default -> false;
+            };
+        }
+
         private boolean expressionContainsPotentialSuspension(
                 Ast.Expr expr,
                 Set<Object> seen) {
@@ -1441,6 +1457,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (expressionContainsPotentialSuspension(call.callee(), seen)) return true;
                 if (call.callee() instanceof Ast.MemberExpr member) {
+                    // Prelude modules are authored in Oreslang. A call such
+                    // as Stdio.println_blocking() is an ordinary function
+                    // containing writech, so it must suspend the *caller* as
+                    // well. Otherwise the caller returns while its callee
+                    // still executes and context shutdown races the worker.
+                    if (member.receiver() instanceof Ast.NameExpr namespace) {
+                        Ast.FunctionDecl moduleMethod =
+                                findFunction(namespace.name() + "." + member.member(),
+                                        call.arguments().size());
+                        if (moduleMethod != null && !moduleMethod.generator()) {
+                            if (moduleMethod.async()
+                                    || functionContainsPotentialSuspension(moduleMethod, seen)) {
+                                return true;
+                            }
+                        }
+                    }
                     // Resolve local method families conservatively across
                     // overrides, without turning every builtin call into a task.
                     // Declaration aliases refer to the same AST object. Structural
