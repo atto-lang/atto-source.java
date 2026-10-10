@@ -28,6 +28,7 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
+    private final StdChannels standardChannels;
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
@@ -77,6 +78,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
+        this.standardChannels = new StdChannels(this);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
@@ -140,6 +142,7 @@ public final class OresContext implements AutoCloseable {
     public TruffleLanguage.Env env() { return env; }
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
+    public StdChannels standardChannels() { return standardChannels; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
@@ -421,9 +424,11 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        RuntimeException failure = null;
+        try { standardChannels.close(); }
+        catch (RuntimeException stdioFailure) { failure = stdioFailure; }
         nativeIo.close();
         http.close();
-        RuntimeException failure = null;
         try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
