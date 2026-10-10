@@ -26,6 +26,48 @@ calling `gc()`, but **99% is a product goal, not a measured guarantee**.
 No userland mutex is necessary for ordinary actor-local state. Shared mutable
 capabilities remain explicit, core-gated and synchronized.
 
+## Borrow checker: calls, actor turns and suspension
+
+Compiler-owned call loans now have explicit **argument-list lifetimes**.
+A structural argument observes a read-only borrowed view; `rt borrow`
+provides an explicit immutable view, and `rt borrow mut` requires exclusive
+authority. A loan remains active while all later arguments are evaluated,
+including in first-class `Fnc<...>` calls and class method receiver dispatch.
+This rejects operations such as `inspect(box, rt take box)` and
+`box.method(rt take box)` instead of accidentally allowing a moved alias.
+Successful synchronous calls release these temporary loans on return from
+argument admission; failed admission releases them as well.
+
+- `structural T` does **not** consume `T`. Passing `rt take x` or a
+  mutable borrow to a structural parameter is rejected.
+- Non-`Copy` class fields, record fields and indexed elements cannot be
+  implicitly moved out while the original storage slot stays initialized.
+  This restriction applies to ordinary classes and collections, not just
+  actor-owned memory. Explicit source-place moves remain unavailable until
+  atomic slot invalidation is part of the runtime lowering.
+- Async calls cannot retain borrowed or structural arguments under a
+  call-scoped loan: returning `Future<T>` is *not* proof that the callee has
+  stopped using those arguments. Async class-method receivers are likewise
+  rejected unless they are actor `self` under the mailbox continuation's
+  runtime-controlled lifetime. True task-lifetime loans are deferred.
+- Actor `self` is a runtime-scoped capability, not a freely transferable
+  `&mut` pointer. Its resumed continuation must re-enter the owning actor
+  under the exclusive native carrier lease. Other borrowed values cannot be
+  captured by detached nonblocking-select continuations, transported through
+  actor/channel mail, or kept live across `await`/`rt cooperate`.
+
+These checks are fail-closed **source-level constraints**, not proof that
+host interop, opaque imports, foreign ABI implementations, every constructor
+path, or dynamically typed callbacks satisfy the same lifetime contract.
+The actor concurrency setting counts unfinished message lifetimes; it does
+not entitle a guest to two simultaneous native writers. A real task-level
+borrow/lease object must be tracked until completion before asynchronous
+borrowed parameters can be permitted.
+
+Targeted regression suite: `PointerlessFncOwnershipTest`, also selected
+in `concurrency-contract.yml`. No production safety certification should
+be claimed until source-exact executed Java/Graal and native tests pass.
+
 ## Readonly publication guarantees, current implementation
 
 Compiler: OwnershipChecker rejects `rt share` unless the source is a known
