@@ -882,6 +882,14 @@ public final class TypeChecker {
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
             }
+            if (resolvedParent != null
+                    && klass.actorKind() != Ast.ActorKind.NONE
+                    && !klass.actorConcurrency().equals(resolvedParent.actorConcurrency())) {
+                throw new IllegalArgumentException("actor transport and concurrency policy must "
+                        + "be preserved across inheritance: " + klass.name() + " has "
+                        + klass.actorConcurrency() + " but parent "
+                        + resolvedParent.name() + " has " + resolvedParent.actorConcurrency());
+            }
             if (resolvedParent != null && resolvedParent.constructor() != null) {
                 throw new IllegalArgumentException(
                         "class '" + klass.name() + "' cannot extend '" + resolvedParent.name()
