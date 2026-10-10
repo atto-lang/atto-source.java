@@ -1653,6 +1653,10 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+            throw error(callable + " argument " + position
+                    + " is an owned by-value parameter and cannot retain a borrowed view");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
