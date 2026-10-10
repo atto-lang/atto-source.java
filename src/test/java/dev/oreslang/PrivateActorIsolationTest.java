@@ -306,6 +306,34 @@ final class PrivateActorIsolationTest {
     }
 
     @Test
+    void zeroSizeNativeAllocationsCannotExhaustMetadataOutsideQuota() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                var memory = context.privateMemory().orElseThrow();
+                int blocks = 0;
+                try {
+                    for (int i = 0; i < 4096; i++) {
+                        var block = memory.allocatePrivateBytes(0);
+                        assertEquals(0, block.capacity());
+                        blocks++;
+                    }
+                    throw new AssertionError("unbounded zero-size native arenas admitted");
+                } catch (IllegalStateException expected) {
+                    if (!expected.getMessage().contains("native block limit"))
+                        throw expected;
+                }
+                assertTrue(blocks > 0 && blocks <= 1024);
+                assertEquals(blocks, memory.usedBytes());
+                context.self().stop();
+            });
+            actor.send("exhaust");
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+            assertEquals(0L, runtime.privateMemoryBytes());
+        }
+    }
+
+    @Test
     void privateActorCannotEscalateBySpawningSharedChild() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var parent = runtime.<String>spawnPrivate(factoryContext -> (message, context) -> {
