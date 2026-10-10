@@ -2574,10 +2574,15 @@ public final class Parser {
      */
     private Ast.Expr parsePipeline() {
         Ast.Expr left = parseLogicalOr();
-        while (match(VALUE_PIPE, PIPE_CONNECT)) {
+        while (true) {
+            // 'pipe' is reserved only in infix position to preserve existing
+            // userland locals named 'pipe' (e.g. FramedPipe pipeline variables).
+            boolean functional = match(VALUE_PIPE);
+            boolean actorPipe = !functional && matchContextualKeyword("pipe");
+            if (!functional && !actorPipe) break;
             Token operator = previous();
             Ast.Expr right = parseLogicalOr();
-            if (operator.type() == PIPE_CONNECT) {
+            if (actorPipe) {
                 left = new Ast.BinaryExpr("pipe", left, right);
                 continue;
             }
