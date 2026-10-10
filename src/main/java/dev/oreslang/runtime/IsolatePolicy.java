@@ -164,7 +164,25 @@ public record IsolatePolicy(
             Set<String> allowedHostClasses,
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
+        return restrictedContextBuilder(
+                profile, allowedHostClasses, permissions, permissionCheckMode, null);
+    }
+
+    /**
+     * Explicitly reuse the one untrusted-domain Engine instead of creating a
+     * new Graal isolate for each context or actor. The Engine owns its
+     * isolate heap; Contexts only own guest execution state.
+     */
+    Context.Builder restrictedContextBuilder(
+            ExecutionProfile profile,
+            Set<String> allowedHostClasses,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            org.graalvm.polyglot.Engine sharedUntrustedEngine) {
         NativeBuildMode.requireCompatible(profile);
+        if (sharedUntrustedEngine != null && !adversarial) {
+            throw new SecurityException("shared untrusted engine requires adversarial policy");
+        }
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
         if (!hostClasses.isEmpty()) {
             require(Capability.JAVA_INTEROP, "Java host imports");
@@ -197,6 +215,10 @@ public record IsolatePolicy(
                 .err(new ByteArrayOutputStream())
                 .arguments(OresLanguage.ID, applicationArguments(profile, permissions, permissionCheckMode));
 
+        if (sharedUntrustedEngine != null) {
+            builder.engine(sharedUntrustedEngine);
+        }
+
         /*
          * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
          * only when the embedding process explicitly supplies a polyglot
@@ -207,7 +229,8 @@ public record IsolatePolicy(
             builder.allowExperimentalOptions(true);
         }
 
-        if (!profile.guestJitAllowed() && NativeBuildMode.kind() != NativeBuildMode.Kind.AOT) {
+        if (sharedUntrustedEngine == null
+                && !profile.guestJitAllowed() && NativeBuildMode.kind() != NativeBuildMode.Kind.AOT) {
             try (org.graalvm.polyglot.Engine probe = org.graalvm.polyglot.Engine.create()) {
                 if (probe.getOptions().get("engine.Compilation") != null) {
                     builder.allowExperimentalOptions(true).option("engine.Compilation", "false");
@@ -218,10 +241,14 @@ public record IsolatePolicy(
         if (adversarial) {
             long guestHeap = Math.max(8L * 1024 * 1024, maxHeapBytes * 3 / 4);
             long maxOutput = allows(Capability.STDOUT) ? 1024L * 1024 : 0L;
-            builder.sandbox(SandboxPolicy.UNTRUSTED)
-                    .spawnIsolate(true)
-                    .option("engine.MaxIsolateMemory", bytes(maxHeapBytes))
-                    .option("sandbox.MaxHeapMemory", bytes(guestHeap))
+            builder.sandbox(SandboxPolicy.UNTRUSTED);
+            if (sharedUntrustedEngine == null) {
+                // Legacy standalone-context API builds its own isolated
+                // Engine. Hosted untrusted actors instead reuse one engine.
+                builder.spawnIsolate(true)
+                        .option("engine.MaxIsolateMemory", bytes(maxHeapBytes));
+            }
+            builder.option("sandbox.MaxHeapMemory", bytes(guestHeap))
                     .option("sandbox.MaxCPUTime", duration(maxWallTime))
                     .option("sandbox.MaxASTDepth", "256")
                     .option("sandbox.MaxThreads", "1")
