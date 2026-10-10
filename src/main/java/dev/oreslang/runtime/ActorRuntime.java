@@ -630,7 +630,7 @@ public final class ActorRuntime implements AutoCloseable {
          * compiler-lowered private actor state a genuinely unshared backing
          * region while actors remain multiplexed over carrier threads.
          */
-        public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
+        public synchronized PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
             MemoryReservation reservation = reserve(bytes, "private actor direct heap");
@@ -694,12 +694,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+        public void close() {
+            // Snapshot under the slice lock, but never hold that lock while
+            // closing individual blocks. Block.close() acquires the block
+            // monitor before releasing the slice's reservation.
+            final List<PrivateMemoryBlock> retiring;
+            final long bytes;
+            synchronized (this) {
+                if (!sliceClosed.compareAndSet(false, true)) return;
+                retiring = List.copyOf(blocks);
+                blocks.clear();
+                bytes = usedBytes.getAndSet(0);
+            }
+            RuntimeException failure = null;
+            try {
+                for (PrivateMemoryBlock block : retiring) {
+                    try {
+                        block.invalidateFromSlice();
+                    } catch (RuntimeException error) {
+                        if (failure == null) failure = error;
+                        else failure.addSuppressed(error);
+                    }
+                }
+            } finally {
+                // Accounting must be released even if a native arena fails
+                // to close; that failure is reported to actor termination.
+                if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            }
+            if (failure != null) throw failure;
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -736,39 +758,39 @@ public final class ActorRuntime implements AutoCloseable {
         /** True when this block uses an explicitly closeable FFM Arena. */
         public boolean deterministicReclamation() { return region != null && region.deterministicReclamation(); }
 
-        public byte readByte(int index) {
+        public synchronized byte readByte(int index) {
             return openMemory().get(index);
         }
 
-        public void writeByte(int index, byte value) {
+        public synchronized void writeByte(int index, byte value) {
             openMemory().put(index, value);
         }
 
-        public int readInt(int index) {
+        public synchronized int readInt(int index) {
             return openMemory().getInt(index);
         }
 
-        public void writeInt(int index, int value) {
+        public synchronized void writeInt(int index, int value) {
             openMemory().putInt(index, value);
         }
 
-        public long readLong(int index) {
+        public synchronized long readLong(int index) {
             return openMemory().getLong(index);
         }
 
-        public void writeLong(int index, long value) {
+        public synchronized void writeLong(int index, long value) {
             openMemory().putLong(index, value);
         }
 
-        public double readDouble(int index) {
+        public synchronized double readDouble(int index) {
             return openMemory().getDouble(index);
         }
 
-        public void writeDouble(int index, double value) {
+        public synchronized void writeDouble(int index, double value) {
             openMemory().putDouble(index, value);
         }
 
-        public byte[] copyOut() {
+        public synchronized byte[] copyOut() {
             ByteBuffer live = openMemory();
             byte[] out = new byte[capacity];
             ByteBuffer duplicate = live.duplicate();
@@ -777,7 +799,7 @@ public final class ActorRuntime implements AutoCloseable {
             return out;
         }
 
-        public void copyIn(byte[] bytes) {
+        public synchronized void copyIn(byte[] bytes) {
             Objects.requireNonNull(bytes);
             ByteBuffer live = openMemory();
             if (bytes.length != capacity) {
@@ -800,20 +822,26 @@ public final class ActorRuntime implements AutoCloseable {
             return live.memory();
         }
 
-        private void zeroAndDetachMemory() {
+        private synchronized void zeroAndDetachMemory() {
             ActorForeignMemory live = region;
             if (live == null) return;
-            region = null;
-            live.close(); // zeroize and free the native Arena on JDK 22+
+            // Once this method runs the block is already marked closed, so
+            // no future owner operation can access it. Always release the
+            // Java wrapper even if native teardown reports an error.
+            try {
+                live.close();
+            } finally {
+                region = null;
+            }
         }
 
-        private void invalidateFromSlice() {
+        private synchronized void invalidateFromSlice() {
             if (!blockClosed.compareAndSet(false, true)) return;
             zeroAndDetachMemory();
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             openMemory(); // owner + liveness check before invalidation
             if (!blockClosed.compareAndSet(false, true)) return;
             zeroAndDetachMemory();
@@ -5927,7 +5955,17 @@ public final class ActorRuntime implements AutoCloseable {
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            if (memorySlice != null) {
+                try {
+                    memorySlice.close();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable failure) {
+                    // Never strand actor termination after failed native
+                    // cleanup; surface the failure through doneFuture.
+                    ref.terminationCause.compareAndSet(null, failure);
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
