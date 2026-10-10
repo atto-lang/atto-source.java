@@ -214,12 +214,21 @@ impl ProxyRoute {
     pub fn confirm_handshake(
         &mut self,
         generation: u64,
+        now_tick: u64,
         peer: AuthenticatedPeer,
     ) -> Result<SessionHandle, RouteError> {
         if self.state != (RouteState::Connecting { generation }) {
             return Err(RouteError::NotConnecting);
         }
         let selected = self.selected.as_ref().ok_or(RouteError::NotConnecting)?;
+        // A discovery lease can expire during slow TLS/IPC authentication.
+        // Never bind a session to an already-stale routing assertion.
+        if selected.expires_at_tick <= now_tick {
+            self.selected = None;
+            self.state = RouteState::Disconnected;
+            self.streams.clear();
+            return Err(RouteError::ExpiredLease);
+        }
         if peer.authority != selected.authority || peer.actor != selected.actor {
             // Authenticated identity mismatch poisons this attempted session.
             // It cannot be retried in-place with a different claimed peer.
@@ -381,7 +390,7 @@ mod tests {
         }
         fn test_confirm_handshake(&mut self, generation: u64, peer: AuthenticatedPeer)
             -> Result<u64, RouteError> {
-            self.confirm_handshake(generation, peer).map(|h| h.epoch)
+            self.confirm_handshake(generation, 20, peer).map(|h| h.epoch)
         }
         fn test_open_stream(&mut self, direction: Direction, id: u64,
             messages: u64, bytes: u64) -> Result<(), RouteError> {
@@ -580,7 +589,7 @@ mod tests {
         p.grant_credit(old_stream, 1, 32).unwrap();
         assert!(p.disconnect(1));
         assert_eq!(p.begin_connect(lease(1, 2), 20), Ok(2));
-        let new_session = p.confirm_handshake(2, AuthenticatedPeer {
+        let new_session = p.confirm_handshake(2, 20, AuthenticatedPeer {
             actor: actor(1), authority: "trusted-worker".into(),
         }).unwrap();
         let new_stream = p.open_stream(new_session, Direction::Forward, 42, 2, 32).unwrap();
@@ -608,6 +617,19 @@ mod tests {
         assert_eq!(p.grant_credit(second, 1, 10), Ok(()));
         assert_eq!(p.admit_data(second, 0, 10), Ok(()));
         assert_eq!(p.finish_stream(second), Ok(()));
+    }
+
+    #[test]
+    fn lease_expiry_during_authentication_poisoned_session_cannot_recover_in_place() {
+        let mut p = route();
+        assert_eq!(p.begin_connect(lease(1, 1), 20), Ok(1));
+        let peer = AuthenticatedPeer {
+            actor: actor(1), authority: "trusted-worker".into(),
+        };
+        assert_eq!(p.confirm_handshake(1, 100, peer.clone()), Err(RouteError::ExpiredLease));
+        assert_eq!(p.confirm_handshake(1, 99, peer.clone()), Err(RouteError::NotConnecting));
+        assert_eq!(p.begin_connect(lease(1, 2), 20), Ok(2));
+        assert!(p.confirm_handshake(2, 99, peer).is_ok());
     }
 
 }
