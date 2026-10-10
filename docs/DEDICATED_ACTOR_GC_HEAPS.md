@@ -96,3 +96,21 @@ continuations, hot loading and cancellation.
 The LLVM native actor-owned arena implementation is a distinct, currently
 unintegrated backend and must not be counted as validation of the Graal
 polyglot isolate adapter.
+
+## Strict physical-heap admission across **all** actor kinds
+
+The ordinary source-level runtime supports `--ores-actor-heaps=independent`.
+When enabled, its `ActorRuntime` rejects **every** PRIVATE/isoactor,
+SHARED and UNTRUSTED actor spawn *before* allocating an actor cell or
+invoking user factories; it cannot silently fall back to host JVM GC.
+`--ores-actor-heaps=shared-jvm` is the explicit compatibility mode and
+current default. The supervisor receives the actual admission mode in
+`process.descriptor()`. Neither mode pretends that JVM direct-memory
+slices have independent tracing collectors.
+
+This flag is a **requirement/guard**, not a switch that magically provisions
+native images or routes source-level `spawn` to isolated engines. Use the
+explicit `DedicatedUntrustedActorIsolates` host path for the supported
+UNTRUSTED case. Until PRIVATE and SHARED actor source routing is implemented,
+a strict Oreslang program that attempts to spawn them will intentionally
+fail closed rather than violate the requested GC boundary.
