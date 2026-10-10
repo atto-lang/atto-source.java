@@ -46,6 +46,42 @@ final class PolyglotClientContractAdmissionTest {
     }
 
     @Test
+    void sharedRestRouteContractAndConcreteModuleCompileTogether() {
+        String source = """
+                define contract RouteContract as
+                  fnc get(String request) => String;
+                  fnc post(String request) => String;
+                end
+
+                define module Route conforms RouteContract as
+                  pub fnc get(String request) -> String { return request; }
+                  pub fnc post(String request) -> String { return request; }
+                end
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void incorrectRestRouteMemberArrowAndConformsToAreRejected() {
+        String badArrow = """
+                define contract RouteContract as
+                  fnc get(String request) -> String;
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(badArrow));
+
+        String badConformsTo = """
+                define contract RouteContract as
+                  fnc get(String request) => String;
+                end
+                define module Route conforms to RouteContract as
+                  pub fnc get(String request) -> String { return request; }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(badConformsTo));
+    }
+
+    @Test
     void refusesImplementationThatViolatesGeneratedContract() {
         String bad = """
                 define module client conforms ClientContract as
