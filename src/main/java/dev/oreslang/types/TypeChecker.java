@@ -2852,10 +2852,15 @@ public final class TypeChecker {
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
-                if (member.member().equals("replace_literal")) {
-                    return new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
-                }
-                throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                return switch (member.member()) {
+                    case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
+                    case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+                    case "trim" -> new Function(List.of(), Primitive.STRING);
+                    case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
+                    case "starts_with", "ends_with", "contains_literal" ->
+                            new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                };
             }
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
@@ -4126,6 +4131,27 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        if (named.name().equals("fs") || named.name().equals("File")) {
+            Type string = Primitive.STRING;
+            Type booleanType = Primitive.BOOL;
+            switch (name) {
+                case "list_dir": return new Function(List.of(string), new ListType(string));
+                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
+                case "read_text": return new Function(List.of(string), string);
+                case "write_text", "write_text_atomic", "append_text":
+                    return new Function(List.of(string, string), Primitive.VOID);
+                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
+                default: break;
+            }
+        }
+        if (named.name().equals("env")) {
+            switch (name) {
+                case "get": return new Function(List.of(Primitive.STRING),
+                        new Named("Option", List.of(Primitive.STRING)));
+                case "has": return new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                default: break;
+            }
+        }
         Type result;
         List<Type> parameters;
         switch (named.name()) {
