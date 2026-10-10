@@ -220,6 +220,34 @@ final class OresFuturesTest {
     }
 
     @Test
+    void cancellingHostStageBridgeDetachesWithoutCancellingProducer() {
+        OresFuture<Integer> producer = new OresFuture<>();
+        CompletableFuture<Integer> bridge = producer.asCompletionStage().toCompletableFuture();
+
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(bridge.cancel(false));
+        assertTrue(bridge.isCancelled());
+        assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                "a discarded host bridge cannot be retained by a never-settling producer");
+        assertFalse(producer.isCancelled(),
+                "host-side cancellation is not authority to cancel a shared Ores Future");
+
+        assertTrue(producer.completeFromRuntime(42));
+        assertTrue(bridge.isCancelled());
+    }
+
+    @Test
+    void normallyCompletedHostStageBridgeReleasesItsRuntimeWaiter() {
+        OresFuture<Integer> producer = new OresFuture<>();
+        CompletableFuture<Integer> bridge = producer.asCompletionStage().toCompletableFuture();
+
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(producer.completeFromRuntime(42));
+        assertEquals(42, bridge.join());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void timedOutHostReadsDetachWaitersFromNeverSettledProducer() throws Exception {
         OresFuture<Integer> pending = new OresFuture<>();
 
