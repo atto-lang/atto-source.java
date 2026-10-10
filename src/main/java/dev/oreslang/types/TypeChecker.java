@@ -2772,7 +2772,19 @@ public final class TypeChecker {
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
-                if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
+                if (member.member().equals("stdin") || member.member().equals("in")
+                        || member.member().equals("out") || member.member().equals("err")
+                        || member.member().equals("stderr"))
+                    return new Named("Channel", List.of(Primitive.STRING));
+            }
+            // Legacy stdio.stdin.read_line() now uses the same channel owner.
+            // EOF is Option.None, never a String or a fabricated empty line.
+            if (member.member().equals("read_line")
+                    && member.receiver() instanceof Ast.MemberExpr stdioStream
+                    && stdioStream.receiver() instanceof Ast.NameExpr stdioName
+                    && stdioName.name().equals("stdio")
+                    && (stdioStream.member().equals("stdin") || stdioStream.member().equals("in"))) {
+                return new Function(List.of(), new Named("Option", List.of(Primitive.STRING)));
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
@@ -5231,6 +5243,9 @@ public final class TypeChecker {
             return result;
         }
         if (iterable instanceof Named named) {
+            if (named.name().equals("Channel") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
             if (named.name().equals("Iterator") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
