@@ -596,14 +596,23 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        RuntimeWaiterRegistration<T> registration =
+                whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                // Timeout must not keep the host latch retained by a producer
+                // Future that may never settle. Read state once to preserve
+                // a completion that raced with the deadline.
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // Detach on timeout, interrupt AND normal completion. A shared
+            // producer may outlive thousands of short host polling waits.
+            registration.detach();
         }
-        return state.get();
     }
 
     private static void requireBlockingAllowed() {
