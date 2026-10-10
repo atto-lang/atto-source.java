@@ -577,6 +577,13 @@ final class IdentityReturnChecker {
         if (expression instanceof Ast.NameExpr name) {
             return Boolean.TRUE.equals(scope.get(name.name()));
         }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            // A ternary is identity-safe only when BOTH outcomes retain the
+            // same original argument/receiver. Effects in its condition and
+            // branches are independently inspected by verifyExpressionEffects.
+            return proves(conditional.whenTrue(), scope, module)
+                    && proves(conditional.whenFalse(), scope, module);
+        }
         if (expression instanceof Ast.RuntimeCallExpr runtime) {
             return (runtime.operation().equals("take") || runtime.operation().equals("borrow"))
                     && runtime.arguments().size() == 1
