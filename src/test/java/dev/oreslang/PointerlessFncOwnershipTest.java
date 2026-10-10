@@ -419,6 +419,23 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void unknownHostCallsCannotAcquireBorrowedSourceCapabilities() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          unknownHost(rt borrow box);
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().contains("unknown/host callable"),
+                rejected.getMessage());
+    }
+
+    @Test
     void conditionalStructuralBorrowProtectsAllPossibleNamedOwners() {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
