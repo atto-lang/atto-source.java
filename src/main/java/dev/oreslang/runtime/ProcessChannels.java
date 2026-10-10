@@ -71,6 +71,8 @@ public final class ProcessChannels implements AutoCloseable {
     private final Thread inWorker;
     private final AtomicBoolean stdinStarted = new AtomicBoolean();
     private final AtomicBoolean closing = new AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicReference<Throwable> outputFailure =
+            new java.util.concurrent.atomic.AtomicReference<>();
     private final Map<String, CompletableFuture<Void>> stdoutBarriers =
             Collections.synchronizedMap(new IdentityHashMap<>());
 
@@ -111,11 +113,18 @@ public final class ProcessChannels implements AutoCloseable {
      * The unique marker is never exposed to userland, and is compared by identity.
      */
     public CompletableFuture<Void> flushAsyncLogs() {
+        if (outputFailure.get() != null)
+            return CompletableFuture.failedFuture(outputFailure.get());
         if (closing.get()) return CompletableFuture.failedFuture(
                 new IllegalStateException("console channels are closing"));
         String marker = new String("\u0000ORES_STDOUT_FLUSH_MARKER");
         CompletableFuture<Void> barrier = new CompletableFuture<>();
-        stdoutBarriers.put(marker, barrier);
+        synchronized (stdoutBarriers) {
+            if (stdoutBarriers.size() >= 1024)
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("too many outstanding stdout flush barriers"));
+            stdoutBarriers.put(marker, barrier);
+        }
         ChannelRuntime.writeForRuntime(out, marker).whenCompleteRuntime((ignored, error) -> {
             if (error != null) {
                 stdoutBarriers.remove(marker);
@@ -131,7 +140,10 @@ public final class ProcessChannels implements AutoCloseable {
             for (;;) {
                 String chunk;
                 try { chunk = ChannelRuntime.readForRuntime(source).join(); }
-                catch (ChannelRuntime.ChannelClosedException closed) { break; }
+                catch (java.util.concurrent.CompletionException failure) {
+                    if (failure.getCause() instanceof ChannelRuntime.ChannelClosedException) break;
+                    throw failure;
+                }
                 CompletableFuture<Void> barrier = barriers == null ? null : barriers.remove(chunk);
                 if (barrier != null) {
                     target.flush();
@@ -153,9 +165,9 @@ public final class ProcessChannels implements AutoCloseable {
                     barriers.clear();
                 }
             }
+            outputFailure.compareAndSet(null, failed);
             // Channel closure wakes pending guest writers/readers.
             if (!source.isClosed()) source.closeOwned();
-            // A channel drain failure surfaces on shutdown through pending barriers.
         }
     }
 
@@ -187,6 +199,8 @@ public final class ProcessChannels implements AutoCloseable {
                     Math.max(0, deadline - System.nanoTime()))));
             if (outWorker.isAlive() || errWorker.isAlive())
                 throw new IllegalStateException("console channel workers did not drain before VM shutdown");
+            if (outputFailure.get() != null)
+                throw new IllegalStateException("console output worker failed", outputFailure.get());
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("interrupted draining console channels", interrupted);
