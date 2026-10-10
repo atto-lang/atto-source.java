@@ -3020,6 +3020,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.BinaryExpr binary) {
+                    if (binary.operator().equals("pipe")) {
+                        // Defense in depth: never spawn or inspect either stage
+                        // if an untyped graph operator reaches guest evaluation.
+                        continuation.accept(task, null, new IllegalStateException(
+                                "actor pipe graph is not implemented; no stages were spawned"));
+                        return;
+                    }
                     if (binary.operator().equals("&&")) {
                         evalSuspendableExpr(
                                 task,
@@ -5744,6 +5751,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
+                if (binary.operator().equals("pipe")) {
+                    throw new IllegalStateException(
+                            "actor pipe graph is not implemented; no stages were spawned");
+                }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
                     return truth(left) && truth(eval(binary.right(), env));
