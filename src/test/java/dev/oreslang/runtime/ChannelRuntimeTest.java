@@ -63,6 +63,21 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void failedAwaitedFuturePreservesOriginalErrorAndDoesNotConsumeChannel() {
+        var cause = new IllegalStateException("upstream failed");
+        OresFuture<Integer> failed = OresFuture.failed(cause);
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(failed), ChannelRuntime.read(channel))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        var terminal = assertThrows(java.util.concurrent.CompletionException.class,
+                selected::join);
+        org.junit.jupiter.api.Assertions.assertSame(cause, terminal.getCause());
+        assertTrue(channel.tryWrite(72));
+        assertEquals(72, channel.tryRead().orElseThrow());
+    }
+
+    @Test
     void cancellationSignalIsAnExplicitCaseNotAuthorityToCancelProducer() {
         var signal = new OresFuture<Void>();
         var producer = new OresFuture<Integer>();
