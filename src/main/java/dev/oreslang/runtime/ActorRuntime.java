@@ -807,6 +807,17 @@ public final class ActorRuntime implements AutoCloseable {
          * The segment is bounded by this actor's memory quota and cannot
          * escape to another actor. This is NOT a separate Java GC heap.
          */
+        /**
+         * Fixed scalar object layout admitted under the current ActorId.
+         * All fields live in an FFM native region owned by this actor, and
+         * the declaration order determines stable compiler field indices.
+         */
+        public ActorNativeI64Record newNativeI64Record(
+                String typeName, List<ActorNativeI64Record.Field> fields) {
+            requireCurrentOwner();
+            return ActorNativeI64Record.allocate(this, typeName, fields);
+        }
+
         public ExplicitNativeI64Region newExplicitNativeI64Region(int slots) {
             ActorCell<?> cell = requireCurrentOwner();
             if (slots < 1 || slots > 65536) {
