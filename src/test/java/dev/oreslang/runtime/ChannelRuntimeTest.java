@@ -39,6 +39,75 @@ final class ChannelRuntimeTest {
                         List.of(ChannelRuntime.read(sink))));
     }
     @Test
+    void descriptorWorkerCompletionCannotGrantAmbientGuestAuthority() throws Exception {
+        // A pending writer is admitted by the host worker, so callbacks run on
+        // that same thread. Public channel methods must still lack host rights.
+        var constructor = StdChannels.OutputChannel.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        StdChannels.OutputChannel sink = constructor.newInstance();
+        StdChannels owner = new StdChannels(null);
+        var pump = StdChannels.class.getDeclaredMethod("pumpOutput",
+                StdChannels.OutputChannel.class, java.io.PrintWriter.class, String.class);
+        pump.setAccessible(true);
+        var finish = StdChannels.OutputChannel.class.getDeclaredMethod(
+                "finishFromContext", Throwable.class);
+        finish.setAccessible(true);
+
+        java.io.StringWriter captured = new java.io.StringWriter();
+        java.util.concurrent.atomic.AtomicReference<Thread> callbackCarrier =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> unexpected =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.CountDownLatch callbackDone =
+                new java.util.concurrent.CountDownLatch(1);
+
+        OresFuture<Void> guestWrite = sink.writeAsync("frame");
+        assertFalse(guestWrite.isDone());
+        guestWrite.whenCompleteRuntime((ignored, error) -> {
+            callbackCarrier.set(Thread.currentThread());
+            try {
+                if (error != null) unexpected.compareAndSet(null, error);
+                try {
+                    sink.close();
+                    unexpected.compareAndSet(null,
+                            new AssertionError("output close inherited bridge authority"));
+                } catch (SecurityException expected) { }
+                try {
+                    ChannelRuntime.SelectSet.of(ChannelRuntime.read(sink));
+                    unexpected.compareAndSet(null,
+                            new AssertionError("guest read inherited bridge authority"));
+                } catch (IllegalArgumentException expected) { }
+            } catch (Throwable t) {
+                unexpected.compareAndSet(null, t);
+            } finally {
+                callbackDone.countDown();
+            }
+        });
+
+        Thread worker = Thread.ofPlatform().daemon(true).name("ores-test-stdio-bridge")
+                .start(() -> {
+                    try {
+                        pump.invoke(owner, sink, new java.io.PrintWriter(captured), "test");
+                    } catch (Throwable t) {
+                        unexpected.compareAndSet(null, t);
+                    }
+                });
+        try {
+            assertTrue(callbackDone.await(3, java.util.concurrent.TimeUnit.SECONDS),
+                    "descriptor worker never admitted pending write");
+            assertEquals(worker, callbackCarrier.get(),
+                    "callback must execute on the descriptor worker for this regression");
+        } finally {
+            finish.invoke(sink, new Object[]{null});
+            worker.join(3_000);
+        }
+        assertFalse(worker.isAlive(), "worker must exit on context-authorized close");
+        assertEquals("frame", captured.toString());
+        assertTrue(unexpected.get() == null,
+                "descriptor callback inherited privilege or failed: " + unexpected.get());
+    }
+
+    @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         assertTrue(channel.tryWrite(1));
