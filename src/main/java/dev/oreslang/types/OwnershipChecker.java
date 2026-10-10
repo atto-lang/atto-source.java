@@ -412,10 +412,12 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
-            if (selected.mode() == Ast.WaitMode.BLOCKING) {
-                // The mailbox lane can yield while waiting for a winner.
-                // Ordinary lexical borrows cannot span this suspension, even
-                // though the winning arm completes before the outer code resumes.
+            if (selected.mode() == Ast.WaitMode.BLOCKING
+                    && selected.arms().stream().noneMatch(arm ->
+                            arm.operation() == Ast.ChannelOperation.DEFAULT)) {
+                // Without a default arm, the mailbox lane can yield while
+                // waiting for a winner. A default arm makes the selection
+                // immediately decidable, so no borrow-suspension ban is needed.
                 checkSuspensionBorrows(scope, "select");
             } else if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
