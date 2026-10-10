@@ -46,6 +46,34 @@ final class SelectPlanLanguageTest {
     }
 
     @Test
+    void nonblockingAndImmediatePlansExposeConsistentMutableState() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  val DynamicSelectPlan plan = DynamicSelectPlan.new();
+                  plan.put("incoming", SelectCase.read(incoming));
+                  val Option<SelectResult> missed = try select first from plan;
+                  stdio.stdout.write(missed.is_some());
+                  writech incoming, 31;
+                  val Future<Option<SelectResult>> pending = nb select first from plan;
+                  val Option<SelectResult> got = await pending;
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(got.unwrap().value);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(plan.size());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(plan.version());
+                  plan.remove("incoming");
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(plan.size());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("false:31:1:1:0", run(program));
+    }
+
+    @Test
     void refusesIncorrectDynamicMutationArgumentsAtCompileTime() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 pub fnc main(): void {
