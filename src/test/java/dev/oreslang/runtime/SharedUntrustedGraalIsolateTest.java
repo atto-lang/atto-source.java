@@ -36,6 +36,8 @@ class SharedUntrustedGraalIsolateTest {
         try {
             domain = SharedUntrustedGraalIsolate.open();
         } catch (IllegalStateException unavailable) {
+            System.out.println("Expected fail-closed bootstrap without a language-isolate image: "
+                    + unavailable.getCause());
             assertTrue(unavailable.getMessage().contains("could not start"),
                     "a missing Graal isolate must fail closed, not fall back to the host JVM");
             assertNotNull(unavailable.getCause());
@@ -44,6 +46,9 @@ class SharedUntrustedGraalIsolateTest {
 
         try {
             assertTrue(domain.usesOneEngineForWholeDomain());
+            assertThrows(IllegalArgumentException.class, () ->
+                    domain.submitSource("x".repeat(1_048_577)),
+                    "large source submissions must be rejected before entering host queue");
             assertSame(domain, SharedUntrustedGraalIsolate.open(),
                     "multiple untrusted host entrypoints must reuse the same engine");
             assertThrows(IllegalStateException.class, () ->
