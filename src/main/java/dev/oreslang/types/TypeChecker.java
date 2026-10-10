@@ -2142,6 +2142,30 @@ public final class TypeChecker {
                                 "SelectCase.write value");
                         yield new Named("SelectCase", List.of());
                     }
+                    case "await", "cancelled" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase."
+                                    + selectCaseCall.member() + " expects one Future<T>");
+                        }
+                        Type awaited = typeOf(call.arguments().getFirst(), env, generics, self);
+                        if (!(awaited instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase."
+                                    + selectCaseCall.member() + " requires Future<T>");
+                        }
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "timeout" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.timeout expects one integer millisecond duration");
+                        }
+                        requireAssignable(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.INT, "SelectCase.timeout milliseconds");
+                        yield new Named("SelectCase", List.of());
+                    }
                     case "default" -> {
                         if (!call.arguments().isEmpty()) {
                             throw new IllegalArgumentException("SelectCase.default expects no arguments");
