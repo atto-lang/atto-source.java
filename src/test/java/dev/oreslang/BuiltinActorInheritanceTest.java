@@ -101,7 +101,7 @@ final class BuiltinActorInheritanceTest {
                     receive(ActorMail<String> mail): void { self.end(); return; }
                 end
                 define actor Child extends Parent as
-                    end(): void { return; }
+                    send(): void { return; }
                 end
                 """);
         IllegalArgumentException error = assertThrows(
