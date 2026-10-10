@@ -283,9 +283,10 @@ final class SourceActorSpawnExecutionTest {
                 define actor Base from serial actor as {
                     let int progress;
                     on_start(): void {
-                        self.progress = 0;
+                        self.progress = 1;
                         return;
                     }
+                    pub progress_value(): int { return self.progress; }
                     receive(ActorMail<String> mail): void {
                         self.send("base");
                         self.end();
@@ -295,10 +296,9 @@ final class SourceActorSpawnExecutionTest {
 
                 define actor Child extends Base as
                     receive(ActorMail<String> mail): void {
-                        self.progress = 1;
                         self.send("before");
                         rt cooperate;
-                        self.send(self.progress);
+                        self.send(self.progress_value());
                         self.end();
                         return;
                     }
