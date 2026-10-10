@@ -519,14 +519,21 @@ public final class ChannelRuntime {
             if (!started.compareAndSet(false, true) || terminal.get()) return;
             // Foreign subscribe implementations may block or invoke onNext
             // synchronously. Never execute them on an actor's native carrier.
-            Thread.ofVirtual().name("ores-select-observable-once").start(() -> {
-                if (terminal.get()) return;
-                try {
-                    publisher.subscribe(this);
-                } catch (Throwable failure) {
-                    onError(failure);
-                }
-            });
+            try {
+                Thread.ofVirtual().name("ores-select-observable-once").start(() -> {
+                    if (terminal.get()) return;
+                    try {
+                        publisher.subscribe(this);
+                    } catch (Throwable failure) {
+                        onError(failure);
+                    }
+                });
+            } catch (RuntimeException | Error admissionFailure) {
+                // The selection is already armed. A host thread-admission
+                // failure must settle the observed case so other channel/
+                // Future registrations do not remain stranded indefinitely.
+                onError(admissionFailure);
+            }
         }
 
         private void stop() {
