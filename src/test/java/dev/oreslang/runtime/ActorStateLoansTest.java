@@ -52,7 +52,7 @@ final class ActorStateLoansTest {
             held.close();
             var granted = next.join();
             assertTrue(granted.heldBy(c));
-            assertFalse(loans.acquireAsync(c).isDone() == false,
+            assertTrue(loans.acquireAsync(c).isCompletedExceptionally(),
                     "same handler cannot queue while already owning a loan");
             granted.close();
             assertEquals(0, loans.pendingCount());
@@ -107,21 +107,37 @@ final class ActorStateLoansTest {
         }
     }
 
-    @Test void contestedTransfersDoNotOverlap() throws Exception {
+    @Test void concurrentHostHandoffsNeverOverlapExclusiveState() throws Exception {
         try (var loans = new ActorStateLoans(128)) {
             AtomicInteger working = new AtomicInteger();
             AtomicInteger peak = new AtomicInteger();
-            var futures = new ArrayList<OresFuture<ActorStateLoans.ExclusiveLoan>>();
-            for (int i = 0; i < 100; i++) futures.add(loans.acquireAsync(new Object()));
-            for (var future : futures) {
-                try (var lease = future.join()) {
-                    int current = working.incrementAndGet();
-                    peak.accumulateAndGet(current, Math::max);
-                    Thread.yield();
-                    working.decrementAndGet();
+            var executor = java.util.concurrent.Executors.newFixedThreadPool(8);
+            var start = new CountDownLatch(1);
+            try {
+                var jobs = new ArrayList<java.util.concurrent.Future<?>>();
+                for (int i = 0; i < 100; i++) {
+                    jobs.add(executor.submit(() -> {
+                        try {
+                            start.await();
+                            try (var lease = loans.acquireAsync(new Object()).join()) {
+                                int current = working.incrementAndGet();
+                                peak.accumulateAndGet(current, Math::max);
+                                Thread.yield();
+                                working.decrementAndGet();
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }));
                 }
+                start.countDown();
+                for (var job : jobs) job.get(15, TimeUnit.SECONDS);
+            } finally {
+                executor.shutdownNow();
             }
             assertEquals(1, peak.get());
+            assertEquals(0, working.get());
             assertEquals(0, loans.pendingCount());
             assertEquals(0, loans.activeCount());
         }
