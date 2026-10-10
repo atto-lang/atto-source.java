@@ -69,6 +69,36 @@ final class IdentityReturnSymbolResolutionTest {
                     """)));
         assertTrue(error.getMessage().contains("identity return mismatch"), error::getMessage);
     }
+    @Test void moduleValueBindingCannotImpersonateQualifiedIdentityHelper() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> IdentityReturnChecker.check(Parser.parse("""
+                    define class T as
+                    end
+                    define module Helpers as
+                      fnc relay(T x): x { return x; }
+                    end
+                    define module Client as
+                      val Helpers = 42;
+                      fnc forward(T v): v { return Helpers.relay(v); }
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("identity return mismatch"), error::getMessage);
+    }
+
+    @Test void moduleValueBindingCannotImpersonateUnqualifiedIdentityHelper() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> IdentityReturnChecker.check(Parser.parse("""
+                    define module m as
+                      define class T as
+                      end
+                      val relay = 42;
+                      fnc relay(T x): x { return x; }
+                      fnc forward(T v): v { return relay(v); }
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("identity return mismatch"), error::getMessage);
+    }
+
     @Test void transitiveInterfaceLookupUsesDeclaringModuleDespiteShadowName() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> IdentityReturnChecker.check(Parser.parse("""
