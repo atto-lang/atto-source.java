@@ -1885,6 +1885,8 @@ public final class ActorRuntime implements AutoCloseable {
         // Strong refs to group-managed workers only. Joining a group is not
         // ownership transfer: unrelated members are never stopped by close().
         private final Map<ActorId, ActorRef<?>> workers = new ConcurrentHashMap<>();
+        // Guarded by authorityLock. Fences handoff after stop admission.
+        private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
@@ -1965,8 +1967,8 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(ref.id());
-                if (cell == null || cell.stopped.get()) {
-                    throw new IllegalStateException("actor is not alive: " + ref.id());
+                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(ref.id())) {
+                    throw new IllegalStateException("actor is not alive or stopping: " + ref.id());
                 }
                 if (!members.contains(ref.id()) && members.size() >= memberLimit) {
                     throw new IllegalStateException(
@@ -2040,6 +2042,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
             synchronized (authorityLock) {
                 requireOpen();
+                if (stoppingWorkers.contains(ref.id())) {
+                    throw new IllegalStateException("cannot transfer an ActorGroup worker after stop was requested");
+                }
                 if (!workers.remove(ref.id(), ref)) return false;
                 workerOwners.remove(ref.id(), id);
                 return true;
@@ -2076,7 +2081,17 @@ public final class ActorRuntime implements AutoCloseable {
         /** Nonblocking graceful stop for this group's managed workers only. */
         public void stopWorkers() {
             requireManager("stop ActorGroup workers");
-            for (ActorRef<?> ref : List.copyOf(workers.values())) {
+            final List<ActorRef<?>> admitted = new ArrayList<>();
+            synchronized (authorityLock) {
+                requireOpen();
+                for (ActorRef<?> ref : workers.values()) {
+                    if (stoppingWorkers.add(ref.id())) admitted.add(ref);
+                }
+            }
+            // Never wait for an actor cell while holding the group authority
+            // lock: finalization takes its own lifecycle lock then retires
+            // membership under authorityLock, in the opposite order.
+            for (ActorRef<?> ref : admitted) {
                 ActorCell<?> cell = actors.get(ref.id());
                 if (cell != null) cell.stop();
             }
@@ -2312,6 +2327,7 @@ public final class ActorRuntime implements AutoCloseable {
             // worker or leave a stale owner mapping after a concurrent join.
             synchronized (authorityLock) {
                 if (workers.remove(actorId) != null) workerOwners.remove(actorId, id);
+                stoppingWorkers.remove(actorId);
                 if (members.remove(actorId)) eventBus.removeActor(actorId);
             }
             if (Objects.equals(creator, actorId)) closeFromRuntime();
@@ -2337,6 +2353,7 @@ public final class ActorRuntime implements AutoCloseable {
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(workers.values());
                 workers.clear();
+                stoppingWorkers.clear();
                 for (ActorRef<?> ref : owned) workerOwners.remove(ref.id(), id);
             }
             GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
