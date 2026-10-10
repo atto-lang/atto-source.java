@@ -7138,7 +7138,9 @@ public final class OresEvalRootNode extends RootNode {
                 boolean externalConstruction) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalStateException("actor '" + klass.name()
-                        + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
+                        + "' cannot be constructed with new outside spawn; "
+                        + "use 'spawn " + klass.name() + "()' or 'spawn new " + klass.name()
+                        + "()'. Actor state must be initialized inside ActorRuntime");
             }
             if (externalConstruction && klass.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException(
