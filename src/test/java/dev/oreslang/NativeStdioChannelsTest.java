@@ -319,6 +319,47 @@ final class NativeStdioChannelsTest {
     }
 
     @Test
+    void syncGeneratorConsumingStdinRunsOnSuspendedSourceTurns() throws Exception {
+        Output result = run("""
+                pub gen* read_stdin(): Iterator<String> {
+                  for const line of process.stdin {
+                    yield line;
+                  }
+                  return;
+                }
+                pub routine main(): void {
+                  for const line of read_stdin() {
+                    writech stdio.out, line + "\\n";
+                  }
+                  writech stdio.err, "eof\\n";
+                  return;
+                }
+                """, "one\ntwo\n");
+        assertEquals("one\n" + "two\n", result.stdout());
+        assertEquals("eof\n", result.stderr());
+    }
+
+    @Test
+    void syncGeneratorEarlyBreakCancelsRemainingPull() throws Exception {
+        Output result = run("""
+                pub gen* read_stdin(): Iterator<String> {
+                  for const line of stdin.in {
+                    yield line;
+                  }
+                  return;
+                }
+                pub routine main(): void {
+                  for const line of read_stdin() {
+                    writech stdio.out, line + "\\n";
+                    break;
+                  }
+                  return;
+                }
+                """, "first\nsecond\n");
+        assertEquals("first\n", result.stdout());
+    }
+
+    @Test
     void sourceAllowsSynchronousGeneratorWithoutAsync() throws Exception {
         OresCompiler.parseAndTypeCheck("""
                 pub gen* stdin_lines(): Iterator<String> {
