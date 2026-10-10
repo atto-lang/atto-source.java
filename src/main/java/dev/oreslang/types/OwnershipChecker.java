@@ -1179,7 +1179,10 @@ public final class OwnershipChecker {
                     if (call.arguments().size() != 2) {
                         throw error("SelectCase.write requires a channel and owned payload");
                     }
-                    checkExpr(call.arguments().getFirst(), scope, false);
+                    ValueInfo channelHandle = checkExpr(call.arguments().getFirst(), scope, false);
+                    if (isBorrowValue(channelHandle)) {
+                        throw error("SelectCase.write cannot retain a borrowed channel handle");
+                    }
                     ValueInfo outgoing = checkExpr(call.arguments().get(1), scope, true);
                     if (isBorrowValue(outgoing) || containsMutexGuardType(outgoing.type)) {
                         throw error("SelectCase.write cannot retain borrowed/guard-bearing payloads");
