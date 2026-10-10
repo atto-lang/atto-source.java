@@ -17,6 +17,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class StdChannels implements AutoCloseable {
     public static final int MAX_LINE_CHARS = 65_536;
+    private static final ThreadLocal<Boolean> BRIDGE = ThreadLocal.withInitial(() -> false);
+    static boolean isBridgeCurrent() { return Boolean.TRUE.equals(BRIDGE.get()); }
 
     /** Read-only to guest source. Runtime producer may write internally. */
     public static final class InputChannel extends ChannelRuntime.Channel<String> {
@@ -77,6 +79,7 @@ public final class StdChannels implements AutoCloseable {
     }
 
     private void pumpInput() {
+        BRIDGE.set(true);
         try {
             BufferedReader reader = context.input();
             while (!closed.get()) {
@@ -97,6 +100,7 @@ public final class StdChannels implements AutoCloseable {
                 input.close(err);
             }
         } finally {
+            BRIDGE.remove();
             input.close();
         }
     }
@@ -119,14 +123,16 @@ public final class StdChannels implements AutoCloseable {
     }
 
     private void pumpOutput(OutputChannel channel, PrintWriter target, String descriptor) {
+        BRIDGE.set(true);
         try {
             for (;;) {
                 String frame;
                 try {
                     frame = channel.readAsync().join();
-                } catch (ChannelRuntime.ChannelClosedException done) {
-                    if (done.getCause() != null) throw done;
-                    return;
+                } catch (java.util.concurrent.CompletionException done) {
+                    Throwable root = OresFuture.unwrap(done);
+                    if (root instanceof ChannelRuntime.ChannelClosedException closed && closed.getCause() == null) return;
+                    throw done;
                 }
                 target.print(frame);
                 target.flush();
@@ -139,6 +145,8 @@ public final class StdChannels implements AutoCloseable {
                 failure = err;
                 channel.close(err);
             }
+        } finally {
+            BRIDGE.remove();
         }
     }
 
