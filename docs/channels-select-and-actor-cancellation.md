@@ -290,6 +290,29 @@ binding shadows an outer binding of the same name and is not an outer capture.
 This distinction protects logical overlapping lifetimes even when the runtime
 never executes two actor turns on separate native threads.
 
+### Deferred channel write callbacks
+
+`nb cb writech channel, value || -> { ... }` evaluates and transfers its
+write payload when it registers the write. Its callback executes on a later
+serialized actor mailbox turn, so callback captures obey the same ownership
+lifetime rules as static `nb select` arms:
+
+- owned non-Copy captures move into the callback at registration; the
+  continuing caller cannot read, mutate, or transfer them;
+- ordinary borrowed captures (including aliases of actor `self`) and
+  guard-bearing captures are rejected;
+- Copy captures remain usable by the caller; a mutable capture transfers
+  exclusively, even when its underlying type is Copy;
+- only the canonical actor `self` mailbox capability has the special
+  actor-turn lifetime;
+- nested channel callbacks are included in outer deferred-capture scanning,
+  so callback nesting cannot revive a moved owner or conceal an alias.
+
+A nonblocking write with **no callback** does not detach a source-language arm;
+it transfers its outbound payload but does not capture unrelated locals.
+The runtime callback is only dispatched by the owning actor mailbox lane,
+not a producer or I/O thread.
+
 ## Nonblocking static select
 
 ```ores
