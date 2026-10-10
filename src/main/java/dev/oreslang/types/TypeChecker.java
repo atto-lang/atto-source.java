@@ -839,7 +839,41 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Methods backed by the native ActorRef/mailman/supervisor are final.
+     * User subtypes may customize on_start(), receive(...), and ordinary
+     * actor-defined methods, but may not impersonate these scheduler hooks.
+     */
+    private static final Set<String> FINAL_BUILTIN_ACTOR_METHODS = Set.of(
+            "send", "ready", "done", "outputs", "id",
+            "stop", "cancel", "end", "endWithCleanup",
+            "get_ready_signal", "get_done_signal");
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        if (klass.builtinActorBase() == Ast.BuiltinActorBase.SERIAL) {
+            if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null
+                    || klass.concurrencySpec() == null
+                    || !klass.concurrencySpec().serial()) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name()
+                        + "' inherits the builtin serial actor only with SHARED isolation "
+                        + "and strict requestConcurrency=1, messageConcurrency=1");
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (FINAL_BUILTIN_ACTOR_METHODS.contains(method.name())) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot override final builtin actor "
+                            + "method '" + method.name() + "'");
+                }
+            }
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (FINAL_BUILTIN_ACTOR_METHODS.contains(field.name())) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot shadow final builtin actor "
+                            + "member '" + field.name() + "'");
+                }
+            }
+        }
         if (klass.concurrencySpec() != null) {
             Ast.ActorConcurrencySpec limits = klass.concurrencySpec();
             if (klass.actorKind() == Ast.ActorKind.NONE || klass.proxySpec() != null
@@ -914,6 +948,30 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
+            }
+            if (resolvedParent != null && resolvedParent.actorKind() != Ast.ActorKind.NONE) {
+                // A derived actor cannot loosen its parent's scheduling and
+                // stream admission limits merely by changing a declaration.
+                Ast.ActorConcurrencySpec parentLimit = resolvedParent.concurrencySpec();
+                Ast.ActorConcurrencySpec childLimit = klass.concurrencySpec();
+                if (parentLimit != null && parentLimit.serial()
+                        && childLimit != null && !childLimit.serial()) {
+                    throw new IllegalArgumentException(
+                            "derived actor '" + klass.name()
+                            + "' cannot weaken inherited serial actor admission from '"
+                            + resolvedParent.name() + "'");
+                }
+                if (resolvedParent.builtinActorBase() == Ast.BuiltinActorBase.SERIAL) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (FINAL_BUILTIN_ACTOR_METHODS.contains(method.name())) {
+                            throw new IllegalArgumentException(
+                                    "actor '" + klass.name()
+                                    + "' cannot override final builtin actor method '"
+                                    + method.name() + "' through parent '"
+                                    + resolvedParent.name() + "'");
+                        }
+                    }
+                }
             }
             if (resolvedParent != null && resolvedParent.constructor() != null) {
                 throw new IllegalArgumentException(
