@@ -85,6 +85,31 @@ final class ActorArenaTest {
     }
 
     @Test
+    void leakedScratchScopeFailsTheActorAtItsMailboxBoundary() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable());
+        var arena = new AtomicReference<ActorArena>();
+        var reached = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (mail, ctx) -> {
+                ActorArena value = ctx.actorOwnedMemory().orElseThrow().newActorArena(2, 2);
+                arena.set(value);
+                value.beginTurn().allocate(99);
+                reached.countDown();
+                // Compiler/runtime cannot allow ephemeral native memory to
+                // escape this message, even when guest forgets to close it.
+            });
+            actor.send("leak");
+            assertTrue(reached.await(20, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(20, TimeUnit.SECONDS));
+            var problem = actor.failure().orElseThrow();
+            assertTrue(problem.toString().contains("scratch arena scope escaped"),
+                    () -> "unexpected failure: " + problem);
+        }
+        assertTrue(arena.get().closed());
+        assertTrue(arena.get().physicallyClosed());
+    }
+
+    @Test
     void actorTerminationRetainsNativeQuotaUntilLoanReleases() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable());
         var arena = new AtomicReference<ActorArena>();
