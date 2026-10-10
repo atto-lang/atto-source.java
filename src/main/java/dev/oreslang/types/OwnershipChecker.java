@@ -1676,6 +1676,20 @@ public final class OwnershipChecker {
         boolean structural = param.structural() && !param.type().isBorrow();
         if (!structural && !param.type().isBorrow()) return;
 
+        // Transparent expression wrappers can retain aliases too. Loan every
+        // feasible conditional owner conservatively until branch provenance is
+        // represented in typed IR. The second branch may not actually run,
+        // but it must never provide a route to move a possible first argument.
+        if (argument instanceof Ast.CastExpr cast) {
+            reserveCallLoan(cast.value(), param, scope, loans);
+            return;
+        }
+        if (argument instanceof Ast.ConditionalExpr conditional) {
+            reserveCallLoan(conditional.whenTrue(), param, scope, loans);
+            reserveCallLoan(conditional.whenFalse(), param, scope, loans);
+            return;
+        }
+
         Ast.Expr source = null;
         if (argument instanceof Ast.NameExpr) {
             source = argument;
@@ -1742,6 +1756,11 @@ public final class OwnershipChecker {
                         + " is a read-only structural view; rt borrow mut is not permitted");
             }
             ValueInfo argument = checkExpr(arg, scope, false);
+            if (isBorrowValue(argument) && argument.borrowSource == null) {
+                throw error(callable + " argument " + position
+                        + " has unknown borrowed provenance; structural views "
+                        + "require a statically tracked owner");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(callable + " argument " + position
