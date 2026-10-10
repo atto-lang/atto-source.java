@@ -3477,6 +3477,17 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor spawn");
         }
 
+        // An adversarial guest-domain root may create untrusted actors, but
+        // cannot elevate guest code to PRIVATE/SHARED actor semantics. All
+        // actor execution admitted by this domain stays in the same UNTRUSTED
+        // Graal isolate and receives the restrictive actor policy.
+        if (policyCeiling.adversarial()
+                && policyCeiling.allows(IsolatePolicy.Capability.ACTOR_SPAWN)
+                && kind != ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "shared untrusted domain may spawn only UNTRUSTED actors");
+        }
+
         IsolatePolicy effectivePolicy;
         if (kind == ActorKind.UNTRUSTED) {
             IsolatePolicy baseline = IsolatePolicy.untrustedActor();
