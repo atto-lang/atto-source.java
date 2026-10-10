@@ -219,6 +219,67 @@ final class SourceActorSpawnExecutionTest {
                 run(program, "source-actor-suspending-receive.ores"));
     }
 
+    @Test
+    void awaitSpawnIsAReadinessBarrierThatReturnsTheActorRef() throws Exception {
+        String program = """
+                define actor WorkerActor as
+                  let int initialized;
+
+                  on_start(): void {
+                    self.initialized = 1;
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    if self.initialized == 1; do
+                      self.send("ready");
+                    fi
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn WorkerActor();
+                  worker.send("run");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.done;
+                  return;
+                }
+                """;
+        assertEquals("ready", run(program, "source-await-spawn-ref.ores"));
+    }
+
+    @Test
+    void awaitSpawnFailsWhenOnStartFails() throws Exception {
+        String program = """
+                define actor WorkerActor as
+                  val int required;
+
+                  on_start(): void {
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn WorkerActor();
+                  worker.send("unreachable");
+                  return;
+                }
+                """;
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(program, "source-await-spawn-failure.ores"));
+        assertTrue(error.getMessage().contains("did not initialize field 'required'"),
+                error.getMessage());
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
