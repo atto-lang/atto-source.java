@@ -80,6 +80,21 @@ final class NativeStdioChannelsTest {
     }
 
     @Test
+    void legacyReadLineSharesChannelAndReturnsOptionAtEof() throws Exception {
+        Output result = run("""
+                pub routine main(): void {
+                  val Option<String> first = stdio.stdin.read_line();
+                  val Option<String> eof = stdio.in.read_line();
+                  stdio.stdout.write(first.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(eof.is_none());
+                  return;
+                }
+                """, "one\\n");
+        assertEquals("one:true", result.stdout());
+    }
+
+    @Test
     void nativeNonBlockingOutputReturnsAnAwaitableAdmissionFuture() throws Exception {
         Output result = run("""
                 import module Stdio from "std/stdio";
