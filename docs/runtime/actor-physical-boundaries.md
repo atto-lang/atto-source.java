@@ -89,6 +89,42 @@ signal ordering must be respected. Runtime signal handling does not imply every
 exit notification overtakes application messages. See the official
 [process and signal semantics](https://www.erlang.org/doc/system/ref_man_processes.html).
 
+## Actor-owned native regions (feature branch, October 10, 2026)
+
+`ActorRuntime.ActorMemorySlice` is now created for SHARED, PRIVATE (source
+syntax: isolated), and UNTRUSTED actors. `ActorContext.actorMemory()` exposes
+an actor-owned region for all three kinds. Existing `privateMemory()` remains
+restricted to PRIVATE and UNTRUSTED for compatibility. Every allocation
+retains an owning actor ID and checks that ID on read/write/close; a SHARED
+actor's *private* memory is not automatically exported to its peers.
+
+`allocatePrivateBytes()` uses `ActorForeignMemory` underneath:
+- GraalVM/JDK 22+ creates an `Arena.ofShared()` **per allocated block**.
+  An actor can resume on a different carrier thread, so a thread-confined
+  `Arena.ofConfined()` would be incorrect. Explicit block close or actor
+  finalization zeroizes and closes the native arena. Arena closure is deferred
+  until the actor has left its execution boundary and children are finalized.
+- Java 21 stays source/binary-compatible via `ByteBuffer.allocateDirect()`.
+  It does **not** offer deterministic native-memory release. JDK 22+ fails
+  closed if FFM cannot initialize; native-image builds need FFM support.
+- These are off-heap **byte blocks**, not relocated Java/Truffle objects.
+  Interpreter ASTs, source objects, mailbox envelopes, futures and scheduling
+  infrastructure can still allocate on the garbage-collected heap.
+- Arenas are per-block at this stage, not slab-pooled bump allocators. This
+  prioritizes precise ownership/close semantics over peak allocation speed.
+  Benchmark allocations, zeroization, object promotion, RSS and GC pauses
+  before asserting any improvement.
+
+**Untrusted actor warning:** `IsolatePolicy.restrictedContextBuilder()`
+chooses `SandboxPolicy.UNTRUSTED` and `spawnIsolate(true)` for adversarial
+Graal contexts; that is separate from the Java `ActorRuntime.spawnUntrusted()`
+implementation, which currently schedules guest behavior on a distinct
+dispatcher but does **not** provision a physical Graal isolate per ActorCell.
+Giving the latter FFM-backed byte blocks does not turn it into a VM sandbox.
+An isolate-worker bootstrap plus serialized actor message bridge, teardown
+and resource-limit tests are still required before guaranteeing a Graal
+isolate per untrusted actor. Untrusted native/FFI capabilities remain denied.
+
 ## Physical heap backend decision
 
 Start with exec'd workers as the reference protected backend. Each live isolated
