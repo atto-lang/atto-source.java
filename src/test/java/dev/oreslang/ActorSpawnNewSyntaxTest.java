@@ -82,6 +82,39 @@ final class ActorSpawnNewSyntaxTest {
     }
 
     @Test
+    void explicitNewWorksWithPrivateAndUntrustedActorKinds() throws Exception {
+        String program = """
+                define isoactor Isolated as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                define untrusted actor Restricted as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val privateActor = spawn new Isolated();
+                  val untrustedActor = spawn (new Restricted());
+                  await privateActor.ready;
+                  await untrustedActor.ready;
+                  privateActor.send("done");
+                  untrustedActor.send("done");
+                  await privateActor.done;
+                  await untrustedActor.done;
+                  stdio.stdout.write("isolated");
+                  return;
+                }
+                """;
+        assertEquals("isolated", run(program));
+    }
+
+    @Test
     void nonActorClassCannotBeSpawnedThroughExplicitNew() {
         String program = """
                 define class Worker as
