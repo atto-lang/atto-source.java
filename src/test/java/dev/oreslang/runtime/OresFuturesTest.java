@@ -12,6 +12,43 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresFuturesTest {
 
     @Test
+    void terminalFutureDropsAdmissionClosureForSuccessFailureAndCancellation() throws Exception {
+        java.lang.reflect.Field field = OresFuture.class.getDeclaredField("cancelAdmission");
+        field.setAccessible(true);
+        for (int terminal = 0; terminal < 3; terminal++) {
+            Object retained = new Object();
+            OresFuture<Integer> future = new OresFuture<>(
+                    () -> retained != null, () -> { });
+            @SuppressWarnings("unchecked")
+            java.util.concurrent.atomic.AtomicReference<java.util.function.BooleanSupplier> slot =
+                    (java.util.concurrent.atomic.AtomicReference<java.util.function.BooleanSupplier>)
+                            field.get(future);
+            assertNotNull(slot.get(), "pending Future needs its cancellation authority");
+
+            switch (terminal) {
+                case 0 -> assertTrue(future.completeFromRuntime(10));
+                case 1 -> assertTrue(future.failFromRuntime(new IllegalStateException("failure")));
+                default -> assertTrue(future.cancel(false));
+            }
+
+            assertNull(slot.get(),
+                    "settled Future must not retain its producer/select admission closure");
+            assertFalse(future.cancel(false), "terminal Future cannot cancel again");
+        }
+    }
+
+    @Test
+    void cancellingSelectionAfterSuccessfulCommitCannotInvalidateResult() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite(13));
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                .selectAsync();
+        assertEquals(13, selected.join().value());
+        assertFalse(selected.cancel(false));
+        assertTrue(channel.tryRead().isEmpty());
+    }
+
+    @Test
     void allPreservesInputOrderIndependentOfCompletionOrder() {
         CompletableFuture<Integer> first = new CompletableFuture<>();
         CompletableFuture<Integer> second = new CompletableFuture<>();
