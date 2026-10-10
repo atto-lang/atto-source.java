@@ -138,6 +138,47 @@ final class GlobalStdioStreamTest {
     }
 
     @Test
+    void merelyCreatingStdinHandlesStreamsAndObservablesNeverPrefetchesInput() throws Exception {
+        String code = """
+                pub routine main(): void {
+                  val Channel<String> raw = stdio.in;
+                  val ReadableStream<String> stream = stdin.in.stream();
+                  val Iterator<String> source = Observable.from_ch(process.stdin);
+                  return;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(code);
+        java.util.concurrent.atomic.AtomicInteger hostReads =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.io.InputStream input = new java.io.ByteArrayInputStream(
+                "secret-before-demand\\n".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public synchronized int read() {
+                hostReads.incrementAndGet();
+                return super.read();
+            }
+
+            @Override
+            public synchronized int read(byte[] data, int offset, int length) {
+                hostReads.incrementAndGet();
+                return super.read(data, offset, length);
+            }
+        };
+        Source source = Source.newBuilder(OresLanguage.ID, code, "lazy-stdio-reads.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .in(input)
+                .logHandler(new ByteArrayOutputStream())
+                .out(new ByteArrayOutputStream())
+                .err(new ByteArrayOutputStream()).build()) {
+            context.eval(source);
+        }
+        assertEquals(0, hostReads.get(),
+                "creating stdin aliases, a stream or an observable must not touch OS input");
+    }
+
+    @Test
     void brokenOutputDescriptorFailsClosedInsteadOfReportingSuccessfulFlush() throws Exception {
         String code = """
                 pub routine main(): void {
