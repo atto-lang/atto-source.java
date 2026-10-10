@@ -1,0 +1,54 @@
+# Actor-native FFM loans and physical-memory accounting
+
+This experimental OresVM/Graal runtime branch strengthens
+`ExplicitNativeI64Region` from PR #563.
+
+## Loan-gated deterministic native release
+
+`region.borrow(slot)` creates an opaque host-side loan. An actor may use
+`loan.read()` only while it is the currently executing semantic owner of
+the region and the loan has not been released. The host completion worker may
+call `loan.close()` on any thread without dereferencing native memory.
+A loan is idempotent to close. A slot cannot be dropped while loans refer
+to it.
+
+`region.close()` and actor termination immediately **fence further access**.
+If loans remain, the native FFM Arena is not physically released. Closing
+the last loan performs `Arena.close()`, invalidates all slots and releases
+the region's quota. `region.physicallyClosed()` is separate from the
+logical `closed()` state so callers cannot confuse revocation with release.
+
+## Quota hardening
+
+A pending loan may retain physical native memory beyond actor shutdown.
+Previously the encompassing `ActorMemorySlice.close()` would reset the
+aggregate runtime memory budget even though the FFM memory was still alive.
+That would allow another actor to consume the same aggregate bytes twice.
+
+Native FFM reservations are now marked `retainPhysicalNativeBytes`.
+At actor exit, the slice releases nonpinned reservations but **keeps
+still-live FFM bytes charged to the runtime-wide heap ceiling**. Completion
+of the final loan releases the aggregate charge, even if the original
+actor and its memory slice have already closed. Tests inspect
+`ActorRuntime.privateMemoryBytes()` before and after this transition.
+
+## Remaining isolation and compiler gates
+
+- This is host-FFM native data memory; JVM/Graal Java wrappers are still
+  garbage collected. No independent actor tracing heap or zero JVM GC is
+  claimed.
+- No raw MemorySegment leaves the host runtime API, but a future source
+  compiler must ensure that guest-language borrows cannot escape as
+  references to mutable Java state. Host code holding an opaque loan remains
+  trusted; the public host API is not itself an unforgeable compiler witness.
+- Cross-isolate untrusted JIT dispatch is not implemented by these changes.
+- Full scheduler quiescence, real native actor classes, async/FFI cancellation
+  fencing, source-level object layout lowering, Native Image reflection and
+  physical isolation tests remain release gates.
+- FFM scope-close failures are fatal to the cleanup path and must not
+  masquerade as successfully released physical memory or quota refunds.
+
+The funded GraalVM JDK 25 exact-blob CI validates actor shutdown with a
+pending loan, foreign actor confinement, multiple-loan completion, aggregate
+native reservation persistence and release, alongside previous actor GC
+boundary and isolate admission tests.
