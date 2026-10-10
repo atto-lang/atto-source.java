@@ -4644,6 +4644,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+        if (isActorPrivateGraphCapability(value)) {
+            throw new SecurityException(
+                    "actor-owned graph/heap handles cannot be stored in shared mutex state");
+        }
 
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
@@ -4771,6 +4775,14 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             visiting.remove(value);
         }
+    }
+
+    private static boolean isActorPrivateGraphCapability(Object value) {
+        return value instanceof ActorGraphArena
+                || value instanceof ActorGraphArena.NodeId
+                || value instanceof ActorMemorySlice
+                || value instanceof PrivateMemoryBlock
+                || value instanceof MemoryReservation;
     }
 
     private void requireOwnedSharedHandles(
@@ -4974,6 +4986,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (isActorPrivateGraphCapability(value)) {
+            throw new SecurityException(
+                    "actor-owned graph/heap handles cannot be published as Shared values");
+        }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
                 || value instanceof ActorRuntime.ContinuationTarget
@@ -5031,6 +5047,13 @@ public final class ActorRuntime implements AutoCloseable {
             int depth,
             long[] nodes) {
         requireGraphDepth(depth);
+        // A graph handle without its actor heap is a stale, forged or
+        // non-owning reference. Neither the object nor its NodeId may cross
+        // an actor mailbox or be serialized as an ordinary data value.
+        if (isActorPrivateGraphCapability(value)) {
+            throw new SecurityException(
+                    "actor-owned graph/heap state cannot cross actor message boundaries");
+        }
         if (++nodes[0] > MAX_MESSAGE_GRAPH_NODES) {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
@@ -5127,6 +5150,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+        if (isActorPrivateGraphCapability(value)) {
+            throw new SecurityException(
+                    "actor-owned graph/heap handles cannot be frozen or shared");
+        }
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
