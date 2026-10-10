@@ -52,6 +52,9 @@ class SharedUntrustedGraalIsolateTest {
             assertTrue(unavailable.getMessage().contains("could not start"),
                     "a missing Graal isolate must fail closed, not fall back to the host JVM");
             assertNotNull(unavailable.getCause());
+            String causeText = unavailable.getCause().toString();
+            assertFalse(causeText.contains("validation for the given sandbox policy"),
+                    "UNTRUSTED sandbox configuration errors must fail this regression: " + causeText);
             return;
         }
 
