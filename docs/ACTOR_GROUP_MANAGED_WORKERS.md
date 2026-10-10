@@ -45,6 +45,8 @@ group.workerCount();       // managed workers (not all cooperative members)
 group.workersDone();       // Future<Void>, snapshot-wide nonblocking drain
 group.releaseWorker(worker); // relinquish ownership without stopping worker
 group.stopWorkers();       // asynchronous stop request; does not park carriers
+OresFuture<Void> finished = group.closeAsync(); // nonblocking close + terminal barrier
+group.closedDone();        // observe finalization after close()
 group.close();             // fences admissions and stops owned workers only
 ```
 
@@ -70,8 +72,15 @@ a source-exposed ActorGroup type are still required for guest-level API parity.
    cooperative membership unchanged.
 5. `stopWorkers()` and `close()` operate only on owned workers. A joined
    cooperative member is not silently stopped or given lifecycle authority.
+   A committed stop request fences `releaseWorker()`: lifecycle ownership
+   cannot be transferred after shutdown has been admitted.
 6. Cancellation/stop before ready fails the readiness barrier. `done` is a
    distinct finalization signal. Shutdown/await must not block a carrier.
+   `workersDone()` observes a worker snapshot while a group is open; after
+   close it returns the persistent `closedDone()` barrier, not a spurious
+   success merely because the closed group's worker map was cleared.
+   `closeAsync()` initiates stop and returns that same noncancellable future.
+   Do not await your own group's finalization from an actor it needs to stop.
 7. Groups are not independent heap/isolate GC domains and cannot bypass
    current runtime actor isolation or message ownership rules.
 
@@ -82,5 +91,11 @@ a source-exposed ActorGroup type are still required for guest-level API parity.
 - Add optional fail-fast/restart supervision policy and graceful shutdown
   deadlines. The current `workersDone()` aggregates a fixed worker snapshot,
   not dynamically spawned workers after the call or nested grandchildren.
-- Run full Java integration regression/CI on the branch head, and differential
-  native source-to-runtime tests once LLVM source actors are lowered.
+- Exact-source GraalVM validation: 114 Java tests passed (ActorRuntime,
+  ActorStructuredCancellation, ActorGroupMailman, ActorReadinessLifecycle,
+  ActorGroupManagedWorkers, and SourceActorSpawnExecution) at
+  https://github.com/athlet-o/athleto-e2e/actions/runs/38093350396 .
+  That result predates the additional `closeAsync/closedDone` implementation;
+  its new exact-head retest is tracked separately.
+- Run broader/full Java integration regression/CI on the latest head, and
+  differential native source-to-runtime tests once LLVM source actors are lowered.
