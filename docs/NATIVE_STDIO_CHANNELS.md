@@ -70,9 +70,12 @@ future settling when the sink accepts the frame; awaiting it is optional.
 **Accepted does not mean flushed.** A previously accepted frame may still be
 in a sink worker's OS write. The context attempts to join sink workers during
 graceful close (bounded wait); force kill, a permanently blocked host stream,
-or an OS write error can still lose that frame. Strong durable flush
-acknowledgment and atomic multi-fd sequencing require an additional barrier
-API. A default fire-and-forget `do writech` syntax is intentionally not
+or an OS write error can still lose that frame. `Stdio.flush_blocking()`
+and `Stdio.flush_async()` provide ordered **host OutputStream.flush()**
+barriers for stdout; `Stdio.err_flush_blocking()` / `err_flush_async()`
+provide the corresponding stderr barriers. This is not `fsync`, does not
+prove the downstream pipe consumer read the bytes, and does not provide
+atomic multi-descriptor delivery. A default fire-and-forget `do writech` syntax is intentionally not
 introduced without explicit unobserved-error policy.
 
 `std/stdio.ores` implements `Stdio.println` and `Stdio.eprintln` returning
@@ -93,8 +96,12 @@ The host stdin worker reads one bounded line at a time and waits for its
 rendezvous to complete **before the next read**. As a result, a slow Oreslang
 consumer stops further host reads, and a shell producer eventually blocks
 once the finite OS pipe buffer fills. Already-buffered bytes are not
-retracted. The line limit is 65,536 UTF-16 code units. Oversized lines close
-with an error rather than masquerading as EOF.
+retracted. The line limit is 65,536 UTF-16 code units **and** 65,536 UTF-8
+bytes. Both limits are enforced; oversized lines close with an error
+rather than masquerading as EOF. Guest-written output frames are capped
+at 65,536 UTF-8 bytes before channel admission. Together with the 128
+pending-guest-operation limit per descriptor, this bounds retained
+pending output payloads; it does not bound all other program allocations.
 
 Only the descriptor bridge performs OS reads/writes; all generator,
 Observable, composition, formatting, and cancellation decisions are in

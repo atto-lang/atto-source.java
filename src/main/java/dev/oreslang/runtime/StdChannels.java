@@ -17,6 +17,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class StdChannels implements AutoCloseable {
     public static final int MAX_LINE_CHARS = 65_536;
+    public static final int MAX_OUTPUT_FRAME_UTF8_BYTES = 65_536;
+
+    /**
+     * Pending write registrations retain frames. The admission count limit
+     * alone cannot bound memory unless individual frames are also bounded.
+     */
+    static void validateOutputFrame(Object value) {
+        if (!(value instanceof String frame)) {
+            throw new IllegalArgumentException("stdio output channels accept String frames only");
+        }
+        if (frame.length() > MAX_OUTPUT_FRAME_UTF8_BYTES
+                || frame.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                        > MAX_OUTPUT_FRAME_UTF8_BYTES) {
+            throw new IllegalArgumentException(
+                    "stdio output frame exceeds " + MAX_OUTPUT_FRAME_UTF8_BYTES + " UTF-8 bytes");
+        }
+    }
+
+    private static String boundedInputLine(String line) throws IOException {
+        if (line.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_LINE_CHARS) {
+            throw new IOException("stdin line exceeds " + MAX_LINE_CHARS + " UTF-8 bytes");
+        }
+        return line;
+    }
 
     /**
      * A process-owned descriptor is NOT an ordinary guest-owned channel.
@@ -167,11 +191,11 @@ public final class StdChannels implements AutoCloseable {
         StringBuilder value = new StringBuilder();
         for (;;) {
             int ch = reader.read();
-            if (ch < 0) return value.isEmpty() ? null : value.toString();
+            if (ch < 0) return value.isEmpty() ? null : boundedInputLine(value.toString());
             if (ch == '\n') {
                 int length = value.length();
                 if (length > 0 && value.charAt(length - 1) == '\r') value.setLength(length - 1);
-                return value.toString();
+                return boundedInputLine(value.toString());
             }
             if (value.length() >= MAX_LINE_CHARS) {
                 throw new IOException("stdin line exceeds " + MAX_LINE_CHARS + " UTF-16 code units");

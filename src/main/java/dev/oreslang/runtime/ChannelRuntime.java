@@ -676,6 +676,9 @@ public final class ChannelRuntime {
             for (SelectCase candidate : selection.set.cases) {
                 if (candidate instanceof WriteCase<?> write
                         && write.channel() instanceof StdChannels.OutputChannel) {
+                    // All guest writes (including dynamically built selects)
+                    // must have a bounded frame before admission retains it.
+                    StdChannels.validateOutputFrame(write.value());
                     pending.merge(write.channel(), 1, Integer::sum);
                 } else if (candidate instanceof ReadCase<?> read
                         && read.channel() instanceof StdChannels.InputChannel) {

@@ -231,6 +231,41 @@ final class NativeStdioChannelsTest {
                         + ": " + problem);
     }
 
+
+    @Test
+    void outputFrameLimitRejectsAsciiAndMultibytePayloadsBeforeAdmission() {
+        for (String[] sample : new String[][]{
+                {"stdio.out", "x".repeat(65_537)},
+                {"process.stderr", "é".repeat(32_769)}
+        }) {
+            String code = "pub routine main(): void { writech "
+                    + sample[0] + ", \"" + sample[1] + "\"; return; }";
+            assertThrows(Exception.class, () -> run(code, ""),
+                    "oversized UTF-8 frame should not be admitted: " + sample[0]);
+        }
+    }
+
+    @Test
+    void outputFrameAtExactUtf8LimitIsAccepted() throws Exception {
+        String payload = "x".repeat(65_536);
+        Output result = run("pub routine main(): void { writech stdio.out, \""
+                + payload + "\"; return; }", "");
+        assertEquals(payload, result.stdout());
+    }
+
+    @Test
+    void stdinLineByteLimitRejectsLargeMultibyteInput() {
+        String input = "é".repeat(32_769) + "\n";
+        assertThrows(Exception.class, () -> run("""
+                pub routine main(): void {
+                  for const line of stdio.in {
+                    writech stdio.out, line;
+                  }
+                  return;
+                }
+                """, input));
+    }
+
     @Test
     void processAndStdioChannelsAreTheSameGlobalObjects() throws Exception {
         Output result = run("""
