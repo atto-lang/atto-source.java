@@ -480,6 +480,41 @@ final class IdentityReturnTypeTest {
         assertEquals("after\\n", output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
     }
 
+    @Test void conditionalExpressionProvesBothBranchesPreserveIdentity() {
+        accepts("""
+                define class T as
+                end
+                fnc preserve(T v, bool selected): v {
+                  return selected ? v : v;
+                }
+                """);
+        accepts("""
+                define class T as
+                end
+                fnc preserve(T v, bool selected): v {
+                  val origin = selected ? v : v;
+                  return origin;
+                }
+                """);
+    }
+
+    @Test void conditionalIdentityRejectsAReplacementOrRebind() {
+        rejects("""
+                define class T as
+                end
+                fnc bad(T v, bool selected): v {
+                  return selected ? v : new T();
+                }
+                """, "identity return mismatch");
+        rejects("""
+                define class T as
+                end
+                fnc bad(T mut v, bool selected): v {
+                  return selected ? v : (v = new T());
+                }
+                """, "identity return rebind");
+    }
+
     @Test void shadowedAliasDoesNotProveIdentity() {
         rejects("""
                 define module m
