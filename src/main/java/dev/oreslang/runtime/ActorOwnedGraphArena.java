@@ -110,6 +110,20 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         this.maxEdgesPerNode = maxEdgesPerNode;
     }
 
+    /**
+     * A minimum bounded metadata charge. Guest payload allocations themselves
+     * still need compiler-provided, backend-specific accounting.
+     */
+    public static long estimatedMetadataBytes(int capacity, int degree) {
+        if (capacity < 1 || capacity > 65536 || degree < 1
+                || (long) capacity * degree > 1_000_000L) {
+            throw new IllegalArgumentException("bounded graph capacity and degree required");
+        }
+        return Math.addExact(128L, Math.addExact(
+                Math.multiplyExact(64L, capacity),
+                Math.multiplyExact(32L, (long) capacity * degree)));
+    }
+
     private void checkActor() { ownerGuard.run(); }
 
     public NodeId add(Supplier<? extends T> factory) {
