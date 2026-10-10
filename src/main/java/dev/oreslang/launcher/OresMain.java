@@ -51,6 +51,8 @@ public final class OresMain {
         Set<String> buildEntryPoints = new LinkedHashSet<>();
         String mode = NativeBuildMode.defaultExecutionMode();
         String platform = "server";
+        String targetEnvironment = null;
+        Set<String> targetCapabilities = new LinkedHashSet<>();
         PermissionCheckMode permissionCheckMode = PermissionCheckMode.RUNTIME;
         RuntimePermissions.Builder permissionBuilder = new RuntimePermissions.Builder();
         EnumSet<RuntimePermissions.Permission> touchedPermissions =
@@ -88,6 +90,21 @@ public final class OresMain {
                 String raw = arg.substring("--entry=".length()).trim();
                 if (raw.isEmpty()) throw new IllegalArgumentException("--entry requires a symbol name");
                 buildEntryPoints.add(raw);
+            } else if (arg.startsWith("--target-env=")) {
+                targetEnvironment = arg.substring("--target-env=".length());
+                if (targetEnvironment.isBlank()) {
+                    throw new IllegalArgumentException("--target-env requires an environment");
+                }
+            } else if (arg.startsWith("--target-capabilities=")) {
+                String raw = arg.substring("--target-capabilities=".length());
+                if (!raw.isBlank()) {
+                    for (String capability : raw.split(",", -1)) {
+                        if (capability.isBlank()) {
+                            throw new IllegalArgumentException("empty --target-capabilities entry");
+                        }
+                        targetCapabilities.add(capability.trim());
+                    }
+                }
             } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
             else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
             else if (arg.startsWith("--allow=")) {
@@ -133,6 +150,12 @@ public final class OresMain {
 
         if (checkOnly && buildAnalysis) {
             throw new IllegalArgumentException("--check and --build-analysis are mutually exclusive");
+        }
+        if (targetEnvironment != null && !checkOnly) {
+            throw new IllegalArgumentException("--target-env currently requires --check (not execution)");
+        }
+        if (targetEnvironment == null && !targetCapabilities.isEmpty()) {
+            throw new IllegalArgumentException("--target-capabilities requires --target-env");
         }
 
         String directOresSource = filename.endsWith(".ores") ? Files.readString(path) : null;
@@ -196,7 +219,9 @@ public final class OresMain {
                         path,
                         System.getenv(),
                         policy,
-                        permissionCheckMode);
+                        permissionCheckMode,
+                        targetEnvironment,
+                        Set.copyOf(targetCapabilities));
             } catch (Exception error) {
                 System.err.println(formatCheckDiagnostic(path, error));
                 System.exit(1);
