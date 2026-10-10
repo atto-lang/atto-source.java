@@ -10,6 +10,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** HTTP/1.1 transport. Guest code sees revocable exchange capabilities, never sockets. */
@@ -17,6 +18,8 @@ public final class NativeHttp implements AutoCloseable {
     private final OresContext context;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
+    /** One completion watcher per reusable actor, not one per HTTP request. */
+    private final Map<ActorRuntime.ActorId, ReusableActorLease> reusableActors = new ConcurrentHashMap<>();
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
@@ -126,6 +129,33 @@ public final class NativeHttp implements AutoCloseable {
             return ActorRuntime.currentActorId().orElseThrow();
         }
         return context;
+    }
+
+    /** Actor death closes all its unfinished exchanges. Completed ones are detached
+     * immediately, so persistent actors do not retain one callback per request. */
+    private final class ReusableActorLease {
+        final ActorRuntime.ActorRef<?> actor;
+        final Set<State> outstanding = ConcurrentHashMap.newKeySet();
+        final AtomicBoolean watching = new AtomicBoolean();
+        volatile boolean ended;
+
+        ReusableActorLease(ActorRuntime.ActorRef<?> actor) { this.actor = actor; }
+
+        void attach(State state) {
+            outstanding.add(state);
+            if (ended || actor.done().isDone()) state.abort(500);
+        }
+
+        void watch() {
+            if (!watching.compareAndSet(false, true)) return;
+            actor.done().whenCompleteRuntime((ignored, failure) -> {
+                ended = true;
+                for (State state : outstanding) state.abort(500);
+                reusableActors.remove(actor.id(), this);
+            });
+        }
+
+        void detach(State state) { outstanding.remove(state); }
     }
 
     public final class Server implements AutoCloseable {
@@ -277,6 +307,7 @@ public final class NativeHttp implements AutoCloseable {
         final Map<String, List<String>> params = new LinkedHashMap<>();
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
+        ReusableActorLease reusableActor;
         // A handler() dispatch owns its actor for exactly this exchange. By contrast,
         // move_to(existing_actor) borrows a persistent actor that may own many requests.
         // Only the former may cancel its actor and wait for actor.done before releasing
@@ -316,6 +347,7 @@ public final class NativeHttp implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
+                if (reusableActor != null) reusableActor.detach(this);
                 if (CorePerf.enabled()) {
                     CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
                 }
@@ -355,7 +387,15 @@ public final class NativeHttp implements AutoCloseable {
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                if (dedicated) {
+                    destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                } else {
+                    ReusableActorLease lease = reusableActors.computeIfAbsent(
+                            destination.id(), unused -> new ReusableActorLease(destination));
+                    state.reusableActor = lease;
+                    lease.attach(state);
+                    lease.watch();
+                }
                 return token;
             }
         }
@@ -589,6 +629,6 @@ public final class NativeHttp implements AutoCloseable {
     @Override public synchronized void close() {
         closed = true;
         for (Server server : List.copyOf(servers)) server.close();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+        timers.shutdownNow(); io.shutdownNow(); transfers.clear(); reusableActors.clear();
     }
 }
