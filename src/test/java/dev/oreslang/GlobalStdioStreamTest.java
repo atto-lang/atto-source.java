@@ -92,14 +92,19 @@ final class GlobalStdioStreamTest {
         for (String descriptor : List.of(
                 "stdio.in", "stdin.in", "process.stdin",
                 "stdio.out", "process.stdout", "stdio.err", "process.stderr")) {
-            Exception failure = assertThrows(Exception.class, () -> run("""
+            String program = """
                     pub routine main(): void {
                       val Channel<String> alias = %s;
                       alias.close();
                       return;
                     }
-                    """.formatted(descriptor), ""));
-            assertNotNull(failure, descriptor);
+                    """.formatted(descriptor);
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program),
+                    "guest descriptor close must be well-typed before the runtime denies it: " + descriptor);
+            Exception failure = assertThrows(Exception.class, () -> run(program, ""));
+            assertTrue(failure.toString().contains("process-owned"),
+                    "runtime must reject the ambient close, not an unrelated failure: "
+                            + descriptor + ": " + failure);
         }
     }
 
