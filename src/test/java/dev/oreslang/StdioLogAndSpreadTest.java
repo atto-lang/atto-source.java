@@ -41,7 +41,7 @@ final class StdioLogAndSpreadTest {
 
     @Test
     void explicitBlockingLogNamePreservesLegacyLogBehavior() throws Exception {
-        assertEquals("A1B\\n", run("""
+        assertEquals("A1B\n", run("""
                 pub routine main(): void {
                   stdio.stdout.log_blocking("A", 1, "B");
                   return;
