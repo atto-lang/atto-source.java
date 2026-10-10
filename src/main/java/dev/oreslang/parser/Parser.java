@@ -101,7 +101,7 @@ public final class Parser {
                 }
                 if (match(MODULE)) {
                     if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.critical) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
@@ -273,7 +273,7 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
-            if (modifiers.shared || modifiers.untrusted) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.critical) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             if (match(CONTRACT)) {
@@ -343,7 +343,7 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.critical) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
@@ -357,7 +357,7 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.critical) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
@@ -385,7 +385,7 @@ public final class Parser {
     }
 
     private Ast.ActorKind resolveActorKind(Token actorToken, boolean isolated, Modifiers modifiers) {
-        if (isolated && (modifiers.shared || modifiers.untrusted)) {
+        if (isolated && (modifiers.shared || modifiers.untrusted || modifiers.critical)) {
             throw error(
                     actorToken,
                     "'shared/untrusted isoactor' is contradictory; use either shared actor, untrusted actor, or isoactor");
@@ -410,6 +410,7 @@ public final class Parser {
         if (modifiers.suspends && modifiers.generator)
             throw error(previous(), "suspends generators need suspension-aware generator frames");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
+        if (modifiers.critical && modifiers.generator) throw error(previous(), "critical generators cannot hold a lock across yield");
         if (modifiers.trapped && modifiers.async) {
             throw error(previous(), "async trap fnc/routine is not enabled until trap spans every await suspension");
         }
@@ -420,7 +421,7 @@ public final class Parser {
             throw error(previous(), "trap actor callables are not enabled until actor supervision preserves the trap effect");
         }
         CallableStructural structural = normalizeCallableStructural(annotations, modifiers.structural);
-        annotations = structural.annotations();
+        annotations = addCriticalEffect(structural.annotations(), modifiers.critical);
         String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
 
@@ -509,7 +510,7 @@ public final class Parser {
             if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
-            if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
+            if (mods.shared || mods.untrusted || mods.critical) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
@@ -538,7 +539,7 @@ public final class Parser {
             boolean filePrivateScope) {
         Token keyword = advance(); // contextual 'constructor'
         if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.isStatic
-                || mods.isAbstract || mods.shared || mods.untrusted) {
+                || mods.isAbstract || mods.shared || mods.untrusted || mods.critical) {
             throw error(keyword,
                     "constructors accept only private/pub visibility; callable/actor modifiers are not permitted");
         }
@@ -573,7 +574,7 @@ public final class Parser {
 
     private void validateClassModifiers(Modifiers modifiers) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.shared || modifiers.untrusted || modifiers.critical) {
             throw error(previous(),
                     "classes accept only private/pub visibility and abstract; callable/actor modifiers are not permitted");
         }
@@ -581,21 +582,21 @@ public final class Parser {
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.critical) {
             throw error(peek(), "class fields accept only private/pub visibility modifiers");
         }
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.critical) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
         }
     }
 
     private void validateInterfaceCallableModifiers(Modifiers modifiers) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.critical) {
             throw error(previous(),
                     "interface callable signatures currently accept only the structural callable modifier");
         }
@@ -604,7 +605,7 @@ public final class Parser {
     private void validateNoModifiers(Modifiers modifiers, String context) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted) {
+                || modifiers.shared || modifiers.untrusted || modifiers.critical) {
             throw error(previous(), context + " do not accept declaration modifiers");
         }
     }
@@ -715,14 +716,14 @@ public final class Parser {
             throw error(peek(), "actor state fields are private; expose state through actor methods");
         }
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.critical) {
             throw error(peek(), "actor state fields do not accept callable/static/actor modifiers");
         }
     }
 
     private void validateActorMethodModifiers(Modifiers modifiers) {
         if (modifiers.generator || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted) {
+                || modifiers.shared || modifiers.untrusted || modifiers.critical) {
             throw error(peek(), "actor methods do not accept generator, nlex, abstract, shared, or untrusted modifiers");
         }
     }
@@ -863,7 +864,8 @@ public final class Parser {
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
-        annotations = structural.annotations();
+        annotations = addCriticalEffect(structural.annotations(), mods.critical);
+        if (mods.critical && (mods.isAbstract || mods.generator)) throw error(previous(), "critical methods need a concrete non-generator body");
         String name = parseMethodName();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after method name");
@@ -972,6 +974,7 @@ public final class Parser {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean suspends = false;
+        boolean critical = false;
         boolean generator = false;
         boolean structural = false;
         boolean nonLexical = false;
@@ -983,6 +986,7 @@ public final class Parser {
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
         boolean suspendsSeen = false;
+        boolean criticalSeen = false;
         boolean generatorSeen = false;
         boolean structuralSeen = false;
         boolean nonLexicalSeen = false;
@@ -1009,6 +1013,10 @@ public final class Parser {
                 if (suspendsSeen) throw error(previous(), "duplicate 'suspends' modifier");
                 suspendsSeen = true;
                 suspends = true;
+            } else if (match(CRITICAL)) {
+                if (criticalSeen) throw error(previous(), "duplicate 'critical' modifier");
+                criticalSeen = true;
+                critical = true;
             } else if (match(GENERATOR)) {
                 if (generatorSeen) throw error(previous(), "duplicate 'generator' modifier");
                 generatorSeen = true;
@@ -1054,7 +1062,7 @@ public final class Parser {
             }
         }
         if (async && suspends) throw error(previous(), "'async suspends' is redundant; choose one");
-        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
+        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted, critical);
     }
 
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
@@ -1065,6 +1073,7 @@ public final class Parser {
         if (before.suspends && after.suspends) throw error(previous(), "duplicate 'suspends' modifier");
         if (before.async && after.suspends || before.suspends && after.async)
             throw error(previous(), "'async suspends' is redundant; choose one");
+        if (before.critical && after.critical) throw error(previous(), "duplicate 'critical' modifier");
         if (before.generator && after.generator) throw error(previous(), "duplicate 'generator' modifier");
         if (before.structural && after.structural) throw error(previous(), "duplicate 'structural' modifier");
         if (before.nonLexical && after.nonLexical) throw error(previous(), "duplicate 'nlex' modifier");
@@ -1086,7 +1095,8 @@ public final class Parser {
                 before.isStatic || after.isStatic,
                 before.isAbstract || after.isAbstract,
                 before.shared || after.shared,
-                before.untrusted || after.untrusted);
+                before.untrusted || after.untrusted,
+                before.critical || after.critical);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -3213,6 +3223,13 @@ public final class Parser {
 
     private record CallableStructural(boolean enabled, List<Ast.Annotation> annotations) { }
 
+    private List<Ast.Annotation> addCriticalEffect(List<Ast.Annotation> existing, boolean critical) {
+        if (!critical) return existing;
+        ArrayList<Ast.Annotation> annotations = new ArrayList<>(existing);
+        annotations.add(new Ast.Annotation("$critical", List.of()));
+        return List.copyOf(annotations);
+    }
+
     private boolean isCallableStructuralAnnotation(Ast.Annotation annotation) {
         return annotation.name().equals("structural") || annotation.name().equals("Structural");
     }
@@ -3511,5 +3528,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted, boolean critical) { }
 }
