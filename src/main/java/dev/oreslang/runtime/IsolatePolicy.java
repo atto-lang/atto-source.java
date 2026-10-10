@@ -100,6 +100,27 @@ public record IsolatePolicy(
                 true);
     }
 
+    /**
+     * Root runtime policy for the ONE shared untrusted domain. Host/FFI/IO
+     * capabilities remain absent; only bounded actor creation is admitted.
+     * Individual UNTRUSTED actors still inherit untrustedActor(), which has
+     * no ACTOR_SPAWN authority.
+     *
+     * <p>The CPU bound is an isolate-epoch limit, not an actor-turn timeout.
+     * The supervisor must recycle the entire domain when its budget expires.</p>
+     */
+    public static IsolatePolicy sharedUntrustedDomain(long isolateHeapBytes) {
+        if (isolateHeapBytes < 32L * 1024 * 1024)
+            throw new IllegalArgumentException("shared untrusted domain requires at least 32 MiB");
+        long guestBudget = isolateHeapBytes - Math.max(8L * 1024 * 1024, isolateHeapBytes / 4);
+        return new IsolatePolicy(
+                Set.of(Capability.ACTOR_SPAWN),
+                guestBudget,
+                2048,
+                Duration.ofHours(24),
+                true);
+    }
+
     /** Restricted local/test baseline. Java interop/FFI/native/reflection/process spawning remain denied. */
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
