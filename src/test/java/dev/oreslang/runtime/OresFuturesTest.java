@@ -220,6 +220,58 @@ final class OresFuturesTest {
     }
 
     @Test
+    void timedOutHostReadsDetachWaitersFromNeverSettledProducer() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+
+        for (int attempt = 0; attempt < 400; attempt++) {
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> pending.get(1, java.util.concurrent.TimeUnit.NANOSECONDS));
+            assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                    "timed-out polling must never retain an abandoned host latch");
+        }
+
+        assertFalse(pending.isDone(), "timing out must not cancel the shared producer");
+        assertTrue(pending.completeFromRuntime(17));
+        assertEquals(17, pending.get(1, java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    @Test
+    void interruptedHostReadDetachesWaiterWithoutCancellingProducer() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        var result = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var started = new java.util.concurrent.CountDownLatch(1);
+        Thread host = Thread.ofVirtual().start(() -> {
+            started.countDown();
+            try {
+                pending.get();
+                result.set(new AssertionError("pending Future unexpectedly completed"));
+            } catch (Throwable failure) {
+                result.set(failure);
+            }
+        });
+        try {
+            assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (pending.pendingRuntimeWaiterCount() == 0 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(1, pending.pendingRuntimeWaiterCount(),
+                    "host must register its blocking waiter before interruption");
+            host.interrupt();
+            host.join(5_000);
+            assertFalse(host.isAlive());
+            assertInstanceOf(InterruptedException.class, result.get());
+            assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                    "interrupt must detach host latch from shared producer");
+            assertFalse(pending.isDone(), "interrupt must not cancel shared producer");
+        } finally {
+            host.interrupt();
+            host.join(5_000);
+        }
+    }
+
+    @Test
     void terminalFutureDoesNotRetainLateRuntimeWaiters() {
         OresFuture<Integer> future = OresFuture.completed(7);
         java.util.concurrent.atomic.AtomicInteger callbacks =
