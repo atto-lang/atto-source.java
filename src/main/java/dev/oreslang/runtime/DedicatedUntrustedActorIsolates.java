@@ -183,7 +183,19 @@ public final class DedicatedUntrustedActorIsolates implements AutoCloseable {
         }
 
         public UUID identity() { return hostIdentity; }
+
+        /**
+         * The sole actor in this lease has a distinct Graal isolate Engine
+         * (and collector). This flag is only available after engine/context
+         * construction succeeds; there is no fallback host-JVM actor.
+         */
         public boolean independentlyCollectable() { return true; }
+
+        /** Package-private verification, never exposed as a guest handle. */
+        boolean sharesPhysicalCollectorWith(Actor other) {
+            Objects.requireNonNull(other, "other");
+            return scope.engine == other.scope.engine;
+        }
         public boolean closed() { return actorClosed.get(); }
 
         public void send(Object data) {
