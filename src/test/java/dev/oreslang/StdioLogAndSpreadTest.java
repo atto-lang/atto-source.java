@@ -18,6 +18,28 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class StdioLogAndSpreadTest {
     @Test
+    void asyncStdoutLogsDrainAutomaticallyWhenContextCloses() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  stdio.stdout.log_async("async-", 42);
+                  return;
+                }
+                """);
+        assertEquals("async-42\\n", output);
+    }
+
+    @Test
+    void asyncStdoutFlushHasFutureVoidType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub async routine main(): void {
+                  stdio.stdout.log_async("queued");
+                  await stdio.flush_async_logs();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void stdoutLogConcatenatesArgumentsAndAppendsOneNewline() throws Exception {
         String output = run("""
                 pub routine main(): void {
