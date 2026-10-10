@@ -3721,7 +3721,8 @@ public final class TypeChecker {
                     targetFunction.parameters(),
                     targetFunction.mutableParameters(),
                     targetFunction.async(),
-                    overlayReadonlyCapabilities(sourceFunction.result(), targetFunction.result()));
+                    overlayReadonlyCapabilities(sourceFunction.result(), targetFunction.result()),
+                    targetFunction.identitySource());
         }
         return expected;
     }
@@ -4059,7 +4060,8 @@ public final class TypeChecker {
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> bindReceiverSelf(t, receiver)).toList(),
                 fn.mutableParameters(), fn.async(),
-                bindReceiverSelf(fn.result(), receiver));
+                bindReceiverSelf(fn.result(), receiver),
+                fn.identitySource());
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
@@ -5060,7 +5062,8 @@ public final class TypeChecker {
                             .toList(),
                     fn.mutableParameters(),
                     fn.async(),
-                    resolveSharedGeneric(fn.result(), bindings));
+                    resolveSharedGeneric(fn.result(), bindings),
+                    fn.identitySource());
         }
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -6035,11 +6038,30 @@ public final class TypeChecker {
             boolean generator,
             Set<String> generics,
             Type self) {
+        int identitySource = Function.NO_IDENTITY;
+        if (returns.isIdentityReturn()) {
+            String source = returns.identityParameter();
+            if (source.equals("this")) {
+                identitySource = Function.RECEIVER_IDENTITY;
+            } else {
+                for (int i = 0; i < params.size(); i++) {
+                    if (params.get(i).name().equals(source)) {
+                        identitySource = i;
+                        break;
+                    }
+                }
+                if (identitySource == Function.NO_IDENTITY) {
+                    throw new IllegalArgumentException(
+                            "identity-returning function references unknown parameter '" + source + "'");
+                }
+            }
+        }
         return new Function(
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
                 params.stream().map(Ast.Param::mutable).toList(),
                 async,
-                callableResult(async, generator, resolve(returns, generics, self)));
+                callableResult(async, generator, resolve(returns, generics, self)),
+                identitySource);
     }
 
     private Function callableContractType(
@@ -6525,7 +6547,8 @@ public final class TypeChecker {
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
                 fn.mutableParameters(),
                 fn.async(),
-                substituteGenerics(fn.result(), bindings));
+                substituteGenerics(fn.result(), bindings),
+                fn.identitySource());
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
@@ -7133,6 +7156,10 @@ public final class TypeChecker {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
             if (!source.mutableParameters().equals(target.mutableParameters())) return false;
+            // Identity guarantees are covariant only by weakening to a nominal
+            // return, never by upgrading a nominal callable to a dependent one.
+            if (target.identitySource() != Function.NO_IDENTITY
+                    && source.identitySource() != target.identitySource()) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!assignable(target.parameters().get(i), source.parameters().get(i))) return false;
             }
