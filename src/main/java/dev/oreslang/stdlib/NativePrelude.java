@@ -31,6 +31,26 @@ public final class NativePrelude {
         boolean needStdio = source.matches("(?s).*\\bStdio\\b.*");
         if (!needObservable && !needStreams && !needStdio) return program;
 
+        // These names are not extension points. In particular, a local
+        // ReadableStream class must not be invoked by the trusted Channel.stream
+        // primitive simply because it has the same unqualified name.
+        for (Ast.ModuleDecl module : program.modules()) {
+            if ((needObservable && module.name().equals("Observable"))
+                    || (needStdio && module.name().equals("Stdio"))) {
+                throw new IllegalArgumentException(
+                        "cannot redeclare reserved Oreslang standard module " + module.name());
+            }
+            if (needStreams) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.ClassDecl klass
+                            && (klass.name().equals("ReadableStream")
+                                || klass.name().equals("WritableTee"))) {
+                        throw new IllegalArgumentException(
+                                "cannot redeclare reserved Oreslang stream type " + klass.name());
+                    }
+                }
+            }
+        }
         Set<String> present = new HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
             present.add(module.name());
@@ -41,6 +61,20 @@ public final class NativePrelude {
         for (Ast.ImportDecl imported : program.imports()) {
             if (!imported.wildcard()) {
                 for (String name : imported.names()) {
+                    String exposed = imported.namespace() == null ? name : imported.namespace();
+                    if (needStreams
+                            && (exposed.equals("ReadableStream") || exposed.equals("WritableTee"))) {
+                        throw new IllegalArgumentException(
+                                "native stream types are globally provided; do not import " + exposed);
+                    }
+                    if (needObservable && exposed.equals("Observable")
+                            && !imported.path().equals("std/observable")) {
+                        throw new IllegalArgumentException("Observable is a reserved standard module");
+                    }
+                    if (needStdio && exposed.equals("Stdio")
+                            && !imported.path().equals("std/stdio")) {
+                        throw new IllegalArgumentException("Stdio is a reserved standard module");
+                    }
                     present.add(imported.namespace() == null ? name : imported.namespace());
                 }
             }
