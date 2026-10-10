@@ -132,6 +132,22 @@ final class ActorConcurrencyDeclarationTest {
     }
 
     @Test
+    void protocolActorSpawnNeverPretendsToBeAnHttpListener() {
+        Ast.Program program = Parser.parse("""
+                define serial http actor HttpEndpoint as
+                end
+                pub routine main(): void {
+                    const endpoint = spawn HttpEndpoint();
+                    return;
+                }
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(failure.getMessage().contains("request/session adapter"),
+                failure::getMessage);
+    }
+
+    @Test
     void nonProtocolIdentifiersRemainValid() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc calculate(int serial, int http, int tcp, int websocket): int {
