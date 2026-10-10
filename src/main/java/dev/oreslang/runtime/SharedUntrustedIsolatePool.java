@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.OresLanguage;
+
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
