@@ -122,6 +122,83 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void observableTakeOneUnsubscribesAfterFirstEmission() throws Exception {
+        var requested = new java.util.concurrent.atomic.AtomicInteger();
+        var unsubscribed = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.Flow.Publisher<Integer> source = subscriber ->
+                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                    @Override public void request(long n) {
+                        requested.incrementAndGet();
+                        subscriber.onNext(31);
+                        subscriber.onNext(99); // Ignore any unexpected second emission.
+                        subscriber.onComplete();
+                    }
+                    @Override public void cancel() { unsubscribed.countDown(); }
+                });
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(source))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        var winner = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals(ChannelRuntime.SelectOperation.OBSERVE, winner.operation());
+        assertEquals(31, winner.value());
+        assertEquals(1, requested.get());
+        assertTrue(unsubscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    @Test
+    void losingObservableSubscriptionIsCancelledWithoutStealingChannelValue()
+            throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        var subscribed = new java.util.concurrent.CountDownLatch(1);
+        var unsubscribed = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.Flow.Publisher<Integer> never = subscriber -> {
+            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                @Override public void request(long n) { subscribed.countDown(); }
+                @Override public void cancel() { unsubscribed.countDown(); }
+            });
+        };
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.observeOnce(never), ChannelRuntime.read(channel))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertTrue(subscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(channel.tryWrite(12));
+        var winner = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals(ChannelRuntime.SelectOperation.READ, winner.operation());
+        assertEquals(12, winner.value());
+        assertTrue(unsubscribed.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                "losing reactive case must unsubscribe");
+    }
+
+    @Test
+    void readyChannelPreventsUnnecessaryObservableSubscription() throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite(5));
+        var starts = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Flow.Publisher<Integer> publisher =
+                subscriber -> starts.incrementAndGet();
+        var winner = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(channel), ChannelRuntime.observeOnce(publisher))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY)
+                .get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals(ChannelRuntime.SelectOperation.READ, winner.operation());
+        assertEquals(0, starts.get(),
+                "already decided select must not subscribe to the losing Publisher");
+    }
+
+    @Test
+    void observableEmptyCompletionFailsSelectRatherThanHanging() throws Exception {
+        java.util.concurrent.Flow.Publisher<Integer> empty = subscriber ->
+                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                    @Override public void request(long n) { subscriber.onComplete(); }
+                    @Override public void cancel() { }
+                });
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(empty))
+                .selectAsync();
+        var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> selected.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(failure.getCause() instanceof java.util.NoSuchElementException);
+    }
+
+    @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         assertTrue(channel.tryWrite(1));
