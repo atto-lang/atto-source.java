@@ -12,6 +12,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * ONE physical Graal polyglot isolate and ONE guest Context for the untrusted
@@ -35,7 +36,11 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
     private static final long MIN_HEAP = 32L * 1024 * 1024;
     private static final long DEFAULT_HEAP = 256L * 1024 * 1024;
     private static final int SUBMISSION_CAPACITY = 128;
+    private static final Object GLOBAL_LOCK = new Object();
+    private static SharedUntrustedGraalIsolate processDomain;
 
+    private final long aggregateHeapLimit;
+    private final AtomicReference<Thread> submitCarrier = new AtomicReference<>();
     private final Engine engine;
     private final Context guest;
     private final ThreadPoolExecutor submissions;
@@ -44,6 +49,7 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
     private SharedUntrustedGraalIsolate(long isolateHeapBytes) {
         if (isolateHeapBytes < MIN_HEAP)
             throw new IllegalArgumentException("shared untrusted isolate heap must be at least 32 MiB");
+        this.aggregateHeapLimit = isolateHeapBytes;
         Engine created = null;
         Context opened = null;
         try {
@@ -82,17 +88,35 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
                 runnable -> {
                     Thread t = new Thread(runnable, "ores-shared-untrusted-isolate-entry");
                     t.setDaemon(true);
+                    submitCarrier.set(t);
                     return t;
                 },
                 new ThreadPoolExecutor.AbortPolicy());
     }
 
     public static SharedUntrustedGraalIsolate open() {
-        return new SharedUntrustedGraalIsolate(DEFAULT_HEAP);
+        return open(DEFAULT_HEAP);
     }
 
+    /**
+     * Exactly one live untrusted Engine/Context pair per host process.
+     * A different aggregate budget is not silently accepted on a later call.
+     * The host supervisor owns shutdown; this is not a per-actor resource.
+     */
     public static SharedUntrustedGraalIsolate open(long aggregateIsolateHeapBytes) {
-        return new SharedUntrustedGraalIsolate(aggregateIsolateHeapBytes);
+        if (aggregateIsolateHeapBytes < MIN_HEAP)
+            throw new IllegalArgumentException("shared untrusted isolate heap must be at least 32 MiB");
+        synchronized (GLOBAL_LOCK) {
+            if (processDomain != null) {
+                if (processDomain.aggregateHeapLimit != aggregateIsolateHeapBytes)
+                    throw new IllegalStateException("shared untrusted isolate already exists with a different heap cap");
+                return processDomain;
+            }
+            SharedUntrustedGraalIsolate created =
+                    new SharedUntrustedGraalIsolate(aggregateIsolateHeapBytes);
+            processDomain = created;
+            return created;
+        }
     }
 
     /**
@@ -113,8 +137,8 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
                 guest.eval(OresLanguage.ID, source);
                 result.complete(null);
             } catch (Throwable failure) {
-                if (failure instanceof VirtualMachineError fatal) throw fatal;
                 result.completeExceptionally(failure);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
             }
         });
         return result;
@@ -127,26 +151,35 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
 
     @Override
     public void close() {
-        synchronized (this) {
-            if (!closed.compareAndSet(false, true)) return;
-            submissions.shutdown();
-        }
-        boolean terminated = false;
-        try {
-            terminated = submissions.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-        }
-        try {
-            if (!terminated) {
-                // Cancel a wedged guest evaluation before stopping its carrier.
-                guest.close(true);
-                submissions.shutdownNow();
-            } else {
-                guest.close();
+        if (Thread.currentThread() == submitCarrier.get())
+            throw new IllegalStateException("cannot close shared untrusted isolate from its entry carrier");
+        synchronized (GLOBAL_LOCK) {
+            synchronized (this) {
+                if (!closed.compareAndSet(false, true)) return;
+                submissions.shutdown();
             }
-        } finally {
-            engine.close(true);
+            boolean terminated = false;
+            try {
+                terminated = submissions.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            try {
+                if (!terminated) {
+                    // Cancel wedged guest execution; do not let untrusted
+                    // code retain the isolate indefinitely after shutdown.
+                    guest.close(true);
+                    submissions.shutdownNow();
+                } else {
+                    guest.close();
+                }
+            } finally {
+                try {
+                    engine.close(true);
+                } finally {
+                    if (processDomain == this) processDomain = null;
+                }
+            }
         }
     }
 }
