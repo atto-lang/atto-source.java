@@ -97,7 +97,7 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
-                actor.send(exchange.moveTo(actor));
+                actor.send(exchange.moveTo(actor, true));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
@@ -277,19 +277,28 @@ public final class NativeHttp implements AutoCloseable {
         final Map<String, List<String>> params = new LinkedHashMap<>();
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
+        // A handler() dispatch owns its actor for exactly this exchange. By contrast,
+        // move_to(existing_actor) borrows a persistent actor that may own many requests.
+        // Only the former may cancel its actor and wait for actor.done before releasing
+        // listener admission. Every exchange still has its own deadline and completion.
+        boolean dedicatedActor;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
         void abort(int status) {
             boolean send, alreadyClosed;
+            ActorRuntime.ActorRef<?> cancelDedicatedActor;
             synchronized (this) {
                 alreadyClosed = terminal;
                 send = !terminal && !committed && !busy;
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
+                cancelDedicatedActor = !alreadyClosed && dedicatedActor ? actor : null;
             }
-            // Never perform socket I/O or actor cancellation while holding the ownership monitor.
-            if (actor != null) actor.cancel();
+            // A request-scoped error must never cancel a reusable actor and thereby
+            // destroy unrelated in-flight HTTP requests owned by the same actor.
+            // Never perform socket I/O or actor cancellation while holding this monitor.
+            if (cancelDedicatedActor != null) cancelDedicatedActor.cancel();
             if (alreadyClosed) { release(); return; }
             try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
             catch (RejectedExecutionException closed) { release(); }
@@ -302,7 +311,7 @@ public final class NativeHttp implements AutoCloseable {
             // Admission includes the actor lifetime, even after the response ends.
             // A handler that forgets self.end cannot accumulate unbounded actors.
             synchronized (this) {
-                if (!transportClosed || (actor != null && !actor.done().isDone())) return;
+                if (!transportClosed || (dedicatedActor && actor != null && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
@@ -331,6 +340,9 @@ public final class NativeHttp implements AutoCloseable {
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
+            return moveTo(destination, false);
+        }
+        private String moveTo(ActorRuntime.ActorRef<?> destination, boolean dedicated) {
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
@@ -339,6 +351,7 @@ public final class NativeHttp implements AutoCloseable {
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
                 state.movedNanos = System.nanoTime();
                 state.generation++; state.owner = destination.id(); state.actor = destination;
+                state.dedicatedActor = dedicated;
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
