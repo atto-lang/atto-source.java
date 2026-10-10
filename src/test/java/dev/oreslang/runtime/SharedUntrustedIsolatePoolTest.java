@@ -27,6 +27,9 @@ final class SharedUntrustedIsolatePoolTest {
         long limit = 256L * 1024 * 1024;
         assertDoesNotThrow(() ->
                 SharedUntrustedIsolatePool.validateGroupPolicy(
+                        IsolatePolicy.untrustedActorGroup(), limit));
+        assertThrows(IllegalArgumentException.class, () ->
+                SharedUntrustedIsolatePool.validateGroupPolicy(
                         IsolatePolicy.untrustedActor(), limit));
         assertThrows(SecurityException.class, () ->
                 SharedUntrustedIsolatePool.validateGroupPolicy(
@@ -63,15 +66,15 @@ final class SharedUntrustedIsolatePoolTest {
     void physicallySharesExactlyOneEngineAcrossUntrustedContexts() {
         try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
                 256L * 1024 * 1024, 2);
-             SharedUntrustedIsolatePool.Group groupA = pool.createGroup(IsolatePolicy.untrustedActor());
-             SharedUntrustedIsolatePool.Group groupB = pool.createGroup(IsolatePolicy.untrustedActor())) {
+             SharedUntrustedIsolatePool.Group groupA = pool.createGroup();
+             SharedUntrustedIsolatePool.Group groupB = pool.createGroup()) {
             assertEquals(2, pool.activeGroups());
             assertNotSame(groupA.contextForSupervisor(), groupB.contextForSupervisor());
             assertSame(groupA.contextForSupervisor().getEngine(),
                     groupB.contextForSupervisor().getEngine(),
                     "groups must share one isolate engine and GC/JIT");
             assertThrows(IllegalStateException.class,
-                    () -> pool.createGroup(IsolatePolicy.untrustedActor()));
+                    () -> pool.createGroup());
         }
     }
 }
