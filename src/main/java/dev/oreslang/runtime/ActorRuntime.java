@@ -293,6 +293,39 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
     }
 
+    /** Stable failure types for the supervisor CONTROL lane; never guest data mail. */
+    public enum ActorFailureKind { THROW, RAISE, PANIC, HOST_FAILURE }
+
+    /**
+     * Immutable, data-only supervision notice. Host Throwable identity is
+     * deliberately not sent to an actor or shared across isolation domains.
+     */
+    public record ActorFailureNotice(
+            ActorId actorId,
+            ActorFailureKind kind,
+            String summary) {
+        public ActorFailureNotice {
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(summary, "summary");
+        }
+    }
+
+    private static ActorFailureNotice failureNotice(ActorId id, Throwable failure) {
+        ActorFailureKind kind = failure instanceof OresPanic
+                ? ActorFailureKind.PANIC
+                : failure instanceof OresRaised
+                ? ActorFailureKind.RAISE
+                : failure instanceof Error
+                ? ActorFailureKind.HOST_FAILURE
+                : ActorFailureKind.THROW;
+        // Do not publish Throwable/cross-heap references to a supervisor.
+        String summary = kind == ActorFailureKind.PANIC || kind == ActorFailureKind.RAISE
+                ? String.valueOf(failure.getMessage())
+                : failure.getClass().getName();
+        return new ActorFailureNotice(id, kind, summary);
+    }
+
     public static final class ActorTerminatedException extends IllegalStateException {
         private final ActorId actorId;
         private final ActorKind actorKind;
@@ -1560,6 +1593,10 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // An independent single-slot supervisor signal. No ordinary mailbox
+        // backlog can starve it, and guest cancellation cannot forge an exit.
+        private final OresFuture<ActorFailureNotice> failureNoticeFuture =
+                new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind) {
@@ -1572,6 +1609,18 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+
+        /**
+         * Awaitable supervisor CONTROL signal, separate from ordinary actor
+         * mail and continuations. Settles exactly once for exceptional actor
+         * termination, never for a normal stop or structured cancellation.
+         * The companion done() observer covers all terminal outcomes.
+         *
+         * This host-facing API is not yet a compiler-checked source handler.
+         */
+        public OresFuture<ActorFailureNotice> failureNotice() {
+            return failureNoticeFuture;
+        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
@@ -6406,6 +6455,16 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Publish typed supervision outside lifecycleLock: future waiters
+            // can dispatch to a supervisor without holding a failed actor's
+            // lock or waiting for its bounded user-data mailbox.
+            if (recordCause && cause != null
+                    && !(cause instanceof ActorCancelledException)
+                    && !(cause instanceof ActorCancellationSignal)
+                    && ref.terminationCause.get() == cause) {
+                ref.failureNoticeFuture.complete(failureNotice(ref.id(), cause));
             }
 
             // Cancellation removes channel/select waiter registrations before
