@@ -374,4 +374,76 @@ final class RuntimeGarbageCollectorTest {
             assertTrue(error.getMessage().contains("actor.gc() requires execution inside an actor"));
         }
     }
+
+    @Test
+    void actorExitPerformsOnlyABoundedSynchronousCleanupQuantum() throws Exception {
+        AtomicInteger cleanups = new AtomicInteger();
+        AtomicReference<ArrayList<Object>> reachableOwners = new AtomicReference<>();
+        CountDownLatch registered = new CountDownLatch(1);
+
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                     () -> {}, Duration.ofHours(1), Duration.ofHours(1), 64, 64, 2);
+             ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                var owners = new ArrayList<Object>();
+                for (int i = 0; i < 5; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    gc.track(owner, cleanups::incrementAndGet);
+                }
+                reachableOwners.set(owners);
+                registered.countDown();
+                context.self().stop();
+            });
+            ref.send("stop");
+            assertTrue(registered.await(2, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(5, reachableOwners.get().size());
+            assertEquals(2, cleanups.get(), "actor exit must not synchronously drain the entire heap");
+
+            var maintenance = gc.collectPeriodic();
+            assertEquals(3, maintenance.cleaned());
+            assertEquals(5, cleanups.get(), "periodic maintenance must drain retired actor hooks");
+        }
+    }
+
+    @Test
+    void periodicAndExplicitProcessSweepsHaveHardInspectionBudgets() {
+        AtomicInteger attempts = new AtomicInteger();
+        var owners = new ArrayList<Object>();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                     () -> {}, Duration.ofHours(1), Duration.ofHours(1), 6_000)) {
+            for (int i = 0; i < 5_000; i++) {
+                Object owner = new Object();
+                owners.add(owner);
+                var handle = gc.track(owner, () -> {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("poisoned external cleanup");
+                });
+                assertThrows(IllegalStateException.class, handle::close);
+            }
+            int before = attempts.get();
+            var periodic = gc.collectPeriodic();
+            assertTrue(periodic.inspected() <= 1_024, "periodic cleanup must stay bounded");
+            assertTrue(attempts.get() - before <= 1_024);
+            before = attempts.get();
+            var explicit = gc.collectProcess();
+            assertTrue(explicit.inspected() <= 4_096, "process sweep must stay bounded");
+            assertTrue(attempts.get() - before <= 4_096);
+            assertEquals(5_000, owners.size());
+        }
+    }
+
+    @Test
+    void repeatedEmptyActorRetirementDoesNotRetainDomains() throws Exception {
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1))) {
+            for (int i = 0; i < 2_000; i++) {
+                var report = gc.retireActorDomain(new Object());
+                assertEquals(0, report.inspected());
+                assertEquals(0, report.trackedAfter());
+            }
+            assertEquals(0, gc.collectPeriodic().inspected());
+        }
+    }
 }
