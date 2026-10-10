@@ -505,9 +505,42 @@ no required per-iteration observable behavior and the referenced channel/value
 bindings are stable. Otherwise the compiler must keep the original lowering.
 
 Dynamic selection can explicitly build a plan after constructing its runtime
-case list. Mutating the source list afterward does not mutate the plan; create a
-new plan for a changed case set. A later versioned dynamic-plan builder may
-support incremental add/remove/rebind without changing this snapshot contract.
+case list. Mutating the original source list afterward does not mutate the
+plan. The Java runtime `ChannelRuntime.SelectPlan` now offers an explicit
+copy-on-write revision API: `addCase`, `removeCase(index)`,
+`replaceCase(index, case)`, and `replaceCases(collection)`. Each mutation
+atomically publishes a new immutable descriptor snapshot, increments
+`revision()`, and leaves **already armed** operations on the previous
+snapshot. Concurrent mutations use a compare-and-swap retry instead of
+silently losing cases. Invalid revisions (empty set, duplicate defaults,
+null cases, invalid index) fail without changing the current revision.
+
+A revision copies the then-current fairness cursor into a new independent
+cursor; a late winner of an older version cannot change a newer revision's
+rotation. Cases and their evaluated argument values are snapshots, not live
+references to changing source expressions.
+
+These mutators are Java runtime APIs, **not yet** source-level
+`SelectPlan.addCase` syntax. The source `SelectSet.new` constructor remains
+immutable and should be reconstructed on a source-level membership change.
+Source-level typed mutable-plan methods need explicit capability, borrow, and
+generation rules before exposure.
+
+## Resource ownership for completed select Futures
+
+A terminal `OresFuture` now drops its cancellation admission closure on all
+three terminal outcomes: success, failure and cancellation. The closure
+otherwise strongly retains its `SelectRegistration`, which in turn holds
+channel cases, write payloads, publisher references and subscriber state.
+A caller retaining a completed select Future must **not** accidentally retain
+the entire former selection graph. Retained reusable `SelectPlan` descriptors
+still intentionally retain their current case values until updated or dropped.
+
+The admission closure remains installed while a Future is pending, including
+while cancellation races with an in-flight channel commit. Once settled,
+subsequent `cancel()` calls return false. This is distinct from observer
+cancellation, which detaches a listener but has no authority over a shared
+producer.
 
 ## Cancellation
 
