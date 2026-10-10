@@ -634,7 +634,9 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        // Initialized under COORDINATOR, not at construction: concurrent
+        // selections must see the fairness cursor at admission time.
+        private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         private final int defaultIndex;
@@ -645,8 +647,6 @@ public final class ChannelRuntime {
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
-
             int foundDefault = -1;
             for (int i = 0; i < set.cases.size(); i++) {
                 if (set.cases.get(i) instanceof DefaultCase) {
@@ -715,6 +715,7 @@ public final class ChannelRuntime {
 
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
+        selection.order = selection.set.initialOrder(selection.policy);
         selection.registered = true;
         ACTIVE.add(selection);
 
