@@ -33,7 +33,7 @@ public final class NativeIo {
     static final int MAX_HTTP_TEXT_BYTES = 4 * 1024 * 1024;
     private NativeIo() { }
 
-    private static byte[] checkedHttpRequestBody(String body) {
+    static byte[] checkedHttpRequestBody(String body) {
         java.util.Objects.requireNonNull(body, "HTTP request body");
         // Avoid allocating a large intermediate array for clearly oversized input.
         if (body.length() > MAX_HTTP_TEXT_BYTES) {
