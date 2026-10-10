@@ -271,6 +271,56 @@ class NativeHttpTest {
         assertTrue(output.contains("500\n200\n0"), output);
     }
 
+    @Test void persistentActorReleasesSingleListenerSlotAcrossManyRequests() throws Exception {
+        String output = run("""
+            define actor Persistent as
+              receive(ActorMail<String> mail): void {
+                if mail.value == "stop"; do
+                  self.end();
+                  return;
+                fi
+                val exchange = http.claim(mail.value);
+                await exchange.respond(200, "text/plain", exchange.target);
+                return;
+              }
+            end
+            pub async routine main(): void {
+              // A capacity of one catches any request whose admission is
+              // mistakenly held until a persistent actor exits.
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 10000);
+              stdio.println(server.port);
+              val worker = spawn Persistent();
+              await worker.ready;
+              let int count = 0;
+              loop {
+                if count == 20; do break; fi
+                val exchange = await server.accept();
+                val completed = exchange.completion;
+                worker.send(exchange.move_to(worker));
+                await completed;
+                if server.active != 0; do
+                  throw "listener admission must be reclaimed per request";
+                fi
+                count = count + 1;
+              }
+              stdio.println(count);
+              stdio.println(server.active);
+              worker.send("stop");
+              await worker.done;
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+            for (int i = 0; i < 20; i++) {
+                String target = "/repeat-" + i;
+                HttpResponse<String> response = request(port, "GET", target, "");
+                assertEquals(200, response.statusCode(), target);
+                assertEquals(target, response.body(), target);
+            }
+        });
+        assertTrue(output.contains("20\\n0"), output);
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
