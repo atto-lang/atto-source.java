@@ -2134,9 +2134,18 @@ public final class ActorRuntime implements AutoCloseable {
      * bus. It does not own a dispatcher and is not itself an actor, so group
      * communication never serializes through a central mailbox.</p>
      */
+    /**
+     * TREE groups are confined to one actual supervisor ancestry tree.
+     * VM groups are runtime-local and host-created. CLUSTER is intentionally
+     * rejected until authenticated cross-node membership/transport exists.
+     */
+    public enum ActorGroupScope { TREE, VM, CLUSTER }
+
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
         private final ActorId creator;
+        private final ActorGroupScope scope;
+        private final ActorId treeRoot;
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
@@ -2149,9 +2158,13 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorGroup(
                 ActorGroupId id,
                 ActorId creator,
-                IsolatePolicy creatorPolicy) {
+                IsolatePolicy creatorPolicy,
+                ActorGroupScope scope,
+                ActorId treeRoot) {
             this.id = Objects.requireNonNull(id, "id");
             this.creator = creator;
+            this.scope = Objects.requireNonNull(scope, "scope");
+            this.treeRoot = treeRoot;
             Objects.requireNonNull(creatorPolicy, "creatorPolicy");
             this.memberLimit = Math.max(
                     1,
@@ -2168,6 +2181,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public ActorGroupId id() { return id; }
+
+        public ActorGroupScope scope() {
+            requireObserver("inspect ActorGroup scope");
+            return scope;
+        }
+
+        public Optional<ActorId> treeRootId() {
+            requireObserver("inspect ActorGroup tree root");
+            return Optional.ofNullable(treeRoot);
+        }
 
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
@@ -2313,6 +2336,14 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCell<?> cell = actors.get(actorId);
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("actor is not alive: " + actorId);
+                }
+                if (scope == ActorGroupScope.TREE) {
+                    ActorCell<?> ancestor = cell;
+                    while (ancestor.parent != null) ancestor = ancestor.parent;
+                    if (!ancestor.ref.id().equals(treeRoot)) {
+                        throw new SecurityException(
+                                "actor is outside the ActorGroup supervisor tree");
+                    }
                 }
                 if (!members.contains(actorId) && members.size() >= memberLimit) {
                     throw new IllegalStateException(
@@ -3039,11 +3070,37 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public ActorGroup createActorGroup() {
+        // Preserve the existing host-wide behavior, but prevent actor-created
+        // groups from silently spanning unrelated supervisor trees.
+        return createActorGroup(currentActorId().isPresent()
+                ? ActorGroupScope.TREE : ActorGroupScope.VM);
+    }
+
+    public ActorGroup createActorGroup(ActorGroupScope scope) {
         requireCallerRuntimeAffinity("create an ActorGroup");
         requireNotActorGroupMailman("create an ActorGroup");
+        Objects.requireNonNull(scope, "scope");
+        if (scope == ActorGroupScope.CLUSTER) {
+            throw new UnsupportedOperationException(
+                    "cluster ActorGroups require authenticated remote membership, "
+                    + "fencing, transport and delivery guarantees; not implemented");
+        }
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         ActorId creator = currentActorId().orElse(null);
+        if (scope == ActorGroupScope.VM && creator != null) {
+            throw new SecurityException("VM-scope ActorGroups require host/supervisor creation");
+        }
+        if (scope == ActorGroupScope.TREE && creator == null) {
+            throw new SecurityException("TREE-scope ActorGroups require an owning actor tree");
+        }
+        ActorId treeRoot = null;
+        if (scope == ActorGroupScope.TREE) {
+            ActorCell<?> ancestor = actors.get(creator);
+            if (ancestor == null) throw new IllegalStateException("actor no longer registered");
+            while (ancestor.parent != null) ancestor = ancestor.parent;
+            treeRoot = ancestor.ref.id();
+        }
         IsolatePolicy creatorPolicy =
                 currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
         if (creator != null && !actors.containsKey(creator)) {
@@ -3076,7 +3133,7 @@ public final class ActorRuntime implements AutoCloseable {
             while (true) {
                 ActorGroupId id = ActorGroupId.create();
                 ActorGroup group =
-                        new ActorGroup(id, creator, creatorPolicy);
+                        new ActorGroup(id, creator, creatorPolicy, scope, treeRoot);
                 if (actorGroups.putIfAbsent(id, group) == null) return group;
             }
         }
