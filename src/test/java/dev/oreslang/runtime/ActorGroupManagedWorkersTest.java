@@ -181,6 +181,53 @@ final class ActorGroupManagedWorkersTest {
     }
 
     @Test
+    void closeDoneBarrierDoesNotCompleteWhileManagedActorTurnIsActive()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch exit = new CountDownLatch(1);
+            ActorRuntime.ActorRef<Integer> worker = runtime.spawnShared(
+                    () -> (value, context) -> {
+                        entered.countDown();
+                        if (!exit.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("test worker was not released");
+                        }
+                    });
+            group.manage(worker);
+            worker.send(3);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                OresFuture<Void> finished = group.closeAsync();
+                assertSame(finished, group.closedDone());
+                assertSame(finished, group.workersDone(),
+                        "a closed group's empty worker map is not a completed drain");
+                assertFalse(finished.isDone(),
+                        "close may revoke admission before the active turn finalizes");
+                assertFalse(finished.cancel(false),
+                        "observers must not cancel group lifecycle completion");
+                assertTrue(group.closed());
+            } finally {
+                exit.countDown();
+            }
+            group.closedDone().get(5, TimeUnit.SECONDS);
+            worker.done().get(5, TimeUnit.SECONDS);
+            assertFalse(worker.isAlive());
+        }
+    }
+
+    @Test
+    void emptyGroupCloseDoneCompletesImmediately() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            OresFuture<Void> finished = group.closeAsync();
+            assertTrue(finished.isDone());
+            assertSame(finished, group.closeAsync(), "group close is idempotent");
+            finished.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void failedInitializationRejectsReadySpawnAndReleasesGroupReference() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
