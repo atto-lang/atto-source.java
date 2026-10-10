@@ -885,6 +885,9 @@ public final class OresEvalRootNode extends RootNode {
                     awaitingContinuation = null;
                     nextStep = null;
                     initialBlockEnv = null;
+                    if (trapped() && isTrappableFailure(failure)) {
+                        return OresScheduler.done(new OptionValue(false, null));
+                    }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
@@ -998,6 +1001,10 @@ public final class OresEvalRootNode extends RootNode {
                 nextStep = OresScheduler.done(value);
             }
 
+            private boolean trapped() {
+                return function != null && function.trapped();
+            }
+
             private void finishSourceFlow(
                     SourceTask task,
                     SourceFlow flow) {
@@ -1022,7 +1029,13 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
-                    case THROW -> throw sourceFailure(flow.failure());
+                    case THROW -> {
+                        if (trapped() && isTrappableFailure(flow.failure())) {
+                            done(new OptionValue(false, null));
+                        } else {
+                            throw sourceFailure(flow.failure());
+                        }
+                    }
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
@@ -1038,8 +1051,18 @@ public final class OresEvalRootNode extends RootNode {
                         function != null
                                 ? "function " + function.name()
                                 : "method " + method.name();
-                return shapeReturnedValue(returnType, value, label);
+                Object shaped = shapeReturnedValue(returnType, value, label);
+                return trapped() ? new OptionValue(true, shaped) : shaped;
             }
+        }
+
+        /** Only guest-level recoverable failures may be reduced to a lossy None. */
+        private boolean isTrappableFailure(Throwable failure) {
+            Throwable unwrapped = OresFuture.unwrap(failure);
+            return unwrapped instanceof OresCastError
+                    || unwrapped instanceof IllegalArgumentException
+                    || unwrapped instanceof ArithmeticException
+                    || unwrapped instanceof IndexOutOfBoundsException;
         }
 
         private RuntimeException sourceFailure(Throwable failure) {
@@ -4362,14 +4385,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresPanic panic) {
-                throw panic;
-            } catch (java.util.concurrent.CancellationException cancelled) {
-                throw cancelled;
             } catch (RuntimeException ordinaryFailure) {
-                // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Panic and scheduler cancellation remain distinct
-                // non-trappable control channels.
+                if (!isTrappableFailure(ordinaryFailure)) throw ordinaryFailure;
+                // Recoverable guest errors become None. Panic, cancellation,
+                // security, scheduler and unexpected native failures escape.
                 return new OptionValue(false, null);
             }
         }
