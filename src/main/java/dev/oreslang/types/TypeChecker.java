@@ -105,7 +105,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectPlan", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -1718,7 +1718,8 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("SelectCase")
+                    || name.name().equals("SelectSet") || name.name().equals("SelectPlan")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2179,17 +2180,19 @@ public final class TypeChecker {
 
             if (call.callee() instanceof Ast.MemberExpr selectSetCall
                     && selectSetCall.receiver() instanceof Ast.NameExpr factory
-                    && factory.name().equals("SelectSet")
+                    && (factory.name().equals("SelectSet")
+                        || factory.name().equals("SelectPlan"))
                     && selectSetCall.member().equals("new")) {
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("SelectSet.new does not accept type arguments");
+                    throw new IllegalArgumentException(
+                            factory.name() + ".new does not accept type arguments");
                 }
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(
-                            "SelectSet.new expects one list/map of SelectCase values");
+                            factory.name() + ".new expects one list/map of SelectCase values");
                 }
                 typeOf(call.arguments().getFirst(), env, generics, self);
-                return new Named("SelectSet", List.of());
+                return new Named(factory.name(), List.of());
             }
 
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -2859,6 +2862,22 @@ public final class TypeChecker {
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named selectPlan
+                    && selectPlan.name().equals("SelectPlan")
+                    && selectPlan.arguments().isEmpty()) {
+                Type selectCase = new Named("SelectCase", List.of());
+                return switch (member.member()) {
+                    case "revision" -> Primitive.INT;
+                    case "addCase" -> new Function(List.of(selectCase), Primitive.VOID);
+                    case "removeCase" -> new Function(List.of(Primitive.INT), Primitive.VOID);
+                    case "replaceCase" -> new Function(
+                            List.of(Primitive.INT, selectCase), Primitive.VOID);
+                    case "replaceCases" -> new Function(
+                            List.of(new ListType(selectCase)), Primitive.VOID);
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectPlan member '" + member.member() + "'");
                 };
             }
             Type ioMember = builtinIoMember(sumReceiver, member.member());
@@ -4531,7 +4550,8 @@ public final class TypeChecker {
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
+                || named.name().equals("SelectSet") || named.name().equals("SelectPlan")
+                || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")
                 || named.name().equals("ReadySignal") || named.name().equals("DoneSignal")) {
             throw new IllegalArgumentException(
@@ -4616,6 +4636,8 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")
+                || named.name().equals("SelectCase") || named.name().equals("SelectSet")
+                || named.name().equals("SelectPlan") || named.name().equals("Channel")
                 || named.name().equals("ReadySignal") || named.name().equals("DoneSignal")) return false;
         if (named.name().equals("Readonly")) {
             return named.arguments().size() == 1
