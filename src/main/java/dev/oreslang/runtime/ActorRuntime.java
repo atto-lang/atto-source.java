@@ -658,6 +658,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -701,6 +702,27 @@ public final class ActorRuntime implements AutoCloseable {
                     reservation.close();
                     throw failure;
                 }
+            }
+        }
+
+        /**
+         * Create one actor-owned graph lifetime domain. Self-links and cycles
+         * are allowed because edges never own payloads. Unlike a JVM heap
+         * collector, node close is explicit and actor finalization retires
+         * the graph. The Java payload/wrapper objects remain host-managed.
+         *
+         * Source lowering must prove values and borrows do not escape.
+         */
+        public <T extends AutoCloseable> ActorOwnedGraphArena<T> newGraphArena(
+                int maxNodes, int maxEdgesPerNode) {
+            ActorCell<?> cell = requireCurrentOwner();
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap is retired");
+                ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
+                        maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
+                        () -> {}); // retired arenas are retained only by live lease owners
+                ownedGraphs.add(graph);
+                return graph;
             }
         }
 
@@ -767,6 +789,13 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
+            // Graph retirement comes before releasing actor quota. An
+            // outstanding host/native lease defers payload destruction until
+            // the final lease closes. Actor access is fenced immediately.
+            for (ActorOwnedGraphArena<?> graph : List.copyOf(ownedGraphs)) {
+                graph.retireFromActor();
+            }
+            ownedGraphs.clear();
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
