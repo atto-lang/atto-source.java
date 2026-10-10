@@ -1536,7 +1536,14 @@ public final class OwnershipChecker {
                 && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
             source = unary.operand();
         }
-        if (source == null) return; // Temporary expression; no caller-owned named root.
+        // A structural argument can project a class field, record member, or
+        // array element without spelling an explicit borrow. The projection
+        // remains backed by its named aggregate until the call returns.
+        // Reserve the aggregate root, not just a direct NameExpr: otherwise
+        // consume(container) could move a value while container.inner is an
+        // outstanding read-only call argument.
+        if (source == null && structural) source = projectedCallLoanRoot(argument);
+        if (source == null) return; // Pure temporary; no provable named aggregate root.
         VarState owner = borrowOwner(source, scope);
         boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
         if (owner.kind == ValueKind.IMM_BORROW || owner.kind == ValueKind.MUT_BORROW || owner.type.isBorrow()) {
@@ -1556,6 +1563,23 @@ public final class OwnershipChecker {
             beginPersistentBorrow(owner, mutable);
             loans.add(new CallLoan(ownershipRoot(owner), mutable));
         }
+    }
+
+    /**
+     * Locate the owning lexical aggregate for structural field/index views.
+     * An expression with no provable named root is not treated as an alias to
+     * an unrelated local. Side-effecting index expressions are checked by
+     * checkArgument before the call loan is reserved.
+     */
+    private Ast.Expr projectedCallLoanRoot(Ast.Expr expression) {
+        if (expression instanceof Ast.NameExpr) return expression;
+        if (expression instanceof Ast.MemberExpr member) {
+            return projectedCallLoanRoot(member.receiver());
+        }
+        if (expression instanceof Ast.IndexExpr indexed) {
+            return projectedCallLoanRoot(indexed.receiver());
+        }
+        return null;
     }
 
     private void checkArgument(
