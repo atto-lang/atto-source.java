@@ -141,6 +141,45 @@ work is completed or generation-fenced.
   Never claim `spawnUntrusted` in the bootstrap host is already routed
   through the shared isolate.
 
+## Executable actor-owned cyclic graph prototype (this PR)
+
+`ActorGraphArena` is now attached to every `ActorCell` and accessible
+during a guest actor turn via `ActorContext.actorGraphArena()`.
+The returned arena belongs to the actor's `ActorMemorySlice`, regardless
+of PRIVATE, SHARED or UNTRUSTED kind. Payloads are bounded, copied byte
+arrays backed by actor-confined direct memory. Edges hold generation-checked
+`NodeId` values rather than owning Java references. Self/mutual cycles
+can be represented without a tracing collector. Node deletion increments
+its generation, invalidating stale handles after slot reuse. Actor
+finalization retires the graph and revokes all outstanding handles,
+then zeroes/invalidates the actor's owned memory blocks.
+
+**Limits:** the graph's slots, edge sets, actor state and scheduler are
+still host JVM objects, and `ByteBuffer.allocateDirect` relies on the
+JVM for actual native allocation release. An actor's deterministic
+logical retirement is not proof of deterministic physical `free()`.
+The prototype stores *bytes*, not arbitrary source class instances,
+does not lower Oreslang destructor/ownership semantics, and does not
+remove the need for Java JVM GC or an opt-in tracing heap for strongly
+owned guest objects.
+
+`ActorRuntime.ActorHeapPlacement` standardizes
+`ACTOR_ARENA`, `VM_ISOLATE` and `PROCESS_ISOLATE`.
+`spawnWithHeapPlacement` enforces the requirement in the bootstrap
+runtime: trusted actors may use `ACTOR_ARENA`, but an isolated
+backend request or untrusted inline host-arena request fails closed.
+The older `spawnUntrusted` API remains for tests/compatibility
+and is **not** a production isolate-routing implementation.
+`heapIdentityFor` exposes unique actor/arena identities for supervisor
+verification, not guest memory pointers.
+
+The LLVM C++ runtime companion, `ActorOwnedGraphHeap.hpp`, provides
+an inline fixed-capacity storage proof: non-owning generational node
+handles, deterministic byte zeroing and retirement at a verified
+quiescent actor boundary, rejection of cross-actor heap access, bounded
+nodes/edges and ABA-safe slot reuse. It still needs source actor-object
+lowering, drop glue, and a scheduler-produced quiescence proof.
+
 ## GC roots, safety and correctness
 
 Each independent collector must observe every strong root from its own
