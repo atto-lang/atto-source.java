@@ -131,22 +131,54 @@ without granting actors shared mutable state.
 The accounting is intentionally conservative and represents OresVM policy, not
 a claim about exact JVM object layout.
 
-## Isolation boundary in this first implementation
+## Isolation boundary and per-subscriber copied delivery (PR #519)
 
-The zero-copy subscriber path currently accepts SHARED actors only.
+SHARED actors continue to subscribe to the one-immutable-snapshot fanout. Their
+events share the same immutable graph and its aggregate-runtime reservation.
 
-Private/isolated actors may join a group, publish data-only events, read
-runtime-owned scalar reductions, and receive ActorGroup capabilities through
-ordinary actor transport, but they may not subscribe to the zero-copy event bus
-yet. Their existing isolation contract requires a per-subscriber isolated-copy
-delivery backend with private-memory reservations; sharing the same frozen JVM
-object directly would weaken that contract.
+PRIVATE and UNTRUSTED subscribers may now subscribe: publication constructs
+an **independent deeply copied event graph for each isolated subscriber**
+rather than forwarding the SHARED payload graph, and charges each copy to
+that destination actor's private-memory slice and the runtime aggregate cap.
+The copy's lease is released exactly once on read, coalesce, cancellation,
+subscription close, actor termination, or group close. RELIABLE publications
+prepare every isolated copy before starting subscriber delivery so failed
+preflight allocations do not create an avoidable partial broadcast.
 
-Until that backend lands, private/isolated actors should receive values through
-ordinary actor mailboxes.
+Only data-only values are eligible. Actor references, group join capabilities,
+shared memory, mutexes, native resources, FDs and arbitrary host objects
+are forbidden as events. UNTRUSTED inbound validation applies to each copied
+payload.
 
-This restriction is fail-closed and enforced by ActorEventBus.subscribe(), not
-only by source-level checking.
+**Security limitation:** The existing JVM ActorMemorySlice + independent Java
+object graph provides logical isolation and accounting, **not** a separate
+OS process, hardware address-space boundary or validated hostile-code
+sandbox. A future physically isolated worker backend must serialize the event
+over a bounded transport, and retain exactly these per-recipient lifetime and
+quota guarantees. Do not expose the same host Event or Channel object to
+untrusted guest code.
+
+## ActorGroup scope and membership boundaries (PR #519)
+
+`ActorGroupScope.TREE` is anchored to the highest actor ancestor in the
+creating actor's *actual* supervisor ancestry. Its join capability alone is
+not sufficient to admit an actor from another root tree. The creator's death
+still closes the group.
+
+`ActorGroupScope.VM` is a host/supervisor-created, one-runtime-local group,
+suitable for explicitly authorized cross-tree cooperation.
+
+`ActorGroupScope.CLUSTER` is **fail-closed** and throws UnsupportedOperationException.
+No cross-node membership, delivery, ordering, persistence or partition
+guarantees exist yet. Introducing CLUSTER requires authenticated node identities,
+fencing generations, bounded transport, membership reconciliation and explicit
+at-most-once/at-least-once/exactly-once boundaries.
+
+The zero-argument runtime `createActorGroup()` retains backward compatibility:
+inside an actor it defaults to TREE, and for host/supervisor creation it
+defaults to VM. Actor-group scopes are runtime Java APIs in this draft; there
+is not yet source-language `ActorGroup.new(scope: ...)` lowering.
+
 
 ## Performance contract
 
