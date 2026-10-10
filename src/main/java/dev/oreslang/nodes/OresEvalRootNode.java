@@ -5805,6 +5805,14 @@ public final class OresEvalRootNode extends RootNode {
                                 "ProxyActor requires authenticated remote transport; "
                                 + "local source-actor spawn is forbidden");
                     }
+                    if (actorClass.builtinActorBase() == Ast.BuiltinActorBase.SERIAL
+                            && (actorClass.actorKind() != Ast.ActorKind.SHARED
+                                || actorClass.concurrencySpec() == null
+                                || !actorClass.concurrencySpec().serial())) {
+                        throw new IllegalStateException(
+                                "builtin serial actor spawn must preserve SHARED isolation "
+                                + "and exclusive handler admission");
+                    }
                     if (actorClass.concurrencySpec() != null
                             && !actorClass.concurrencySpec().protocol().equals("actor")) {
                         throw new IllegalStateException(
