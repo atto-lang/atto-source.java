@@ -21,6 +21,11 @@ public final class NativePrelude {
     private NativePrelude() { }
 
     public static Ast.Program attach(Ast.Program program, String source) {
+        // The stdlib audit compiles each packaged .ores file in isolation.
+        // The declaration inside that exact trusted file is not user shadowing.
+        // This exception is byte-for-byte only; edited/redeclared modules
+        // still fail the reserved-namespace admission check below.
+        if (isPackagedSource(source)) return program;
         boolean needObservable = source.matches("(?s).*\\bObservable\\b.*")
                 || source.matches("(?s).*\\.stream\\s*\\(.*")
                 || source.matches("(?s).*\\.tee\\s*\\(.*");
@@ -112,6 +117,18 @@ public final class NativePrelude {
             }
         }
         return new Ast.Program(program.namespace(), program.imports(), merged);
+    }
+
+    private static boolean isPackagedSource(String candidate) {
+        for (String module : List.of("std/stdio", "std/observable", "std/streams")) {
+            try {
+                if (candidate.equals(CoreLibrarySources.source(module))) return true;
+            } catch (IOException failure) {
+                throw new IllegalStateException("could not validate packaged stdlib source: " + module,
+                        failure);
+            }
+        }
+        return false;
     }
 
     private static Ast.Program parsePackaged(String path) {
