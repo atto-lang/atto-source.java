@@ -48,7 +48,7 @@ define module Stdio as
   // other channel writers. Variadic declaration syntax can forward here
   // once stable; native List<String> is the supported form today.
   pub fnc println_parts_blocking(List<String> parts): void {
-    let text = "";
+    let String text = "";
     for const part of parts {
       text = text + part;
     }
