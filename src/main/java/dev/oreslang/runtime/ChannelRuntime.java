@@ -718,9 +718,11 @@ public final class ChannelRuntime {
             Objects.requireNonNull(next, "subscription");
             if (!subscription.compareAndSet(null, next)) {
                 // A Publisher that sends onSubscribe twice violates Flow's
-                // contract. Cancel the extra subscription without poisoning
-                // the valid first subscription or blocking its callback.
-                cancelSubscription(next);
+                // contract. If it repeats the exact same Subscription object,
+                // cancelling the "extra" would actually cancel the active
+                // subscription and could strand this selection forever.
+                // Different duplicate subscriptions must still be cancelled.
+                if (subscription.get() != next) cancelSubscription(next);
                 return;
             }
             if (terminal.get()) {
