@@ -1835,6 +1835,14 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("pipe")) {
+                // The grammar reserves actor graph syntax, but no graph may
+                // execute without checked stage port types and owned links.
+                throw new IllegalArgumentException(
+                        "'pipe' is reserved for ActorStream graph composition; "
+                        + "actor stage contracts, bounded links and graph lifecycle "
+                        + "are not implemented yet. Use |> for eager function piping.");
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
