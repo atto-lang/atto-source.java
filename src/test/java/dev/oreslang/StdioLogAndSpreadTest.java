@@ -25,7 +25,7 @@ final class StdioLogAndSpreadTest {
                   return;
                 }
                 """);
-        assertEquals("async-42\\n", output);
+        assertEquals("async-42\n", output);
     }
 
     @Test
