@@ -6177,6 +6177,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
+            // TurnExecutor is allowed to enter the guest on a different native
+            // carrier from runBatch(). Carrier-sensitive runtime checks must
+            // follow the actual executing turn, not only the dispatching thread.
+            Boolean previousCarrier = ACTOR_CARRIER.get();
+            ACTOR_CARRIER.set(Boolean.TRUE);
             boolean turnActive = false;
             ActorTurnContentionProbe.Scope contentionScope = null;
             try {
@@ -6379,7 +6384,15 @@ public final class ActorRuntime implements AutoCloseable {
                     } finally {
                         // The mandatory lifecycle lease remains authoritative,
                         // including when the probe's release fails.
-                        if (turnActive) endTurn();
+                        try {
+                            if (turnActive) endTurn();
+                        } finally {
+                            // Never leak carrier status onto a reused executor
+                            // worker, nor clear the dispatcher marker when
+                            // TurnExecutor.direct() executes on that thread.
+                            if (previousCarrier == null) ACTOR_CARRIER.remove();
+                            else ACTOR_CARRIER.set(previousCarrier);
+                        }
                     }
                 }
                 // scheduled/finalization/rescheduling belong to runBatch(),
