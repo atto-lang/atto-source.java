@@ -6192,27 +6192,20 @@ public final class OresEvalRootNode extends RootNode {
                     && name.equals("read_line")) {
                 return (Invokable) args -> {
                     requireZero(args, "stdio.stdin.read_line");
-                    OresFuture<String> pending = stdin.readAsync();
-                    OresFuture<OptionValue> mapped = OresFuture.fromCallback(callback ->
-                            pending.whenCompleteRuntime((value, failure) -> {
-                                if (failure == null) {
-                                    callback.resolve(new OptionValue(true, value));
-                                    return;
-                                }
-                                Throwable root = OresFuture.unwrap(failure);
-                                if (root instanceof ChannelRuntime.ChannelClosedException closed
+                    // A descriptor read is exclusively owned by this call.
+                    // mapOwnedTerminal translates clean EOF to Option.None,
+                    // propagates failures, and cancels/detaches the pending
+                    // read when the awaiting Oreslang frame is cancelled.
+                    return stdin.readAsync().mapOwnedTerminal(
+                            value -> new OptionValue(true, value),
+                            failure -> {
+                                if (failure instanceof ChannelRuntime.ChannelClosedException closed
                                         && closed.getCause() == null) {
-                                    callback.resolve(new OptionValue(false, null));
-                                } else {
-                                    callback.reject(root);
+                                    return new OptionValue(false, null);
                                 }
-                            }));
-                    mapped.whenCompleteRuntime((value, failure) -> {
-                        if (mapped.isCancelled()) pending.cancel(false);
-                    });
-                    // The source invocation transparently suspends/resumes on
-                    // this future; callers still observe Option<String>.
-                    return mapped;
+                                if (failure instanceof RuntimeException runtime) throw runtime;
+                                throw new java.util.concurrent.CompletionException(failure);
+                            });
                 };
             }
             if (receiver instanceof FileSystemFacade fs) {
