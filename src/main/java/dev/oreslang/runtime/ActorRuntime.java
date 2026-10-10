@@ -5702,8 +5702,8 @@ public final class ActorRuntime implements AutoCloseable {
         // the global actor limit), never by normal user mailbox capacity.
         // Exactly one terminal notice is admitted for each child identity.
         private final ArrayDeque<ActorFailureNotice> childFailureControl = new ArrayDeque<>();
-        private final Set<ActorId> reportedChildFailures = new java.util.HashSet<>();
         private OresFuture<ActorFailureNotice> childFailureWaiter;
+        private final AtomicBoolean failureNoticePublished = new AtomicBoolean();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -5898,22 +5898,29 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void enqueueChildFailure(ActorFailureNotice notice) {
             OresFuture<ActorFailureNotice> pending = null;
+            boolean exceededCapacity = false;
             synchronized (lifecycleLock) {
-                if (stopped.get() || finalized || !children.stream()
-                        .anyMatch(child -> child.ref.id().equals(notice.actorId()))) return;
-                if (!reportedChildFailures.add(notice.actorId())) return;
+                // The child may already have finalized/left children by the
+                // time its asynchronous failure notice reaches us.
+                if (stopped.get() || finalized) return;
                 if (childFailureWaiter != null) {
                     pending = childFailureWaiter;
                     childFailureWaiter = null;
+                } else if (childFailureControl.size() >= dispatcherConfig.maxActors()) {
+                    // Unlimited sequential child crashes must not exhaust the
+                    // parent's heap. Fail closed instead of silently dropping.
+                    exceededCapacity = true;
                 } else {
-                    // A child can fail once. With only direct children admitted
-                    // this cannot exceed dispatcherConfig.maxActors() slots.
                     childFailureControl.addLast(notice);
                 }
             }
-            // Never execute a Future completion under either actor's lifecycle
-            // lock, and never enter parent guest code on the failed carrier.
+            // Never execute a Future completion or recursively stop the parent
+            // under a child's or parent's lifecycle lock.
             if (pending != null) pending.completeFromRuntime(notice);
+            if (exceededCapacity) {
+                fail(new IllegalStateException(
+                        "supervision CONTROL inbox overflow for actor " + ref.id()));
+            }
         }
 
         private boolean hasQueuedWorkLocked() {
@@ -6521,7 +6528,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (recordCause && cause != null
                     && !(cause instanceof ActorCancelledException)
                     && !(cause instanceof ActorCancellationSignal)
-                    && ref.terminationCause.get() == cause) {
+                    && ref.terminationCause.get() == cause
+                    && failureNoticePublished.compareAndSet(false, true)) {
                 ActorFailureNotice notice = failureNotice(ref.id(), cause);
                 ref.failureNoticeFuture.completeFromRuntime(notice);
                 if (parent != null) parent.enqueueChildFailure(notice);
@@ -6532,7 +6540,6 @@ public final class ActorRuntime implements AutoCloseable {
                 abandoned = childFailureWaiter;
                 childFailureWaiter = null;
                 childFailureControl.clear();
-                reportedChildFailures.clear();
             }
             if (abandoned != null) abandoned.failFromRuntime(terminated(ref));
 
