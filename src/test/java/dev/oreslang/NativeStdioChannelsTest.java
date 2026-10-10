@@ -69,12 +69,18 @@ final class NativeStdioChannelsTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "invalid-utf8.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false)
-                .in(new ByteArrayInputStream(new byte[]{(byte) 0xC3, (byte) 0x28}))
-                .out(output).build()) {
-            assertThrows(Exception.class, () -> context.eval(source));
-        }
+        Exception thrown = assertThrows(Exception.class, () -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .in(new ByteArrayInputStream(new byte[]{(byte) 0xC3, (byte) 0x28}))
+                    .out(output).build()) {
+                context.eval(source);
+            }
+        });
+        assertTrue(thrown.toString().contains("stdio")
+                || thrown.toString().contains("Input")
+                || thrown.getCause() != null,
+                "invalid UTF-8 must fail instead of silently completing stdin");
     }
 
     @Test
@@ -119,9 +125,9 @@ final class NativeStdioChannelsTest {
     @Test
     void legacyReadLineSharesChannelAndReturnsOptionAtEof() throws Exception {
         Output result = run("""
-                pub routine main(): void {
-                  val Option<String> first = stdio.stdin.read_line();
-                  val Option<String> eof = stdio.in.read_line();
+                pub async routine main(): void {
+                  val Option<String> first = await stdio.stdin.read_line();
+                  val Option<String> eof = await stdio.in.read_line();
                   stdio.stdout.write(first.unwrap());
                   stdio.stdout.write(":");
                   stdio.stdout.write(eof.is_none());
