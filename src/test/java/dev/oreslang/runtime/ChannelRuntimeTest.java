@@ -118,7 +118,7 @@ final class ChannelRuntimeTest {
                 reusable.selectAsync().join().operation());
         assertEquals(ChannelRuntime.SelectOperation.READ,
                 reusable.selectAsync().join().operation());
-        assertEquals(10, channel.size() == 0 ? 10 : 0);
+        assertEquals(0, channel.size());
     }
 
     @Test
