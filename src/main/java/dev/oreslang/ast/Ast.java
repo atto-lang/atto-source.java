@@ -303,6 +303,9 @@ public final class Ast {
         }
     }
 
+    /** Built-in actor superclass is a scheduling/ownership type, never an ordinary class. */
+    public enum BuiltinActorBase { SERIAL }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -315,13 +318,26 @@ public final class Ast {
             ConstructorDecl constructor,
             List<MethodDecl> methods,
             ProxyActorSpec proxySpec,
-            ActorConcurrencySpec concurrencySpec) implements Decl {
+            ActorConcurrencySpec concurrencySpec,
+            BuiltinActorBase builtinActorBase) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Existing compiler constructors do not declare a builtin superclass. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ProxyActorSpec proxySpec,
+                         ActorConcurrencySpec concurrencySpec) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    proxySpec, concurrencySpec, null);
         }
 
         /** Preserve pre-concurrency serialized AST producers. */
