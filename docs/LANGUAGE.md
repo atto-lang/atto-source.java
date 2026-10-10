@@ -1118,6 +1118,17 @@ field/method must exist with a compatible type/signature.
 read-only borrowed views: they cannot be `mut`, survive async suspension, cross an
 actor mailbox boundary, or turn an actor reference into an ordinary object.
 
+Passing an aggregate to a `structural T` parameter creates a call-scoped
+read loan instead of moving it. Calls such as `read(container.inner)` retain
+the lexical aggregate root while later arguments are evaluated, so moving or
+exclusively borrowing `container` as a later argument is rejected. Instance
+method receivers are also loaned through argument evaluation, and these loans
+release when the synchronous call finishes. An explicit `rt borrow mut`
+cannot be silently downgraded to a structural read-only parameter.
+Field/index-level partial-move precision, actor request/response handle
+lifetimes, and parallel actor re-entry require separate admission proof; this
+rule protects the named root without claiming those semantics.
+
 Interfaces may inherit from other interfaces and support literal-string marker fields:
 
 ```ores
