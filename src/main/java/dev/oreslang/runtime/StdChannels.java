@@ -92,8 +92,15 @@ public final class StdChannels implements AutoCloseable {
                 // This join waits for a consumer to accept the previous line.
                 input.writeAsync(line).join();
             }
+        } catch (java.util.concurrent.CompletionException failed) {
+            Throwable root = OresFuture.unwrap(failed);
+            if (!(root instanceof ChannelRuntime.ChannelClosedException ended
+                    && ended.getCause() == null) && !closed.get()) {
+                failure = root;
+                input.close(root);
+            }
         } catch (ChannelRuntime.ChannelClosedException ignored) {
-            // Context teardown, not an input error.
+            // A clean channel close was requested by its owner.
         } catch (Throwable err) {
             if (!closed.get()) {
                 failure = err;
@@ -141,10 +148,10 @@ public final class StdChannels implements AutoCloseable {
                 }
             }
         } catch (Throwable err) {
-            if (!closed.get()) {
-                failure = err;
-                channel.close(err);
-            }
+            // A sink failure after graceful close was initiated is still a
+            // real I/O failure and must be reported to the context owner.
+            failure = err;
+            channel.close(err);
         } finally {
             BRIDGE.remove();
         }
