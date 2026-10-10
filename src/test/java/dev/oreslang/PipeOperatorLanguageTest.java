@@ -107,7 +107,7 @@ final class PipeOperatorLanguageTest {
 
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(program));
-        assertTrue(failure.getMessage().contains("not executable yet"), failure::getMessage);
+        assertTrue(failure.getMessage().contains("must explicitly implement StreamOperator"), failure::getMessage);
     }
 
     @Test
@@ -140,7 +140,7 @@ final class PipeOperatorLanguageTest {
                 """);
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(program));
-        assertTrue(failure.getMessage().contains("not executable yet"),
+        assertTrue(failure.getMessage().contains("must explicitly implement StreamOperator"),
                 failure::getMessage);
     }
 
