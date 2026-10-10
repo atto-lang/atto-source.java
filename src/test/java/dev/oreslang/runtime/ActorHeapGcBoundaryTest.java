@@ -44,8 +44,9 @@ final class ActorHeapGcBoundaryTest {
             }
             assertTrue(runtime.heapStatusFor(isolated).actorOwnedMemorySlice());
             assertTrue(runtime.heapStatusFor(untrusted).actorOwnedMemorySlice());
-            assertFalse(runtime.heapStatusFor(shared).actorOwnedMemorySlice());
-            assertFalse(runtime.heapStatusFor(shared).canAllocateOwnerCheckedDirectMemory());
+            assertTrue(runtime.heapStatusFor(shared).actorOwnedMemorySlice());
+            assertTrue(runtime.heapStatusFor(shared).canAllocateOwnerCheckedDirectMemory(),
+                    "shared actors also own private direct-memory slices");
         }
     }
 
