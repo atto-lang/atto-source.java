@@ -818,6 +818,17 @@ public final class ActorRuntime implements AutoCloseable {
             return ActorNativeI64Record.allocate(this, typeName, fields);
         }
 
+        /**
+         * Host-level ActorArena for explicitly bounded persistent i64 state
+         * and reusable turn-local scratch. Uses real FFM memory and keeps
+         * actor quota charged until any outstanding native loan releases.
+         * ScratchTurn must close before an await/cooperate suspension.
+         */
+        public ActorArena newActorArena(int persistentSlots, int scratchSlots) {
+            requireCurrentOwner();
+            return ActorArena.open(this, persistentSlots, scratchSlots);
+        }
+
         public ExplicitNativeI64Region newExplicitNativeI64Region(int slots) {
             ActorCell<?> cell = requireCurrentOwner();
             if (slots < 1 || slots > 65536) {
