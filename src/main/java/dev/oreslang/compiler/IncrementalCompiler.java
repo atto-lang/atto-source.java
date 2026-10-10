@@ -104,9 +104,16 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.analyze(
-                    parsed.get(id),
-                    importedModuleContracts(id, parsed, normalizedImportResolutions));
+            Ast.Program checked;
+            try {
+                checked = OresCompiler.analyze(
+                        parsed.get(id),
+                        importedModuleContracts(id, parsed, normalizedImportResolutions));
+            } catch (IllegalArgumentException invalidSource) {
+                throw new IllegalArgumentException(
+                        "Oreslang source unit '" + id + "': " + invalidSource.getMessage(),
+                        invalidSource);
+            }
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -180,6 +187,25 @@ public final class IncrementalCompiler {
             }
         }
         return Map.copyOf(importedContracts);
+    }
+
+    /**
+     * Read back the already-validated per-unit imported contract closure for
+     * Graal's second parse of the same exact source. No unlinked source can
+     * obtain a contract through this path.
+     */
+    public static Map<String, Ast.InterfaceDecl> linkedModuleContracts(
+            String unitId,
+            BuildResult compiled,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.Program> programs = new LinkedHashMap<>();
+        for (Map.Entry<String, CompiledUnit> unit : compiled.units().entrySet()) {
+            programs.put(unit.getKey(), unit.getValue().program());
+        }
+        if (!programs.containsKey(unitId)) {
+            throw new IllegalArgumentException("not a verified linked source unit: " + unitId);
+        }
+        return importedModuleContracts(unitId, programs, normalizeImportResolutions(importResolutions));
     }
 
     public synchronized void clear() {
