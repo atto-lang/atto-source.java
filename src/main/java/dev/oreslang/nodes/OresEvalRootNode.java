@@ -6126,20 +6126,27 @@ public final class OresEvalRootNode extends RootNode {
                     && name.equals("read_line")) {
                 return (Invokable) args -> {
                     requireZero(args, "stdio.stdin.read_line");
-                    if (ActorRuntime.inActorExecution() || context.vm().isRootSchedulerCurrent()) {
-                        throw new IllegalStateException(
-                                "stdio.stdin.read_line cannot block a guest carrier; use readch stdio.in");
-                    }
-                    try {
-                        return new OptionValue(true, stdin.readAsync().join());
-                    } catch (java.util.concurrent.CompletionException failure) {
-                        Throwable root = OresFuture.unwrap(failure);
-                        if (root instanceof ChannelRuntime.ChannelClosedException closed
-                                && closed.getCause() == null) {
-                            return new OptionValue(false, null);
-                        }
-                        throw failure;
-                    }
+                    OresFuture<String> pending = stdin.readAsync();
+                    OresFuture<OptionValue> mapped = OresFuture.fromCallback(callback ->
+                            pending.whenCompleteRuntime((value, failure) -> {
+                                if (failure == null) {
+                                    callback.resolve(new OptionValue(true, value));
+                                    return;
+                                }
+                                Throwable root = OresFuture.unwrap(failure);
+                                if (root instanceof ChannelRuntime.ChannelClosedException closed
+                                        && closed.getCause() == null) {
+                                    callback.resolve(new OptionValue(false, null));
+                                } else {
+                                    callback.reject(root);
+                                }
+                            }));
+                    mapped.whenCompleteRuntime((value, failure) -> {
+                        if (mapped.isCancelled()) pending.cancel(false);
+                    });
+                    // The source invocation transparently suspends/resumes on
+                    // this future; callers still observe Option<String>.
+                    return mapped;
                 };
             }
             if (receiver instanceof FileSystemFacade fs) {
