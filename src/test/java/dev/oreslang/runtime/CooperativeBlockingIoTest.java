@@ -303,4 +303,50 @@ class CooperativeBlockingIoTest {
             server.stop(0);
         }
     }
+
+    @Test void asyncHttpRejectsOversizedDeclaredAndChunkedBodies() throws Exception {
+        byte[] tooLarge = new byte[NativeIo.MAX_HTTP_TEXT_BYTES + 1];
+        java.util.Arrays.fill(tooLarge, (byte) 'z');
+        var server = com.sun.net.httpserver.HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/declared", exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, tooLarge.length);
+                exchange.getResponseBody().write(tooLarge);
+            } catch (java.io.IOException ignored) {
+                // The client intentionally cancels an oversized response.
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/chunked", exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 0);
+                exchange.getResponseBody().write(tooLarge);
+            } catch (java.io.IOException ignored) {
+                // Unknown length must be rejected during incremental delivery.
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            var permission = RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET,
+                    "127.0.0.1:" + server.getAddress().getPort());
+            for (String kind : new String[]{"declared", "chunked"}) {
+                String source = """
+                    pub async routine main(): void {
+                      await http.get_text_async("http://127.0.0.1:%d/%s");
+                      return;
+                    }
+                    """.formatted(server.getAddress().getPort(), kind);
+                assertThrows(RuntimeException.class,
+                        () -> run(source, permission, new ByteArrayOutputStream()),
+                        "response must reject oversized " + kind + " body");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
 }
