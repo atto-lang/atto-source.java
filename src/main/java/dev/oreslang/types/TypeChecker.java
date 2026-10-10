@@ -2105,7 +2105,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             factory.name() + ".new expects " + expected + " argument(s)");
                 }
-                for (Ast.Expr argument : call.arguments()) typeOf(argument, env, generics, self);
+                if (expected == 1) {
+                    Type cases = typeOf(call.arguments().getFirst(), env, generics, self);
+                    validateSelectCaseSource(cases, false, factory.name() + ".new");
+                }
                 return new Named(factory.name(), List.of());
             }
 
@@ -3176,7 +3179,8 @@ public final class TypeChecker {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
             // remain Unknown until collection generic constraints are richer.
-            typeOf(selected.cases(), env, generics, self);
+            Type cases = typeOf(selected.cases(), env, generics, self);
+            validateSelectCaseSource(cases, true, "select from");
             Type result = new Named("SelectResult", List.of());
             Type optional = new Named("Option", List.of(result));
             return switch (selected.mode()) {
@@ -3303,6 +3307,40 @@ public final class TypeChecker {
         }
         throw new IllegalArgumentException(
                 where + " requires Channel<T>; got " + channel);
+    }
+
+    /**
+     * Selection constructors must not silently accept int, unrelated lists,
+     * futures or arbitrary host capabilities as case collections.
+     * Maps are admitted only when their values are statically SelectCase.
+     */
+    private void validateSelectCaseSource(Type source, boolean permitPlan, String where) {
+        Type type = deref(source);
+        if (permitPlan && type instanceof Named name
+                && Set.of("SelectSet", "SelectPlan", "DynamicSelectPlan").contains(name.name())
+                && name.arguments().isEmpty()) {
+            return;
+        }
+        if (type instanceof ListType list && isSelectCaseType(list.element())) {
+            return;
+        }
+        if (type instanceof Record record && !record.members().isEmpty()
+                && record.members().values().stream().allMatch(this::isSelectCaseType)) {
+            return;
+        }
+        if (type instanceof Named map && map.name().equals("Map")
+                && map.arguments().size() == 2 && isSelectCaseType(map.arguments().get(1))) {
+            return;
+        }
+        throw new IllegalArgumentException(where
+                + " requires a typed list/map of SelectCase values"
+                + (permitPlan ? " or a SelectSet/SelectPlan/DynamicSelectPlan" : "")
+                + "; got " + type);
+    }
+
+    private boolean isSelectCaseType(Type type) {
+        return type instanceof Named named && named.name().equals("SelectCase")
+                && named.arguments().isEmpty();
     }
 
     private void validateChannelPayloadType(Type element, String where) {
