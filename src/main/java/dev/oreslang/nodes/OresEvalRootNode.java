@@ -6403,9 +6403,6 @@ public final class OresEvalRootNode extends RootNode {
                     case "share_readonly" -> (Invokable) process::shareReadonly;
                     case "gc" -> (Invokable) process::gc;
                     case "exit" -> (Invokable) process::exit;
-                    case "stdin" -> process.context().standardChannels().input();
-                    case "stdout" -> process.context().standardChannels().output();
-                    case "stderr" -> process.context().standardChannels().error();
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
