@@ -76,6 +76,8 @@ public final class ProcessChannels implements AutoCloseable {
             new java.util.concurrent.atomic.AtomicReference<>();
     private final Map<String, CompletableFuture<Void>> stdoutBarriers =
             Collections.synchronizedMap(new IdentityHashMap<>());
+    private final Map<String, CompletableFuture<Void>> stderrBarriers =
+            Collections.synchronizedMap(new IdentityHashMap<>());
 
     public ProcessChannels(OresContext owner, BufferedReader stdin,
                            PrintWriter stdout, PrintWriter stderr) {
@@ -91,7 +93,7 @@ public final class ProcessChannels implements AutoCloseable {
         this.outWorker = Thread.ofPlatform().daemon(true)
                 .name("ores-process-stdout").start(() -> drain(out, stdout, stdoutBarriers));
         this.errWorker = Thread.ofPlatform().daemon(true)
-                .name("ores-process-stderr").start(() -> drain(err, stderr, null));
+                .name("ores-process-stderr").start(() -> drain(err, stderr, stderrBarriers));
         this.inWorker = Thread.ofPlatform().daemon(true)
                 .name("ores-process-stdin").unstarted(this::feedInput);
     }
@@ -118,17 +120,25 @@ public final class ProcessChannels implements AutoCloseable {
             return CompletableFuture.failedFuture(outputFailure.get());
         if (closing.get()) return CompletableFuture.failedFuture(
                 new IllegalStateException("console channels are closing"));
-        String marker = new String("\u0000ORES_STDOUT_FLUSH_MARKER");
+        return CompletableFuture.allOf(
+                flushOutput(out, stdoutBarriers),
+                flushOutput(err, stderrBarriers));
+    }
+
+    private CompletableFuture<Void> flushOutput(
+            ConsoleChannel<String> channel, Map<String, CompletableFuture<Void>> barriers) {
+        // The private identity key cannot be forged by equal-content guest strings.
+        String marker = new String("\u0000ORES_IO_FLUSH_MARKER");
         CompletableFuture<Void> barrier = new CompletableFuture<>();
-        synchronized (stdoutBarriers) {
-            if (stdoutBarriers.size() >= 1024)
+        synchronized (barriers) {
+            if (barriers.size() >= 1024)
                 return CompletableFuture.failedFuture(
-                        new IllegalStateException("too many outstanding stdout flush barriers"));
-            stdoutBarriers.put(marker, barrier);
+                        new IllegalStateException("too many outstanding console flush barriers"));
+            barriers.put(marker, barrier);
         }
-        ChannelRuntime.writeForRuntime(out, marker).whenCompleteRuntime((ignored, error) -> {
+        ChannelRuntime.writeForRuntime(channel, marker).whenCompleteRuntime((ignored, error) -> {
             if (error != null) {
-                stdoutBarriers.remove(marker);
+                barriers.remove(marker);
                 barrier.completeExceptionally(error);
             }
         });
