@@ -28,7 +28,7 @@ final class OreslangStackRouteIntegrationTest {
     @TempDir Path temp;
 
     private static final String CONTRACT = """
-            define contract RouteContract as
+            pub define contract RouteContract as
               fnc get(String request) => String;
               fnc post(String request) => String;
             end
