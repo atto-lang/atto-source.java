@@ -33,6 +33,38 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         public long generation() { return generation; }
     }
 
+    /**
+     * Host-only lease that can outlive a logical actor turn while an async
+     * completion is pending. Lease close does not dereference native memory,
+     * and may run on an arbitrary completion thread.
+     */
+    public final class Loan implements AutoCloseable {
+        private final Slot slot;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private Loan(Slot slot) { this.slot = slot; }
+
+        public long read() {
+            requireActor.run();
+            synchronized (ExplicitNativeI64Region.this) {
+                if (released.get()) throw new IllegalStateException("native loan released");
+                return get(requireLive(slot));
+            }
+        }
+
+        @Override public void close() {
+            if (!released.compareAndSet(false, true)) return;
+            synchronized (ExplicitNativeI64Region.this) {
+                if (slotLoans[slot.index] <= 0 || loanCount <= 0) {
+                    throw new IllegalStateException("actor-native loan accounting underflow");
+                }
+                slotLoans[slot.index]--;
+                loanCount--;
+                if (closed.get() && loanCount == 0) finishPhysicalClose();
+            }
+        }
+    }
+
     private final Object identity = new Object();
     private final Runnable requireActor;
     private final Runnable onRetired;
@@ -44,8 +76,11 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final Method putLong;
     private final Method closeArena;
     private final boolean[] live;
+    private final int[] slotLoans;
     private final long[] generations;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean physicalClosed = new AtomicBoolean();
+    private int loanCount;
     private int occupied;
 
     ExplicitNativeI64Region(
@@ -58,6 +93,7 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         this.onRetired = Objects.requireNonNull(onRetired);
         this.reservation = Objects.requireNonNull(reservation);
         this.live = new boolean[slots];
+        this.slotLoans = new int[slots];
         this.generations = new long[slots];
         Arrays.fill(generations, 1L);
         Object allocatedArena = null;
@@ -124,9 +160,23 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         put(requireLive(slot), value);
     }
 
+    public synchronized Loan borrow(Slot slot) {
+        requireActor.run();
+        int index = requireLive(slot);
+        if (slotLoans[index] == Integer.MAX_VALUE || loanCount == Integer.MAX_VALUE) {
+            throw new IllegalStateException("actor-native loan limit reached");
+        }
+        slotLoans[index]++;
+        loanCount++;
+        return new Loan(slot);
+    }
+
     public synchronized void drop(Slot slot) {
         requireActor.run();
         int index = requireLive(slot);
+        if (slotLoans[index] != 0) {
+            throw new IllegalStateException("cannot drop loaned actor-native storage");
+        }
         if (generations[index] == Long.MAX_VALUE) {
             throw new IllegalStateException("native slot generation exhausted");
         }
@@ -138,30 +188,38 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
     public synchronized int size() { return occupied; }
     public synchronized boolean closed() { return closed.get(); }
+    public synchronized boolean physicallyClosed() { return physicalClosed.get(); }
+    public synchronized int activeLoans() { return loanCount; }
 
     @Override public void close() {
         requireActor.run();
         retireFromActor();
     }
 
+    /** Stop admission immediately; defer FFM arena close until loans drain. */
     void retireFromActor() {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
-            try {
-                // No live native pointer or MemorySegment escaped the wrapper.
-                // FFM scope close releases the physical native region.
-                closeArena.invoke(nativeArena);
-            } catch (IllegalAccessException | InvocationTargetException error) {
-                throw new IllegalStateException("failed physically releasing actor-native region", error);
-            } finally {
-                Arrays.fill(live, false);
-                occupied = 0;
-                try {
-                    reservation.close();
-                } finally {
-                    onRetired.run();
-                }
-            }
+            if (loanCount == 0) finishPhysicalClose();
+        }
+    }
+
+    private void finishPhysicalClose() {
+        if (!closed.get() || loanCount != 0 || physicalClosed.get()) return;
+        try {
+            closeArena.invoke(nativeArena);
+        } catch (IllegalAccessException | InvocationTargetException error) {
+            // Do not report successful physical release or reimburse the
+            // actor's quota when the native FFM scope failed to close.
+            throw new IllegalStateException("failed physically releasing actor-native region", error);
+        }
+        physicalClosed.set(true);
+        Arrays.fill(live, false);
+        occupied = 0;
+        try {
+            reservation.close();
+        } finally {
+            onRetired.run();
         }
     }
 
