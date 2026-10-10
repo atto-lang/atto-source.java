@@ -955,6 +955,14 @@ public final class TypeChecker {
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && (field.name().equals("requestConcurrency")
+                        || field.name().equals("messageConcurrency"))) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' cannot store '"
+                        + field.name() + "' as mutable/ordinary state; "
+                        + "declare a compile-time int concurrency setting instead");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
