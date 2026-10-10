@@ -40,6 +40,18 @@ Arbitrary payloads consume additional memory and must be separately charged
 by eventual compiler/backend lowering: the current quota is **not** an exact
 accounting of Java object, native or FFI allocations.
 
+## Verified placement admission
+
+`ActorRuntime.requireActorHeapBacking(ref, requirement)` is a supervisor
+admission check, not a switch that can place the actor by itself.
+`OWNER_CHECKED_REGION` is supported for every kind in the current bootstrap
+runtime. `DETERMINISTIC_NATIVE_ARENA`, `INDEPENDENT_GRAAL_ISOLATE`,
+and `ISOLATED_PROCESS` all **fail closed** until a backend actually lowers
+guest allocations or routes that actor into a verified isolate/process.
+An actor declaration or a dispatcher choice can never forge a physical
+heap/collector boundary. Eventually these requirements should be checked
+before spawning the actor by a real placement planner.
+
 ## Security and lifecycle conditions
 
 - APIs enforce the current **semantic ActorId**, not a physical pthread/Java
