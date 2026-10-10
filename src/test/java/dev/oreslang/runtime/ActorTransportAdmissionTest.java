@@ -49,6 +49,33 @@ final class ActorTransportAdmissionTest {
         }
     }
 
+    @Test void connectionMessageLimitsAreIndependentRatherThanGloballySerialized() {
+        try (ActorTransportAdmission admission = new ActorTransportAdmission(3, 4, 0, 0)) {
+            var a = admission.requestAsync().join();
+            var b = admission.requestAsync().join();
+            var c = admission.requestAsync().join();
+            var aa = new java.util.ArrayList<ActorTransportAdmission.MessageLease>();
+            var bb = new java.util.ArrayList<ActorTransportAdmission.MessageLease>();
+            var cc = new java.util.ArrayList<ActorTransportAdmission.MessageLease>();
+            for (int i = 0; i < 4; i++) {
+                aa.add(a.messageAsync().join());
+                bb.add(b.messageAsync().join());
+                cc.add(c.messageAsync().join());
+            }
+            assertEquals(4, a.activeMessageCount());
+            assertEquals(4, b.activeMessageCount());
+            assertEquals(4, c.activeMessageCount());
+            assertTrue(admission.requestAsync().isCompletedExceptionally());
+            assertTrue(a.messageAsync().isCompletedExceptionally());
+            assertTrue(b.messageAsync().isCompletedExceptionally());
+            for (var lease : aa) lease.close();
+            for (var lease : bb) lease.close();
+            for (var lease : cc) lease.close();
+            a.close(); b.close(); c.close();
+            assertEquals(0, admission.activeRequestCount());
+        }
+    }
+
     @Test void messageCancellationRemovesOnlyItsWaiterAndPreservesFifo() {
         try (ActorTransportAdmission admission = new ActorTransportAdmission(1, 1, 3, 3)) {
             var req = admission.requestAsync().join();
