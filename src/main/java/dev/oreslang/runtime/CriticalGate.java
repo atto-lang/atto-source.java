@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 
@@ -14,6 +15,12 @@ import java.util.concurrent.CancellationException;
  */
 public final class CriticalGate {
     public static final int MAX_WAITERS = 8192;
+    // A short, process-local coordinator serializes queue metadata and the
+    // critical wait-for graph. No guest code or scheduler turn runs under it.
+    // This must never be confused with a permit held across await.
+    private static final Object COORDINATOR = new Object();
+    private static final IdentityHashMap<Object, CriticalGate> WAITING_ON =
+            new IdentityHashMap<>();
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
     private Ticket owner;
 
@@ -25,20 +32,33 @@ public final class CriticalGate {
         private boolean granted;
         private boolean closed;
         private Thread synchronousOwner;
+        private Object logicalOwner;
         // Only host/embedder synchronous callers may wait on a physical thread.
         // Per-ticket signaling avoids waking every queued host thread.
         private java.util.concurrent.CountDownLatch synchronousWaiter;
 
         private Ticket() { }
 
-        /** Nonblocking FIFO admission, safe on actor carrier threads. */
+        /**
+         * Nonblocking admission. Each scheduler task has a stable logical id
+         * across await/carrier migration; detached host async invocations use
+         * their own ticket rather than inheriting the creating host thread.
+         */
         public OresFuture<Void> enterAsync() {
+            return request(false);
+        }
+
+        private OresFuture<Void> request(boolean synchronous) {
+            Object domain = OresScheduler.currentTaskDomain();
+            if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
+            if (domain == null) domain = synchronous ? Thread.currentThread() : this;
             boolean completeNow = false;
-            synchronized (CriticalGate.this) {
+            synchronized (COORDINATOR) {
                 if (closed || requested) {
                     throw new IllegalStateException("critical ticket already used or released");
                 }
                 requested = true;
+                logicalOwner = domain;
                 if (owner == null && waiters.isEmpty()) {
                     owner = this;
                     granted = true;
@@ -48,26 +68,40 @@ public final class CriticalGate {
                         requested = false;
                         throw new IllegalStateException("critical wait queue is full");
                     }
+                    if (owner != null && owner.logicalOwner == domain) {
+                        requested = false;
+                        throw new IllegalStateException(
+                                "recursive logical critical acquisition would deadlock");
+                    }
+                    CriticalGate priorWait = WAITING_ON.get(domain);
+                    if (priorWait != null) {
+                        requested = false;
+                        throw new IllegalStateException(
+                                "logical caller cannot wait on multiple critical gates simultaneously");
+                    }
+                    if (wouldCreateCycle(domain)) {
+                        requested = false;
+                        throw new IllegalStateException(
+                                "cross-gate critical acquisition would create a deadlock cycle");
+                    }
+                    WAITING_ON.put(domain, CriticalGate.this);
                     waiters.addLast(this);
                 }
             }
+            // Completing the Future may notify runtime callbacks; always do so
+            // after releasing the metadata coordinator.
             if (completeNow) admitted.completeFromRuntime(null);
             return admitted;
         }
 
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
         public void enterSync() {
-            synchronized (CriticalGate.this) {
-                if (owner != null && owner.synchronousOwner == Thread.currentThread()) {
-                    throw new IllegalStateException("recursive synchronous critical acquisition would deadlock");
-                }
-            }
-            OresFuture<Void> ready = enterAsync();
+            OresFuture<Void> ready = request(true);
             if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
                 // Never park a scheduler/actor worker. Release and fail outside
                 // the monitor, because Future settlement runs callbacks.
                 boolean admittedNow;
-                synchronized (CriticalGate.this) {
+                synchronized (COORDINATOR) {
                     admittedNow = granted && !closed;
                     if (admittedNow) synchronousOwner = Thread.currentThread();
                 }
@@ -79,7 +113,7 @@ public final class CriticalGate {
                 return;
             }
             java.util.concurrent.CountDownLatch signal = null;
-            synchronized (CriticalGate.this) {
+            synchronized (COORDINATOR) {
                 if (!granted && !closed) {
                     synchronousWaiter = new java.util.concurrent.CountDownLatch(1);
                     signal = synchronousWaiter;
@@ -95,7 +129,7 @@ public final class CriticalGate {
                             "interrupted while waiting for critical section", interrupted);
                 }
             }
-            synchronized (CriticalGate.this) {
+            synchronized (COORDINATOR) {
                 if (closed || !granted) {
                     throw new CancellationException("critical ticket was cancelled");
                 }
@@ -110,7 +144,7 @@ public final class CriticalGate {
         }
 
         public boolean isHeld() {
-            synchronized (CriticalGate.this) {
+            synchronized (COORDINATOR) {
                 return granted && !closed;
             }
         }
@@ -119,7 +153,7 @@ public final class CriticalGate {
         public void close() {
             Ticket wake = null;
             java.util.concurrent.CountDownLatch cancelledWaiter = null;
-            synchronized (CriticalGate.this) {
+            synchronized (COORDINATOR) {
                 if (closed) return;
                 closed = true;
                 synchronousOwner = null;
@@ -128,6 +162,7 @@ public final class CriticalGate {
                     owner = null;
                     while (!waiters.isEmpty()) {
                         Ticket candidate = waiters.removeFirst();
+                        WAITING_ON.remove(candidate.logicalOwner, CriticalGate.this);
                         if (candidate.closed) continue;
                         owner = candidate;
                         candidate.granted = true;
@@ -135,7 +170,9 @@ public final class CriticalGate {
                         break;
                     }
                 } else {
-                    waiters.remove(this);
+                    if (waiters.remove(this)) {
+                        WAITING_ON.remove(logicalOwner, CriticalGate.this);
+                    }
                 }
             }
             if (cancelledWaiter != null) cancelledWaiter.countDown();
@@ -145,7 +182,7 @@ public final class CriticalGate {
             if (wake != null) {
                 wake.admitted.completeFromRuntime(null);
                 java.util.concurrent.CountDownLatch signal;
-                synchronized (CriticalGate.this) {
+                synchronized (COORDINATOR) {
                     signal = wake.synchronousWaiter;
                 }
                 if (signal != null) signal.countDown();
@@ -153,8 +190,37 @@ public final class CriticalGate {
         }
     }
 
+    /**
+     * Follow the waiting dependency chain: requesting this gate would close
+     * a cycle if the current owner is (transitively) waiting on requester.
+     * Call only under COORDINATOR.
+     */
+    private boolean wouldCreateCycle(Object requester) {
+        Ticket current = owner;
+        IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
+        while (current != null) {
+            Object ownerDomain = current.logicalOwner;
+            if (ownerDomain == requester) return true;
+            if (visited.put(ownerDomain, Boolean.TRUE) != null) return false;
+            CriticalGate waiting = WAITING_ON.get(ownerDomain);
+            if (waiting == null) return false;
+            current = waiting.owner;
+        }
+        return false;
+    }
+
     public Ticket newTicket() { return new Ticket(); }
 
-    public synchronized int queuedCount() { return waiters.size(); }
-    public synchronized boolean held() { return owner != null; }
+    public int queuedCount() {
+        synchronized (COORDINATOR) { return waiters.size(); }
+    }
+
+    public boolean held() {
+        synchronized (COORDINATOR) { return owner != null; }
+    }
+
+    /** Runtime diagnostic; identifies queued logical invocations, not threads. */
+    public static int waitingLogicalDomains() {
+        synchronized (COORDINATOR) { return WAITING_ON.size(); }
+    }
 }
