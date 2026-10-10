@@ -2385,7 +2385,10 @@ public final class ActorRuntime implements AutoCloseable {
                 owned = List.copyOf(workers.values());
                 workers.clear();
                 stoppingWorkers.clear();
-                for (ActorRef<?> ref : owned) workerOwners.remove(ref.id(), id);
+                // Keep runtime-wide ownership reservations until actual actor
+                // retirement. Releasing here would let another ActorGroup
+                // adopt a worker between this lock release and cell.stop().
+                // unregisterActor() clears these tombstones after finalization.
             }
             // Attach observers BEFORE issuing stops so a fast finalization
             // cannot elude the close barrier. Runtime callbacks are enqueue-
@@ -4020,7 +4023,11 @@ public final class ActorRuntime implements AutoCloseable {
         for (ActorGroup group : List.copyOf(actorGroups.values())) {
             group.actorTerminated(cell.ref.id());
         }
+        // A closed ActorGroup was already removed from actorGroups and cannot
+        // observe this termination. Clear its retained ownership tombstone
+        // only when the runtime finalization fence has actually won.
         if (actors.remove(cell.ref.id(), cell)) {
+            workerOwners.remove(cell.ref.id());
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
