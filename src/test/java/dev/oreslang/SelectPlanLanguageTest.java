@@ -83,6 +83,29 @@ final class SelectPlanLanguageTest {
                 """));
     }
 
+    @Test
+    void rejectsNonCaseInputsBeforeRuntime() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub fnc main(): void {
+                  val SelectSet invalid = SelectSet.new(42);
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub fnc main(): void {
+                  val SelectPlan invalid = SelectPlan.new([1, 2]);
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub fnc main(): void {
+                  val Array<int> numbers = [1, 2];
+                  val Option<SelectResult> invalid = try select from numbers;
+                  return;
+                }
+                """));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "select-plan.ores")
