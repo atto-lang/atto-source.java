@@ -212,6 +212,90 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void concurrentAdmissionPreservesExactFairRotationWithContinuouslyReadyArms() throws Exception {
+        var a = new ChannelRuntime.Channel<Integer>(5000);
+        var b = new ChannelRuntime.Channel<Integer>(5000);
+        for (int i = 0; i < 5000; i++) {
+            assertTrue(a.tryWrite(i));
+            assertTrue(b.tryWrite(i));
+        }
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("a", ChannelRuntime.read(a));
+        plan.put("b", ChannelRuntime.read(b));
+
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(8);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var tasks = new java.util.ArrayList<java.util.concurrent.Future<int[]>>();
+            for (int thread = 0; thread < 8; thread++) {
+                tasks.add(workers.submit(() -> {
+                    start.await();
+                    int[] counts = new int[2];
+                    for (int i = 0; i < 1000; i++) {
+                        var selected = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR)
+                                .orElseThrow();
+                        if ("a".equals(selected.key())) counts[0]++;
+                        else if ("b".equals(selected.key())) counts[1]++;
+                        else fail("unexpected selection key " + selected.key());
+                    }
+                    return counts;
+                }));
+            }
+            start.countDown();
+            int[] totals = new int[2];
+            for (var task : tasks) {
+                var counts = task.get(20, java.util.concurrent.TimeUnit.SECONDS);
+                totals[0] += counts[0];
+                totals[1] += counts[1];
+            }
+            assertArrayEquals(new int[] {4000, 4000}, totals,
+                    "FAIR must use the cursor of the serialized admission, not stale construction order");
+            assertEquals(1000, a.size());
+            assertEquals(1000, b.size());
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellationVersusRendezvousHasOneTerminalOwner() throws Exception {
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 250; round++) {
+                var channel = new ChannelRuntime.Channel<Integer>(0);
+                var set = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel));
+                var pending = set.selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var writer = workers.submit(() -> {
+                    start.await();
+                    return channel.writeAsync(99);
+                });
+                var canceller = workers.submit(() -> {
+                    start.await();
+                    return pending.cancel(false);
+                });
+                start.countDown();
+                var outgoing = writer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                boolean cancelled = canceller.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                channel.close();
+                assertTrue(pending.isDone());
+                assertTrue(outgoing.isDone());
+                if (cancelled) {
+                    assertTrue(pending.isCancelled());
+                    assertThrows(java.util.concurrent.CancellationException.class, pending::join);
+                    assertFalse(outgoing.isCompletedExceptionally() == false && !outgoing.isCancelled(),
+                            "writer must not succeed when its rendezvous reader was cancelled");
+                } else {
+                    assertEquals(99, pending.join().value());
+                    assertNull(outgoing.join());
+                }
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void rejectsSecondDefaultAtomicallyAndKeepsPreviousSnapshot() {
         var channel = new ChannelRuntime.Channel<String>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
