@@ -45,6 +45,29 @@ synchronous loop can monopolize *its process*. Untrusted child actors need
 compiler-injected resumable checkpoints and bounded fuel/time budgets.
 Runtime-only safepoint polling cannot suspend an arbitrary Java stack.
 
+## Carrier-safe host Future bridge boundaries
+
+- Pending `OresFuture.get()`, timed `get(timeout)` with a positive deadline,
+  `join()`, and legacy `AsyncRuntime.await(...)` must fail closed **inside
+  both actor turns and ROOT/supervisor OresScheduler task turns**. No host
+  synchronization wait may park a scarce Ores scheduler carrier. Settled
+  reads and zero-timeout polling remain nonblocking.
+- `AsyncRuntime.await(CompletionStage)` checks carrier eligibility **before**
+  registering a completion callback against the external host producer.
+  A custom CompletionStage whose already-settled state cannot be established
+  via the Future interface is treated as pending while on a carrier.
+- Host blocking waits that time out or receive `InterruptedException`
+  detach their runtime completion registrations in a `finally` boundary,
+  without cancelling the independently owned producer Future.
+- A host `CompletionStage` adapter detaches its runtime completion waiter
+  when the host bridge is cancelled or independently completed. Cancellation
+  of an observer is not authority to cancel a shared Ores producer.
+
+See `OresSchedulerTest` and `OresFuturesTest` for direct regression cases,
+including a single-carrier progress test and retained-waiter accounting.
+These are committed invariants, **not executed acceptance evidence** while
+exact-head GitHub Actions fails before allocating JVM runner steps.
+
 ## Next acceptance tests
 
 - Source-level shared ROOT state, concurrent async functions and `await`.
