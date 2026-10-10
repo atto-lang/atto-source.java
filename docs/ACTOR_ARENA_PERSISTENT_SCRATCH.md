@@ -68,3 +68,9 @@ its bookkeeping uses managed collections. Therefore *near-zero JVM allocation*
 is an architectural target, not a measured result. Future lowering should use
 primitive handles or specialized inline/native scratch cursors to remove
 remaining per-allocation wrapper allocations; use JFR for proof.
+The `ExplicitNativeI64Region` slot allocator also now uses a preallocated
+free-slot stack. Allocation/drop select a slot in O(1) without linear scans
+or any new allocator metadata; native data allocation is performed only when
+the region opens, while Java `Slot` handle wrappers are still created on
+allocate. The regression suite stresses 8,192 allocate/drop/reuse cycles
+and verifies generation monotonicity and immediate stale-handle rejection.
