@@ -458,6 +458,47 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
+    void nbSelectRejectsBorrowedAliasOfActorSelfAcrossDeferredTurn() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub let int counter = 0;
+                          receive(ActorMail<int> mail): void {
+                            val Channel<int> input = Channel.new<int>(1);
+                            val alias = rt borrow self;
+                            nb select {
+                              case readch input: val value {
+                                stdio.println(alias.counter);
+                              }
+                            }
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(rejected.getMessage().contains("nb select continuation")
+                        && rejected.getMessage().contains("borrowed value 'alias'"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void nbSelectCanReenterOnlyCanonicalRuntimeOwnedActorSelf() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                define actor Worker as
+                  pub let int counter = 0;
+                  receive(ActorMail<int> mail): void {
+                    val Channel<int> input = Channel.new<int>(1);
+                    nb select {
+                      case readch input: val value {
+                        stdio.println(self.counter);
+                      }
+                    }
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void nbSelectMovesMoveOnlyCapturesIntoDeferredContinuation() {
         IllegalArgumentException moved = assertThrows(
                 IllegalArgumentException.class,
