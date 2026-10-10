@@ -16,6 +16,7 @@ import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.Function;
 
 /**
  * Oreslang's runtime-owned Future primitive.
@@ -388,6 +389,53 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 new Failure(Objects.requireNonNull(failure, "failure")));
         if (completed) cancelHook.set(null);
         return completed;
+    }
+
+    /**
+     * Transform an exclusively owned runtime operation's terminal outcome
+     * without ever running Oreslang guest code on the producer's thread.
+     *
+     * The mapping functions must only create runtime values or propagate
+     * failures. Cancellation of the returned Future detaches the observer
+     * and cancels the owned source operation (e.g. one stdin readch).
+     * Do not use this on shared broadcasts or multi-consumer Futures.
+     */
+    public <U> OresFuture<U> mapOwnedTerminal(
+            Function<? super T, ? extends U> onValue,
+            Function<? super Throwable, ? extends U> onFailure) {
+        Objects.requireNonNull(onValue, "onValue");
+        Objects.requireNonNull(onFailure, "onFailure");
+        AtomicReference<RuntimeWaiterRegistration<T>> registration =
+                new AtomicReference<>();
+        OresFuture<U> mapped = new OresFuture<>(() -> {
+            RuntimeWaiterRegistration<T> active = registration.getAndSet(null);
+            if (active != null) active.detach();
+            this.cancel(false);
+        });
+
+        RuntimeWaiterRegistration<T> waiter =
+                whenCompleteRuntimeCancellable((value, failure) -> {
+                    try {
+                        if (mapped.isDone()) return;
+                        U converted = failure == null
+                                ? onValue.apply(value)
+                                : onFailure.apply(OresFuture.unwrap(failure));
+                        mapped.completeFromRuntime(converted);
+                    } catch (Throwable conversionFailure) {
+                        mapped.failFromRuntime(conversionFailure);
+                    } finally {
+                        RuntimeWaiterRegistration<T> active =
+                                registration.getAndSet(null);
+                        if (active != null) active.detach();
+                    }
+                });
+        registration.set(waiter);
+        if (mapped.isDone()) {
+            RuntimeWaiterRegistration<T> active =
+                    registration.getAndSet(null);
+            if (active != null) active.detach();
+        }
+        return mapped;
     }
 
     /**
