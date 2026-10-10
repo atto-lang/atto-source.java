@@ -90,10 +90,34 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        return checkTypesWithDiagnostics(program, Map.of());
+    }
+
+    /** Cross-file imported module contracts, already exported/validated by ImportGraph. */
+    public static Ast.Program checkTypes(Ast.Program program, Map<String, Ast.InterfaceDecl> importedContracts) {
+        return checkTypesWithDiagnostics(program, importedContracts).program();
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, Map<String, Ast.InterfaceDecl> importedContracts) {
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        // Imported types are visible only by the exact explicitly-selected name/alias.
+        // They are not added to the program AST or re-exported by this source unit.
+        for (Map.Entry<String, Ast.InterfaceDecl> imported : importedContracts.entrySet()) {
+            String name = imported.getKey();
+            Ast.InterfaceDecl contract = imported.getValue();
+            if (contract == null || !contract.moduleContract()
+                    || contract.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("invalid imported public module contract '" + name + "'");
+            }
+            if (checker.interfaces.putIfAbsent(name, contract) != null) {
+                throw new IllegalArgumentException("imported module contract '" + name
+                        + "' conflicts with a local declaration");
+            }
+        }
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
     }
