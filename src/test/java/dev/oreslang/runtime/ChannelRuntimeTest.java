@@ -291,6 +291,90 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void selectPlanMutationDoesNotRetargetAlreadyRegisteredReaders() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(first));
+        OresFuture<ChannelRuntime.SelectResult> older = plan.selectAsync();
+        assertEquals(0L, plan.revision());
+        assertFalse(older.isDone());
+
+        plan.replaceCase(0, ChannelRuntime.read(second));
+        assertEquals(1L, plan.revision());
+        assertEquals(1, plan.cases().size());
+        OresFuture<ChannelRuntime.SelectResult> newer = plan.selectAsync();
+        assertFalse(newer.isDone());
+
+        assertTrue(second.tryWrite(2));
+        assertEquals(2, newer.join().value());
+        assertFalse(older.isDone(), "old selection must still watch the original channel");
+        assertTrue(first.tryWrite(1));
+        assertEquals(1, older.join().value());
+    }
+
+    @Test
+    void selectPlanCanAddRemoveAndReplaceCasesWithoutLeakingPreviousGenerations() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(first));
+        plan.addCase(ChannelRuntime.read(second));
+        assertEquals(1L, plan.revision());
+        assertEquals(2, plan.cases().size());
+        assertTrue(second.tryWrite(9));
+        assertEquals(1, plan.trySelect().orElseThrow().index());
+
+        plan.removeCase(0);
+        assertEquals(2L, plan.revision());
+        assertEquals(1, plan.cases().size());
+        plan.replaceCases(List.of(ChannelRuntime.timeout(
+                0, java.util.concurrent.TimeUnit.NANOSECONDS)));
+        assertEquals(3L, plan.revision());
+        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT,
+                plan.trySelect().orElseThrow().operation());
+
+        assertThrows(IllegalArgumentException.class, () -> plan.removeCase(0));
+        assertEquals(3L, plan.revision(),
+                "rejected empty-plan change must leave the original snapshot intact");
+    }
+
+    @Test
+    void invalidDuplicateDefaultPlanRevisionRollsBackAtomically() {
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.defaultCase());
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.addCase(ChannelRuntime.defaultCase()));
+        assertEquals(0L, plan.revision());
+        assertEquals(1, plan.cases().size());
+        assertEquals(ChannelRuntime.SelectOperation.DEFAULT,
+                plan.trySelect().orElseThrow().operation());
+    }
+
+    @Test
+    void concurrentPlanUpdatesAreLosslessAndGenerationMonotonic() throws Exception {
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.timeout(0, java.util.concurrent.TimeUnit.NANOSECONDS));
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(4)) {
+            java.util.List<java.util.concurrent.Future<?>> edits =
+                    new java.util.ArrayList<>();
+            for (int thread = 0; thread < 4; thread++) {
+                edits.add(workers.submit(() -> {
+                    for (int n = 0; n < 40; n++) {
+                        plan.addCase(ChannelRuntime.timeout(
+                                0, java.util.concurrent.TimeUnit.NANOSECONDS));
+                    }
+                }));
+            }
+            for (var edit : edits) edit.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertEquals(160L, plan.revision());
+        assertEquals(161, plan.cases().size());
+        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT,
+                plan.trySelect().orElseThrow().operation());
+    }
+
+    @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         assertTrue(channel.tryWrite(1));
