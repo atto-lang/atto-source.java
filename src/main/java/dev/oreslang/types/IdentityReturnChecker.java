@@ -18,6 +18,7 @@ import java.util.Map;
 final class IdentityReturnChecker {
     private final Map<String, List<Callable>> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> qualifiedClasses = new HashMap<>();
+    private final Map<String, Ast.InterfaceDecl> qualifiedInterfaces = new HashMap<>();
 
     private record Callable(String module, Ast.FunctionDecl function) { }
 
@@ -45,10 +46,13 @@ final class IdentityReturnChecker {
                             .add(new Callable(module.name(), function));
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     checker.qualifiedClasses.put(module.name() + "." + klass.name(), klass);
+                } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    checker.qualifiedInterfaces.put(module.name() + "." + iface.name(), iface);
                 }
             }
         }
         checker.verifyOverrideContracts(program);
+        checker.verifyInterfaceIdentityContracts(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl function && function.returnType().isIdentityReturn()) {
