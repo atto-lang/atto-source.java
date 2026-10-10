@@ -345,6 +345,29 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
+            if (defer.expression() instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.LambdaExpr) {
+                // A deferred inline-lambda invocation eagerly captures args and
+                // stores them until scope exit. Ordinary borrowed views and
+                // mutex guards cannot escape into that delayed activation.
+                for (Ast.Expr argument : call.arguments()) {
+                    Ast.Expr value = argument instanceof Ast.SpreadExpr spread
+                            ? spread.expression() : argument;
+                    if (value instanceof Ast.RuntimeCallExpr runtime
+                            && runtime.operation().equals("borrow")) {
+                        throw error("defer cannot retain borrowed inline-lambda argument");
+                    }
+                    if (value instanceof Ast.NameExpr name) {
+                        VarState state = scope.lookup(name.name());
+                        if (state != null && (state.type.isBorrow()
+                                || state.kind == ValueKind.IMM_BORROW
+                                || state.kind == ValueKind.MUT_BORROW
+                                || containsMutexGuardType(state.type))) {
+                            throw error("defer cannot retain borrowed or guard-bearing argument '" + name.name() + "'");
+                        }
+                    }
+                }
+            }
             ValueInfo value = checkExpr(defer.expression(), scope, false);
             if (containsMutexGuardType(value.type)) {
                 throw error("defer cannot produce a guard-bearing value");
