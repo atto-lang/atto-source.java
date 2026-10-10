@@ -101,6 +101,24 @@ public record IsolatePolicy(
                 true);
     }
 
+    /**
+     * Group CONTEXT baseline for many untrusted actors sharing one Graal
+     * isolate. The context's sandbox.MaxCPUTime is a CUMULATIVE lifetime
+     * budget, not the per-actor turn budget. Individual spawned UNTRUSTED
+     * actors still receive the untrustedActor() 250 ms baseline.
+     *
+     * The supervisor must rotate long-lived group contexts before exhausting
+     * this budget, safely fencing and draining pending tasks and I/O first.
+     */
+    public static IsolatePolicy untrustedActorGroup() {
+        return new IsolatePolicy(
+                Set.of(),
+                128L * 1024 * 1024,
+                4096,
+                Duration.ofHours(12),
+                true);
+    }
+
     /** Restricted local/test baseline. Java interop/FFI/native/reflection/process spawning remain denied. */
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
