@@ -101,7 +101,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "stdin", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
@@ -1696,6 +1696,7 @@ public final class TypeChecker {
                 return local.type();
             }
             if (name.name().equals("stdio")
+                    || name.name().equals("stdin")
                     || name.name().equals("std")
                     || name.name().equals("process")
                     || name.name().equals("actor")
@@ -2768,6 +2769,21 @@ public final class TypeChecker {
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
                 return new Function(List.of(), Primitive.INT);
             }
+            // These are global descriptor namespaces; no std/* import is needed.
+            // They are runtime singletons per context, so aliases preserve
+            // identity, FIFO ordering, and shared backpressure.
+            if (member.receiver() instanceof Ast.NameExpr global
+                    && env.lookup(global.name()) == null) {
+                if (global.name().equals("process")
+                        && (member.member().equals("stdin") || member.member().equals("stdout")
+                            || member.member().equals("stderr"))) {
+                    return new Named("Channel", List.of(Primitive.STRING));
+                }
+                if (global.name().equals("stdin")
+                        && (member.member().equals("in") || member.member().equals("stdin"))) {
+                    return new Named("Channel", List.of(Primitive.STRING));
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -2782,8 +2798,12 @@ public final class TypeChecker {
             if (member.member().equals("read_line")
                     && member.receiver() instanceof Ast.MemberExpr stdioStream
                     && stdioStream.receiver() instanceof Ast.NameExpr stdioName
-                    && stdioName.name().equals("stdio")
-                    && (stdioStream.member().equals("stdin") || stdioStream.member().equals("in"))) {
+                    && ((stdioName.name().equals("stdio")
+                          && (stdioStream.member().equals("stdin") || stdioStream.member().equals("in")))
+                        || (stdioName.name().equals("stdin")
+                          && (stdioStream.member().equals("in") || stdioStream.member().equals("stdin")))
+                        || (stdioName.name().equals("process")
+                          && stdioStream.member().equals("stdin")))) {
                 return new Function(List.of(), new Named("Option", List.of(Primitive.STRING)));
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
