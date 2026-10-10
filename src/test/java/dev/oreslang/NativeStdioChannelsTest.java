@@ -126,7 +126,7 @@ final class NativeStdioChannelsTest {
     }
 
     @Test
-    void observableDoesNotConsumeBeforeFirstPull() throws Exception {
+    void observableRendezvousPullConsumesSingleElement() throws Exception {
         Output result = run("""
                 import module Observable from "std/observable";
                 pub routine main(): void {
