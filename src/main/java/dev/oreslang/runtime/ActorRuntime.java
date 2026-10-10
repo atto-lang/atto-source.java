@@ -600,12 +600,17 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId owner;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
+        private final int maxNativeBlocks;
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
             this.limitBytes = limitBytes;
+            // FFM arenas carry native and Java metadata beyond the logical
+            // byte length. Prevent unlimited zero/tiny block allocations.
+            this.maxNativeBlocks = (int) Math.min(1024L,
+                    Math.max(16L, limitBytes / 4096L));
         }
 
         public ActorId owner() { return owner; }
@@ -633,7 +638,13 @@ public final class ActorRuntime implements AutoCloseable {
         public synchronized PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
-            MemoryReservation reservation = reserve(bytes, "private actor direct heap");
+            if (sliceClosed.get()) throw new IllegalStateException("actor native memory slice closed");
+            if (blocks.size() >= maxNativeBlocks)
+                throw new IllegalStateException("actor native block limit exceeded for " + owner
+                        + ": blocks=" + blocks.size() + " limit=" + maxNativeBlocks);
+            // Even a logically empty FFM segment has native arena overhead.
+            MemoryReservation reservation = reserve(Math.max(1L, (long) bytes),
+                    "actor native memory block");
             PrivateMemoryBlock block = null;
             try {
                 block = new PrivateMemoryBlock(this, reservation, bytes);
