@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
 
 /**
  * Context-owned, non-carrier stdout logging. Only the daemon writer touches the
@@ -26,6 +26,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private final Object lock = new Object();
     private final ArrayBlockingQueue<Record> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     private final List<Barrier> barriers = new ArrayList<>();
+    private final Semaphore wake = new Semaphore(0);
     private final PrintWriter writer;
     private final Thread drain;
     private long submitted;
@@ -58,6 +59,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 throw new IllegalStateException("async stdio queue is full (1024 records)");
             }
             submitted = next;
+            wake.release();
             return completion;
         }
     }
@@ -78,7 +80,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 synchronized (lock) {
                     if (!accepting && queue.isEmpty()) break;
                 }
-                Record record = queue.poll(50, TimeUnit.MILLISECONDS);
+                wake.acquire();
+                Record record = queue.poll();
                 if (record == null) continue;
                 Throwable error;
                 synchronized (lock) { error = failure; }
@@ -143,7 +146,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
      * flushed by software.
      */
     @Override public void close() {
-        synchronized (lock) { accepting = false; }
+        synchronized (lock) { accepting = false; wake.release(); }
         try {
             drain.join(CLOSE_TIMEOUT_MILLIS);
         } catch (InterruptedException interrupted) {
