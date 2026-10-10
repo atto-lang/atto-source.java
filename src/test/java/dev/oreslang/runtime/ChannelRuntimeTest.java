@@ -363,6 +363,43 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void concurrentSelectionsCannotCommitOneAffineWriteCaseTwice() throws Exception {
+        ChannelRuntime.Channel<java.util.List<Integer>> channel =
+                new ChannelRuntime.Channel<>(2);
+        java.util.List<Integer> payload = new java.util.ArrayList<>(List.of(1));
+        ChannelRuntime.WriteCase<java.util.List<Integer>> shared =
+                ChannelRuntime.write(channel, payload);
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(shared);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> {
+                start.await();
+                try {
+                    plan.selectAsync().join();
+                    return true;
+                } catch (java.util.concurrent.CompletionException rejected) {
+                    return false;
+                }
+            });
+            var second = pool.submit(() -> {
+                start.await();
+                try {
+                    plan.selectAsync().join();
+                    return true;
+                } catch (java.util.concurrent.CompletionException rejected) {
+                    return false;
+                }
+            });
+            start.countDown();
+            boolean a = first.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            boolean b = second.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(a ^ b, "one and only one registration may commit the payload");
+        }
+        assertEquals(1, channel.size());
+        org.junit.jupiter.api.Assertions.assertSame(payload, channel.tryRead().orElseThrow());
+    }
+
+    @Test
     void scalarWriteCaseCanBeReusedBecauseItsPayloadIsCopySafe() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
         ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
