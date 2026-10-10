@@ -40,6 +40,9 @@ pub enum Error {
     NotRunnable,
     WrongLease,
     TurnStillActive,
+    StaleRequest,
+    StaleMessage,
+    EpochExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,9 +55,23 @@ pub struct Lease {
     token: u64,
 }
 
+/// Request/message handles are lifetime-specific scheduler capabilities. IDs
+/// supplied by callers are only routing keys and may be reused after closing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestHandle { id: u64, incarnation: u64 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MessageHandle {
+    request: RequestHandle,
+    id: u64,
+    incarnation: u64,
+}
+
 #[derive(Default)]
 struct Request {
+    incarnation: u64,
     messages: BTreeMap<u64, Phase>,
+    message_incarnations: BTreeMap<u64, u64>,
 }
 
 pub struct Admission {
@@ -62,34 +79,109 @@ pub struct Admission {
     requests: BTreeMap<u64, Request>,
     active: Option<Lease>,
     next_token: u64,
+    next_request_incarnation: u64,
+    next_message_incarnation: u64,
 }
 
 impl Admission {
     pub fn new(limits: Limits) -> Self {
-        Self { limits, requests: BTreeMap::new(), active: None, next_token: 0 }
+        Self { limits, requests: BTreeMap::new(), active: None, next_token: 0,
+            next_request_incarnation: 0, next_message_incarnation: 0 }
     }
 
     pub fn active_lease(&self) -> Option<Lease> { self.active }
     pub fn request_count(&self) -> usize { self.requests.len() }
 
-    pub fn admit_request(&mut self, id: u64) -> Result<(), Error> {
+    // ID-only methods are private model test helpers. Runtime callers must use
+    // the public lifetime-capability API below to fence delayed IO callbacks.
+    fn admit_request(&mut self, id: u64) -> Result<(), Error> {
         if self.requests.contains_key(&id) { return Err(Error::DuplicateRequest); }
         if self.requests.len() >= self.limits.requests { return Err(Error::RequestLimit); }
-        self.requests.insert(id, Request::default());
+        let incarnation = self.next_request_incarnation.checked_add(1)
+            .ok_or(Error::EpochExhausted)?;
+        self.next_request_incarnation = incarnation;
+        self.requests.insert(id, Request {
+            incarnation, ..Request::default()
+        });
         Ok(())
     }
 
-    pub fn admit_message(&mut self, request: u64, message: u64) -> Result<(), Error> {
+    fn admit_message(&mut self, request: u64, message: u64) -> Result<(), Error> {
         let r = self.requests.get_mut(&request).ok_or(Error::UnknownRequest)?;
         if r.messages.contains_key(&message) { return Err(Error::DuplicateMessage); }
         if r.messages.len() >= self.limits.messages_per_request {
             return Err(Error::MessageLimit);
         }
+        let incarnation = self.next_message_incarnation.checked_add(1)
+            .ok_or(Error::EpochExhausted)?;
+        self.next_message_incarnation = incarnation;
         r.messages.insert(message, Phase::Ready);
+        r.message_incarnations.insert(message, incarnation);
         Ok(())
     }
 
-    pub fn enter(&mut self, request: u64, message: u64) -> Result<Lease, Error> {
+    fn check_request(&self, handle: RequestHandle) -> Result<(), Error> {
+        match self.requests.get(&handle.id) {
+            Some(r) if r.incarnation == handle.incarnation => Ok(()),
+            Some(_) => Err(Error::StaleRequest),
+            None => Err(Error::UnknownRequest),
+        }
+    }
+
+    fn check_message(&self, handle: MessageHandle) -> Result<(), Error> {
+        self.check_request(handle.request)?;
+        match self.requests.get(&handle.request.id)
+            .and_then(|r| r.message_incarnations.get(&handle.id)) {
+            Some(i) if *i == handle.incarnation => Ok(()),
+            Some(_) => Err(Error::StaleMessage),
+            None => Err(Error::UnknownMessage),
+        }
+    }
+
+    /// Admit an externally correlated request lifetime, returning an opaque
+    /// incarnation handle. Never derive a fresh handle in a late callback.
+    pub fn open_request(&mut self, id: u64) -> Result<RequestHandle, Error> {
+        self.admit_request(id)?;
+        let incarnation = self.requests.get(&id).ok_or(Error::UnknownRequest)?.incarnation;
+        Ok(RequestHandle { id, incarnation })
+    }
+
+    pub fn open_message(&mut self, request: RequestHandle, id: u64)
+        -> Result<MessageHandle, Error> {
+        self.check_request(request)?;
+        self.admit_message(request.id, id)?;
+        let incarnation = *self.requests.get(&request.id)
+            .and_then(|r| r.message_incarnations.get(&id))
+            .ok_or(Error::UnknownMessage)?;
+        Ok(MessageHandle { request, id, incarnation })
+    }
+
+    pub fn enter_message(&mut self, message: MessageHandle) -> Result<Lease, Error> {
+        self.check_message(message)?;
+        self.enter(message.request.id, message.id)
+    }
+
+    pub fn wake_message(&mut self, message: MessageHandle) -> Result<(), Error> {
+        self.check_message(message)?;
+        self.wake(message.request.id, message.id)
+    }
+
+    pub fn finish_message_handle(&mut self, message: MessageHandle) -> Result<(), Error> {
+        self.check_message(message)?;
+        self.finish_message(message.request.id, message.id)
+    }
+
+    pub fn cancel_request_handle(&mut self, request: RequestHandle) -> Result<(), Error> {
+        self.check_request(request)?;
+        self.cancel_request(request.id)
+    }
+
+    pub fn finish_request_handle(&mut self, request: RequestHandle) -> Result<(), Error> {
+        self.check_request(request)?;
+        self.finish_request(request.id)
+    }
+
+    fn enter(&mut self, request: u64, message: u64) -> Result<Lease, Error> {
         if self.active.is_some() { return Err(Error::TurnBusy); }
         let phase = self.requests.get_mut(&request)
             .ok_or(Error::UnknownRequest)?.messages.get_mut(&message)
@@ -126,7 +218,7 @@ impl Admission {
         Ok(())
     }
 
-    pub fn wake(&mut self, request: u64, message: u64) -> Result<(), Error> {
+    fn wake(&mut self, request: u64, message: u64) -> Result<(), Error> {
         let phase = self.requests.get_mut(&request)
             .ok_or(Error::UnknownRequest)?.messages.get_mut(&message)
             .ok_or(Error::UnknownMessage)?;
@@ -135,13 +227,14 @@ impl Admission {
         Ok(())
     }
 
-    pub fn finish_message(&mut self, request: u64, message: u64) -> Result<(), Error> {
+    fn finish_message(&mut self, request: u64, message: u64) -> Result<(), Error> {
         if self.active.is_some_and(|lease|
             lease.request == request && lease.message == message) {
             return Err(Error::TurnStillActive);
         }
         let r = self.requests.get_mut(&request).ok_or(Error::UnknownRequest)?;
         if r.messages.remove(&message).is_none() { return Err(Error::UnknownMessage); }
+        r.message_incarnations.remove(&message);
         Ok(())
     }
 
@@ -149,7 +242,7 @@ impl Admission {
     /// Active guest code cannot be revoked while holding its actor execution
     /// lease: request a safepoint unwind, then call again after lease release.
     /// A late wake from an old IO completion will be UnknownMessage.
-    pub fn cancel_request(&mut self, request: u64) -> Result<(), Error> {
+    fn cancel_request(&mut self, request: u64) -> Result<(), Error> {
         if self.active.is_some_and(|lease| lease.request == request) {
             return Err(Error::TurnStillActive);
         }
@@ -159,7 +252,7 @@ impl Admission {
         Ok(())
     }
 
-    pub fn finish_request(&mut self, request: u64) -> Result<(), Error> {
+    fn finish_request(&mut self, request: u64) -> Result<(), Error> {
         let r = self.requests.get(&request).ok_or(Error::UnknownRequest)?;
         if !r.messages.is_empty() { return Err(Error::RequestNotEmpty); }
         self.requests.remove(&request);
@@ -173,6 +266,10 @@ impl Admission {
         let mut running = 0;
         for r in self.requests.values() {
             if r.messages.len() > self.limits.messages_per_request { return false; }
+            if r.messages.len() != r.message_incarnations.len() { return false; }
+            if r.messages.keys().any(|id| !r.message_incarnations.contains_key(id)) {
+                return false;
+            }
             running += r.messages.values().filter(|x| **x == Phase::Running).count();
         }
         if running > 1 || running != usize::from(self.active.is_some()) { return false; }
@@ -334,4 +431,45 @@ mod tests {
         assert_eq!(Limits::new(100, 100), Err(Error::InvalidLimit));
         assert_eq!(Limits::new(3, 4), Ok(Limits { requests: 3, messages_per_request: 4 }));
     }
+    #[test]
+    fn stale_callbacks_cannot_resurrect_reused_request_and_message_ids() {
+        let mut a = Admission::new(Limits::new(2, 2).unwrap());
+        let first_request = a.open_request(9).unwrap();
+        let first_message = a.open_message(first_request, 5).unwrap();
+        let turn = a.enter_message(first_message).unwrap();
+        a.suspend(turn).unwrap();
+        a.cancel_request_handle(first_request).unwrap();
+
+        let second_request = a.open_request(9).unwrap();
+        let second_message = a.open_message(second_request, 5).unwrap();
+        let second_turn = a.enter_message(second_message).unwrap();
+        a.suspend(second_turn).unwrap();
+
+        assert_ne!(first_request, second_request);
+        assert_ne!(first_message, second_message);
+        assert_eq!(a.wake_message(first_message), Err(Error::StaleRequest));
+        assert_eq!(a.finish_message_handle(first_message), Err(Error::StaleRequest));
+        assert_eq!(a.cancel_request_handle(first_request), Err(Error::StaleRequest));
+        assert_eq!(a.finish_request_handle(first_request), Err(Error::StaleRequest));
+        assert_eq!(a.wake_message(second_message), Ok(()));
+        assert!(a.check_invariants());
+    }
+
+    #[test]
+    fn stale_message_incarnation_cannot_cancel_replacement_in_same_request() {
+        let mut a = Admission::new(Limits::serial());
+        let request = a.open_request(5).unwrap();
+        let previous = a.open_message(request, 8).unwrap();
+        a.finish_message_handle(previous).unwrap();
+        let current = a.open_message(request, 8).unwrap();
+        assert_ne!(previous, current);
+        assert_eq!(a.wake_message(previous), Err(Error::StaleMessage));
+        assert_eq!(a.finish_message_handle(previous), Err(Error::StaleMessage));
+        let turn = a.enter_message(current).unwrap();
+        a.yield_turn(turn).unwrap();
+        a.finish_message_handle(current).unwrap();
+        a.finish_request_handle(request).unwrap();
+        assert!(a.check_invariants());
+    }
+
 }
