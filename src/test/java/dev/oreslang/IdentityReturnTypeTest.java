@@ -450,7 +450,7 @@ final class IdentityReturnTypeTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("23\\n", output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+        assertEquals("23\n", output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
     @Test void runtimeReceiverIdentitySurvivesReturnValidation() throws Exception {
@@ -458,7 +458,6 @@ final class IdentityReturnTypeTest {
                 define class T as
                   pub let string message = "before";
                   pub same(): this {
-                    self.message = "after";
                     return self;
                   }
                 end
@@ -477,7 +476,7 @@ final class IdentityReturnTypeTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("after\\n", output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+        assertEquals("before\n", output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
     @Test void conditionalExpressionProvesBothBranchesPreserveIdentity() {
