@@ -88,38 +88,22 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
-    void moveOnlyCopyAndShareFailClosedUntilTheirFullContractsConverge() {
-        IllegalArgumentException copied = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Box as
-                          pub let int value = 7;
-                        end
-
-                        fnc bad(): void {
-                          let Box box = new Box();
-                          val other = rt copy box;
-                          stdio.println(other.value);
-                          return;
-                        }
-                        """)));
-        assertTrue(copied.getMessage().contains("rt copy"), copied.getMessage());
-
-        IllegalArgumentException shared = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Box as
-                          pub let int value = 7;
-                        end
-
-                        fnc bad(): void {
-                          let Box box = new Box();
-                          val alias = rt share box;
-                          stdio.println(alias.value);
-                          return;
-                        }
-                        """)));
-        assertTrue(shared.getMessage().contains("rt share"), shared.getMessage());
+    void deepCopyAndReadonlyShareAllowDataOnlyNominalValues() throws Exception {
+        String output = run("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                pub routine main(): void {
+                  val Box box = new Box();
+                  val Box copied = rt copy box;
+                  val frozen = rt share box;
+                  stdio.stdout.write(copied.value);
+                  stdio.stdout.write(frozen.value);
+                  stdio.stdout.write(box.value);
+                  return;
+                }
+                """);
+        assertEquals("777", output);
     }
 
     @Test
@@ -265,10 +249,10 @@ final class PointerlessFncOwnershipTest {
                   val Array<int> nested = new Array<int>();
                   nested.add(5);
                   val Array<Array<int>> source = new Array<Array<int>>();
-                  source.add(nested);
+                  source.add(rt copy nested);
                   val frozen = rt share source;
                   nested.add(6);
-                  source.add(nested);
+                  source.add(rt copy nested);
                   stdio.stdout.write(frozen.size);
                   stdio.stdout.write(frozen[0].size);
                   stdio.stdout.write(source.size);
@@ -478,7 +462,7 @@ final class PointerlessFncOwnershipTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
                           pub let int value = 7;
-                          fnc inspect(Box other): int { return self.value; }
+                          inspect(Box other): int { return self.value; }
                         end
                         fnc bad(): void {
                           let mut Box box = new Box();
@@ -529,8 +513,8 @@ final class PointerlessFncOwnershipTest {
                           return;
                         }
                         """)));
-        assertTrue(rejected.getMessage().contains("async")
-                        && rejected.getMessage().contains("structural"),
+        assertTrue(rejected.getMessage().contains("structural")
+                        && rejected.getMessage().contains("outlive"),
                 rejected.getMessage());
     }
 
