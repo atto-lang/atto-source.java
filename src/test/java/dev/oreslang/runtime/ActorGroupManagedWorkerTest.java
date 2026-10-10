@@ -81,6 +81,34 @@ final class ActorGroupManagedWorkerTest {
     }
 
     @Test
+    void structuredManagementIsExclusiveAcrossGroupsAndIdempotentWithinOneGroup()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup owner = runtime.createActorGroup();
+            ActorRuntime.ActorGroup unrelated = runtime.createActorGroup();
+            ActorRuntime.ActorRef<String> worker = owner.spawnWorker(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    context -> (message, actorContext) -> { });
+
+            assertSame(worker, owner.manageWorker(worker),
+                    "registering the same worker twice in its owning group is idempotent");
+            assertEquals(1, owner.workerCount());
+            assertThrows(IllegalStateException.class, () -> unrelated.manageWorker(worker),
+                    "a second cooperation group must not acquire lifecycle ownership");
+            assertEquals(0, unrelated.workerCount());
+
+            worker.getReady().get(5, TimeUnit.SECONDS);
+            unrelated.close();
+            assertTrue(worker.isAlive(), "closing a non-owner cannot cancel the worker");
+
+            owner.close();
+            assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertFalse(worker.isAlive());
+        }
+    }
+
+    @Test
     void managementRejectsCrossRuntimeRefsAndRequiresActiveActor() throws Exception {
         try (ActorRuntime one = new ActorRuntime();
              ActorRuntime two = new ActorRuntime()) {
