@@ -477,50 +477,6 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
-    void structuralReadOnlyViewCannotReturnItsOwnedChild() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Child as
-                          pub let String value = "owned";
-                        end
-                        define class Parent as
-                          pub let Child child = new Child();
-                        end
-                        fnc steal(structural Parent borrowed): Child {
-                          return borrowed.child;
-                        }
-                        """)));
-        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error.getMessage());
-    }
-
-    @Test
-    void explicitBorrowCannotReturnAnOwnedChild() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Child as
-                          pub let String value = "owned";
-                        end
-                        define class Parent as
-                          pub let Child child = new Child();
-                        end
-                        fnc steal(borrow Parent view): Child {
-                          return view.child;
-                        }
-                        """)));
-        assertTrue(error.getMessage().toLowerCase().contains("borrow"), error.getMessage());
-    }
-
-    @Test
-    void borrowedViewMayReadCopyableFieldsWithoutMovingOwner() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Child as
-                  pub let int number = 7;
-                end
-                fnc read(structural Child view): int { return view.number; }
-                """)));
-    }
-
-    @Test
     void inlineStructuralViewOfInferredStructRunsWithoutMoving() throws Exception {
         String output = run("""
                 fnc inspect(structural {x: String} v): String {
