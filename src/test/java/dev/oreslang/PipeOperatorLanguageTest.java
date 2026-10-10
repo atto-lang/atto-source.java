@@ -126,6 +126,25 @@ final class PipeOperatorLanguageTest {
     }
 
     @Test
+    void actorSuperclassAndBothPipeFormsShareOneGrammar() {
+        Ast.Program program = Parser.parse("""
+                define actor Producer from serial actor as {
+                    receive(ActorMail<int> mail): void { self.end(); return; }
+                }
+                pub fnc twice(int x): int { return x * 2; }
+                pub routine main(): void {
+                    const value = 3 |> twice;
+                    const stream = spawn Producer() pipe spawn Producer();
+                    return;
+                }
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(failure.getMessage().contains("not executable yet"),
+                failure::getMessage);
+    }
+
+    @Test
     void actorPipeNeverOverloadsOrdinaryValueAndFunctionApplication() {
         Ast.Program program = Parser.parse("""
                 pub routine main(): void {

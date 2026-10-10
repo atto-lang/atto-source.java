@@ -142,6 +142,55 @@ final class BuiltinActorInheritanceTest {
     }
 
     @Test
+    void nativeRuntimeOperationsAreFinalForAllActorKinds() {
+        for (String header : new String[] {
+                "define actor Worker as",
+                "define serial actor Worker as",
+                "define isoactor Worker as",
+                "define untrusted actor Worker as"
+        }) {
+            String source = header + "\n"
+                    + "send(): void { return; }\nend";
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), header);
+            assertTrue(failure.getMessage().contains("final builtin actor method"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
+    void nativeRuntimeSlotsCannotBeOrdinaryActorFields() {
+        for (String name : new String[] {
+                "send", "outputs", "get_done_signal"
+        }) {
+            String source = "define actor Worker as\n"
+                    + "let int " + name + ";\nend";
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), name);
+            assertTrue(failure.getMessage().contains("final builtin actor member"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
+    void ordinaryActorParentCannotSmuggleNativeSlotsIntoSerialChild() {
+        String source = """
+                define actor Parent as
+                    pub get_done_signal(): void { return; }
+                end
+                define actor Child from serial actor extends Parent as
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("final builtin actor method"),
+                failure::getMessage);
+    }
+
+    @Test
     void fromWordKeepsItsExistingImportAndExpressionMeanings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc serial(int value): int { return value; }

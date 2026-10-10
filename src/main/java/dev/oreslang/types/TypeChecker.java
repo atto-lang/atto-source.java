@@ -1033,6 +1033,36 @@ public final class TypeChecker {
         }
         Set<String> effectiveInstanceMethodNames = new LinkedHashSet<>();
         collectInstanceMethodNames(klass, effectiveInstanceMethodNames, new LinkedHashSet<>());
+        // Native actor identity, supervision, lifecycle, and transport slots
+        // are final on EVERY actor, not only "from serial actor" descendants.
+        // Examine effective inherited members so named actor parents cannot
+        // smuggle reserved slot names into a derived actor.
+        if (klass.actorKind() != Ast.ActorKind.NONE && klass.proxySpec() == null) {
+            for (String name : effectiveFieldNames) {
+                if (FINAL_BUILTIN_ACTOR_METHODS.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name()
+                            + "' cannot shadow final builtin actor member '" + name
+                            + "' through local or inherited state");
+                }
+            }
+            for (String name : effectiveInstanceMethodNames) {
+                if (FINAL_BUILTIN_ACTOR_METHODS.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name()
+                            + "' cannot override final builtin actor method '" + name
+                            + "' through local or inherited methods");
+                }
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.isStatic() && FINAL_BUILTIN_ACTOR_METHODS.contains(method.name())) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name()
+                            + "' cannot hide final builtin actor method '"
+                            + method.name() + "' with a static method");
+                }
+            }
+        }
         for (String name : effectiveFieldNames) {
             if (effectiveInstanceMethodNames.contains(name)) {
                 throw new IllegalArgumentException(
