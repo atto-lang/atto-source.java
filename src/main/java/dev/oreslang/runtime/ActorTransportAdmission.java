@@ -27,6 +27,9 @@ public final class ActorTransportAdmission implements AutoCloseable {
     private final int maxPendingRequests;
     private final int maxPendingMessagesPerRequest;
     private final ArrayDeque<PendingRequest> requests = new ArrayDeque<>();
+    /** Never invoke Future callbacks while the admission monitor is held. */
+    private final ArrayDeque<Runnable> readyCompletions = new ArrayDeque<>();
+    private boolean dispatchingCompletions;
     private final Set<RequestLease> activeRequests =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean closed;
@@ -70,16 +73,50 @@ public final class ActorTransportAdmission implements AutoCloseable {
         return lease;
     }
 
+    /**
+     * Serializes completion publication in grant order without holding the
+     * monitor during callbacks, even when a callback re-enters admission.
+     * Source guest continuations remain under OresScheduler's own dispatch.
+     */
+    private void publishCompletions() {
+        synchronized (monitor) {
+            if (dispatchingCompletions) return;
+            dispatchingCompletions = true;
+        }
+        Throwable firstFailure = null;
+        for (;;) {
+            Runnable completion;
+            synchronized (monitor) {
+                completion = readyCompletions.pollFirst();
+                if (completion == null) {
+                    dispatchingCompletions = false;
+                    break;
+                }
+            }
+            try {
+                completion.run();
+            } catch (Throwable error) {
+                if (firstFailure == null) firstFailure = error;
+                else firstFailure.addSuppressed(error);
+            }
+        }
+        if (firstFailure != null) {
+            if (firstFailure instanceof Error fatal) throw fatal;
+            if (firstFailure instanceof RuntimeException failure) throw failure;
+            throw new IllegalStateException("transport admission callback failed", firstFailure);
+        }
+    }
+
     private void promoteRequestLocked() {
         if (closed) return;
         while (activeRequests.size() < requestConcurrency && !requests.isEmpty()) {
             PendingRequest next = requests.removeFirst();
             if (next.future.isCancelled()) continue;
             RequestLease lease = createRequestLocked();
-            if (!next.future.completeFromRuntime(lease)) {
-                // Cancellation may win between deque removal and settlement.
-                activeRequests.remove(lease);
-            }
+            // A Future callback can re-enter the gate. Publish outside monitor.
+            readyCompletions.addLast(() -> {
+                if (!next.future.completeFromRuntime(lease)) lease.close();
+            });
         }
     }
 
@@ -127,8 +164,10 @@ public final class ActorTransportAdmission implements AutoCloseable {
                 PendingMessage waiter = messages.removeFirst();
                 if (waiter.future.isCancelled()) continue;
                 activeMessages++;
-                if (!waiter.future.completeFromRuntime(new MessageLease(this)))
-                    activeMessages--;
+                MessageLease granted = new MessageLease(this);
+                readyCompletions.addLast(() -> {
+                    if (!waiter.future.completeFromRuntime(granted)) granted.close();
+                });
             }
         }
 
@@ -140,6 +179,7 @@ public final class ActorTransportAdmission implements AutoCloseable {
                 if (ending) finishRequestLocked();
                 else promoteMessagesLocked();
             }
+            publishCompletions();
         }
 
         private void finishRequestLocked() {
@@ -160,6 +200,7 @@ public final class ActorTransportAdmission implements AutoCloseable {
             }
             for (PendingMessage p : abandoned)
                 p.future.failFromRuntime(new IllegalStateException("request lease ended"));
+            publishCompletions();
         }
     }
 
