@@ -3000,15 +3000,23 @@ public final class Parser {
             return new Ast.NameExpr(previous().lexeme());
         }
         if (match(SPAWN)) {
-            // The optional 'new' is syntactic sugar, NOT eager construction:
-            // spawn Actor(...) and spawn new Actor(...) lower to the exact
-            // same actor-owned allocation operation. No constructor executes
-            // on the caller, and this does not permit bare new Actor(...).
-            match(NEW);
+            // All three immediate-spawn forms lower to the same actor-owned
+            // allocation intrinsic: spawn Actor(), spawn new Actor(), and
+            // spawn (new Actor()). Crucially no constructor is evaluated in
+            // the caller and a bare new Actor() is not an actor instance.
+            boolean parenthesizedNew = match(LPAREN);
+            if (parenthesizedNew) {
+                consume(NEW, "expected 'new' inside parenthesized actor spawn");
+            } else {
+                match(NEW);
+            }
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
+            if (parenthesizedNew) {
+                consume(RPAREN, "expected ')' to close parenthesized actor spawn");
+            }
             return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
         }
         if (match(NEW)) {
