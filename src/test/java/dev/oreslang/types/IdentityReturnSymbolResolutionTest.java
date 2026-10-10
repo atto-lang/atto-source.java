@@ -69,4 +69,70 @@ final class IdentityReturnSymbolResolutionTest {
                     """)));
         assertTrue(error.getMessage().contains("identity return mismatch"), error::getMessage);
     }
+    @Test void transitiveInterfaceLookupUsesDeclaringModuleDespiteShadowName() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> IdentityReturnChecker.check(Parser.parse("""
+                    define module A as
+                      define interface Root as
+                        fnc same(): this;
+                      end
+                      define interface Mid extends Root as
+                      end
+                    end
+                    define module B as
+                      define interface Root as
+                        fnc same(): self;
+                      end
+                      define interface Child extends A.Mid as
+                        fnc same(): self;
+                      end
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("cannot weaken inherited identity contract"),
+                error::getMessage);
+    }
+
+    @Test void transitiveInterfaceIdentityCanBePreservedAcrossModules() {
+        assertDoesNotThrow(() -> IdentityReturnChecker.check(Parser.parse("""
+                define module A as
+                  define interface Root as
+                    fnc same(): this;
+                  end
+                  define interface Mid extends Root as
+                  end
+                end
+                define module B as
+                  define interface Root as
+                    fnc same(): self;
+                  end
+                  define interface Child extends A.Mid as
+                    fnc same(): this;
+                  end
+                end
+                """)));
+    }
+
+    @Test void transitiveClassOverrideCannotResolveAnUnrelatedShadowParent() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> IdentityReturnChecker.check(Parser.parse("""
+                    define module A as
+                      define class Root as
+                        pub same(): this { return self; }
+                      end
+                      define class Mid extends Root as
+                      end
+                    end
+                    define module B as
+                      define class Root as
+                        pub same(): self { return self; }
+                      end
+                      define class Child extends A.Mid as
+                        pub same(): self { return self; }
+                      end
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("cannot weaken inherited identity return"),
+                error::getMessage);
+    }
+
 }
