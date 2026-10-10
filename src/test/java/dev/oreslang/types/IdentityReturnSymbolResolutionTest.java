@@ -99,6 +99,50 @@ final class IdentityReturnSymbolResolutionTest {
         assertTrue(error.getMessage().contains("identity return mismatch"), error::getMessage);
     }
 
+    @Test void ambiguousUnqualifiedClassAncestryFailsClosed() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> IdentityReturnChecker.check(Parser.parse("""
+                    define module A as
+                      define class Root as
+                        pub same(): this { return self; }
+                      end
+                    end
+                    define module B as
+                      define class Root as
+                        pub same(): self { return self; }
+                      end
+                    end
+                    define module C as
+                      define class Child extends Root as
+                        pub same(): self { return self; }
+                      end
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("ambiguous inherited class"), error::getMessage);
+    }
+
+    @Test void ambiguousUnqualifiedInterfaceAncestryFailsClosed() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> IdentityReturnChecker.check(Parser.parse("""
+                    define module A as
+                      define interface Root as
+                        fnc same(): this;
+                      end
+                    end
+                    define module B as
+                      define interface Root as
+                        fnc same(): self;
+                      end
+                    end
+                    define module C as
+                      define interface Child extends Root as
+                        fnc same(): self;
+                      end
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("ambiguous inherited interface"), error::getMessage);
+    }
+
     @Test void transitiveInterfaceLookupUsesDeclaringModuleDespiteShadowName() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> IdentityReturnChecker.check(Parser.parse("""
