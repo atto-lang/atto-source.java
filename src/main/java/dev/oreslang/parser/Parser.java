@@ -771,7 +771,7 @@ public final class Parser {
         boolean messageDeclared = false;
 
         while (!check(terminator) && !check(EOF)) {
-            if (policy != null && isContextualIdentifier("int")
+            if (isContextualIdentifier("int")
                     && current + 1 < tokens.size()
                     && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
                         || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
@@ -839,8 +839,11 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
-        Ast.ActorConcurrencySpec configured = policy == null ? null
-                : new Ast.ActorConcurrencySpec(policy.protocol(), requestConcurrency, messageConcurrency);
+        Ast.ActorConcurrencySpec configured =
+                policy == null && !requestDeclared && !messageDeclared ? null
+                : new Ast.ActorConcurrencySpec(
+                        policy == null ? "actor" : policy.protocol(),
+                        requestConcurrency, messageConcurrency);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces,
                 fields, null, methods, null, configured);
