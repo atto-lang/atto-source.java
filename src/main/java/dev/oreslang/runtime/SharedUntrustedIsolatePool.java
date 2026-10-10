@@ -52,14 +52,9 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         }
     }
 
-    /**
-     * Each group may host many untrusted actors, subject to its adversarial
-     * policy and actor-level budgets. Creating a Group does NOT create an
-     * additional Graal isolate or an independent per-actor collector.
-     */
-    public synchronized Group createGroup(IsolatePolicy groupPolicy) {
+    /** Validate the host/group boundary independently of native-isolate availability. */
+    public static void validateGroupPolicy(IsolatePolicy groupPolicy, long isolateHeapBytes) {
         Objects.requireNonNull(groupPolicy, "groupPolicy");
-        if (closed) throw new IllegalStateException("untrusted isolate pool is closed");
         if (!groupPolicy.adversarial()) {
             throw new SecurityException("untrusted actor group requires adversarial policy");
         }
@@ -70,6 +65,16 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         if (groupPolicy.maxHeapBytes() > isolateHeapBytes) {
             throw new IllegalArgumentException("group heap quota exceeds shared isolate cap");
         }
+    }
+
+    /**
+     * Each group may host many untrusted actors, subject to its adversarial
+     * policy and actor-level budgets. Creating a Group does NOT create an
+     * additional Graal isolate or an independent per-actor collector.
+     */
+    public synchronized Group createGroup(IsolatePolicy groupPolicy) {
+        if (closed) throw new IllegalStateException("untrusted isolate pool is closed");
+        validateGroupPolicy(groupPolicy, isolateHeapBytes);
         if (groups.size() >= maxGroups) {
             throw new IllegalStateException("untrusted isolate group capacity exceeded");
         }
