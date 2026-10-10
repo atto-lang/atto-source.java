@@ -894,6 +894,19 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
+            // Dynamic select results can carry move-only channel payloads.
+            // Extracting .value by value must consume the whole SelectResult
+            // until field-level partial moves are represented in the checker.
+            // Ordinary .index/.operation queries remain non-consuming.
+            if (consuming && concreteReceiver != null
+                    && concreteReceiver.name().equals("SelectResult")
+                    && member.member().equals("value")
+                    && member.receiver() instanceof Ast.NameExpr resultName) {
+                VarState resultOwner = scope.lookup(resultName.name());
+                if (resultOwner != null && resultOwner.kind == ValueKind.MOVE_ONLY) {
+                    move(resultOwner, resultName.name());
+                }
+            }
             if (concreteReceiver != null && concreteReceiver.isRecordType()) {
                 Ast.TypeRef valueType = concreteReceiver.recordMembers().get(member.member());
                 if (valueType == null) {
