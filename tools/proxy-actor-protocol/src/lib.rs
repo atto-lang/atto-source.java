@@ -8,6 +8,12 @@
 
 use std::collections::BTreeMap;
 
+/// Conservative per-connection ceilings. Transport adapters must also
+/// enforce total memory accounting and serialized payload size limits.
+pub const MAX_STREAMS_PER_PROXY: usize = 256;
+pub const MAX_MESSAGES_PER_STREAM: u64 = 4096;
+pub const MAX_WINDOW_BYTES_PER_STREAM: u64 = 1024 * 1024;
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RemoteActorId {
     pub namespace: String,
@@ -72,6 +78,7 @@ pub enum RouteError {
     InvalidCredit,
     CreditOverflow,
     OversizeFrame,
+    TooManyStreams,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -231,8 +238,15 @@ impl ProxyRoute {
         maximum_bytes: u64,
     ) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
-        if maximum_messages == 0 || maximum_bytes == 0 { return Err(RouteError::InvalidCredit); }
+        if maximum_messages == 0 || maximum_bytes == 0
+            || maximum_messages > MAX_MESSAGES_PER_STREAM
+            || maximum_bytes > MAX_WINDOW_BYTES_PER_STREAM {
+            return Err(RouteError::InvalidCredit);
+        }
         if self.streams.contains_key(&(direction, id)) { return Err(RouteError::DuplicateStream); }
+        if self.streams.len() >= MAX_STREAMS_PER_PROXY {
+            return Err(RouteError::TooManyStreams);
+        }
         self.streams.insert((direction, id), StreamWindow {
             maximum_messages,
             maximum_bytes,
@@ -430,6 +444,22 @@ mod tests {
         assert_eq!(p.admit_data(Direction::Forward, 9, 1, 0), Err(RouteError::WindowExceeded));
         assert_eq!(p.finish_stream(Direction::Forward, 9), Ok(()));
         assert_eq!(p.finish_stream(Direction::Reverse, 9), Ok(()));
+    }
+
+    #[test]
+    fn enforces_stream_and_credit_caps_before_admission() {
+        let mut p = connected();
+        assert_eq!(p.open_stream(Direction::Forward, 0,
+            MAX_MESSAGES_PER_STREAM + 1, 1), Err(RouteError::InvalidCredit));
+        assert_eq!(p.open_stream(Direction::Forward, 0,
+            1, MAX_WINDOW_BYTES_PER_STREAM + 1), Err(RouteError::InvalidCredit));
+        for id in 0..MAX_STREAMS_PER_PROXY as u64 {
+            assert_eq!(p.open_stream(Direction::Forward, id, 1, 1), Ok(()));
+        }
+        assert_eq!(p.open_stream(Direction::Reverse, 0, 1, 1),
+            Err(RouteError::TooManyStreams));
+        assert_eq!(p.finish_stream(Direction::Forward, 0), Ok(()));
+        assert_eq!(p.open_stream(Direction::Reverse, 0, 1, 1), Ok(()));
     }
 
     #[test]
