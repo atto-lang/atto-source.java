@@ -156,6 +156,24 @@ final class OreslangStackRouteIntegrationTest {
     }
 
     @Test
+    void runtimeLinkedParseScopeRejectsMismatchedSourceOrNestedScopes() {
+        String program = "pub routine main(): void { return; }";
+        String path = "/virtual/correct.ores";
+        assertDoesNotThrow(() -> dev.oreslang.compiler.OresCompiler.parseForRuntime(program, path));
+        try (var scope = dev.oreslang.compiler.OresCompiler.openLinkedParse(path, program, Map.of())) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    dev.oreslang.compiler.OresCompiler.openLinkedParse(path, program, Map.of()));
+            assertThrows(IllegalArgumentException.class, () ->
+                    dev.oreslang.compiler.OresCompiler.parseForRuntime(program, "/virtual/wrong.ores"));
+            assertThrows(IllegalArgumentException.class, () ->
+                    dev.oreslang.compiler.OresCompiler.parseForRuntime(program + " ", path));
+            assertDoesNotThrow(() ->
+                    dev.oreslang.compiler.OresCompiler.parseForRuntime(program, path));
+        }
+        assertDoesNotThrow(() -> dev.oreslang.compiler.OresCompiler.parseForRuntime(program, path));
+    }
+
+    @Test
     void missingPostImplementationMustNotPassLinker() throws Exception {
         String missing = ROUTE.replace(
                 "  pub fnc post(String request) -> String { return handlers.post(request); }\n", "");
