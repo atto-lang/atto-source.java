@@ -28,7 +28,7 @@ This draft implements **actual runtime subclasses** of `ChannelRuntime.Channel<S
 
 A dedicated worker drains each output channel into the embedding context's `Env.out()` or `Env.err()`. Worker threads may block on slow sinks; Oreslang actor carriers do not. Each channel has an 8192-chunk bounded buffer; a `try writech` probe rejects instead of blocking, while `nb writech` can register bounded-channel backpressure. Like regular channels, many unawaited pending writes can still accumulate registrations; **callers must bound outstanding Futures**.
 
-`stdio.stdout.log_async(...)` formats one line and tries to enqueue it to **the same stdout channel** as `writech stdio.out`. Admission is immediate and rejects a full buffer. `stdio.flush_async_logs()` inserts a private FIFO marker into stdout and completes only after preceding accepted stdout chunks are written and the writer flushed. It does not wait for stderr, external pipe readers, network collectors, or durable storage. Mixed legacy direct PrintWriter operations do not have a strict interleaving order with channel writes.
+`stdio.stdout.log_async(...)` formats one line and tries to enqueue it to **the same stdout channel** as `writech stdio.out`. Admission is immediate and rejects a full buffer. `stdio.flush_async_logs()` inserts private FIFO markers into **both stdout and stderr**. The combined Future completes only after preceding accepted chunks in each output channel are written and both writers flushed. It does not wait for external pipe readers, network collectors, or durable storage. Mixed legacy direct PrintWriter operations do not have a strict interleaving order with channel writes.
 
 Context teardown closes the process-owned channels, drains accepted output before `OresVM` shutdown, and surfaces drain failures/timeouts to the embedding host. `std.process.exit` and linked CLI exits need dedicated end-to-end validation.
 
@@ -51,7 +51,7 @@ Do not merge this draft until exact-head Graal JVM/AOT/hybrid/isolate builds and
 - alias object identity under both namespace spellings and named/typed channel variables
 - stdout and stderr captured separately, including pipe backpressure and bounded queues
 - readch/writech/SelectCase wrong-direction denial and capability enforcement
-- stdin EOF, cancellation, slow/blocking embedded stdin and teardown
+- stdin EOF versus caused close (via `Channel.is_closed_normally()`), cancellation, slow/blocking embedded stdin and teardown
 - flush ordering under simultaneous log_async/writech and explicit process exit
 - overflow, timeouts, races, worker error propagation and no carrier blockage
 - Observable adapter single-subscriber behavior, terminal framing and cancellation
