@@ -101,7 +101,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
@@ -622,11 +622,24 @@ public final class TypeChecker {
                 if (local.isStatic() != staticNamespace || !local.overloadIdentity().equals(entry.getKey())) continue;
                 for (MethodOrigin origin : entry.getValue()) {
                     for (Ast.MethodDecl parentMethod : origin.owner().methods()) {
-                        if (parentMethod.isStatic() == staticNamespace
-                                && parentMethod.overloadIdentity().equals(entry.getKey())
-                                && parentMethod.genericParameters().size() != local.genericParameters().size()) {
+                        if (parentMethod.isStatic() != staticNamespace
+                                || !parentMethod.overloadIdentity().equals(entry.getKey())) continue;
+                        if (parentMethod.genericParameters().size() != local.genericParameters().size()) {
                             throw new IllegalArgumentException("incompatible generic arity for method slot '"
                                     + klass.name() + "." + local.name() + "' with arity " + local.arity());
+                        }
+                        // Dispatch selects the child's declaration, but inherited public
+                        // contracts still advertise this slot to callers (including through
+                        // a base-typed receiver). A private override would typecheck as
+                        // public and then fail runtime access checks.
+                        if (parentMethod.visibility() == Ast.Visibility.PUBLIC
+                                && local.visibility() != Ast.Visibility.PUBLIC) {
+                            String kind = staticNamespace ? "static function" : "method";
+                            throw new IllegalArgumentException("private " + kind + " '"
+                                    + klass.name() + "." + local.name() + "' with arity " + local.arity()
+                                    + " cannot override inherited public " + kind + " from "
+                                    + methodOriginLabel(origin)
+                                    + "; keep the overriding declaration public");
                         }
                     }
                 }
@@ -1683,6 +1696,7 @@ public final class TypeChecker {
                 return local.type();
             }
             if (name.name().equals("stdio")
+                    || name.name().equals("std")
                     || name.name().equals("process")
                     || name.name().equals("actor")
                     || name.name().equals("fs")
@@ -2732,6 +2746,19 @@ public final class TypeChecker {
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
             }
+            if (member.receiver() instanceof Ast.NameExpr stdName && stdName.name().equals("std")
+                    && env.lookup("std") == null && member.member().equals("process")) {
+                return new Named("process", List.of());
+            }
+            if (member.member().equals("exit")
+                    && ((member.receiver() instanceof Ast.NameExpr processName
+                             && processName.name().equals("process") && env.lookup("process") == null)
+                        || (member.receiver() instanceof Ast.MemberExpr namespace
+                             && namespace.member().equals("process")
+                             && namespace.receiver() instanceof Ast.NameExpr root
+                             && root.name().equals("std") && env.lookup("std") == null))) {
+                return new Function(List.of(Primitive.INT), Primitive.VOID);
+            }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
@@ -2839,10 +2866,15 @@ public final class TypeChecker {
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
-                if (member.member().equals("replace_literal")) {
-                    return new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
-                }
-                throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                return switch (member.member()) {
+                    case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
+                    case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+                    case "trim" -> new Function(List.of(), Primitive.STRING);
+                    case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
+                    case "starts_with", "ends_with", "contains_literal" ->
+                            new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                };
             }
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
@@ -4113,6 +4145,27 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        if (named.name().equals("fs") || named.name().equals("File")) {
+            Type string = Primitive.STRING;
+            Type booleanType = Primitive.BOOL;
+            switch (name) {
+                case "list_dir": return new Function(List.of(string), new ListType(string));
+                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
+                case "read_text": return new Function(List.of(string), string);
+                case "write_text", "write_text_atomic", "append_text":
+                    return new Function(List.of(string, string), Primitive.VOID);
+                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
+                default: break;
+            }
+        }
+        if (named.name().equals("env")) {
+            switch (name) {
+                case "get": return new Function(List.of(Primitive.STRING),
+                        new Named("Option", List.of(Primitive.STRING)));
+                case "has": return new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                default: break;
+            }
+        }
         Type result;
         List<Type> parameters;
         switch (named.name()) {
