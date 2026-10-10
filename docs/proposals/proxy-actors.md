@@ -22,7 +22,7 @@ transport are all distinct.
 
 ```oreslang
 define contract Transformer as
-    pub async fnc transform(Data input): ResultData;
+    fnc transform(Data input) => Future<ResultData>;
 end
 
 // Declarative parsing is supported, but spawning is rejected until the
