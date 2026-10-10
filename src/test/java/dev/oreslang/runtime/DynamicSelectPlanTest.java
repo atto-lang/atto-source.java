@@ -106,6 +106,61 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void staleWinnerDoesNotRotateNewGenerationFairness() {
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        var oldA = new ChannelRuntime.Channel<Integer>(0);
+        var oldB = new ChannelRuntime.Channel<Integer>(0);
+        var freshA = new ChannelRuntime.Channel<Integer>(1);
+        var freshB = new ChannelRuntime.Channel<Integer>(1);
+        plan.put("oldA", ChannelRuntime.read(oldA));
+        plan.put("oldB", ChannelRuntime.read(oldB));
+        var pending = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+
+        plan.remove("oldA");
+        plan.remove("oldB");
+        plan.put("freshA", ChannelRuntime.read(freshA));
+        plan.put("freshB", ChannelRuntime.read(freshB));
+        var newGeneration = plan.selectSetSnapshot();
+
+        assertTrue(oldA.tryWrite(11));
+        assertEquals("oldA", pending.join().key());
+        assertSame(newGeneration, plan.selectSetSnapshot());
+        assertTrue(freshA.tryWrite(21));
+        assertTrue(freshB.tryWrite(22));
+        assertEquals("freshA",
+                plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow().key());
+    }
+
+    @Test
+    void defaultDispatchDoesNotAdvanceFairnessCursor() {
+        var a = new ChannelRuntime.Channel<Integer>(1);
+        var b = new ChannelRuntime.Channel<Integer>(1);
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(a),
+                ChannelRuntime.defaultCase(),
+                ChannelRuntime.read(b));
+        assertEquals(ChannelRuntime.SelectOperation.DEFAULT,
+                set.trySelect(ChannelRuntime.SelectPolicy.FAIR).orElseThrow().operation());
+        assertTrue(a.tryWrite(11));
+        assertTrue(b.tryWrite(22));
+        assertEquals(0, set.trySelect(ChannelRuntime.SelectPolicy.FAIR).orElseThrow().index());
+    }
+
+    @Test
+    void cachedSnapshotStillReusesCaseListAfterRepeatedSelects() {
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        var channel = new ChannelRuntime.Channel<Integer>(3);
+        plan.put("reader", ChannelRuntime.read(channel));
+        var stable = plan.selectSetSnapshot();
+        for (int i = 0; i < 3; i++) {
+            assertTrue(channel.tryWrite(i));
+            assertEquals(i, plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR)
+                    .orElseThrow().selection().value());
+            assertSame(stable, plan.selectSetSnapshot());
+        }
+    }
+
+    @Test
     void rejectsSecondDefaultAtomicallyAndKeepsPreviousSnapshot() {
         var channel = new ChannelRuntime.Channel<String>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
