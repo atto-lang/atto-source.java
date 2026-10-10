@@ -157,4 +157,58 @@ final class ActorNativeI64RecordTest {
             assertTrue(actor.failure().isEmpty(), () -> "untrusted actor failed: " + actor.failure());
         }
     }
+
+    @Test
+    void mutableActorFieldRequiresOwnerAndUnloanedStorageAcrossTurns() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable());
+        var record = new AtomicReference<ActorNativeI64Record>();
+        var loan = new AtomicReference<ExplicitNativeI64Region.Loan>();
+        var failure = new AtomicReference<Throwable>();
+        CountDownLatch initialized = new CountDownLatch(1);
+        CountDownLatch mutated = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
+                try {
+                    if ("init".equals(mail)) {
+                        var object = ctx.actorOwnedMemory().orElseThrow()
+                                .newNativeI64Record("Counter", List.of(
+                                        new ActorNativeI64Record.Field("base", 40),
+                                        new ActorNativeI64Record.Field("count", 0, true)));
+                        record.set(object);
+                        assertFalse(object.mutable("base"));
+                        assertTrue(object.mutable("count"));
+                        assertThrows(IllegalStateException.class,
+                                () -> object.write("base", 100));
+                        object.write("count", 2);
+                        loan.set(object.borrow("count"));
+                        assertThrows(IllegalStateException.class,
+                                () -> object.write("count", 3));
+                        initialized.countDown();
+                    } else {
+                        assertEquals(2, loan.get().read());
+                        assertThrows(IllegalStateException.class,
+                                () -> record.get().write("count", 3));
+                        loan.get().close();
+                        record.get().write("count", 3);
+                        assertEquals(43, record.get().read("base") + record.get().read("count"));
+                        mutated.countDown();
+                    }
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                    initialized.countDown();
+                    mutated.countDown();
+                }
+            });
+            actor.send("init");
+            assertTrue(initialized.await(20, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+            assertThrows(IllegalStateException.class, () -> record.get().write("count", 8));
+            actor.send("mutate");
+            assertTrue(mutated.await(20, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+        }
+        assertTrue(record.get().physicallyClosed());
+        assertThrows(IllegalStateException.class, () -> record.get().write("count", 4));
+    }
+
 }
