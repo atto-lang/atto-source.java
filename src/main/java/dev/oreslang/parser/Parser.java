@@ -283,6 +283,18 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isContextualIdentifier("proxy") && checkNext(ACTOR)) {
+                advance();
+                consume(ACTOR, "proxy must modify an actor");
+                if (modifiers.async || modifiers.generator || modifiers.structural
+                        || modifiers.nonLexical || modifiers.trapped
+                        || modifiers.isStatic || modifiers.isAbstract
+                        || modifiers.shared || modifiers.untrusted) {
+                    throw error(previous(), "proxy actor accepts only pub/private visibility");
+                }
+                rejectCallableStructuralAnnotation(annotations, "proxy actor declarations");
+                return parseProxyActor(modifiers.visibility);
+            }
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
