@@ -1880,6 +1880,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        // Strong refs to group-managed workers only. Joining a group is not
+        // ownership transfer: unrelated members are never stopped by close().
+        private final Map<ActorId, ActorRef<?>> workers = new ConcurrentHashMap<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
@@ -1924,6 +1927,102 @@ public final class ActorRuntime implements AutoCloseable {
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
             return Set.copyOf(members);
+        }
+
+        /**
+         * A snapshot of workers owned by this group, not all cooperative members.
+         * Only the creator or host supervisor may inspect worker control refs.
+         */
+        public List<ActorRef<?>> workerRefs() {
+            requireManager("inspect ActorGroup worker refs");
+            return List.copyOf(workers.values());
+        }
+
+        public int workerCount() {
+            requireManager("inspect ActorGroup worker count");
+            return workers.size();
+        }
+
+        /**
+         * Adopt an already-spawned actor as a supervised worker. The caller
+         * must possess group-manager authority; joining alone never grants
+         * lifecycle control. A ref from another runtime is rejected.
+         *
+         * Both 'spawn Worker()' and 'await spawn Worker()' produce ActorRef:
+         * the latter awaits ready(), not done(). Adoption works with either.
+         */
+        public <M> ActorRef<M> manage(ActorRef<M> ref) {
+            requireManager("manage an ActorGroup worker");
+            Objects.requireNonNull(ref, "ref");
+            if (!ref.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+            }
+            synchronized (authorityLock) {
+                requireOpen();
+                ActorCell<?> cell = actors.get(ref.id());
+                if (cell == null || cell.stopped.get()) {
+                    throw new IllegalStateException("actor is not alive: " + ref.id());
+                }
+                if (!members.contains(ref.id()) && members.size() >= memberLimit) {
+                    throw new IllegalStateException(
+                            "ActorGroup member limit exceeded: maximum " + memberLimit);
+                }
+                boolean added = members.add(ref.id());
+                workers.putIfAbsent(ref.id(), ref);
+                // Concurrent actor retirement must not leave a stale strong ref.
+                if (groupClosed.get() || actors.get(ref.id()) != cell || cell.stopped.get()) {
+                    workers.remove(ref.id(), ref);
+                    if (added) members.remove(ref.id());
+                    throw new IllegalStateException("ActorGroup or worker closed during admission");
+                }
+                return ref;
+            }
+        }
+
+        /**
+         * Spawn and register one owned worker atomically with respect to group
+         * close. Construction is deferred as in ordinary spawn; no carrier is
+         * blocked waiting for readiness.
+         */
+        public <M> ActorRef<M> spawnWorker(
+                ActorKind kind, IsolatePolicy policy, BehaviorFactory<M> factory) {
+            requireManager("spawn an ActorGroup worker");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (members.size() >= memberLimit) {
+                    throw new IllegalStateException(
+                            "ActorGroup member limit exceeded: maximum " + memberLimit);
+                }
+                ActorRef<M> ref = ActorRuntime.this.spawn(kind, policy, factory);
+                try {
+                    return manage(ref);
+                } catch (RuntimeException | Error admissionFailure) {
+                    ActorCell<?> cell = actors.get(ref.id());
+                    if (cell != null) cell.stop();
+                    throw admissionFailure;
+                }
+            }
+        }
+
+        /** An awaitable readiness barrier that yields the same ActorRef. */
+        public <M> OresFuture<ActorRef<M>> spawnWorkerReady(
+                ActorKind kind, IsolatePolicy policy, BehaviorFactory<M> factory) {
+            ActorRef<M> ref = spawnWorker(kind, policy, factory);
+            OresFuture<ActorRef<M>> result = new OresFuture<>(() -> false, () -> { });
+            ref.ready().whenCompleteRuntime((ignored, failure) -> {
+                if (failure == null) result.completeFromRuntime(ref);
+                else result.failFromRuntime(failure);
+            });
+            return result;
+        }
+
+        /** Nonblocking graceful stop for this group's managed workers only. */
+        public void stopWorkers() {
+            requireManager("stop ActorGroup workers");
+            for (ActorRef<?> ref : List.copyOf(workers.values())) {
+                ActorCell<?> cell = actors.get(ref.id());
+                if (cell != null) cell.stop();
+            }
         }
 
         int eventTopicLimit() { return eventTopicLimit; }
@@ -2145,6 +2244,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void actorTerminated(ActorId actorId) {
+            workers.remove(actorId);
             leaveId(actorId);
             if (Objects.equals(creator, actorId)) closeFromRuntime();
         }
@@ -2162,17 +2262,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
+            final List<ActorRef<?>> owned;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
-                // Revocation is part of close: even a capability held by code
-                // racing teardown can no longer pass validation.
+                // Revocation and worker snapshot are atomic with group admission.
                 joinSecret = UUID.randomUUID();
+                owned = List.copyOf(workers.values());
+                workers.clear();
             }
             GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
             if (mailman != null) mailman.close();
             eventBus.closeFromGroup();
             members.clear();
             actorGroups.remove(id, this);
+            // Never wait for actor termination on a dispatcher or CONTROL turn.
+            // Group membership alone never grants ownership or stop authority.
+            for (ActorRef<?> ref : owned) {
+                ActorCell<?> cell = actors.get(ref.id());
+                if (cell != null) cell.stop();
+            }
         }
 
         @Override
