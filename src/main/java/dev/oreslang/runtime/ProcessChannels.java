@@ -256,9 +256,34 @@ public final class ProcessChannels implements AutoCloseable {
         }
     }
 
+    /**
+     * Avoid BufferedReader.readLine() allocating unlimited guest input records.
+     * Keep line framing for this draft; a binary stdin adapter will be separate.
+     */
+    private String readBoundedInputLine() throws java.io.IOException {
+        StringBuilder line = new StringBuilder();
+        for (;;) {
+            int value = stdin.read();
+            if (value == -1) {
+                if (line.isEmpty()) return null;
+                break;
+            }
+            if (value == '\\n') break;
+            if (line.length() >= 65_536)
+                throw new java.io.IOException("stdin line exceeds 65536 characters");
+            line.append((char) value);
+        }
+        if (!line.isEmpty() && line.charAt(line.length() - 1) == '\\r')
+            line.setLength(line.length() - 1);
+        String chunk = line.toString();
+        if (chunk.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 65_536)
+            throw new java.io.IOException("stdin line exceeds 65536 UTF-8 bytes");
+        return chunk;
+    }
+
     private void feedInput() {
         try {
-            for (String line; !closing.get() && (line = stdin.readLine()) != null;) {
+            for (String line; !closing.get() && (line = readBoundedInputLine()) != null;) {
                 ChannelRuntime.writeForRuntime(in, line).join();
             }
         } catch (Throwable failed) {
