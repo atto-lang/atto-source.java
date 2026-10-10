@@ -8,6 +8,16 @@ surface is `define actor`/`define isoactor` with
 [HTTP_SERVER.md](HTTP_SERVER.md). LLVM has no corresponding source HTTP actor
 integration yet.
 
+For per-instance configuration, the proposed constructor/spec model is
+`val spec = new WebHandler(); spec.set_concurrency(128, 8);
+val running = spawn spec;`. `new` creates an **inert ActorSpec**,
+not a running actor; `spawn` executes constructor/startup only within
+the actor's own domain. See [ActorSpawnSpec design](ACTOR_SPAWN_SPEC_DESIGN.md).
+A regular actor spec instead uses `set_concurrency(6)`. Oreslang
+`const` provides a readonly referent, so a mutating setter needs
+`val`; `const spec = new Worker().with_concurrency(6)` is a proposed
+immutable alternative. These forms are **not yet implemented**.
+
 ## Concurrency policy: one ordinary control, two network controls
 
 **Public configuration under design (not executable Oreslang yet):**
