@@ -1888,6 +1888,10 @@ public final class ActorRuntime implements AutoCloseable {
         // Guarded by authorityLock. Fences handoff after stop admission.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        // Settles after close and *all workers owned at close* finish teardown.
+        // Never cancellable by an observer and survives registry clearing.
+        private final OresFuture<Void> closedWorkersDone =
+                new OresFuture<>(() -> false, () -> { });
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
@@ -2057,6 +2061,10 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> workersDone() {
             requireManager("await ActorGroup worker termination");
+            // A closed group's worker map is intentionally empty. Never
+            // return an immediately successful empty snapshot while teardown
+            // of its former workers is still in progress.
+            if (groupClosed.get()) return closedWorkersDone;
             List<ActorRef<?>> snapshot = List.copyOf(workers.values());
             OresFuture<Void> result = new OresFuture<>(() -> false, () -> { });
             if (snapshot.isEmpty()) {
@@ -2076,6 +2084,23 @@ public final class ActorRuntime implements AutoCloseable {
                 });
             }
             return result;
+        }
+
+        /**
+         * Request group close and return a noncancellable future settling only
+         * after every worker owned at the close linearization point finalizes.
+         * Never synchronously block an actor carrier on group destruction.
+         */
+        public OresFuture<Void> closeAsync() {
+            requireManager("close an ActorGroup asynchronously");
+            closeFromRuntime();
+            return closedWorkersDone;
+        }
+
+        /** Observe the completion of group close without initiating it. */
+        public OresFuture<Void> closedDone() {
+            requireManager("await ActorGroup close");
+            return closedWorkersDone;
         }
 
         /** Nonblocking graceful stop for this group's managed workers only. */
@@ -2355,6 +2380,25 @@ public final class ActorRuntime implements AutoCloseable {
                 workers.clear();
                 stoppingWorkers.clear();
                 for (ActorRef<?> ref : owned) workerOwners.remove(ref.id(), id);
+            }
+            // Attach observers BEFORE issuing stops so a fast finalization
+            // cannot elude the close barrier. Runtime callbacks are enqueue-
+            // only and never resume guest source on the terminating thread.
+            if (owned.isEmpty()) {
+                closedWorkersDone.completeFromRuntime(null);
+            } else {
+                AtomicInteger remaining = new AtomicInteger(owned.size());
+                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+                for (ActorRef<?> ref : owned) {
+                    ref.done().whenCompleteRuntime((ignored, failure) -> {
+                        if (failure != null) firstFailure.compareAndSet(null, failure);
+                        if (remaining.decrementAndGet() == 0) {
+                            Throwable terminal = firstFailure.get();
+                            if (terminal == null) closedWorkersDone.completeFromRuntime(null);
+                            else closedWorkersDone.failFromRuntime(terminal);
+                        }
+                    });
+                }
             }
             GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
             if (mailman != null) mailman.close();
