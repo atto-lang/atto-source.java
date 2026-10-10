@@ -248,7 +248,12 @@ for_of_rest_item= [ for_of_binding ] "..." IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
-conditional     = logic_or [ "?" assignment ":" conditional ] ;
+conditional     = pipeline [ "?" assignment ":" conditional ] ;
+pipeline        = logic_or { ( "|>" | "pipe" ) logic_or } ;
+(* Left-associative: |> inserts LHS as callable argument zero; the contextual
+   word 'pipe' constructs an actor-stream connection, never a function call.
+   Pipe has lower precedence than logical/arithmetic operators and higher
+   precedence than the ternary conditional. *) 
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
