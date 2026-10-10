@@ -1884,6 +1884,35 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            // Parse 'pipe' now, but fail closed until the actor-stream runtime
+            // provides type-safe output ports, bounded mailbox admission and
+            // a lifecycle-managed forwarding loop. Existing ActorRef.outputs()
+            // has no declared element type, and self.send fails on overflow:
+            // treating either as a streaming guarantee would be unsound.
+            if (binary.operator().equals("pipe")) {
+                Type leftStage = receiverDispatchType(deref(
+                        typeOf(binary.left(), env, generics, self)));
+                Type rightStage = receiverDispatchType(deref(
+                        typeOf(binary.right(), env, generics, self)));
+                if (!(leftStage instanceof Named leftActor
+                        && leftActor.name().equals("ActorRef"))
+                        || !(rightStage instanceof Named rightActor
+                        && rightActor.name().equals("ActorRef"))) {
+                    throw new IllegalArgumentException(
+                            "'pipe' connects actor stream stages, not ordinary values "
+                            + "or functions; use '|>' for function application");
+                }
+                actorClassForRef(leftActor);
+                actorClassForRef(rightActor);
+                // The first supported stage representation will use explicit
+                // StreamStage<I,O> ports rather than guess a type from the
+                // existing ActorOutputStream<Unknown>. Keep the bridge closed
+                // until credit-based backpressure and lifecycle are real.
+                throw new IllegalArgumentException(
+                        "'pipe' actor-stream connection is not executable yet: "
+                        + "typed StreamStage input/output ports and backpressure-aware "
+                        + "actor graph wiring are required; use '|>' for function application");
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
