@@ -76,7 +76,7 @@ final class NativeCoreLibraryTest {
                     .toList();
             assertFalse(modules.isEmpty(), "native-first stdlib must contain Oreslang modules");
             Set<String> actual = modules.stream()
-                    .map(path -> root.relativize(path).toString().replace('\\\\', '/'))
+                    .map(path -> root.relativize(path).toString().replace((char) 92, '/'))
                     .collect(Collectors.toSet());
             assertEquals(actual, CoreLibrarySources.packagedSourcePaths(),
                     "every packaged .ores file must be explicitly registered and vice versa");
