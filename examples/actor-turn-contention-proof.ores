@@ -1,0 +1,56 @@
+// Runtime actor-boundary proof: execute as a real compiled Oreslang application.
+// Uses all three actor kinds, actor on_start, mailbox sends, await/ready and done.
+// Run with ORES_USE_CORE_MUTEXES=1 and native carriers; output must match exactly.
+define actor SharedWorker as
+  let int started;
+
+  on_start(): void {
+    self.started = 1;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    if self.started != 1; do
+      return;
+    fi
+    if mail.value == "stop"; do
+      self.end();
+    fi
+    return;
+  }
+end
+
+define isoactor PrivateWorker as
+  receive(ActorMail<String> mail): void {
+    self.end();
+    return;
+  }
+end
+
+define untrusted actor SandboxedWorker as
+  receive(ActorMail<String> mail): void {
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val shared = spawn SharedWorker();
+  val isolated = spawn PrivateWorker();
+  val sandboxed = spawn SandboxedWorker();
+
+  await shared.ready;
+  await isolated.ready;
+  await sandboxed.ready;
+
+  shared.send("stop");
+  isolated.send("stop");
+  sandboxed.send("stop");
+
+  await shared.done;
+  await isolated.done;
+  await sandboxed.done;
+
+  stdio.stdout.write("actors-done");
+  return;
+}
