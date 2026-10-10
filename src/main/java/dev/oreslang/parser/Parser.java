@@ -808,6 +808,14 @@ public final class Parser {
                 }
                 consume(SEMICOLON, "actor concurrency setting requires ';'");
                 if (key.equals("requestConcurrency")) {
+                    // Generic actors have ONE public concurrency axis:
+                    // the in-flight message-handler limit. A request/session
+                    // dimension makes sense only for HTTP/TCP/WebSocket actors.
+                    if (policy == null || policy.protocol().equals("actor")) {
+                        throw error(raw,
+                                "ordinary actors expose only messageConcurrency; "
+                                + "requestConcurrency is reserved for network actors");
+                    }
                     if (requestDeclared) throw error(raw, "duplicate requestConcurrency setting");
                     requestDeclared = true;
                     requestConcurrency = value;
