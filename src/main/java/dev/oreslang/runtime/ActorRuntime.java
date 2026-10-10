@@ -692,6 +692,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
         private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
         private final Set<ActorOwnedI64Region> ownedI64Regions = ConcurrentHashMap.newKeySet();
+        private final Set<ExplicitNativeI64Region> explicitNativeI64Regions = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -799,6 +800,35 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Opt-in physical native actor-owned storage (Java 25 Foreign Memory).
+         * The segment is bounded by this actor's memory quota and cannot
+         * escape to another actor. This is NOT a separate Java GC heap.
+         */
+        public ExplicitNativeI64Region newExplicitNativeI64Region(int slots) {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (slots < 1 || slots > 65536) {
+                throw new IllegalArgumentException("native actor i64 slots must be 1..65536");
+            }
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap retired");
+                MemoryReservation reservation = reserve(Math.multiplyExact((long) slots, 8),
+                        "actor-owned FFM i64 region");
+                try {
+                    AtomicReference<ExplicitNativeI64Region> registered = new AtomicReference<>();
+                    ExplicitNativeI64Region region = new ExplicitNativeI64Region(slots,
+                            reservation, this::requireCurrentOwner,
+                            () -> explicitNativeI64Regions.remove(registered.get()));
+                    registered.set(region);
+                    explicitNativeI64Regions.add(region);
+                    return region;
+                } catch (RuntimeException | Error failed) {
+                    reservation.close();
+                    throw failed;
+                }
+            }
+        }
+
         private MemoryReservation reserveMailbox(Object isolatedMessage) {
             ActorCell<?> cell = actors.get(owner);
             if (cell == null) throw new IllegalStateException("actor has no live heap");
@@ -873,6 +903,12 @@ public final class ActorRuntime implements AutoCloseable {
                 region.retireFromActor();
             }
             ownedI64Regions.clear();
+            // Native FFM scopes close while the actor is quiescent; the host
+            // wrapper may remain managed but physical guest bytes are freed.
+            for (ExplicitNativeI64Region region : List.copyOf(explicitNativeI64Regions)) {
+                region.retireFromActor();
+            }
+            explicitNativeI64Regions.clear();
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
