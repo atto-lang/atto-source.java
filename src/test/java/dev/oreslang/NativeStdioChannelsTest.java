@@ -41,6 +41,43 @@ final class NativeStdioChannelsTest {
     }
 
     @Test
+    void stdinCleanEofPreservesBlankAndUnterminatedFinalLines() throws Exception {
+        String code = """
+                pub routine main(): void {
+                  for const line of process.stdin {
+                    writech process.stdout, "[" + line + "]\\n";
+                  }
+                  return;
+                }
+                """;
+        assertEquals("", run(code, "").stdout());
+        assertEquals("[]\n[]\n[last]\n", run(code, "\n\nlast").stdout());
+        assertEquals("[CRLF]\n", run(code, "CRLF\r\n").stdout());
+    }
+
+    @Test
+    void malformedUtf8PropagatesAsInputFailureNotCleanEof() throws Exception {
+        String code = """
+                pub routine main(): void {
+                  for const line of stdin.in {
+                    writech stdio.out, line + "\\n";
+                  }
+                  return;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(code);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, code, "invalid-utf8.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .in(new ByteArrayInputStream(new byte[]{(byte) 0xC3, (byte) 0x28}))
+                .out(output).build()) {
+            assertThrows(Exception.class, () -> context.eval(source));
+        }
+    }
+
+    @Test
     void nativePipelineFinishesOnEofAndWritesDistinctDescriptors() throws Exception {
         String code = Files.readString(Path.of("examples/native-stdio-channels.ores"));
         Output result = run(code, "alpha\nbeta\n");
