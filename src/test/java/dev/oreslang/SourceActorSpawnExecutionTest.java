@@ -115,6 +115,11 @@ final class SourceActorSpawnExecutionTest {
                   on_start(): void {
                     return;
                   }
+
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
                 end
 
                 pub async routine main(): void {
