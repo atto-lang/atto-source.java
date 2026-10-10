@@ -69,9 +69,9 @@ end
 
 define actor GpuWorker implements StreamOperator<CpuBatch, GpuResult> as
   async receive(ActorMail<CpuBatch> mail): void {
-    const deviceBatch = await gpu.upload(rt take mail.value);
-    const result = await gpu.run(transform_kernel, rt take deviceBatch);
-    self.send(await gpu.download(rt take result));
+    const deviceBatch = await Gpu.upload(rt take mail.value);
+    const result = await Gpu.run(transform_kernel, rt take deviceBatch);
+    self.send(await Gpu.download(rt take result));
   }
 end
 
@@ -93,7 +93,7 @@ If `CollectResultsWorker` actually consumes without emitting, it is a
 `ActorStream<void, void>`. A bare `ActorStream` erases the critical port
 contract and should not be preferred.
 
-The **actor** is a host-side logical process, *not* itself a GPU thread. A
+The reserved lowercase `gpu`/`quantum` keywords cannot also name API values; this example uses the prospective `Gpu` runtime namespace.\n\nThe **actor** is a host-side logical process, *not* itself a GPU thread. A
 GPU worker enqueues an explicit kernel, yields on `await`, and resumes an
 admitted actor continuation when the device event completes. A source/consumer
 actor may live on different host runtimes; actor boundaries remain protected.
