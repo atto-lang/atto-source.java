@@ -24,6 +24,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private static final int DEFAULT_MAX_TRACKED = 100_000;
     private static final int DEFAULT_MAX_TRACKED_PER_ACTOR = 4_096;
     private static final int DEFAULT_MAX_ACTOR_SWEEP_ENTRIES = 256;
+    private static final int DEFAULT_MAX_PERIODIC_SWEEP_ENTRIES = 256;
     private static final Object PROCESS_DOMAIN = new Object();
     private static final ScheduledThreadPoolExecutor SWEEP_TIMER = createSweepTimer();
 
@@ -137,7 +138,10 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private final int maxTracked;
     private final int maxTrackedPerActor;
     private final int maxActorSweepEntries;
-    private final ScheduledFuture<?> periodicSweep;
+    // No periodic task exists for the common case: wholly ownership-managed values.
+    // Protected by lifecycleLock; cancellation removes this task from the shared timer.
+    private ScheduledFuture<?> periodicSweep;
+    private final long periodNanos;
 
     public RuntimeGarbageCollector() {
         this(
@@ -190,12 +194,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         this.maxTracked = maxTracked;
         this.maxTrackedPerActor = maxTrackedPerActor;
         this.maxActorSweepEntries = maxActorSweepEntries;
-        long periodNanos = period.toNanos();
-        this.periodicSweep = SWEEP_TIMER.scheduleWithFixedDelay(
-                this::safePeriodicSweep,
-                periodNanos,
-                periodNanos,
-                TimeUnit.NANOSECONDS);
+        this.periodNanos = period.toNanos();
     }
 
     private static Duration requirePositive(Duration value, String name) {
@@ -224,6 +223,15 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 throw new IllegalStateException(
                         "actor cleanup registry limit exceeded: " + maxTrackedPerActor);
             }
+            // Delay housekeeping until the first host/interop resource actually
+            // needs fallback cleanup. Ordinary owned values never register here.
+            if (periodicSweep == null) {
+                periodicSweep = SWEEP_TIMER.scheduleWithFixedDelay(
+                        this::safePeriodicSweep,
+                        periodNanos,
+                        periodNanos,
+                        TimeUnit.NANOSECONDS);
+            }
             TrackedCleanup entry = new TrackedCleanup(owner, domain, cleanup, referenceQueue);
             tracked.add(entry);
             domainEntries.add(entry);
@@ -244,9 +252,15 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         return sweep(actorDomain, false, maxActorSweepEntries);
     }
 
+    /**
+     * Perform at most one bounded fallback-cleanup quantum. This method never
+     * requests JVM GC; process.gc() is the explicit full-sweep entry point.
+     * A cleanup callback itself may take arbitrary time, so callers must not
+     * treat this budget as a real-time deadline.
+     */
     public CollectionReport collectPeriodic() {
         ensureOpen();
-        return sweep(null, false, Integer.MAX_VALUE);
+        return sweep(null, false, DEFAULT_MAX_PERIODIC_SWEEP_ENTRIES);
     }
 
     /**
@@ -296,7 +310,9 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         int cleanupFailures = 0;
 
         if (requestedDomain == null) {
-            for (TrackedCleanup entry : Set.copyOf(retryableFailures)) {
+            // Weakly-consistent concurrent iterators avoid allocating a full
+            // snapshot of potentially thousands of registrations per tick.
+            for (TrackedCleanup entry : retryableFailures) {
                 if (inspected >= maxEntriesToInspect) break;
                 if (!tracked.contains(entry)) {
                     retryableFailures.remove(entry);
@@ -340,7 +356,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
 
             // Retired actor domains are deterministically cleanup-eligible even
             // if a stale host reference keeps an owner strongly reachable.
-            for (Object retired : Set.copyOf(retiredDomains)) {
+            for (Object retired : retiredDomains) {
                 if (inspected >= maxEntriesToInspect) break;
                 Set<TrackedCleanup> entries = trackedByDomain.getOrDefault(retired, Set.of());
                 for (TrackedCleanup entry : entries) {
@@ -413,11 +429,17 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 trackedByDomain.remove(entry.domain, domainEntries);
                 retiredDomains.remove(entry.domain);
             }
+            // Deterministic final release is the normal path. Stop even the
+            // bounded fallback ticker when no unmanaged registrations remain.
+            if (tracked.isEmpty() && periodicSweep != null) {
+                periodicSweep.cancel(false);
+                periodicSweep = null;
+            }
         }
     }
 
     private void safePeriodicSweep() {
-        if (closed.get()) return;
+        if (closed.get() || tracked.isEmpty()) return;
         try {
             collectPeriodic();
         } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -437,7 +459,12 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         synchronized (lifecycleLock) {
             if (!closed.compareAndSet(false, true)) return;
         }
-        periodicSweep.cancel(false);
+        synchronized (lifecycleLock) {
+            if (periodicSweep != null) {
+                periodicSweep.cancel(false);
+                periodicSweep = null;
+            }
+        }
         for (TrackedCleanup entry : tracked) {
             try {
                 if (entry.tryClean()) removeTracked(entry);
