@@ -45,7 +45,11 @@ This patch specifically changes fallback cleanup housekeeping:
 - Each periodic/public `collectPeriodic()` pass inspects at most **256**
   entries; it makes **zero requests to `System.gc()`**.
 - No full-set snapshot allocation is needed before inspecting retry entries
-  or retired domains.
+  or retired domains. Empty retired-domain tombstones and stale queue entries
+  also consume inspection budget.
+- Completed host-cleanup entries sever their actor-domain links and clear their
+  weak owner reference; a queued stale notification cannot pin an old actor
+  domain merely because its cleanup handle was retained.
 - `actor.gc()` remains actor-domain-local and bounded. Actor termination
   eagerly retires its domain. `process.gc()` remains an explicit full sweep
   that can request throttled JVM GC.
