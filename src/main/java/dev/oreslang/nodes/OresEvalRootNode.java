@@ -1696,6 +1696,54 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private int unwindPriority(Throwable failure) {
+            if (failure instanceof dev.oreslang.runtime.ProcessExitSignal
+                    || failure instanceof ActorRuntime.ActorCancellationSignal
+                    || failure instanceof java.util.concurrent.CancellationException
+                    || failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath
+                    || failure instanceof LinkageError) return 5;
+            if (failure instanceof dev.oreslang.runtime.GuestFailureSignal guest) {
+                return switch (guest.kind()) {
+                    case PANIC -> 3;
+                    case RAISE -> 2;
+                    case THROW -> 1;
+                    case CANCEL, HOST_FAILURE -> 5;
+                };
+            }
+            if (failure instanceof ReturnSignal || failure instanceof BreakSignal
+                    || failure instanceof ContinueSignal || failure instanceof TailCallSignal) {
+                return 0;
+            }
+            if (failure instanceof Error) return 3;
+            return 1;
+        }
+
+        private Throwable strongestUnwindFailure(Throwable original, Throwable cleanup) {
+            if (original == null) return cleanup;
+            if (cleanup == null || cleanup == original) return original;
+            if (unwindPriority(cleanup) > unwindPriority(original)) {
+                cleanup.addSuppressed(original);
+                return cleanup;
+            }
+            original.addSuppressed(cleanup);
+            return original;
+        }
+
+        private SourceFlow mergeCleanupFlow(SourceFlow original, SourceFlow cleanup) {
+            if (cleanup.kind() == SourceFlowKind.NORMAL) return original;
+            if (original.kind() != SourceFlowKind.THROW) return cleanup;
+            if (cleanup.kind() != SourceFlowKind.THROW) return original;
+            return SourceFlow.throwing(
+                    strongestUnwindFailure(original.failure(), cleanup.failure()));
+        }
+
+        private void rethrowUnwind(Throwable failure) {
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            if (failure instanceof Error error) throw error;
+            throw new IllegalStateException("invalid Oreslang unwind failure", failure);
+        }
+
         private void finishBlock(
                 SourceTask task,
                 Env env,
@@ -1708,7 +1756,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = mergeCleanupFlow(initialFlow, SourceFlow.throwing(failure));
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1736,7 +1784,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = mergeCleanupFlow(currentFlow, SourceFlow.throwing(failure));
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1748,14 +1796,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    mergeCleanupFlow(currentFlow, SourceFlow.throwing(failure)),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -2005,10 +2050,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            mergeCleanupFlow(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2017,10 +2059,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            mergeCleanupFlow(flow, finallyFlow)));
                                 }
                             });
                     return;
@@ -4594,25 +4633,34 @@ public final class OresEvalRootNode extends RootNode {
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
-            boolean abnormalExit = false;
+            Throwable inFlight = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
-            } catch (TailCallSignal signal) {
-                throw signal;
-            } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+            } catch (ReturnSignal | BreakSignal | ContinueSignal | TailCallSignal signal) {
+                // Ordinary function/loop control is weaker than cleanup failure.
                 throw signal;
             } catch (RuntimeException | Error failure) {
-                abnormalExit = true;
+                inFlight = failure;
                 throw failure;
             } finally {
-                boolean deferredFailure = false;
+                Throwable cleanupFailure = null;
+                // All defers run in LIFO order, even after an earlier cleanup
+                // fails. No weaker defer may overwrite an in-flight panic.
+                while (!deferred.isEmpty()) {
+                    try {
+                        eval(deferred.pop(), env);
+                    } catch (RuntimeException | Error failure) {
+                        cleanupFailure = strongestUnwindFailure(cleanupFailure, failure);
+                    }
+                }
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    env.releaseMutexGuards(inFlight != null || cleanupFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    deferredFailure = true;
-                    throw failure;
-                } finally {
-                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                    cleanupFailure = strongestUnwindFailure(cleanupFailure, failure);
+                }
+                if (cleanupFailure != null) {
+                    Throwable selected = strongestUnwindFailure(inFlight, cleanupFailure);
+                    if (selected != inFlight) rethrowUnwind(selected);
                 }
             }
         }
@@ -4815,16 +4863,29 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 // A call under catch/finally is not a proper tail call: the
                 // caller still owns exception/cleanup semantics after the call.
-                try { executeBlock(tried.body(), env, true); }
-                catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (dev.oreslang.runtime.GuestFailureSignal signal) { throw signal; }
-                catch (java.util.concurrent.CancellationException cancelled) { throw cancelled; }
-                catch (RuntimeException failure) {
-                    Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv, true);
-                } finally { executeBlock(tried.finallyBody(), env, true); }
+                Throwable inFlight = null;
+                try {
+                    try { executeBlock(tried.body(), env, true); }
+                    catch (TailCallSignal signal) { throw signal; }
+                    catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                    catch (dev.oreslang.runtime.GuestFailureSignal signal) { throw signal; }
+                    catch (java.util.concurrent.CancellationException cancelled) { throw cancelled; }
+                    catch (RuntimeException failure) {
+                        Env catchEnv = new Env(env);
+                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        executeBlock(tried.catchBody(), catchEnv, true);
+                    }
+                } catch (RuntimeException | Error failure) {
+                    inFlight = failure;
+                    throw failure;
+                } finally {
+                    try {
+                        executeBlock(tried.finallyBody(), env, true);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        Throwable selected = strongestUnwindFailure(inFlight, cleanupFailure);
+                        if (selected != inFlight) rethrowUnwind(selected);
+                    }
+                }
                 return;
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
