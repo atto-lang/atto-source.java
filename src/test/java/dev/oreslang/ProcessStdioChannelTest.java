@@ -82,14 +82,14 @@ final class ProcessStdioChannelTest {
                 "readch stdio.out;",
                 "try readch process.stderr;",
                 "nb readch stdio.out;",
-                "writech stdio.in, \\"bad\\";",
-                "try writech process.stdin, \\"bad\\";",
-                "nb writech stdio.in, \\"bad\\";",
+                "writech stdio.in, \"bad\";",
+                "try writech process.stdin, \"bad\";",
+                "nb writech stdio.in, \"bad\";",
                 "val c = SelectCase.read(process.stdout);",
-                "val c = SelectCase.write(process.stdin, \\"bad\\");"
+                "val c = SelectCase.write(process.stdin, \"bad\");"
         }) {
             String program = "pub async routine main(): void { " + statement + " return; }";
-            assertThrows(Exception.class, () -> run(program, "hello\\n",
+            assertThrows(Exception.class, () -> run(program, "hello\n",
                     new ByteArrayOutputStream(), new ByteArrayOutputStream()), statement);
         }
     }
@@ -109,8 +109,8 @@ final class ProcessStdioChannelTest {
 
     @Test void oversizedStdoutChunkIsRejected() {
         String huge = "X".repeat(65_537);
-        String program = "pub async routine main(): void { writech stdio.out, \\""
-                + huge + "\\"; return; }";
+        String program = "pub async routine main(): void { writech stdio.out, \""
+                + huge + "\"; return; }";
         assertThrows(Exception.class, () -> run(program, "",
                 new ByteArrayOutputStream(), new ByteArrayOutputStream()));
     }
@@ -121,7 +121,7 @@ final class ProcessStdioChannelTest {
                 val input = readch stdio.in;
                 return;
             }
-            """, "A".repeat(65_537) + "\\n",
+            """, "A".repeat(65_537) + "\n",
                 new ByteArrayOutputStream(), new ByteArrayOutputStream()));
     }
 
