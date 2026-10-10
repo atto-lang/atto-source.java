@@ -187,8 +187,8 @@ class NativeHttpTest {
             pub async routine main(): void {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
-              val actor = spawn Reused();
-              await actor.ready;
+              val worker = spawn Reused();
+              await worker.ready;
 
               // Keep both requests admitted before delivering either to
               // the shared actor. Response envelopes must not cross streams.
@@ -196,14 +196,14 @@ class NativeHttpTest {
               val second = await server.accept();
               val firstDone = first.completion;
               val secondDone = second.completion;
-              actor.send(first.move_to(actor));
-              actor.send(second.move_to(actor));
+              worker.send(first.move_to(worker));
+              worker.send(second.move_to(worker));
               stdio.println(await firstDone);
               stdio.println(await secondDone);
               stdio.println(server.active);
 
-              actor.send("stop");
-              await actor.done;
+              worker.send("stop");
+              await worker.done;
               await server.shutdown(0);
               return;
             }
@@ -243,22 +243,22 @@ class NativeHttpTest {
             pub async routine main(): void {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
-              val actor = spawn Reused();
-              await actor.ready;
+              val worker = spawn Reused();
+              await worker.ready;
 
               val first = await server.accept();
               val firstDone = first.completion;
-              actor.send(first.move_to(actor));
+              worker.send(first.move_to(worker));
               stdio.println(await firstDone);
 
               val second = await server.accept();
               val secondDone = second.completion;
-              actor.send(second.move_to(actor));
+              worker.send(second.move_to(worker));
               stdio.println(await secondDone);
               stdio.println(server.active);
 
-              actor.send("stop");
-              await actor.done;
+              worker.send("stop");
+              await worker.done;
               await server.shutdown(0);
               return;
             }
