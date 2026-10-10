@@ -113,6 +113,20 @@ final class SelectPlanBorrowSafetyTest {
     }
 
     @Test
+    void selectPlanCapabilitiesCannotCrossActorBoundaries() {
+        reject("""
+                actor fnc bad(SelectPlan plan): void {
+                  return;
+                }
+                """, "cannot use SelectPlan across an actor boundary");
+        reject("""
+                actor fnc bad(DynamicSelectPlan plan): void {
+                  return;
+                }
+                """, "cannot use DynamicSelectPlan across an actor boundary");
+    }
+
+    @Test
     void nestedOptionCannotDuplicateOwnedSelectCase() {
         reject("""
                 fnc bad(): void {
