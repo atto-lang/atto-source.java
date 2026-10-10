@@ -18,12 +18,12 @@ pub define class WritableTee as
   val Channel<String> primary;
   val Channel<String> secondary;
 
-  // Blocking notation means suspension of the Oreslang continuation,
-  // not occupation of an actor's carrier. Class instance async methods
-  // are not admitted by the compiler yet; no async keyword is needed here.
-  pub write(String frame): void {
-    writech self.primary, frame;
-    writech self.secondary, frame;
-    return;
+  // A class instance self-borrow must not cross suspension.
+  // Register both bounded admissions without suspending inside the method;
+  // the consumer can await the combined Future outside the self-borrow.
+  pub write(String frame): Future<List<void>> {
+    val first = nb writech self.primary, frame;
+    val second = nb writech self.secondary, frame;
+    return Future.all([first, second]);
   }
 end
