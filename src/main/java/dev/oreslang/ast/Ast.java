@@ -280,6 +280,29 @@ public final class Ast {
         }
     }
 
+    /**
+     * Admission limits for a protocol-facing actor. These are logical
+     * in-flight request/message counts, never native execution parallelism.
+     * The current backend supports the (1,1) strict policy only.
+     */
+    public record ActorConcurrencySpec(
+            String protocol, int requestConcurrency, int messageConcurrency) {
+        public ActorConcurrencySpec {
+            if (!java.util.Set.of("http", "tcp", "websocket", "actor").contains(protocol)) {
+                throw new IllegalArgumentException("unsupported actor concurrency protocol");
+            }
+            if (requestConcurrency < 1 || messageConcurrency < 1
+                    || requestConcurrency > 1024 || messageConcurrency > 1024
+                    || (long) requestConcurrency * messageConcurrency > 4096L) {
+                throw new IllegalArgumentException(
+                        "actor concurrency must be positive and have at most 4096 in-flight messages");
+            }
+        }
+        public boolean serial() {
+            return requestConcurrency == 1 && messageConcurrency == 1;
+        }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -291,13 +314,24 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ProxyActorSpec proxySpec) implements Decl {
+            ProxyActorSpec proxySpec,
+            ActorConcurrencySpec concurrencySpec) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Preserve pre-concurrency serialized AST producers. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ProxyActorSpec proxySpec) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, proxySpec, null);
         }
 
         /** Preserve existing actor/class construction and serialization APIs. */
@@ -307,7 +341,7 @@ public final class Ast {
                          List<FieldDecl> fields, ConstructorDecl constructor,
                          List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
-                    parents, interfaces, fields, constructor, methods, null);
+                    parents, interfaces, fields, constructor, methods, null, null);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
