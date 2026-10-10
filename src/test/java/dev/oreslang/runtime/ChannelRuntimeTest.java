@@ -12,6 +12,116 @@ import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
     @Test
+    void mixedPriorityPrefersReadyChannelToAlreadyCompletedFuture() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite(7));
+        OresFuture<String> observed = OresFuture.completed("future");
+        var result = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(channel), ChannelRuntime.await(observed))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join();
+        assertEquals(ChannelRuntime.SelectOperation.READ, result.operation());
+        assertEquals(7, result.value());
+        assertEquals(0, result.index());
+        assertEquals("future", observed.join());
+    }
+
+    @Test
+    void pendingFutureCompletesMixedSelectAndDetachesLosingChannel() {
+        var producer = new OresFuture<Integer>();
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        OresFuture<ChannelRuntime.SelectResult> selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(channel), ChannelRuntime.await(producer))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(selected.isDone());
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(producer.completeFromRuntime(42));
+
+        var winner = selected.join();
+        assertEquals(ChannelRuntime.SelectOperation.AWAIT, winner.operation());
+        assertEquals(1, winner.index());
+        assertEquals(42, winner.value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertTrue(channel.tryWrite(13));
+        assertEquals(13, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void cancellingMixedSelectionPreservesSharedFutureAndChannelValue() {
+        var producer = new OresFuture<Integer>();
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(channel), ChannelRuntime.await(producer))
+                .selectAsync();
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(selected.cancel(false));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isCancelled());
+        assertTrue(channel.tryWrite(19));
+        assertEquals(19, channel.tryRead().orElseThrow());
+        assertTrue(producer.completeFromRuntime(23));
+        assertThrows(CancellationException.class, selected::join);
+    }
+
+    @Test
+    void cancellationSignalIsAnExplicitCaseNotAuthorityToCancelProducer() {
+        var signal = new OresFuture<Void>();
+        var producer = new OresFuture<Integer>();
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer), ChannelRuntime.cancelled(signal))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertTrue(signal.cancel(false));
+        var result = selected.join();
+        assertEquals(ChannelRuntime.SelectOperation.CANCELLED, result.operation());
+        assertEquals(1, result.index());
+        assertFalse(producer.isDone());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void timeoutWinsWithoutLaterConsumingChannel() throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(channel),
+                ChannelRuntime.timeout(2, java.util.concurrent.TimeUnit.MILLISECONDS))
+                .selectAsync();
+        var result = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT, result.operation());
+        assertEquals(1, result.index());
+        assertTrue(channel.tryWrite(37));
+        assertEquals(37, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void immediateTimeoutIsReadyButFutureDeadlineDoesNotBlockTrySelect() {
+        var unready = new OresFuture<Integer>();
+        var nonBlocking = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(unready),
+                ChannelRuntime.timeout(1, java.util.concurrent.TimeUnit.HOURS));
+        assertTrue(nonBlocking.trySelect().isEmpty());
+        assertEquals(0, unready.pendingRuntimeWaiterCount());
+        var immediate = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(unready),
+                ChannelRuntime.timeout(0, java.util.concurrent.TimeUnit.NANOSECONDS));
+        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT,
+                immediate.trySelect().orElseThrow().operation());
+        assertFalse(unready.isCancelled());
+    }
+
+    @Test
+    void mixedSelectionFairCursorRotatesAcrossReadyFutureAndChannel() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
+        OresFuture<Integer> producer = OresFuture.completed(50);
+        ChannelRuntime.SelectSet reusable = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer), ChannelRuntime.read(channel));
+        assertTrue(channel.tryWrite(10));
+        assertEquals(ChannelRuntime.SelectOperation.AWAIT,
+                reusable.selectAsync().join().operation());
+        assertEquals(ChannelRuntime.SelectOperation.READ,
+                reusable.selectAsync().join().operation());
+        assertEquals(10, channel.size() == 0 ? 10 : 0);
+    }
+
+    @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         assertTrue(channel.tryWrite(1));
