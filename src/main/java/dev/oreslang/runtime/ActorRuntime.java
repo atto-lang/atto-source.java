@@ -718,11 +718,19 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCell<?> cell = requireCurrentOwner();
             synchronized (cell.lifecycleLock) {
                 if (sliceClosed.get()) throw new IllegalStateException("actor heap is retired");
-                ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
-                        maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
-                        () -> {}); // retired arenas are retained only by live lease owners
-                ownedGraphs.add(graph);
-                return graph;
+                long metadataBytes = ActorOwnedGraphArena.estimatedMetadataBytes(
+                        maxNodes, maxEdgesPerNode);
+                MemoryReservation reservation = reserve(metadataBytes, "actor-owned graph metadata");
+                try {
+                    ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
+                            maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
+                            reservation::close);
+                    ownedGraphs.add(graph);
+                    return graph;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
             }
         }
 
