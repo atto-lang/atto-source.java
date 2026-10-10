@@ -1786,6 +1786,16 @@ public final class ActorRuntime implements AutoCloseable {
         });
     }
 
+    /**
+     * Read-only, non-consumable actor-start signal; not an exposed Future
+     * completion capability and not a Channel<T> with destructive reads.
+     */
+    public final class ActorReadySignal implements Awaitable<Void> {
+        private final ActorRef<?> actor;
+        private ActorReadySignal(ActorRef<?> actor) { this.actor = actor; }
+        @Override public OresFuture<Void> getAwaited() { return actor.ready(); }
+    }
+
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
@@ -1794,6 +1804,7 @@ public final class ActorRuntime implements AutoCloseable {
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
                 new OresFuture<>(() -> false, () -> { });
+        private final ActorReadySignal readySignal = new ActorReadySignal(this);
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
@@ -1818,6 +1829,19 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCell<?> cell = actors.get(id);
             if (cell != null && !cell.stopped.get()) cell.schedule();
             return readyFuture;
+        }
+
+        /**
+         * Stable readiness API. The wrapper preserves the public awaitable
+         * contract even if readiness is later driven by channels, signals,
+         * or a different scheduler mechanism.
+         *
+         * The signal is multicast/level-triggered: multiple waiters, including
+         * late waiters, observe the same terminal readiness/failure outcome.
+         */
+        public ActorReadySignal getReadySignal() {
+            ready(); // Admission/initialization is triggered exactly as before.
+            return readySignal;
         }
 
         /**
