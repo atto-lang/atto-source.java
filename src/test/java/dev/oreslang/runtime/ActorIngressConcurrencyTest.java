@@ -67,6 +67,8 @@ class ActorIngressConcurrencyTest {
                 a.close();
                 assertTrue(a2.isClosed());
                 assertEquals(1, budget.activeConnections());
+                assertThrows(IllegalArgumentException.class, () -> budget.tryOpenConnection(10, 17),
+                        "closed connection IDs must not be recycled within one actor incarnation");
                 assertNotNull(budget.tryOpenConnection(12, 17));
                 assertThrows(IllegalStateException.class, () -> a.tryEnter(4, 17));
                 b.close();
