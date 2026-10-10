@@ -99,14 +99,15 @@ retains an owning actor ID and checks that ID on read/write/close; a SHARED
 actor's *private* memory is not automatically exported to its peers.
 
 `allocatePrivateBytes()` uses `ActorForeignMemory` underneath:
-- GraalVM/JDK 22+ creates an `Arena.ofShared()` **per allocated block**.
-  An actor can resume on a different carrier thread, so a thread-confined
-  `Arena.ofConfined()` would be incorrect. Explicit block close or actor
-  finalization zeroizes and closes the native arena. Arena closure is deferred
-  until the actor has left its execution boundary and children are finalized.
-- Java 21 stays source/binary-compatible via `ByteBuffer.allocateDirect()`.
-  It does **not** offer deterministic native-memory release. JDK 22+ fails
-  closed if FFM cannot initialize; native-image builds need FFM support.
+- When `java.lang.foreign.Arena` is present, including the preview FFM
+  implementation shipped with the tested GraalVM JDK 21, each block has a
+  separate `Arena.ofShared()`. Continuations may migrate carrier threads, so
+  a confined arena would be incorrect. Block close or actor finalization
+  zeroizes and closes it after the actor execution boundary and child teardown.
+- On a Java 21 runtime without the FFM classes, the compatible fallback is
+  `ByteBuffer.allocateDirect()` and its native memory **is not** immediately
+  reclaimed. JDK 22+ fails closed if FFM cannot initialize; Native Image builds
+  require working FFM support and reachability configuration as applicable.
 - These are off-heap **byte blocks**, not relocated Java/Truffle objects.
   Interpreter ASTs, source objects, mailbox envelopes, futures and scheduling
   infrastructure can still allocate on the garbage-collected heap.
