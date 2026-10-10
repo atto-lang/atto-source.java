@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -99,6 +100,85 @@ final class NativeCoreLibraryTest {
 
 
     @Test
+    void bundledCoreCannotBeOverriddenByApplicationSourceRoot() throws Exception {
+        Path project = Files.createTempDirectory("ores-stdlib-shadow-");
+        Path std = Files.createDirectories(project.resolve("std"));
+        Path entry = project.resolve("main.ores");
+        try {
+            Files.writeString(std.resolve("core.ores"), """
+                    define module core
+                      pub fnc min_int(int left, int right): int {
+                        return 999;
+                      }
+                    end
+                    """);
+            Files.writeString(entry, """
+                    import module core from "std/core";
+                    pub routine main(): void {
+                        stdio.println(core.min_int(9, 4));
+                        return;
+                    }
+                    """);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            var build = LinkedProgramRunner.run(
+                    entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    out, new ByteArrayOutputStream());
+            assertTrue(build.units().containsKey("@std/core.ores"));
+            assertEquals("4", out.toString(StandardCharsets.UTF_8).trim(),
+                    "application filesystem must never shadow std/core");
+        } finally {
+            Files.deleteIfExists(entry);
+            Files.deleteIfExists(std.resolve("core.ores"));
+            Files.deleteIfExists(std);
+            Files.deleteIfExists(project);
+        }
+    }
+
+    @Test
+    void unknownCoreImportNeverFallsBackToApplicationFilesystem() throws Exception {
+        Path project = Files.createTempDirectory("ores-stdlib-unknown-");
+        Path std = Files.createDirectories(project.resolve("std"));
+        Path entry = project.resolve("main.ores");
+        try {
+            Files.writeString(std.resolve("phantom.ores"), """
+                    define module phantom
+                    end
+                    """);
+            Files.writeString(entry, """
+                    import module phantom from "std/phantom";
+                    pub routine main(): void { return; }
+                    """);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(entry));
+            assertTrue(failure.getMessage().contains("unknown Oreslang core-library module"));
+        } finally {
+            Files.deleteIfExists(entry);
+            Files.deleteIfExists(std.resolve("phantom.ores"));
+            Files.deleteIfExists(std);
+            Files.deleteIfExists(project);
+        }
+    }
+
+    @Test
+    void strictIsolateMayValidateTrustedStdlibWithoutJavaCapability() throws Exception {
+        Path entry = Files.createTempFile("ores-stdlib-strict-", ".ores");
+        try {
+            Files.writeString(entry, """
+                    import module core from "std/core";
+                    pub routine main(): void {
+                        stdio.println(core.max_int(9, 4));
+                        return;
+                    }
+                    """);
+            var build = LinkedProgramRunner.validate(
+                    entry, Map.of(), IsolatePolicy.strictFaas(), PermissionCheckMode.COMPILE);
+            assertTrue(build.units().containsKey("@std/core.ores"));
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
+    @Test
     void validationUsesExactPackagedStdlibWithoutHostInterop() throws Exception {
         Path entry = Files.createTempFile("ores-no-java-", ".ores");
         try {
@@ -132,7 +212,9 @@ final class NativeCoreLibraryTest {
                 "std/../secret", "std/./core", "std/a/../core",
                 "std//core", "std/", "std/\\\\core",
                 "std/core?x", "std/%2e%2e/core", "std/one//two",
-                "std/core" + (char) 0)) {
+                "std/core" + (char) 0,
+                "std/" + "verylongsegment".repeat(400),
+                "std/" + "nested/".repeat(33) + "core")) {
             assertThrows(IllegalArgumentException.class,
                     () -> CoreLibrarySources.unitId(invalid), invalid);
         }
@@ -143,5 +225,6 @@ final class NativeCoreLibraryTest {
                 CoreLibrarySources.unitId("std/core.ores"));
         assertEquals(CoreLibrarySources.source("std/core"),
                 CoreLibrarySources.source("std/core.ores"));
+        assertTrue(CoreLibrarySources.source("std/testing").contains("define module testing"));
     }
 }

@@ -94,3 +94,18 @@ application .ores
   -> Java/Truffle host kernel
   -> JNI/native OS or device primitive when required
 ```
+
+## Resource provenance and AOT packaging
+
+- `std/*` source is compiler-owned: a local `./std/core.ores`, project source root,
+  or `ORESLANG_PATH` entry must not override a packaged stdlib module.
+- Duplicate resources with the same packaged `dev/oreslang/std/**/*.ores`
+  path are rejected instead of relying on classpath lookup order.
+- The loader rejects overlong paths (>4096 characters), deep module paths (>32 segments),
+  malformed UTF-8, oversized (>1 MiB) sources and missing resources.
+- GraalVM Native Image includes source assets through
+  `META-INF/native-image/dev.oreslang/oreslang/reachability-metadata.json`,
+  preserving the existing native JNI metadata; do not introduce a competing
+  legacy IncludeResources regex.
+- Host-side native library tests exercise the loader. Complete GraalVM/Native
+  Image integration is a separate executable validation gate.

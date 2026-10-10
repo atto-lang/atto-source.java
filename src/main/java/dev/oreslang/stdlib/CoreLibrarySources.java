@@ -7,6 +7,8 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.CharacterCodingException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Enumeration;
+import java.net.URL;
 import java.util.List;
 import java.util.Objects;
 
@@ -22,6 +24,8 @@ public final class CoreLibrarySources {
     private static final String UNIT_PREFIX = "@std/";
     private static final String RESOURCE_PREFIX = "dev/oreslang/std/";
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
+    private static final int MAX_IMPORT_PATH_CHARS = 4096;
+    private static final int MAX_MODULE_SEGMENTS = 32;
 
     private CoreLibrarySources() { }
 
@@ -37,11 +41,20 @@ public final class CoreLibrarySources {
         String relative = canonicalRelativePath(importPath);
         String resource = RESOURCE_PREFIX + relative;
         ClassLoader loader = CoreLibrarySources.class.getClassLoader();
-        try (InputStream input = loader.getResourceAsStream(resource)) {
-            if (input == null) {
-                throw new IllegalArgumentException(
-                        "unknown Oreslang core-library module: " + importPath);
-            }
+        // Packaged stdlib is compiler authority, not ambient classpath policy.
+        // Ambiguous duplicate resource names must never silently select a
+        // user-controlled earlier classpath entry.
+        Enumeration<URL> matches = loader.getResources(resource);
+        if (!matches.hasMoreElements()) {
+            throw new IllegalArgumentException(
+                    "unknown Oreslang core-library module: " + importPath);
+        }
+        URL unique = matches.nextElement();
+        if (matches.hasMoreElements()) {
+            throw new SecurityException(
+                    "duplicate packaged Oreslang core-library resource: " + importPath);
+        }
+        try (InputStream input = unique.openStream()) {
             byte[] bytes = input.readNBytes(MAX_SOURCE_BYTES + 1);
             if (bytes.length > MAX_SOURCE_BYTES) {
                 throw new IllegalStateException(
@@ -77,6 +90,9 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException(
                     "core-library imports must start with 'std/': " + importPath);
         }
+        if (importPath.length() > MAX_IMPORT_PATH_CHARS) {
+            throw new IllegalArgumentException("Oreslang core-library import path is too long");
+        }
         if (importPath.indexOf('\\') >= 0
                 || importPath.indexOf('\0') >= 0
                 || importPath.startsWith("/")
@@ -92,6 +108,9 @@ public final class CoreLibrarySources {
         }
 
         String[] segments = raw.split("/");
+        if (segments.length > MAX_MODULE_SEGMENTS) {
+            throw new IllegalArgumentException("Oreslang core-library import nesting is too deep");
+        }
         List<String> normalized = new ArrayList<>(segments.length);
         for (String segment : segments) {
             if (segment.isBlank() || segment.equals(".") || segment.equals("..")) {
