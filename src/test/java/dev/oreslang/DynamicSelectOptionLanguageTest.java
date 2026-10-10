@@ -126,6 +126,45 @@ final class DynamicSelectOptionLanguageTest {
         }
     }
 
+    @Test
+    void sourceSelectPlanSupportsVersionedAddRemoveReplaceAndLiveSelect() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> inbox = Channel.new<int>(1);
+                  let mut SelectPlan plan = SelectPlan.new([
+                    SelectCase.read(inbox)
+                  ]);
+                  plan.addCase(SelectCase.timeout(0));
+                  val Option<SelectResult> first = try select first from plan;
+                  stdio.stdout.write(first.unwrap().operation);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(plan.revision);
+
+                  plan.replaceCase(0, SelectCase.timeout(0));
+                  plan.removeCase(1);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(plan.revision);
+                  val Option<SelectResult> second = try select first from plan;
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(second.unwrap().operation);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("timeout:1:3:timeout", run(program));
+    }
+
+    @Test
+    void selectPlanCannotTravelAsAnActorMailPayload() {
+        String source = """
+                define actor Worker as
+                  receive(ActorMail<SelectPlan> mail): void { return; }
+                end
+                """;
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "select-option.ores")
