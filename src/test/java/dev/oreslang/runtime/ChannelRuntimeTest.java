@@ -400,6 +400,50 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void independentPlansCannotConcurrentlyTransferTheSameAffineDescriptor() throws Exception {
+        // Each plan has a distinct registration domain. The ownership claim
+        // must belong to the shared descriptor, not the plan or SelectSet.
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int trial = 0; trial < 100; trial++) {
+                ChannelRuntime.Channel<List<Integer>> channel =
+                        new ChannelRuntime.Channel<>(2);
+                List<Integer> payload =
+                        new java.util.ArrayList<>(List.of(trial));
+                var descriptor = ChannelRuntime.write(channel, payload);
+                var firstPlan = ChannelRuntime.SelectPlan.of(descriptor);
+                var secondPlan = ChannelRuntime.SelectPlan.of(descriptor);
+                var start = new java.util.concurrent.CountDownLatch(1);
+
+                var first = pool.submit(() -> {
+                    start.await();
+                    try {
+                        firstPlan.selectAsync().join();
+                        return true;
+                    } catch (java.util.concurrent.CompletionException rejected) {
+                        return false;
+                    }
+                });
+                var second = pool.submit(() -> {
+                    start.await();
+                    try {
+                        secondPlan.selectAsync().join();
+                        return true;
+                    } catch (java.util.concurrent.CompletionException rejected) {
+                        return false;
+                    }
+                });
+                start.countDown();
+                boolean a = first.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                boolean b = second.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                assertTrue(a ^ b, "only one independent plan may commit trial " + trial);
+                assertEquals(1, channel.size());
+                org.junit.jupiter.api.Assertions.assertSame(
+                        payload, channel.tryRead().orElseThrow());
+            }
+        }
+    }
+
+    @Test
     void scalarWriteCaseCanBeReusedBecauseItsPayloadIsCopySafe() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
         ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
