@@ -121,3 +121,69 @@ rejection of invalid directions and oversized lines.
 returned `runner_id=0, steps=[]` for this PR. Review, actual Maven/GraalVM
 25 execution, exact-head CI mirroring, native AOT conformance, and physical
 shell-pipe cancellation/backpressure tests remain merge blockers.
+
+## Global namespaces, stream adapters and tee (October 10)
+
+`process.stdin`, `stdio.in`, and `stdin.in` refer to **the same input
+channel object in one context**. Likewise `process.stdout === stdio.out`
+and `process.stderr === stdio.err`. These global endpoints are available
+without importing `std/process` or `std/stdio`. The previous legacy
+`stdio.stdout` logging facade remains supported for compatibility.
+
+```oreslang
+// No imports needed:
+pub routine main(): void {
+  val ReadableStream<String> reader = process.stdin.stream();
+  for const text of reader {
+    writech stdio.out, text + "\\n";
+  }
+  return;
+}
+```
+
+`Observable.from_ch(stdio.in)` also needs **no explicit import**: the
+compiler prelude incorporates the Oreslang-owned `std/observable.ores`
+declaration and typechecks its body. `Stdio.println_blocking(...)` from
+`std/stdio.ores` can likewise be used without import. The native
+`ReadableStream<T>` class and `WritableTee` are declared in
+`std/streams.ores`. The prelude is installed on demand by recognized source
+references rather than globally injecting declarations into unrelated programs.
+
+`ReadableStream<T>` currently means a **pull iterator view** of a readable
+channel with clean-EOF completion, lazy source consumption and channel
+backpressure; it is **not** the full browser WHATWG Streams implementation
+(`getReader`, byte BYOB readers, locking/disturbance, pipeTo, etc.).
+`Channel<T>.stream()` is an adapter, not a second independent source.
+One reader consumes an item; readers compete if sharing a channel.
+`stdio.out.stream()` and `stdio.err.stream()` are forbidden because
+both are write-only endpoints.
+
+Output `tee` must not mean reading the output descriptor. A write-only
+sink can be explicitly duplicated to two *writable* channels:
+
+```oreslang
+pub async routine main(): void {
+  val WritableTee paired = stdio.out.tee(stdio.err);
+  await paired.write("both destinations\\n");
+  return;
+}
+```
+
+`tee(target)` returns a **new composite writable adapter**. It does not
+intercept unrelated writes to `stdio.out`; no-argument `stdio.out.tee()`
+is rejected. Its native `write` sends sequentially to the primary
+and secondary sink, awaiting bounded admission. Sink failures can result
+in partial fan-out, not atomic delivery. Concurrent calls to the same tee
+do not guarantee per-call pairwise atomicity. The old `stdout` logging
+facade is intentionally unchanged until callers are migrated.
+
+The runtime channel subtypes reject the forbidden directions even through
+local aliases and dynamic selects. The type checker additionally rejects
+known direct invalid descriptor operations and inappropriate direct
+`stream()/tee()` calls. Full direction-preserving static `ReadChannel<T>`
+and `WriteChannel<T>` subtypes remain a future language feature.
+
+The example and integration tests in this PR are **draft, not proof** until
+an exact-head JDK/GraalVM run executes. Physical shell-pipe backpressure,
+forced interruption of an opaque host stream, and full browser-compatible
+ReadableStream/Observable semantics are separate outstanding checks.
