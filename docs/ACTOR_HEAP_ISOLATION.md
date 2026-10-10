@@ -141,6 +141,37 @@ work is completed or generation-fenced.
   Never claim `spawnUntrusted` in the bootstrap host is already routed
   through the shared isolate.
 
+## Isolated source actor control plane (this PR)
+
+`UntrustedJitCodeUnit` is a host-facing adapter that loads and compiles a
+bounded Oreslang source unit inside a `SharedUntrustedIsolatePool.Group`'s
+separately sandboxed Engine/Context. The host handles only finite data scalars,
+never `ActorRef`, `ActorGraphArena.NodeId`, raw pointers, callback objects
+or polyglot guest `Value` references. Guest failures are sanitized before
+they cross the adapter. Exactly one Engine owns the group pool's VM-level
+collector/JIT, while guest actors retain per-actor logical owned heaps.
+
+The `OresEvalRootNode` guest evaluator has internal commands to spawn a
+`define untrusted actor` declaration **inside that guest context** and
+retain its source `ActorRef` in the guest's bounded, 1,024-entry actor table.
+`UntrustedJitCodeUnit.RemoteUntrustedActor` holds only a local numeric actor
+ID and code-unit UUID generation. It supports scalar-only `send`,
+readiness/done polling, structured cancellation, and on-close cancel-all.
+Messages still go through the guest `ActorRuntime` and per-actor mailbox
+quotas; the trusted host never receives a guest object reference.
+
+**Not yet production complete:** Native Graal Oreslang language-isolate
+packaging and physical isolation/JIT instrumentation are still unverified.
+The actor execution test is gated on
+`ORES_TEST_SHARED_UNTRUSTED_ISOLATE=true`; no compiler-generated host
+`spawn SandboxedWorker()` is yet automatically routed through this API.
+Guest output streams, code-image hot reload, group context rotation and
+per-actor hard-kill semantics still require additional protocol work.
+A long-running guest call is constrained by group Context resource limits,
+not independently hard preempted per mailbox invocation. Legacy host
+`ActorRuntime.spawnCodeActor(UNTRUSTED,...)` remains a compatibility/testing
+path and is **not** a substitute for the isolated deployment.
+
 ## Executable actor-owned cyclic graph prototype (this PR)
 
 `ActorGraphArena` is now attached to every `ActorCell` and accessible
