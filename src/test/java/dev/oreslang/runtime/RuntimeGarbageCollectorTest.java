@@ -389,6 +389,40 @@ final class RuntimeGarbageCollectorTest {
         }
     }
     @Test
+    void actorRetirementIsBoundedAndDeferredHooksEventuallyDrain() throws Exception {
+        AtomicInteger completed = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                    () -> fail("actor retirement must not request JVM GC"),
+                    Duration.ofHours(1));
+             ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (mail, actorContext) -> {
+                for (int i = 0; i < 160; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    gc.track(owner, completed::incrementAndGet);
+                }
+                actorContext.self().stop();
+            });
+            actor.send("retire");
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(32, completed.get(),
+                    "actor exit must run only one bounded cleanup quantum");
+            // Deferred resources are eventually reclaimed without a process.gc()
+            // request or collecting any still-live JVM guest graph.
+            for (int i = 0; i < 10 && completed.get() < 160; i++) {
+                var batch = gc.collectPeriodic();
+                assertTrue(batch.inspected() <= 256, "each fallback sweep stays bounded");
+                assertFalse(batch.jvmGcRequested());
+            }
+            assertEquals(160, completed.get());
+            assertEquals(0, gc.collectPeriodic().trackedAfter());
+            java.lang.ref.Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
     void fallbackSweepIsDormantUntilFirstInteropRegistrationAndStopsAfterRelease() throws Exception {
         AtomicInteger jvmGcRequests = new AtomicInteger();
         try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
