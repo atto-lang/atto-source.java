@@ -7,16 +7,17 @@ import java.nio.ByteOrder;
 
 /**
  * One actor-owned native allocation, closed deterministically on explicit block
- * close or actor finalization. On JDK 22+ this uses the standard Foreign Memory
- * API via reflection so the Java 21 language/runtime compatibility remains.
+ * close or actor finalization. When the FFM Arena API is available (including
+ * GraalVM 21's preview API), it is used reflectively while compiling to Java 21.
  *
  * <p>The backing Arena is SHARED (not thread-confined) because actor continuations
  * may resume on a different carrier. This does not grant another actor access:
  * ActorRuntime performs actor-ID checks before exposing any bytes. Never expose
  * the underlying MemorySegment/ByteBuffer to Oreslang guest code.</p>
  *
- * <p>JDK 21 compatibility mode uses allocateDirect, which is NOT deterministically
- * freed. The runtime must not claim zero GC or prompt reclamation in that mode.
+ * <p>When the JDK 21 FFM classes are unavailable, allocateDirect is the
+ * compatibility fallback and is NOT deterministically freed. The runtime must
+ * not claim zero GC or prompt reclamation in that mode.
  * This class does not allocate Java/Truffle objects off heap.</p>
  */
 final class ActorForeignMemory implements AutoCloseable {
@@ -54,7 +55,7 @@ final class ActorForeignMemory implements AutoCloseable {
             }
         } catch (ClassNotFoundException unsupportedJdk) {
             // Native Image must never silently fall back when FFM is missing.
-            // Only the supported Java 21 compatibility mode uses direct buffers.
+            // Only JDK 21 installations without FFM use direct buffers.
             if (Runtime.version().feature() >= 22)
                 throw new IllegalStateException("FFM Arena unavailable on JDK 22+; refuse unscoped allocation", unsupportedJdk);
             return new ActorForeignMemory(ByteBuffer.allocateDirect(bytes), null);
