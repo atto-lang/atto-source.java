@@ -456,14 +456,20 @@ public final class ChannelRuntime {
      * would require a stronger generation/winner protocol.</p>
      */
     public static final class SelectPlan {
-        private final SelectSet set;
+        // A mutation publishes an immutable descriptor *snapshot*. Registrations
+        // already armed on the previous revision retain their own SelectSet.
+        // This avoids removing/retargeting live waiters while still supporting
+        // dynamic add/remove/replace on one stable plan handle.
+        private record Snapshot(long revision, SelectSet set) { }
+        private final AtomicReference<Snapshot> current;
 
         public SelectPlan(Collection<? extends SelectCase> cases) {
             this(new SelectSet(cases));
         }
 
         private SelectPlan(SelectSet set) {
-            this.set = Objects.requireNonNull(set, "set");
+            this.current = new AtomicReference<>(
+                    new Snapshot(0L, Objects.requireNonNull(set, "set")));
         }
 
         public static SelectPlan of(SelectCase... cases) {
@@ -478,24 +484,77 @@ public final class ChannelRuntime {
             return new SelectPlan(SelectSet.fromMap(cases));
         }
 
+        /** A stable generation number for debugging and stale-plan detection. */
+        public long revision() {
+            return current.get().revision();
+        }
+
+        /** Immutable view of the current descriptor generation. */
         public List<SelectCase> cases() {
-            return set.cases();
+            return current.get().set().cases();
+        }
+
+        /**
+         * Appends a descriptor for FUTURE invocations. Pending selections
+         * continue observing their original descriptor generation.
+         */
+        public SelectPlan addCase(SelectCase selectCase) {
+            Objects.requireNonNull(selectCase, "selectCase");
+            revise(next -> next.add(selectCase));
+            return this;
+        }
+
+        public SelectPlan removeCase(int index) {
+            revise(next -> next.remove(index));
+            return this;
+        }
+
+        public SelectPlan replaceCase(int index, SelectCase selectCase) {
+            Objects.requireNonNull(selectCase, "selectCase");
+            revise(next -> next.set(index, selectCase));
+            return this;
+        }
+
+        public SelectPlan replaceCases(Collection<? extends SelectCase> cases) {
+            Objects.requireNonNull(cases, "cases");
+            List<SelectCase> copy = List.copyOf(cases);
+            revise(next -> {
+                next.clear();
+                next.addAll(copy);
+            });
+            return this;
+        }
+
+        private void revise(java.util.function.Consumer<ArrayList<SelectCase>> mutation) {
+            while (true) {
+                Snapshot before = current.get();
+                ArrayList<SelectCase> next = new ArrayList<>(before.set().cases());
+                mutation.accept(next);
+                // Validate before publication (nonempty, nonnull, one default).
+                // New revisions inherit the current FAIR cursor position but
+                // have their own cursor thereafter: old in-flight completions
+                // must not reorder cases in the new descriptor generation.
+                SelectSet validated = new SelectSet(next, before.set().fairCursor.get());
+                Snapshot after = new Snapshot(
+                        Math.addExact(before.revision(), 1L), validated);
+                if (current.compareAndSet(before, after)) return;
+            }
         }
 
         public OresFuture<SelectResult> selectAsync() {
-            return set.selectAsync();
+            return current.get().set().selectAsync();
         }
 
         public OresFuture<SelectResult> selectAsync(SelectPolicy policy) {
-            return set.selectAsync(policy);
+            return current.get().set().selectAsync(policy);
         }
 
         public Optional<SelectResult> trySelect() {
-            return set.trySelect();
+            return current.get().set().trySelect();
         }
 
         public Optional<SelectResult> trySelect(SelectPolicy policy) {
-            return set.trySelect(policy);
+            return current.get().set().trySelect(policy);
         }
     }
 
