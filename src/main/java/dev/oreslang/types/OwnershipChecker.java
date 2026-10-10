@@ -316,6 +316,9 @@ public final class OwnershipChecker {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
                 validateReturnedBorrow(ret.value(), returned);
+                if (!isBorrowValue(returned) && containsBorrowType(returned.type)) {
+                    throw error("return cannot escape nested borrowed references in an owned container");
+                }
             }
             return;
         }
@@ -334,6 +337,12 @@ public final class OwnershipChecker {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
                         : "MutexGuard values cannot be yielded from a generator");
+            }
+            // A yielded value can outlive this generator's stack and may be
+            // consumed after another actor turn. Neither a temporary borrow
+            // nor a nested borrow hidden inside an owned wrapper can escape.
+            if (isBorrowValue(value) || containsBorrowType(exposed)) {
+                throw error("yield cannot expose a borrowed reference; yield owned/copyable data instead");
             }
             return;
         }
@@ -451,7 +460,7 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(payload.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
-                    if (isBorrowValue(payload)) {
+                    if (isBorrowValue(payload) || containsBorrowType(payload.type)) {
                         throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
                     }
                 }
@@ -671,6 +680,11 @@ public final class OwnershipChecker {
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
+        }
+        // A nested &T must not become an apparently owned Option, Future,
+        // record, tuple or collection through a declared binding type.
+        if (!storedType.isBorrow() && containsBorrowType(storedType)) {
+            throw error("owned binding cannot contain a borrowed reference without container lifetime parameters");
         }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
@@ -949,6 +963,12 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
                 }
+                // Constructor arguments may be retained in the resulting
+                // object. Until constructor effect/lifetime contracts exist,
+                // a borrowed argument must not silently become owned state.
+                if (isBorrowValue(info) || containsBorrowType(info.type)) {
+                    throw error("constructor cannot retain borrowed values without an explicit lifetime contract");
+                }
                 argumentTypes.add(info.type);
             }
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
@@ -981,7 +1001,7 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
                 }
-                if (isBorrowValue(payload)) {
+                if (isBorrowValue(payload) || containsBorrowType(payload.type)) {
                     throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
                 }
                 if (channelOp.callback()) {
@@ -1113,7 +1133,7 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
-            if (owned.type != null && owned.type.isBorrow()) {
+            if (isBorrowValue(owned) || containsBorrowType(owned.type)) {
                 throw error(factory.name()
                         + ".new requires an owned value; borrowed values cannot become mutex state");
             }
@@ -1130,8 +1150,7 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
             ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
-            if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
-                    || (payload.type != null && payload.type.isBorrow())) {
+            if (isBorrowValue(payload) || containsBorrowType(payload.type)) {
                 throw error(name.name()
                         + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
             }
@@ -1152,6 +1171,8 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                requireDeferredOwnedParameters(signature.parameters(),
+                        fn.async() || fn.generator(), "function " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
@@ -1165,6 +1186,9 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                requireDeferredOwnedParameters(signature.parameters(),
+                        fn.async() || fn.generator(),
+                        "function " + namespace.name() + "." + qualified.member());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
@@ -1229,6 +1253,9 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
+                    requireDeferredOwnedParameters(signature.parameters(),
+                            staticFunction.async(),
+                            "static function " + staticClass.name() + "." + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
@@ -1379,6 +1406,8 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
+                requireDeferredOwnedParameters(signature.parameters(),
+                        method.async(), "method " + method.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
@@ -1419,6 +1448,9 @@ public final class OwnershipChecker {
             ValueInfo argument = checkExpr(arg, scope, true);
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
+            }
+            if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+                throw error("unknown call cannot retain borrowed arguments without an explicit callable lifetime contract");
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
@@ -1502,6 +1534,25 @@ public final class OwnershipChecker {
             return new ValueInfo(receiverType, kindOfType(receiverType), null);
         }
         return new ValueInfo(okType, kindOfType(okType), null);
+    }
+
+    /**
+     * An async call or generator can retain arguments after its caller's
+     * lexical scope exits. A call-site borrow is not an owned Future lifetime:
+     * until scoped-join loans are modeled, fail closed for both explicit &T
+     * and structural implicit-read parameters.
+     */
+    private void requireDeferredOwnedParameters(
+            List<Ast.Param> parameters, boolean deferred, String callable) {
+        if (!deferred) return;
+        for (int i = 0; i < parameters.size(); i++) {
+            Ast.Param parameter = parameters.get(i);
+            if (parameter.structural() || containsBorrowType(parameter.type())) {
+                throw error(callable + " argument " + (i + 1)
+                        + " cannot borrow across an async/generator lifetime; "
+                        + "pass owned data until scoped Future lifetimes are enforced");
+            }
+        }
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
@@ -2913,6 +2964,9 @@ public final class OwnershipChecker {
                     List.of(element),
                     false);
         }
+        if ((async || generator) && containsBorrowType(result)) {
+            throw error("async/generator result cannot expose borrowed references without a scoped lifetime");
+        }
         if (async) return new Ast.TypeRef("Future", List.of(result), false);
         return result;
     }
@@ -2992,6 +3046,30 @@ public final class OwnershipChecker {
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
+    }
+
+    /**
+     * Track nested reference types, not just the top-level &T. An owned
+     * container cannot erase a borrow's lexical lifetime. Identity tracking
+     * prevents recursive type representations from looping indefinitely.
+     */
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        return containsBorrowType(type,
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private static boolean containsBorrowType(Ast.TypeRef type, Set<Ast.TypeRef> visited) {
+        if (type == null || !visited.add(type)) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument, visited)) return true;
+        }
+        if (type.isRecordType()) {
+            for (Ast.TypeRef field : type.recordMembers().values()) {
+                if (containsBorrowType(field, visited)) return true;
+            }
+        }
+        return false;
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
