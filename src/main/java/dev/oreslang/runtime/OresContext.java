@@ -426,9 +426,6 @@ public final class OresContext implements AutoCloseable {
     @Override
     public void close() {
         RuntimeException failure = null;
-        // Drain accepted async records before closing guest and host streams.
-        // No actor carrier waits during normal log_async admission.
-        try { asyncStdio.close(); } catch (RuntimeException logFailure) { failure = logFailure; }
         try { nativeIo.close(); } catch (RuntimeException ioFailure) {
             if (failure == null) failure = ioFailure;
             else failure.addSuppressed(ioFailure);
@@ -455,6 +452,13 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = vmFailure;
             else failure.addSuppressed(vmFailure);
         } finally {
+            // Shut down guest producers before closing async logging admission.
+            // Accepted finalizer/supervision records are then drained before
+            // relinquishing the caller-owned host output stream.
+            try { asyncStdio.close(); } catch (RuntimeException logFailure) {
+                if (failure == null) failure = logFailure;
+                else failure.addSuppressed(logFailure);
+            }
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
