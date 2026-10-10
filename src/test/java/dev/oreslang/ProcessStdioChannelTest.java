@@ -19,18 +19,18 @@ final class ProcessStdioChannelTest {
         var error = new ByteArrayOutputStream();
         run("""
             pub async routine main(): void {
-                if process.stdout != stdio.out {
+                if !(process.stdout is stdio.out); then
                     stdio.stdout.log("stdout alias mismatch");
                     return;
-                }
-                if process.stderr != stdio.err {
+                fi
+                if !(process.stderr is stdio.err); then
                     stdio.stdout.log("stderr alias mismatch");
                     return;
-                }
-                if process.stdin != stdio.in {
+                fi
+                if !(process.stdin is stdio.in); then
                     stdio.stdout.log("stdin alias mismatch");
                     return;
-                }
+                fi
                 await nb writech stdio.out, "one";
                 await nb writech process.stdout, "two";
                 await nb writech process.stderr, "diagnostic";
