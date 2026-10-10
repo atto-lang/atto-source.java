@@ -205,19 +205,34 @@ public final class AsyncRuntime implements AutoCloseable {
      */
     public static <T> T await(OresFuture<T> future) {
         Objects.requireNonNull(future, "future");
-        if (ActorRuntime.inActorExecution() && !future.isDone()) {
+        if (insideSchedulerTurn() && !future.isDone()) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "await would block an Oreslang scheduler/actor carrier; "
+                            + "continuation lowering must suspend/resume the logical task");
         }
         return blockingGet(future);
     }
 
     /**
-     * Host-interop bridge only. CompletionStage is normalized immediately into
-     * OresFuture so host callback scheduling never becomes Oreslang semantics.
+     * Host-interop bridge only. CompletionStage is normalized into an
+     * OresFuture only AFTER carrier admission is checked. Converting a pending
+     * host stage first would leave a host callback registered even though the
+     * subsequent blocking get() was denied. Unknown CompletionStage
+     * implementations are conservatively treated as pending on carriers.
      */
     public static <T> T await(CompletionStage<T> stage) {
-        return await(OresFuture.from(Objects.requireNonNull(stage, "stage")));
+        Objects.requireNonNull(stage, "stage");
+        if (insideSchedulerTurn()
+                && !(stage instanceof Future<?> host && host.isDone())) {
+            throw new IllegalStateException(
+                    "await would block an Oreslang scheduler/actor carrier; "
+                            + "continuation lowering must suspend/resume the logical task");
+        }
+        return await(OresFuture.from(stage));
+    }
+
+    private static boolean insideSchedulerTurn() {
+        return ActorRuntime.inActorExecution() || OresScheduler.current() != null;
     }
 
     private static <T> T blockingGet(Future<T> future) {
