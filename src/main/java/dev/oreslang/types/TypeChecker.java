@@ -1941,7 +1941,9 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinStdoutCall(call, "log", env) || isBuiltinStdoutCall(call, "log_async", env)) {
+            if (isBuiltinStdoutCall(call, "log", env)
+                    || isBuiltinStdoutCall(call, "log_blocking", env)
+                    || isBuiltinStdoutCall(call, "log_async", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -2942,7 +2944,8 @@ public final class TypeChecker {
                 if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
-                if (member.member().equals("log") || member.member().equals("log_async")) {
+                if (member.member().equals("log") || member.member().equals("log_blocking")
+                        || member.member().equals("log_async")) {
                     throw new IllegalArgumentException(
                             "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
                 }
