@@ -2566,8 +2566,50 @@ public final class Parser {
         return expr;
     }
 
+    /**
+     * Value piping is deliberately separate from actor graph composition.
+     * The former desugars to an ordinary first-argument function call; the
+     * latter remains an explicit AST operator until typed ActorStream graph
+     * admission is implemented. Both are left associative.
+     */
+    private Ast.Expr parsePipeline() {
+        Ast.Expr left = parseLogicalOr();
+        while (match(VALUE_PIPE, PIPE_CONNECT)) {
+            Token operator = previous();
+            Ast.Expr right = parseLogicalOr();
+            if (operator.type() == PIPE_CONNECT) {
+                left = new Ast.BinaryExpr("pipe", left, right);
+                continue;
+            }
+            if (right instanceof Ast.CallExpr call) {
+                // Only named call targets are admitted initially so that
+                // desugaring does not reorder an effectful callee expression
+                // ahead of the already-evaluated left pipeline stage.
+                if (!isNamedPipelineCallee(call.callee()))
+                    throw error(operator, "|> requires a named function or named call target");
+                List<Ast.Expr> arguments = new ArrayList<>();
+                arguments.add(left);
+                arguments.addAll(call.arguments());
+                left = new Ast.CallExpr(call.callee(),
+                        call.typeArguments(), call.typeArgumentsPresent(), arguments);
+            } else if (isNamedPipelineCallee(right)) {
+                left = new Ast.CallExpr(right, List.of(left));
+            } else {
+                throw error(operator, "|> requires a callable name or a named function call");
+            }
+        }
+        return left;
+    }
+
+    private boolean isNamedPipelineCallee(Ast.Expr callee) {
+        if (callee instanceof Ast.NameExpr) return true;
+        if (callee instanceof Ast.MemberExpr member)
+            return isNamedPipelineCallee(member.receiver());
+        return false;
+    }
+
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parsePipeline();
         if (!match(QUESTION)) return condition;
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
