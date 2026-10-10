@@ -35,6 +35,23 @@ final class ActorStrictHeapAdmissionTest {
     }
 
     @Test
+    void commandLineStrictHeapRequirementIsExplicitAndFailClosed() {
+        var mode = ActorRuntime.HeapIsolationRequirement.fromApplicationArguments(
+                new String[]{"--ores-actor-heaps=independent"});
+        assertEquals(ActorRuntime.HeapIsolationRequirement.REQUIRE_INDEPENDENT_COLLECTOR,
+                mode);
+        assertEquals(ActorRuntime.HeapIsolationRequirement.ALLOW_SHARED_JVM,
+                ActorRuntime.HeapIsolationRequirement.fromApplicationArguments(new String[0]));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorRuntime.HeapIsolationRequirement.fromApplicationArguments(
+                        new String[]{"--ores-actor-heaps=isolated-looking"}));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorRuntime.HeapIsolationRequirement.fromApplicationArguments(
+                        new String[]{"--ores-actor-heaps=shared-jvm",
+                                     "--ores-actor-heaps=independent"}));
+    }
+
+    @Test
     void normalActorRuntimeMustNeverClaimIndependentGarbageCollection() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             assertEquals(ActorRuntime.HeapIsolationRequirement.ALLOW_SHARED_JVM,
