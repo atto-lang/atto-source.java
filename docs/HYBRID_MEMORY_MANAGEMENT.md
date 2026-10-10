@@ -42,6 +42,9 @@ This patch specifically changes fallback cleanup housekeeping:
 - There is **no periodic task without a tracked foreign cleanup resource**.
 - Registering the first resource arms periodic maintenance. Releasing the
   last resource cancels the timer (the shared timer cancels queued tasks).
+- The final explicit cleanup also discards stale retry-queue entries under the
+  registry admission lock. A collector with zero host registrations no longer
+  retains retry tombstones while its maintenance timer is dormant.
 - Each periodic/public `collectPeriodic()` pass inspects at most **256**
   entries; it makes **zero requests to `System.gc()`**.
 - No full-set snapshot allocation is needed before inspecting retry entries
