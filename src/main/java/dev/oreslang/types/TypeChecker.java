@@ -435,6 +435,15 @@ public final class TypeChecker {
                 for (String generic : fn.genericParameters()) {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
+                if (fn.returnType().isIdentityReturn()
+                        && !fn.returnType().identityParameter().equals("this")) {
+                    for (Ast.Param param : fn.parameters()) {
+                        if (param.name().equals(fn.returnType().identityParameter())) {
+                            requireIdentityBearing(resolveParam(param, all, interfaceSelf),
+                                    "interface identity return ': " + param.name() + "'");
+                        }
+                    }
+                }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
