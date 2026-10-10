@@ -2957,15 +2957,15 @@ public final class OwnershipChecker {
             Ast.TypeRef result,
             boolean async,
             boolean generator) {
+        if ((async || generator) && containsBorrowType(result)) {
+            throw error("async/generator result cannot expose borrowed references without a scoped lifetime");
+        }
         if (generator) {
             Ast.TypeRef element = generatorYieldType(result, async);
             return new Ast.TypeRef(
                     async ? "AsyncIterator" : "Iterator",
                     List.of(element),
                     false);
-        }
-        if ((async || generator) && containsBorrowType(result)) {
-            throw error("async/generator result cannot expose borrowed references without a scoped lifetime");
         }
         if (async) return new Ast.TypeRef("Future", List.of(result), false);
         return result;
