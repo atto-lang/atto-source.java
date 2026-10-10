@@ -32,6 +32,10 @@ final class NativeStdioChannelsTest {
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
                 .in(new ByteArrayInputStream(stdin.getBytes(StandardCharsets.UTF_8)))
+                // VM diagnostics are not application stderr. Keep the
+                // exact process.stderr data contract independent of
+                // experimental virtual-thread engine warnings.
+                .logHandler(new ByteArrayOutputStream())
                 .out(stdout).err(stderr).build()) {
             context.eval(code);
         }
