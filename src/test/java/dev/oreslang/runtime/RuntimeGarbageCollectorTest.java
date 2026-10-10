@@ -374,4 +374,60 @@ final class RuntimeGarbageCollectorTest {
             assertTrue(error.getMessage().contains("actor.gc() requires execution inside an actor"));
         }
     }
+    @Test
+    void fallbackSweepIsDormantUntilFirstInteropRegistrationAndStopsAfterRelease() throws Exception {
+        AtomicInteger jvmGcRequests = new AtomicInteger();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                jvmGcRequests::incrementAndGet, Duration.ofHours(1))) {
+            var field = RuntimeGarbageCollector.class.getDeclaredField("periodicSweep");
+            field.setAccessible(true);
+            assertNull(field.get(gc), "ownership-only workloads require no scheduled GC");
+            gc.collectPeriodic();
+            assertNull(field.get(gc), "explicit empty maintenance must not start a timer");
+            assertEquals(0, jvmGcRequests.get());
+
+            var first = gc.track(new Object(), () -> {});
+            assertNotNull(field.get(gc), "interop cleanup enables the fallback timer");
+            var second = gc.track(new Object(), () -> {});
+            first.close();
+            assertNotNull(field.get(gc), "another live interop handle still requires fallback");
+            second.close();
+            assertNull(field.get(gc), "closing the last handle must cancel fallback work");
+            assertEquals(0, jvmGcRequests.get());
+        }
+    }
+
+    @Test
+    void periodicFallbackBoundsQueueWorkAndDoesNotRequestHostGc() throws Exception {
+        AtomicInteger jvmGcRequests = new AtomicInteger();
+        AtomicInteger cleanups = new AtomicInteger();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                jvmGcRequests::incrementAndGet, Duration.ofHours(1))) {
+            ArrayList<RuntimeGarbageCollector.CleanupHandle> handles = new ArrayList<>();
+            for (int n = 0; n < 320; n++) {
+                var handle = gc.track(new Object(), cleanups::incrementAndGet);
+                handles.add(handle);
+                enqueue(handle);
+            }
+
+            var first = gc.collectPeriodic();
+            assertEquals(320, first.trackedBefore());
+            assertEquals(256, first.inspected());
+            assertEquals(256, first.cleaned());
+            assertEquals(64, first.trackedAfter());
+            assertFalse(first.jvmGcRequested());
+            assertEquals(0, jvmGcRequests.get());
+
+            var second = gc.collectPeriodic();
+            assertEquals(64, second.inspected());
+            assertEquals(64, second.cleaned());
+            assertEquals(0, second.trackedAfter());
+            assertEquals(320, cleanups.get());
+            assertEquals(0, jvmGcRequests.get());
+            // Retaining handles cannot accidentally repeat completed cleanups.
+            handles.forEach(RuntimeGarbageCollector.CleanupHandle::close);
+            assertEquals(320, cleanups.get());
+        }
+    }
+
 }
