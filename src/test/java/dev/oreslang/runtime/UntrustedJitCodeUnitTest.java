@@ -23,6 +23,47 @@ final class UntrustedJitCodeUnitTest {
     }
 
     /**
+     * Actual actor source must execute inside the guest Context, not in the
+     * host ActorRuntime. This remains gated until a language-isolate artifact
+     * is available to the funded runner.
+     */
+    @Test
+    @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
+    void untrustedSourceActorMailboxIsRoutedThroughGuestOpaqueId() throws Exception {
+        String source = """
+                define untrusted actor IsolatedWorker as
+                  receive(ActorMail<String> mail): void {
+                    if mail.value == "stop"; do
+                      self.end();
+                    fi
+                    return;
+                  }
+                end
+                """;
+        try (SharedUntrustedIsolatePool pool =
+                 new SharedUntrustedIsolatePool(256L * 1024 * 1024, 2);
+             SharedUntrustedIsolatePool.Group group = pool.createGroup();
+             UntrustedJitCodeUnit code = new UntrustedJitCodeUnit(
+                     group, source, "actor-bridge")) {
+            try (var actor = code.spawnUntrustedActor(code.generation(), "IsolatedWorker")) {
+                assertTrue(actor.id() > 0);
+                assertThrows(SecurityException.class, () -> actor.send(new Object()));
+                assertThrows(IllegalStateException.class,
+                        () -> code.spawnUntrustedActor(
+                                UUID.randomUUID(), "IsolatedWorker"));
+                actor.send("stop");
+                long deadline = System.nanoTime() +
+                        java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (!actor.done() && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertTrue(actor.done(),
+                        "guest-side untrusted actor did not finish after stop message");
+            }
+        }
+    }
+
+    /**
      * Requires the real Graal native language isolate artifact and cannot
      * run under an ordinary host JVM which lacks that language isolate.
      * This is source-execution evidence, NOT source actor mailbox routing.
