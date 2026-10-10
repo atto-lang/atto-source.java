@@ -62,6 +62,7 @@ pub enum RouteError {
     WindowExceeded,
     InvalidCredit,
     CreditOverflow,
+    OversizeFrame,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -208,37 +209,64 @@ impl ProxyRoute {
         self.streams.clear();
     }
 
-    pub fn open_stream(&mut self, id: u64, maximum_credit: u64) -> Result<(), RouteError> {
+    pub fn open_stream(
+        &mut self,
+        id: u64,
+        maximum_messages: u64,
+        maximum_bytes: u64,
+    ) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
-        if maximum_credit == 0 { return Err(RouteError::InvalidCredit); }
+        if maximum_messages == 0 || maximum_bytes == 0 { return Err(RouteError::InvalidCredit); }
         if self.streams.contains_key(&id) { return Err(RouteError::DuplicateStream); }
         self.streams.insert(id, StreamWindow {
-            maximum_credit,
-            available_credit: 0,
+            maximum_messages,
+            maximum_bytes,
+            available_messages: 0,
+            available_bytes: 0,
             next_sequence: 0,
         });
         Ok(())
     }
 
-    pub fn grant_credit(&mut self, stream_id: u64, credit: u64) -> Result<(), RouteError> {
+    pub fn grant_credit(
+        &mut self,
+        stream_id: u64,
+        messages: u64,
+        bytes: u64,
+    ) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
-        if credit == 0 { return Err(RouteError::InvalidCredit); }
+        if messages == 0 && bytes == 0 { return Err(RouteError::InvalidCredit); }
         let w = self.streams.get_mut(&stream_id).ok_or(RouteError::MissingStream)?;
-        let new_credit = w.available_credit.checked_add(credit).ok_or(RouteError::CreditOverflow)?;
-        if new_credit > w.maximum_credit { return Err(RouteError::WindowExceeded); }
-        w.available_credit = new_credit;
+        let next_messages = w.available_messages.checked_add(messages)
+                .ok_or(RouteError::CreditOverflow)?;
+        let next_bytes = w.available_bytes.checked_add(bytes)
+                .ok_or(RouteError::CreditOverflow)?;
+        if next_messages > w.maximum_messages || next_bytes > w.maximum_bytes {
+            return Err(RouteError::WindowExceeded);
+        }
+        w.available_messages = next_messages;
+        w.available_bytes = next_bytes;
         Ok(())
     }
 
-    /// Admission consumes exactly one credit and monotonically orders DATA
-    /// within a stream. This is not a durable processing acknowledgment.
-    pub fn admit_data(&mut self, stream_id: u64, sequence: u64) -> Result<(), RouteError> {
+    /// Admission consumes one message credit and the exact payload byte size.
+    /// It never claims processing/durability acknowledgement.
+    pub fn admit_data(
+        &mut self,
+        stream_id: u64,
+        sequence: u64,
+        payload_bytes: u64,
+    ) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
         let w = self.streams.get_mut(&stream_id).ok_or(RouteError::MissingStream)?;
         if sequence != w.next_sequence { return Err(RouteError::DuplicateOrStaleSequence); }
-        if w.available_credit == 0 { return Err(RouteError::WindowExceeded); }
+        if payload_bytes > w.maximum_bytes { return Err(RouteError::OversizeFrame); }
+        if w.available_messages == 0 || payload_bytes > w.available_bytes {
+            return Err(RouteError::WindowExceeded);
+        }
         let next = w.next_sequence.checked_add(1).ok_or(RouteError::CreditOverflow)?;
-        w.available_credit -= 1;
+        w.available_messages -= 1;
+        w.available_bytes -= payload_bytes;
         w.next_sequence = next;
         Ok(())
     }
@@ -251,8 +279,10 @@ impl ProxyRoute {
 }
 
 struct StreamWindow {
-    maximum_credit: u64,
-    available_credit: u64,
+    maximum_messages: u64,
+    maximum_bytes: u64,
+    available_messages: u64,
+    available_bytes: u64,
     next_sequence: u64,
 }
 
@@ -348,16 +378,18 @@ mod tests {
     #[test]
     fn bounded_window_preserves_sequence_and_rejects_overproduction() {
         let mut p = connected();
-        assert_eq!(p.open_stream(42, 2), Ok(()));
-        assert_eq!(p.admit_data(42, 0), Err(RouteError::WindowExceeded));
-        assert_eq!(p.grant_credit(42, 2), Ok(()));
-        assert_eq!(p.grant_credit(42, 1), Err(RouteError::WindowExceeded));
-        assert_eq!(p.admit_data(42, 0), Ok(()));
-        assert_eq!(p.admit_data(42, 0), Err(RouteError::DuplicateOrStaleSequence));
-        assert_eq!(p.admit_data(42, 1), Ok(()));
-        assert_eq!(p.admit_data(42, 2), Err(RouteError::WindowExceeded));
-        assert_eq!(p.grant_credit(42, 1), Ok(()));
-        assert_eq!(p.admit_data(42, 2), Ok(()));
+        assert_eq!(p.open_stream(42, 2, 100), Ok(()));
+        assert_eq!(p.admit_data(42, 0, 1), Err(RouteError::WindowExceeded));
+        assert_eq!(p.grant_credit(42, 2, 60), Ok(()));
+        assert_eq!(p.grant_credit(42, 1, 50), Err(RouteError::WindowExceeded));
+        assert_eq!(p.admit_data(42, 0, 40), Ok(()));
+        assert_eq!(p.admit_data(42, 0, 20), Err(RouteError::DuplicateOrStaleSequence));
+        assert_eq!(p.admit_data(42, 1, 40), Err(RouteError::WindowExceeded));
+        assert_eq!(p.admit_data(42, 1, 20), Ok(()));
+        assert_eq!(p.admit_data(42, 2, 0), Err(RouteError::WindowExceeded));
+        assert_eq!(p.grant_credit(42, 1, 80), Ok(()));
+        assert_eq!(p.admit_data(42, 2, 101), Err(RouteError::OversizeFrame));
+        assert_eq!(p.admit_data(42, 2, 80), Ok(()));
         assert_eq!(p.finish_stream(42), Ok(()));
         assert_eq!(p.finish_stream(42), Err(RouteError::MissingStream));
     }
@@ -372,6 +404,6 @@ mod tests {
         }), Err(RouteError::NotConnecting));
         assert_eq!(p.begin_connect(lease(1, 5), 10), Err(RouteError::Closing));
         p.close();
-        assert_eq!(p.open_stream(1, 1), Err(RouteError::NotReady));
+        assert_eq!(p.open_stream(1, 1, 100), Err(RouteError::NotReady));
     }
 }
