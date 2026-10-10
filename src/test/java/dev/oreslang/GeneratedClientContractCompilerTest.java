@@ -39,7 +39,7 @@ final class GeneratedClientContractCompilerTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(original.replace(
                         "fnc list_items(String page_size) => String;",
-                        "fnc list_items(String page_size) => String")));
+                        "fnc list_items(String page_size) => ;")));
     }
 
     @Test
