@@ -340,6 +340,53 @@ final class IdentityReturnTypeTest {
                 """, "cannot weaken inherited identity contract");
     }
 
+    @Test void moduleContractIdentityCannotBeWeakened() {
+        rejects("""
+                define class T as
+                end
+                define contract IdentityModule as
+                  fnc relay(T value): value;
+                end
+                define module Implementation conforms IdentityModule as
+                  pub fnc relay(T v): T { return new T(); }
+                end
+                """, "cannot weaken contract identity return");
+    }
+
+    @Test void moduleContractIdentityAcceptsParameterRenaming() {
+        accepts("""
+                define class T as
+                end
+                define contract IdentityModule as
+                  fnc relay(T value): value;
+                end
+                define module Implementation conforms IdentityModule as
+                  pub fnc relay(T v): v { return v; }
+                end
+                """);
+    }
+
+    @Test void moduleContractReceiverIdentityIsNotWellDefined() {
+        rejects("""
+                define contract Bad as
+                  fnc relay(): this;
+                end
+                """, "requires a non-static class instance method");
+    }
+
+    @Test void interfacesCannotPromiseValueSemanticIdentity() {
+        rejects("""
+                define interface Bad as
+                  fnc relay(Option<int> value): value;
+                end
+                """, "identity-bearing");
+        rejects("""
+                define contract Bad as
+                  fnc relay(string value): value;
+                end
+                """, "identity-bearing");
+    }
+
     @Test void shadowedAliasDoesNotProveIdentity() {
         rejects("""
                 define module m
