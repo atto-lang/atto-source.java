@@ -19,6 +19,9 @@ final class IdentityReturnChecker {
     private final Map<String, List<Callable>> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> qualifiedClasses = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> qualifiedInterfaces = new HashMap<>();
+    private final java.util.Set<String> importedCallables = new java.util.HashSet<>();
+    private final java.util.Set<String> importedNamespaces = new java.util.HashSet<>();
+    private final java.util.Set<String> classNames = new java.util.HashSet<>();
 
     private record Callable(String module, Ast.FunctionDecl function) { }
 
@@ -39,6 +42,20 @@ final class IdentityReturnChecker {
 
     static void check(Ast.Program program) {
         IdentityReturnChecker checker = new IdentityReturnChecker();
+        // A syntactically identical name can resolve to an imported callable,
+        // class namespace, or module alias rather than the local function
+        // indexed below. Do not use that ambiguous call as identity evidence.
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.namespace() != null) {
+                checker.importedNamespaces.add(imported.namespace());
+                checker.importedCallables.add(imported.namespace());
+            }
+            if (imported.kind() == Ast.ImportKind.FUNCTION) {
+                checker.importedCallables.addAll(imported.names());
+            } else {
+                checker.importedNamespaces.addAll(imported.names());
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl function) {
@@ -46,6 +63,7 @@ final class IdentityReturnChecker {
                             .add(new Callable(module.name(), function));
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     checker.qualifiedClasses.put(module.name() + "." + klass.name(), klass);
+                    checker.classNames.add(klass.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     checker.qualifiedInterfaces.put(module.name() + "." + iface.name(), iface);
                 }
@@ -591,7 +609,9 @@ final class IdentityReturnChecker {
         }
         if (!(expression instanceof Ast.CallExpr call) || module == null) return false;
         Ast.FunctionDecl callee = null;
-        if (call.callee() instanceof Ast.NameExpr name && !scope.contains(name.name())) {
+        if (call.callee() instanceof Ast.NameExpr name
+                && !scope.contains(name.name())
+                && !importedCallables.contains(name.name())) {
             List<Callable> matches = functions.getOrDefault(name.name(), List.of());
             List<Callable> sameModule = matches.stream().filter(
                     c -> c.module().equals(module) && c.function().parameters().size() == call.arguments().size()).toList();
@@ -600,7 +620,9 @@ final class IdentityReturnChecker {
             // Never infer identity from a potentially different imported symbol.
         } else if (call.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr namespace
-                && !scope.contains(namespace.name())) {
+                && !scope.contains(namespace.name())
+                && !importedNamespaces.contains(namespace.name())
+                && !classNames.contains(namespace.name())) {
             List<Callable> matches = functions.getOrDefault(member.member(), List.of());
             List<Callable> exact = matches.stream().filter(
                     c -> c.module().equals(namespace.name())
