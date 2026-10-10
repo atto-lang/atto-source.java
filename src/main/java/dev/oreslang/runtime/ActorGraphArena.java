@@ -152,6 +152,12 @@ public final class ActorGraphArena implements AutoCloseable {
         // Fail before release if the generation cannot be advanced.
         long next = Math.addExact(slot.generation, 1);
         slot.payload.close();
+        // Purge incoming handles before recycling the slot. A stale incoming
+        // edge cannot dereference the node, but retaining it would consume
+        // the finite edge budget over many allocate/delete generations.
+        for (Slot candidate : slots) {
+            if (candidate.payload != null && candidate.outgoing.remove(id)) links--;
+        }
         slot.payload = null;
         links -= slot.outgoing.size();
         slot.outgoing.clear();
