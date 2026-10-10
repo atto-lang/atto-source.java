@@ -6,6 +6,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
 
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
@@ -67,6 +68,19 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         if (groupPolicy.maxHeapBytes() > isolateHeapBytes) {
             throw new IllegalArgumentException("group heap quota exceeds shared isolate cap");
         }
+        // Graal's MaxCPUTime is CUMULATIVE per Context, not per actor
+        // message/turn. Accidentally using the 250ms per-actor policy here
+        // would terminate the entire group under ordinary sustained load.
+        if (groupPolicy.maxWallTime().compareTo(Duration.ofMinutes(1)) < 0) {
+            throw new IllegalArgumentException(
+                    "untrusted group context requires >=1m cumulative CPU budget; "
+                    + "use IsolatePolicy.untrustedActorGroup(), not untrustedActor()");
+        }
+    }
+
+    /** Create a long-lived group using the separate cumulative CPU budget. */
+    public Group createGroup() {
+        return createGroup(IsolatePolicy.untrustedActorGroup());
     }
 
     /**
