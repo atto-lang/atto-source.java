@@ -899,7 +899,17 @@ The interpreter represents a live generator with one serialized resumable activa
 
 ## Actors
 
-Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
+Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one actor guest-code segment for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns. Pending future scheduling features may allow multiple *suspended* message handlers while retaining the one-writer execution lease.
+
+Java/Graal currently accepts three **equivalent immediate actor-spawn spellings**:
+
+```ores
+val a = spawn Worker();
+val b = spawn new Worker();
+val c = spawn (new Worker());
+```
+
+All three parse to the same runtime-owned actor spawn AST operation and return `ActorRef<Worker>`. The `new` keyword in these immediate-spawn forms is syntactic sugar, **not ordinary eager class construction**. It does not execute code under the caller and does not make an actor object accessible outside its isolation boundary. Actor constructors and constructor arguments are not yet supported. Importantly, **bare** `new Worker()` as an inert `ActorSpec<Worker>` and `spawn spec` are **design proposals**, not currently supported by Java/Graal or LLVM. See [the construction and pre-spawn configuration proposal](ACTOR_SPAWN_SPEC_DESIGN.md); do not treat `spec.set_concurrency(...)` as an existing runtime feature.
 
 There are two actor execution domains:
 
