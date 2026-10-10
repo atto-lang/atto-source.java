@@ -375,6 +375,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
+    private final CoreRuntimeFlags coreRuntimeFlags;
+    private final AtomicLong coreContentionViolations = new AtomicLong();
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
@@ -415,6 +417,21 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                CoreRuntimeFlags.fromProcessEnvironment());
+    }
+
+    /**
+     * Explicit typed configuration for embedders which already resolved their
+     * .cli-flags.toml contract using flags2env.
+     */
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            CoreRuntimeFlags coreRuntimeFlags) {
+        this.coreRuntimeFlags = Objects.requireNonNull(coreRuntimeFlags, "coreRuntimeFlags");
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
@@ -442,6 +459,9 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+    public CoreRuntimeFlags coreRuntimeFlags() { return coreRuntimeFlags; }
+    /** Diagnostic events, not a total count of all potential ownership failures. */
+    public long coreContentionViolationCount() { return coreContentionViolations.get(); }
 
     /**
      * Physical carrier implementation currently backing actor turns.
@@ -5657,6 +5677,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
+        /** Optional independent nonblocking witness of the actor's single writer. */
+        private final ActorTurnContentionProbe contentionProbe;
         private int activeTurns;
         private boolean carrierActive;
         /**
@@ -5691,6 +5713,9 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCell<?> parent) {
             this.ref = ref;
             this.kind = kind;
+            this.contentionProbe = coreRuntimeFlags.useCoreMutexes()
+                    ? new ActorTurnContentionProbe(ref.id(), coreContentionViolations)
+                    : null;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
             this.policy = policy;
@@ -6156,7 +6181,11 @@ public final class ActorRuntime implements AutoCloseable {
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
             boolean turnActive = false;
+            ActorTurnContentionProbe.Scope contentionScope = null;
             try {
+                // A diagnostic CAS must run BEFORE the normal lifecycle lease:
+                // an overlapping contender is observed, never parked/serialized.
+                if (contentionProbe != null) contentionScope = contentionProbe.enter();
                 // Admission may throw on a single-writer lease violation.
                 // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
@@ -6334,12 +6363,18 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 try {
-                    if (turnActive) endTurn();
+                    // Guest execution has unwound; release the independent
+                    // witness before the lifecycle lease permits another turn.
+                    if (contentionScope != null) contentionScope.close();
                 } finally {
-                    // endTurn itself is a fail-closed invariant check and may
-                    // throw; never strand actor authority on a reused carrier.
-                    CURRENT_ACTOR_EXECUTION.remove();
-                    currentActor.remove();
+                    try {
+                        if (turnActive) endTurn();
+                    } finally {
+                        // Neither probe nor endTurn failures may strand
+                        // actor authority on a reused carrier.
+                        CURRENT_ACTOR_EXECUTION.remove();
+                        currentActor.remove();
+                    }
                 }
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
