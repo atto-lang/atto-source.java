@@ -1988,6 +1988,21 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "ActorGroup managed worker limit exceeded: maximum " + memberLimit);
                 }
+                // A worker has exactly one structured ActorGroup owner.
+                // Other cooperation groups may still admit it as a member,
+                // but no second manager may acquire independent stop rights.
+                ActorGroupId owningGroup = cell.managedByGroup.get();
+                if (owningGroup == null) {
+                    if (cell.managedByGroup.compareAndSet(null, id)) {
+                        owningGroup = id;
+                    } else {
+                        owningGroup = cell.managedByGroup.get();
+                    }
+                }
+                if (!id.equals(owningGroup)) {
+                    throw new IllegalStateException(
+                            "actor is already managed by a different ActorGroup");
+                }
                 managedWorkers.putIfAbsent(worker.id(), worker);
                 if (cell.stopped.get()) {
                     managedWorkers.remove(worker.id(), worker);
@@ -5821,6 +5836,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        // Lifetime-affine structured owner: never transferred before physical
+        // finalization, even if the original group closes during cancellation.
+        private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
