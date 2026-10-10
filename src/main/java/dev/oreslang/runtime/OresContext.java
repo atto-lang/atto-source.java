@@ -34,6 +34,8 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    private final AsyncStdoutLog asyncStdout;
+    public AsyncStdoutLog asyncStdout() { return asyncStdout; }
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
@@ -77,6 +79,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
+        this.asyncStdout = new AsyncStdoutLog(this.output, 8192);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
@@ -423,6 +426,11 @@ public final class OresContext implements AutoCloseable {
     public void close() {
         nativeIo.close();
         http.close();
+        // Drain accepted async records before any VM/carrier teardown.
+        // Timeout/error must be observable rather than silently discarding logs.
+        RuntimeException stdoutFailure = null;
+        try { asyncStdout.close(); }
+        catch (RuntimeException e) { stdoutFailure = e; }
         RuntimeException failure = null;
         try {
             asyncRuntime.close();
@@ -448,6 +456,10 @@ public final class OresContext implements AutoCloseable {
             }
             garbageCollector.close();
             output.flush();
+        }
+        if (stdoutFailure != null) {
+            if (failure != null) stdoutFailure.addSuppressed(failure);
+            throw stdoutFailure;
         }
         if (failure != null) throw failure;
     }
