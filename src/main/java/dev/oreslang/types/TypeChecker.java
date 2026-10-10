@@ -2825,7 +2825,7 @@ public final class TypeChecker {
                             throw new IllegalArgumentException("stdout/stderr are write-only; stream() requires a readable channel");
                         }
                         yield new Function(List.of(),
-                                new Named("ReadableStream", List.of(channelType.arguments().getFirst())));
+                                new Named("$native_prelude.ReadableStream", List.of(channelType.arguments().getFirst())));
                     }
                     case "tee" -> {
                         // A local variable can hold a writable stdio alias. Its
@@ -2840,7 +2840,7 @@ public final class TypeChecker {
                             throw new IllegalArgumentException("tee(target) requires Channel<String>");
                         }
                         yield new Function(List.of(new Named("Channel", List.of(Primitive.STRING))),
-                                new Named("WritableTee", List.of()));
+                                new Named("$native_prelude.WritableTee", List.of()));
                     }
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
