@@ -161,6 +161,57 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void concurrentMutationAndReadinessPreserveSnapshotKeysAndVersions() throws Exception {
+        var stable = new ChannelRuntime.Channel<Integer>(128);
+        var changing = new ChannelRuntime.Channel<Integer>(128);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("stable", ChannelRuntime.read(stable));
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(3);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var mutator = workers.submit(() -> {
+                start.await();
+                for (int i = 0; i < 600; i++) {
+                    plan.put("changing", ChannelRuntime.read(changing));
+                    plan.remove("changing");
+                }
+                return true;
+            });
+            var producer = workers.submit(() -> {
+                start.await();
+                for (int i = 0; i < 1500; i++) {
+                    stable.tryWrite(i);
+                    changing.tryWrite(i);
+                }
+                return true;
+            });
+            var selector = workers.submit(() -> {
+                start.await();
+                for (int i = 0; i < 1800; i++) {
+                    var outcome = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR);
+                    if (outcome.isPresent()) {
+                        var result = outcome.orElseThrow();
+                        assertTrue(result.key().equals("stable")
+                                || result.key().equals("changing"));
+                        assertEquals(ChannelRuntime.SelectOperation.READ,
+                                result.selection().operation());
+                        assertTrue(result.version() <= plan.version(),
+                                "one operation must never observe a future version");
+                    }
+                }
+                return true;
+            });
+            start.countDown();
+            assertTrue(mutator.get(20, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(producer.get(20, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(selector.get(20, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(List.of("stable"), plan.keys());
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void rejectsSecondDefaultAtomicallyAndKeepsPreviousSnapshot() {
         var channel = new ChannelRuntime.Channel<String>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
