@@ -927,10 +927,18 @@ public final class OresEvalRootNode extends RootNode {
                     if (criticalTicket != null) {
                         OresFuture<Void> ready = criticalTicket.enterAsync();
                         if (ready.isDone()) {
+                            if (!criticalTicket.isHeld()) {
+                                throw new IllegalStateException(
+                                        "critical admission settled without a live ownership ticket");
+                            }
                             startInitialBody();
                         } else {
                             suspend(ready, (task, value, failure) -> {
                                 if (failure != null) throw sourceFailure(failure);
+                                if (!task.criticalTicket.isHeld()) {
+                                    throw new IllegalStateException(
+                                            "cancelled critical admission must not execute guest code");
+                                }
                                 task.startInitialBody();
                             });
                         }
