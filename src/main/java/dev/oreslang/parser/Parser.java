@@ -1559,6 +1559,14 @@ public final class Parser {
         if (check(LBRACE) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
+        // Reserve control-effect spellings until typed lowering preserves
+        // catch/trap/recover and actor-supervision identity at every boundary.
+        // Do not silently treat these words as ordinary identifier calls.
+        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
+            throw error(peek(),
+                    "exceptional-control effect not enabled: typed throw/raise/panic/recover "
+                    + "unwind and supervisor lowering are required");
+        }
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
