@@ -62,6 +62,31 @@ final class CriticalKeywordTest {
         assertEquals("11|23", stdout.toString().strip());
     }
 
+    @Test void suspendCriticalRetainsEffectAcrossAwaitAndReturnsWithoutHostLocks()
+            throws Exception {
+        String code = """
+                async fnc obtain(): int { return 37; }
+                suspend critical fnc guarded(): int {
+                    return (await obtain()) + 5;
+                }
+                async fnc outer(): int { return guarded(); }
+                pub fnc main(): void {
+                    stdio.stdout.write(await outer());
+                    return;
+                }
+                """;
+        dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(code);
+        java.io.ByteArrayOutputStream stdout = new java.io.ByteArrayOutputStream();
+        try (org.graalvm.polyglot.Context context =
+                     org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                             .allowAllAccess(false).out(stdout).build()) {
+            context.eval(org.graalvm.polyglot.Source
+                    .newBuilder(OresLanguage.ID, code, "critical-suspend.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("42", stdout.toString().strip());
+    }
+
     @Test void criticalCanAppearAfterVisibilityOrBeforeStatic() {
         Ast.Program parsed = Parser.parse("""
                 define class Foo as
