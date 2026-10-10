@@ -28,13 +28,15 @@ public final class Parser {
     }
 
     public static Ast.Program parse(String source) {
-        return new Parser(new Lexer(source).scan()).parseProgram();
+        return dev.oreslang.stdlib.NativePrelude.attach(
+                new Parser(new Lexer(source).scan()).parseProgram(), source);
     }
 
     public static ParseResult parseWithWarnings(String source) {
         Parser parser = new Parser(new Lexer(source).scan());
         Ast.Program program = parser.parseProgram();
-        return new ParseResult(program, parser.warnings);
+        return new ParseResult(
+                dev.oreslang.stdlib.NativePrelude.attach(program, source), parser.warnings);
     }
 
     public Ast.Program parseProgram() {
