@@ -95,11 +95,13 @@ a source-exposed ActorGroup type are still required for guest-level API parity.
 - Add optional fail-fast/restart supervision policy and graceful shutdown
   deadlines. The current `workersDone()` aggregates a fixed worker snapshot,
   not dynamically spawned workers after the call or nested grandchildren.
-- Exact-source GraalVM validation: 114 Java tests passed (ActorRuntime,
-  ActorStructuredCancellation, ActorGroupMailman, ActorReadinessLifecycle,
-  ActorGroupManagedWorkers, and SourceActorSpawnExecution) at
-  https://github.com/athlet-o/athleto-e2e/actions/runs/38093350396 .
-  That result predates the additional `closeAsync/closedDone` implementation;
-  its new exact-head retest is tracked separately.
+- Exact-source GraalVM validation on the final implementation revision:
+  **116 focused Java tests + 295 broader Java tests**, zero failures and
+  errors, at https://github.com/athlet-o/athleto-e2e/actions/runs/38093763352 .
+  The funded mirror verified 74 exact Git source/test blobs, and every
+  mirrored Java class/test file matches the PR's source tree. Validation
+  covers ActorRuntime, ActorStructuredCancellation, ActorGroupMailman,
+  ActorReadinessLifecycle, ActorGroupManagedWorkers, SourceActorSpawnExecution,
+  and the additional language/compiler regressions available in that mirror.
 - Run broader/full Java integration regression/CI on the latest head, and
   differential native source-to-runtime tests once LLVM source actors are lowered.
