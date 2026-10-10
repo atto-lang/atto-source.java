@@ -1957,6 +1957,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (!ref.ownedBy(ActorRuntime.this)) {
                 throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
             }
+            // Membership manager is not an ambient actor supervisor: actor
+            // callers may only adopt self or structured descendants.
+            requireActorLifecycleAuthority(ref, "adopt into ActorGroup");
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(ref.id());
