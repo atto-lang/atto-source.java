@@ -314,11 +314,13 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             // snapshot of potentially thousands of registrations per tick.
             for (TrackedCleanup entry : retryableFailures) {
                 if (inspected >= maxEntriesToInspect) break;
+                // Stale retry notifications still cost time to scan. Charge
+                // them against the same quantum as live registrations.
+                inspected++;
                 if (!tracked.contains(entry)) {
                     retryableFailures.remove(entry);
                     continue;
                 }
-                inspected++;
                 try {
                     if (entry.tryClean()) {
                         cleanedCount++;
@@ -334,8 +336,10 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             while (inspected < maxEntriesToInspect) {
                 TrackedCleanup entry = (TrackedCleanup) referenceQueue.poll();
                 if (entry == null) break;
-                if (!tracked.contains(entry)) continue;
+                // A closed handle may enqueue later; stale reference-queue
+                // notifications must not bypass the background work budget.
                 inspected++;
+                if (!tracked.contains(entry)) continue;
                 try {
                     if (entry.tryClean()) {
                         cleanedCount++;
