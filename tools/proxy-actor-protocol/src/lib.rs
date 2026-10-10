@@ -24,6 +24,15 @@ pub enum Transport {
     Http2Tls,
 }
 
+/// Independent local-to-remote and remote-to-local dataflow directions.
+/// A reverse stream never shares its sequence or credit counter with a
+/// forward stream carrying the same numeric ID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum Direction {
+    Forward,
+    Reverse,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EndpointLease {
     pub actor: RemoteActorId,
@@ -89,7 +98,7 @@ pub struct ProxyRoute {
     selected: Option<EndpointLease>,
     highest_generation: Option<u64>,
     session_epoch: u64,
-    streams: BTreeMap<u64, StreamWindow>,
+    streams: BTreeMap<(Direction, u64), StreamWindow>,
 }
 
 impl ProxyRoute {
@@ -216,14 +225,15 @@ impl ProxyRoute {
 
     pub fn open_stream(
         &mut self,
+        direction: Direction,
         id: u64,
         maximum_messages: u64,
         maximum_bytes: u64,
     ) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
         if maximum_messages == 0 || maximum_bytes == 0 { return Err(RouteError::InvalidCredit); }
-        if self.streams.contains_key(&id) { return Err(RouteError::DuplicateStream); }
-        self.streams.insert(id, StreamWindow {
+        if self.streams.contains_key(&(direction, id)) { return Err(RouteError::DuplicateStream); }
+        self.streams.insert((direction, id), StreamWindow {
             maximum_messages,
             maximum_bytes,
             available_messages: 0,
@@ -235,13 +245,15 @@ impl ProxyRoute {
 
     pub fn grant_credit(
         &mut self,
+        direction: Direction,
         stream_id: u64,
         messages: u64,
         bytes: u64,
     ) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
         if messages == 0 && bytes == 0 { return Err(RouteError::InvalidCredit); }
-        let w = self.streams.get_mut(&stream_id).ok_or(RouteError::MissingStream)?;
+        let w = self.streams.get_mut(&(direction, stream_id))
+                .ok_or(RouteError::MissingStream)?;
         let next_messages = w.available_messages.checked_add(messages)
                 .ok_or(RouteError::CreditOverflow)?;
         let next_bytes = w.available_bytes.checked_add(bytes)
@@ -258,12 +270,14 @@ impl ProxyRoute {
     /// It never claims processing/durability acknowledgement.
     pub fn admit_data(
         &mut self,
+        direction: Direction,
         stream_id: u64,
         sequence: u64,
         payload_bytes: u64,
     ) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
-        let w = self.streams.get_mut(&stream_id).ok_or(RouteError::MissingStream)?;
+        let w = self.streams.get_mut(&(direction, stream_id))
+                .ok_or(RouteError::MissingStream)?;
         if sequence != w.next_sequence { return Err(RouteError::DuplicateOrStaleSequence); }
         if payload_bytes > w.maximum_bytes { return Err(RouteError::OversizeFrame); }
         if w.available_messages == 0 || payload_bytes > w.available_bytes {
@@ -276,9 +290,9 @@ impl ProxyRoute {
         Ok(())
     }
 
-    pub fn finish_stream(&mut self, id: u64) -> Result<(), RouteError> {
+    pub fn finish_stream(&mut self, direction: Direction, id: u64) -> Result<(), RouteError> {
         if !matches!(self.state, RouteState::Ready { .. }) { return Err(RouteError::NotReady); }
-        self.streams.remove(&id).ok_or(RouteError::MissingStream)?;
+        self.streams.remove(&(direction, id)).ok_or(RouteError::MissingStream)?;
         Ok(())
     }
 }
@@ -387,20 +401,35 @@ mod tests {
     #[test]
     fn bounded_window_preserves_sequence_and_rejects_overproduction() {
         let mut p = connected();
-        assert_eq!(p.open_stream(42, 2, 100), Ok(()));
-        assert_eq!(p.admit_data(42, 0, 1), Err(RouteError::WindowExceeded));
-        assert_eq!(p.grant_credit(42, 2, 60), Ok(()));
-        assert_eq!(p.grant_credit(42, 1, 50), Err(RouteError::WindowExceeded));
-        assert_eq!(p.admit_data(42, 0, 40), Ok(()));
-        assert_eq!(p.admit_data(42, 0, 20), Err(RouteError::DuplicateOrStaleSequence));
-        assert_eq!(p.admit_data(42, 1, 40), Err(RouteError::WindowExceeded));
-        assert_eq!(p.admit_data(42, 1, 20), Ok(()));
-        assert_eq!(p.admit_data(42, 2, 0), Err(RouteError::WindowExceeded));
-        assert_eq!(p.grant_credit(42, 1, 80), Ok(()));
-        assert_eq!(p.admit_data(42, 2, 101), Err(RouteError::OversizeFrame));
-        assert_eq!(p.admit_data(42, 2, 80), Ok(()));
-        assert_eq!(p.finish_stream(42), Ok(()));
-        assert_eq!(p.finish_stream(42), Err(RouteError::MissingStream));
+        assert_eq!(p.open_stream(Direction::Forward, 42, 2, 100), Ok(()));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 0, 1), Err(RouteError::WindowExceeded));
+        assert_eq!(p.grant_credit(Direction::Forward, 42, 2, 60), Ok(()));
+        assert_eq!(p.grant_credit(Direction::Forward, 42, 1, 50), Err(RouteError::WindowExceeded));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 0, 40), Ok(()));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 0, 20), Err(RouteError::DuplicateOrStaleSequence));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 1, 40), Err(RouteError::WindowExceeded));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 1, 20), Ok(()));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 2, 0), Err(RouteError::WindowExceeded));
+        assert_eq!(p.grant_credit(Direction::Forward, 42, 1, 80), Ok(()));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 2, 101), Err(RouteError::OversizeFrame));
+        assert_eq!(p.admit_data(Direction::Forward, 42, 2, 80), Ok(()));
+        assert_eq!(p.finish_stream(Direction::Forward, 42), Ok(()));
+        assert_eq!(p.finish_stream(Direction::Forward, 42), Err(RouteError::MissingStream));
+    }
+
+    #[test]
+    fn forward_and_reverse_have_independent_windows_and_sequences() {
+        let mut p = connected();
+        assert_eq!(p.open_stream(Direction::Forward, 9, 1, 5), Ok(()));
+        assert_eq!(p.open_stream(Direction::Reverse, 9, 1, 8), Ok(()));
+        assert_eq!(p.open_stream(Direction::Forward, 9, 1, 5), Err(RouteError::DuplicateStream));
+        assert_eq!(p.grant_credit(Direction::Forward, 9, 1, 5), Ok(()));
+        assert_eq!(p.grant_credit(Direction::Reverse, 9, 1, 8), Ok(()));
+        assert_eq!(p.admit_data(Direction::Forward, 9, 0, 5), Ok(()));
+        assert_eq!(p.admit_data(Direction::Reverse, 9, 0, 8), Ok(()));
+        assert_eq!(p.admit_data(Direction::Forward, 9, 1, 0), Err(RouteError::WindowExceeded));
+        assert_eq!(p.finish_stream(Direction::Forward, 9), Ok(()));
+        assert_eq!(p.finish_stream(Direction::Reverse, 9), Ok(()));
     }
 
     #[test]
@@ -413,6 +442,6 @@ mod tests {
         }), Err(RouteError::NotConnecting));
         assert_eq!(p.begin_connect(lease(1, 5), 10), Err(RouteError::Closing));
         p.close();
-        assert_eq!(p.open_stream(1, 1, 100), Err(RouteError::NotReady));
+        assert_eq!(p.open_stream(Direction::Forward, 1, 1, 100), Err(RouteError::NotReady));
     }
 }
