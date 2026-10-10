@@ -379,11 +379,16 @@ final class IdentityReturnChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, String origin, String module, String label) {
+        checkBlock(body, parent, origin, module, label, true);
+    }
+
+    private void checkBlock(List<Ast.Stmt> body, Scope parent, String origin,
+                            String module, String label, boolean verifyReturns) {
         Scope scope = new Scope(parent);
         for (Ast.Stmt stmt : body) {
             verifyRebindingEffects(stmt, scope, label);
             if (stmt instanceof Ast.ReturnStmt returned) {
-                if (!proves(returned.value(), scope, module)) {
+                if (verifyReturns && !proves(returned.value(), scope, module)) {
                     throw new IllegalArgumentException(
                             "identity return mismatch in " + label + ": ': "
                                     + (origin.equals("self") ? "this" : origin)
@@ -400,54 +405,56 @@ final class IdentityReturnChecker {
                     if (!binding.isDiscard()) scope.put(binding.name(), false);
                 }
             } else if (stmt instanceof Ast.BlockStmt block) {
-                checkBlock(block.body(), scope, origin, module, label);
+                checkBlock(block.body(), scope, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     Scope branchScope = new Scope(scope);
                     shadowCondition(branch.condition(), branchScope);
-                    checkBlock(branch.body(), branchScope, origin, module, label);
+                    checkBlock(branch.body(), branchScope, origin, module, label, verifyReturns);
                 }
-                checkBlock(conditional.elseBody(), scope, origin, module, label);
+                checkBlock(conditional.elseBody(), scope, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.MatchStmt matched) {
                 for (Ast.MatchArm arm : matched.arms()) {
                     Scope armScope = new Scope(scope);
                     shadowPattern(arm.pattern(), armScope);
-                    checkBlock(arm.body(), armScope, origin, module, label);
+                    checkBlock(arm.body(), armScope, origin, module, label, verifyReturns);
                 }
             } else if (stmt instanceof Ast.SwitchStmt switched) {
                 for (Ast.SwitchCase arm : switched.cases()) {
-                    checkBlock(arm.body(), scope, origin, module, label);
+                    checkBlock(arm.body(), scope, origin, module, label, verifyReturns);
                 }
-                checkBlock(switched.defaultBody(), scope, origin, module, label);
+                checkBlock(switched.defaultBody(), scope, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.TryStmt attempted) {
-                checkBlock(attempted.body(), scope, origin, module, label);
+                checkBlock(attempted.body(), scope, origin, module, label, verifyReturns);
                 Scope caught = new Scope(scope);
                 if (attempted.errorName() != null) caught.put(attempted.errorName(), false);
-                checkBlock(attempted.catchBody(), caught, origin, module, label);
-                checkBlock(attempted.finallyBody(), scope, origin, module, label);
+                checkBlock(attempted.catchBody(), caught, origin, module, label, verifyReturns);
+                checkBlock(attempted.finallyBody(), scope, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.ForOfStmt loop) {
                 Scope inner = new Scope(scope);
                 inner.put(loop.bindingName(), false);
-                checkBlock(loop.body(), inner, origin, module, label);
+                checkBlock(loop.body(), inner, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.ForOfDestructureStmt loop) {
                 Scope inner = new Scope(scope);
                 for (Ast.DestructureBinding binding : loop.bindings()) {
                     if (!binding.isDiscard()) inner.put(binding.name(), false);
                 }
-                checkBlock(loop.body(), inner, origin, module, label);
+                checkBlock(loop.body(), inner, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.ForStmt loop) {
                 Scope inner = new Scope(scope);
                 if (loop.initializer() instanceof Ast.BindingStmt binding) inner.put(binding.name(), false);
-                checkBlock(loop.body(), inner, origin, module, label);
+                checkBlock(loop.body(), inner, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.LoopStmt loop) {
-                checkBlock(loop.body(), scope, origin, module, label);
+                checkBlock(loop.body(), scope, origin, module, label, verifyReturns);
             } else if (stmt instanceof Ast.SelectStmt selected) {
-                // 'do select' intentionally discards arm-local returns.
-                if (selected.explicitDo()) continue;
+                // Discarding select arm returns are not function-return proofs,
+                // but their effects and captured rebinding still execute. A
+                // detached/nonblocking arm must never replace a captured origin.
                 for (Ast.SelectArm arm : selected.arms()) {
                     Scope inner = new Scope(scope);
                     if (arm.bindingName() != null) inner.put(arm.bindingName(), false);
-                    checkBlock(arm.body(), inner, origin, module, label);
+                    checkBlock(arm.body(), inner, origin, module, label,
+                            verifyReturns && !selected.explicitDo());
                 }
             }
         }
