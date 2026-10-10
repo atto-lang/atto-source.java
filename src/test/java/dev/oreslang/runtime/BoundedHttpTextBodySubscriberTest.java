@@ -60,6 +60,17 @@ class BoundedHttpTextBodySubscriberTest {
         assertThrows(CompletionException.class, () -> target.getBody().toCompletableFuture().join());
     }
 
+    @Test void postRequestAdmissionChecksActualUtf8ByteCount() {
+        int max = NativeIo.MAX_HTTP_TEXT_BYTES;
+        assertEquals(max, NativeIo.checkedHttpRequestBody("x".repeat(max)).length);
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeIo.checkedHttpRequestBody("x".repeat(max + 1)));
+        // A single non-ASCII code point can exceed the limit although
+        // the UTF-16 character count itself stays below the byte limit.
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeIo.checkedHttpRequestBody("€".repeat(max / 2)));
+    }
+
     @Test void transportFailureCompletesExceptionalWithoutConsumingMoreData() {
         var target = new BoundedHttpTextBodySubscriber(3, -1L);
         var subscription = new Subscription();
