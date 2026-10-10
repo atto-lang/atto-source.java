@@ -434,4 +434,33 @@ final class RuntimeGarbageCollectorTest {
         }
     }
 
+    @Test
+    void staleWeakReferenceNotificationsAreAlsoBoundedBySweepBudget() throws Exception {
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                () -> fail("background sweep must not request JVM GC"), Duration.ofHours(1))) {
+            ArrayList<Object> owners = new ArrayList<>();
+            ArrayList<RuntimeGarbageCollector.CleanupHandle> handles = new ArrayList<>();
+            AtomicInteger cleanups = new AtomicInteger();
+            for (int n = 0; n < 320; n++) {
+                Object owner = new Object();
+                owners.add(owner);
+                var handle = gc.track(owner, cleanups::incrementAndGet);
+                handles.add(handle);
+                handle.close();
+                // A released owner may later enqueue a stale weak reference.
+                enqueue(handle);
+            }
+            assertEquals(320, cleanups.get());
+            var first = gc.collectPeriodic();
+            assertEquals(256, first.inspected());
+            assertEquals(0, first.cleaned());
+            assertEquals(0, first.trackedAfter());
+            var second = gc.collectPeriodic();
+            assertEquals(64, second.inspected());
+            assertEquals(0, second.cleaned());
+            java.lang.ref.Reference.reachabilityFence(owners);
+            java.lang.ref.Reference.reachabilityFence(handles);
+        }
+    }
+
 }
