@@ -322,6 +322,172 @@ final class PointerlessFncOwnershipTest {
         }
     }
 
+    @Test
+    void structuralCallLoansPermitRepeatedReadsButReleaseBeforeLaterMutation() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let String value = "start";
+                end
+                fnc inspect(structural Box v): String { return v.value; }
+                fnc inspectPair(structural Box a, structural Box b): void { return; }
+                fnc ok(): void {
+                  let mut Box box = new Box();
+                  inspect(box);
+                  inspect(rt borrow box);
+                  inspectPair(box, box);
+                  box.value = "after";
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void structuralReadLoanRejectsLaterMutableBorrowAndMove() {
+        for (String program : java.util.List.of(
+                """
+                fnc overlap(structural Box a, borrow mut Box b): void { return; }
+                fnc bad(): void {
+                  let mut Box box = new Box();
+                  overlap(box, rt borrow mut box);
+                  return;
+                }
+                """,
+                """
+                fnc overlap(structural Box a, Box b): void { return; }
+                fnc bad(): void {
+                  let mut Box box = new Box();
+                  overlap(box, box);
+                  return;
+                }
+                """,
+                """
+                fnc overlap(borrow Box a, borrow mut Box b): void { return; }
+                fnc bad(): void {
+                  let mut Box box = new Box();
+                  overlap(rt borrow box, rt borrow mut box);
+                  return;
+                }
+                """)) {
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define class Box as
+                              pub let String value = "start";
+                            end
+                            """ + program)));
+            assertTrue(rejected.getMessage().toLowerCase().contains("borrow"),
+                    rejected.getMessage());
+        }
+    }
+
+    @Test
+    void readOnlyStructuralParameterCannotConsumeOrAcquireExclusiveOwner() {
+        for (String argument : java.util.List.of("rt take box", "rt borrow mut box")) {
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define class Box as
+                              pub let String value = "start";
+                            end
+                            fnc inspect(structural Box v): void { return; }
+                            fnc bad(): void {
+                              let mut Box box = new Box();
+                              inspect(%s);
+                              return;
+                            }
+                            """.formatted(argument))));
+            assertTrue(rejected.getMessage().contains("structural")
+                    || rejected.getMessage().toLowerCase().contains("borrow"),
+                    rejected.getMessage());
+        }
+    }
+
+    @Test
+    void ownedParametersCannotConsumeLiveBorrowViews() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        fnc consume(Box value): void { return; }
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          consume(rt borrow box);
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().toLowerCase().contains("borrow"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void firstClassFncReadonlyArgumentCannotBeMovedByLaterArgument() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          val Fnc<Box, Box, int> read = |left, right| -> { return 1; };
+                          read(box, rt take box);
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().toLowerCase().contains("borrow"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void instanceMethodReceiverCannotBeMovedDuringItsOwnArgumentEvaluation() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                          fnc inspect(Box other): int { return self.value; }
+                        end
+                        fnc bad(): void {
+                          let mut Box box = new Box();
+                          box.inspect(rt take box);
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().toLowerCase().contains("borrow"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void cannotImplicitlyMoveNonCopyFieldOrIndexedStorage() {
+        for (String program : java.util.List.of(
+                """
+                define class Owner as
+                  pub let Box payload = new Box();
+                end
+                fnc bad(): void {
+                  let Owner owner = new Owner();
+                  consume(owner.payload);
+                  return;
+                }
+                """,
+                """
+                fnc bad(): void {
+                  let Array<Box> values = new Array<Box>();
+                  values.add(new Box());
+                  consume(values[0]);
+                  return;
+                }
+                """)) {
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define class Box as
+                              pub let int value = 7;
+                            end
+                            fnc consume(Box value): void { return; }
+                            """ + program)));
+            assertTrue(rejected.getMessage().contains("move")
+                            || rejected.getMessage().contains("source slot"),
+                    rejected.getMessage());
+        }
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
