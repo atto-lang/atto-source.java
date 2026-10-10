@@ -3416,7 +3416,11 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    // Channels are actor-local shareable handles; select
+                    // descriptors are NOT Copy because a WriteCase can contain
+                    // a move-only payload. SelectSet/SelectPlan may retain
+                    // those descriptors across selection generations.
+                    "Channel","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
