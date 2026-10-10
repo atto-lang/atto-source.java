@@ -980,7 +980,9 @@ public final class TypeChecker {
                     && !method.isStatic()
                     && (method.name().equals("send")
                             || method.name().equals("end")
-                            || method.name().equals("endWithCleanup"))) {
+                            || method.name().equals("endWithCleanup")
+                            || method.name().equals("get_ready_signal")
+                            || method.name().equals("get_done_signal"))) {
                 throw new IllegalArgumentException(
                         "actor method name '" + method.name()
                                 + "' is reserved by the non-overridable actor transport/lifecycle API");
