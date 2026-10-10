@@ -3516,6 +3516,9 @@ public final class OresEvalRootNode extends RootNode {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
+            } else if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
+                // Preserve the reference result; await only actor initialization.
+                future = actorRef.readyRef();
             } else if (value instanceof Awaitable<?> awaitable) {
                 future = awaitable.getAwaited();
             } else if (value instanceof CompletionStage<?> stage) {
@@ -5902,6 +5905,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
+                if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
+                    AsyncRuntime.await(actorRef.ready());
+                    return actorRef;
+                }
                 if (value instanceof OresFuture<?> future) {
                     return AsyncRuntime.await(future);
                 }
