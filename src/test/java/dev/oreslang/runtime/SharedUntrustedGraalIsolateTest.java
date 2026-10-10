@@ -47,6 +47,11 @@ class SharedUntrustedGraalIsolateTest {
         try {
             domain = SharedUntrustedGraalIsolate.open();
         } catch (IllegalStateException unavailable) {
+            if (Boolean.getBoolean("ores.untrusted.require-native-isolate")) {
+                throw new AssertionError(
+                        "native Oreslang isolate build smoke must actually enter a guest isolate",
+                        unavailable);
+            }
             System.out.println("Expected fail-closed bootstrap without a language-isolate image: "
                     + unavailable.getCause());
             assertTrue(unavailable.getMessage().contains("could not start"),
@@ -69,7 +74,7 @@ class SharedUntrustedGraalIsolateTest {
             assertThrows(IllegalStateException.class, () ->
                     SharedUntrustedGraalIsolate.open(128L * 1024 * 1024));
             // No host Value or Context escapes the source-submission API.
-            assertNotNull(domain.submitSource(""));
+            domain.submitSource("").get(15, TimeUnit.SECONDS);
         } finally {
             domain.close();
         }
