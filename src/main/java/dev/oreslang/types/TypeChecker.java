@@ -67,6 +67,7 @@ public final class TypeChecker {
     private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
+    private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -448,7 +449,16 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    private void requireSuspendableCall(boolean suspends, String label) {
+        if (suspends && !currentMaySuspend)
+            throw new IllegalArgumentException(
+                    "suspends " + label + " requires an async or suspends caller");
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.name().endsWith("_blocking") && !fn.suspends())
+            throw new IllegalArgumentException(
+                    "*_blocking function '" + fn.name() + "' must declare suspends");
         if (fn.trapped()) {
             if (fn.async()) {
                 throw new IllegalArgumentException("async trap callables are not enabled until the trap boundary spans every await");
@@ -464,6 +474,7 @@ public final class TypeChecker {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
+                    || fn.suspends()
                     || fn.generator()
                     || fn.structural()
                     || fn.nonLexical()
@@ -568,12 +579,15 @@ public final class TypeChecker {
         currentActorKind = fn.actorKind();
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
+        boolean previousMaySuspend = currentMaySuspend;
+        currentMaySuspend = fn.async() || fn.suspends();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
+            currentMaySuspend = previousMaySuspend;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -997,7 +1011,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must have an implementation");
                 }
-                if (method.async()) {
+                if (method.async() || method.suspends()) {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must be synchronous; "
                                     + "readiness settles only after startup completes on the actor execution domain");
@@ -1041,6 +1055,9 @@ public final class TypeChecker {
                 }
             }
 
+            if (method.name().endsWith("_blocking") && !method.suspends())
+                throw new IllegalArgumentException(
+                        "*_blocking method '" + method.name() + "' must declare suspends");
             if (method.async() && !method.isStatic()) {
                 throw new IllegalArgumentException(
                         "async instance method '" + klass.name() + "." + method.name()
@@ -1154,12 +1171,15 @@ public final class TypeChecker {
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
+            boolean previousMaySuspend = currentMaySuspend;
+            currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
+                currentMaySuspend = previousMaySuspend;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -2002,6 +2022,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2039,6 +2060,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2533,6 +2555,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -2623,6 +2646,7 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
+                        requireSuspendableCall(method.suspends(), "method '" + method.name() + "'");
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
                         requireClassMemberVisible(method.visibility(), owner, "method", method.name());
