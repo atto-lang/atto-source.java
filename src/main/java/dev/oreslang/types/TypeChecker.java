@@ -840,6 +840,22 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        if (klass.concurrencySpec() != null) {
+            Ast.ActorConcurrencySpec limits = klass.concurrencySpec();
+            if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null) {
+                throw new IllegalArgumentException(
+                        "protocol actor concurrency configuration requires a local SHARED actor");
+            }
+            // The existing source actor receive scheduler has one suspended
+            // receive slot. Accepting >1 here would silently ignore the
+            // configured admission semantics and break actor state safety.
+            if (!limits.serial()) {
+                throw new IllegalArgumentException(
+                        "actor requestConcurrency/messageConcurrency > 1 requires "
+                        + "multi-continuation mailbox admission; current source actor "
+                        + "backend supports only strict (1,1) and will not ignore the policy");
+            }
+        }
         if (klass.proxySpec() != null) {
             Ast.ProxyActorSpec proxy = klass.proxySpec();
             if (klass.actorKind() != Ast.ActorKind.SHARED
