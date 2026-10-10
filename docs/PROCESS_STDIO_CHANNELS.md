@@ -26,7 +26,7 @@ This draft implements **actual runtime subclasses** of `ChannelRuntime.Channel<S
 
 ### Output and flush
 
-A dedicated worker drains each output channel into the embedding context's `Env.out()` or `Env.err()`. Worker threads may block on slow sinks; Oreslang actor carriers do not. Each channel has an 8192-chunk bounded buffer; a `try writech` probe rejects instead of blocking, while `nb writech` can register bounded-channel backpressure. Like regular channels, many unawaited pending writes can still accumulate registrations; **callers must bound outstanding Futures**.
+A dedicated worker drains each output channel into the embedding context's `Env.out()` or `Env.err()`. Worker threads may block on slow sinks; Oreslang actor carriers do not. Each output channel has an 8192-chunk bounded buffer. Direct writes and select registration check direction and capability **at the channel object**, including after an upcast to `Channel<String>`. Output chunks are capped at **65536 UTF-8 bytes**, and each output channel admits at most **8192 outstanding guest async write futures**. A `try writech` probe rejects instead of blocking, while `nb writech` suspends with bounded-channel backpressure and fails closed on admission overflow. Guests should still await/cancel writes promptly. Stdin line frames are separately capped at 65536 UTF-8 bytes and oversized input closes stdin with an error cause.
 
 `stdio.stdout.log_async(...)` formats one line and tries to enqueue it to **the same stdout channel** as `writech stdio.out`. Admission is immediate and rejects a full buffer. `stdio.flush_async_logs()` inserts private FIFO markers into **both stdout and stderr**. The combined Future completes only after preceding accepted chunks in each output channel are written and both writers flushed. It does not wait for external pipe readers, network collectors, or durable storage. Mixed legacy direct PrintWriter operations do not have a strict interleaving order with channel writes.
 
@@ -57,3 +57,30 @@ Do not merge this draft until exact-head Graal JVM/AOT/hybrid/isolate builds and
 - Observable adapter single-subscriber behavior, terminal framing and cancellation
 
 The source contract is intentionally *provisional* until those checks run.
+
+
+## 2026-10-10 hardening audit
+
+The initial subclass guarded only `SelectCase.read/write`, while direct source
+`readch`, `writech` and `nb ...` invoked inherited methods. This bypass is
+now closed by overriding `tryRead`, `readAsync`, `tryWrite`,
+and `writeAsync` in `ConsoleChannel`. `SelectCase.write` also checks the
+byte-size envelope. Channel properties validate their capability before
+exposing the runtime handle, and the runtime-owned stdin feeder/console
+drainers use explicit internal-only channel access.
+
+`stdio.in.stream()` returns one cached adapter across aliases. Its reader
+enforces one outstanding pull and cancels pending registration on
+`release_lock()`. Ordinary `Channel<T>.stream()` is also supported; those
+independent adapters follow normal competing-consumer channel semantics.
+
+Legacy `stdio.stdout.log(...)` now formats one line and issues one
+`PrintWriter.println(...)`, to avoid interleaving arguments with output
+worker writes. UTF-8 decoding/encoding is explicit. Flush failure becomes
+terminal for the respective worker. Stdin lazy-start and context close are
+synchronized to prevent a late input worker after shutdown.
+
+**Not a CI certification:** Exact-head GitHub Actions on the source
+organization currently show failed jobs that executed zero steps. These are
+not executable pass/fail evidence. The pipeline design is in
+`docs/proposals/actor-stream-pipelines.md`; `|>` remains unimplemented.
