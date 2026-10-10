@@ -41,7 +41,7 @@ public final class GeneratorRuntime {
     }
 
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
-        return new Generator<>(new Engine<>(runtime, producer));
+        return new Generator<>(runtime, new Engine<>(runtime, producer));
     }
 
     public static <T> AsyncGenerator<T> asyncGenerator(AsyncRuntime runtime, Producer<T> producer) {
@@ -49,10 +49,23 @@ public final class GeneratorRuntime {
     }
 
     public static final class Generator<T> implements Iterable<T>, AutoCloseable {
+        private final AsyncRuntime runtime;
         private final Engine<T> engine;
 
-        private Generator(Engine<T> engine) {
+        private Generator(AsyncRuntime runtime, Engine<T> engine) {
+            this.runtime = Objects.requireNonNull(runtime, "runtime");
             this.engine = engine;
+        }
+
+        /**
+         * Source-task lowering calls this instead of nextStep(): the consumer
+         * continuation suspends on the future, and generator synchronization
+         * and host compatibility I/O run on the context's virtual carrier.
+         * No guest root/actor scheduler carrier waits in Engine.next().
+         */
+        public OresFuture<Step<T>> nextStepAsync() {
+            if (engine.isClosed()) return OresFuture.completed(Step.doneStep());
+            return runtime.submit(engine::next);
         }
 
         public Step<T> nextStep() {
