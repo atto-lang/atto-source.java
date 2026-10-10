@@ -47,6 +47,14 @@ public final class OresEvalRootNode extends RootNode {
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+    // Only a trusted polyglot host adapter may invoke these control-plane
+    // commands. The guest sees scalar actor IDs, never a host ActorRef.
+    public static final String ISOLATED_ACTOR_SPAWN_COMMAND = "__ores_internal_isolated_actor_spawn__";
+    public static final String ISOLATED_ACTOR_SEND_COMMAND = "__ores_internal_isolated_actor_send__";
+    public static final String ISOLATED_ACTOR_READY_COMMAND = "__ores_internal_isolated_actor_ready__";
+    public static final String ISOLATED_ACTOR_DONE_COMMAND = "__ores_internal_isolated_actor_done__";
+    public static final String ISOLATED_ACTOR_CANCEL_COMMAND = "__ores_internal_isolated_actor_cancel__";
+    public static final String ISOLATED_ACTOR_CANCEL_ALL_COMMAND = "__ores_internal_isolated_actor_cancel_all__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -82,6 +90,36 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         Evaluator current = evaluator(context);
+        if (arguments.length == 2
+                && ISOLATED_ACTOR_SPAWN_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String actorType) {
+            return current.spawnIsolatedUntrusted(actorType);
+        }
+        if (arguments.length == 3
+                && ISOLATED_ACTOR_SEND_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof Long id) {
+            current.sendIsolatedUntrusted(id, arguments[2]);
+            return null;
+        }
+        if (arguments.length == 2
+                && ISOLATED_ACTOR_READY_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof Long id) {
+            return current.isolatedUntrustedReady(id);
+        }
+        if (arguments.length == 2
+                && ISOLATED_ACTOR_DONE_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof Long id) {
+            return current.isolatedUntrustedDone(id);
+        }
+        if (arguments.length == 2
+                && ISOLATED_ACTOR_CANCEL_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof Long id) {
+            return current.cancelIsolatedUntrusted(id);
+        }
+        if (isControl(arguments, ISOLATED_ACTOR_CANCEL_ALL_COMMAND)) {
+            current.cancelAllIsolatedUntrusted();
+            return null;
+        }
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
             return null;
@@ -127,6 +165,9 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
+        private static final int MAX_ISOLATED_CODE_ACTORS = 1024;
+        private final Map<Long, ActorRuntime.ActorRef<Object>> isolatedCodeActors = new HashMap<>();
+        private long nextIsolatedCodeActor = 1L;
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
@@ -550,6 +591,82 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "actor receive must complete with void");
             }
+        }
+
+        private void requireIsolatedGuestRoot() {
+            // An adversarial group policy is required but not, alone,
+            // proof of VM-level isolation. The trusted host adapter MUST
+            // provision this context from a verified spawnIsolate Engine.
+            if (!context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "isolated actor commands require an adversarial guest context");
+            }
+            if (ActorRuntime.currentActorId().isPresent()) {
+                throw new SecurityException(
+                        "isolated actor supervisor commands cannot run from inside actor code");
+            }
+        }
+
+        private long spawnIsolatedUntrusted(String actorType) {
+            requireIsolatedGuestRoot();
+            Ast.ClassDecl declaration = requireLocalActorClass(actorType);
+            if (declaration.actorKind() != Ast.ActorKind.UNTRUSTED) {
+                throw new SecurityException(
+                        "isolated source actor bridge accepts UNTRUSTED declarations only");
+            }
+            if (isolatedCodeActors.size() >= MAX_ISOLATED_CODE_ACTORS) {
+                throw new IllegalStateException("isolated actor table capacity exceeded");
+            }
+            if (nextIsolatedCodeActor == Long.MAX_VALUE) {
+                throw new IllegalStateException("isolated actor handle IDs exhausted");
+            }
+            long id = nextIsolatedCodeActor++;
+            ActorRuntime.ActorRef<Object> actor = context.actors().spawnCodeActor(
+                    ActorRuntime.ActorKind.UNTRUSTED,
+                    IsolatePolicy.untrustedActor(),
+                    this, actorType);
+            isolatedCodeActors.put(id, actor);
+            actor.ready();
+            return id;
+        }
+
+        private ActorRuntime.ActorRef<Object> isolatedUntrustedRef(long id) {
+            requireIsolatedGuestRoot();
+            if (id <= 0) throw new IllegalArgumentException("invalid isolated actor ID");
+            ActorRuntime.ActorRef<Object> actor = isolatedCodeActors.get(id);
+            if (actor == null) throw new IllegalStateException("stale isolated actor ID");
+            return actor;
+        }
+
+        private void sendIsolatedUntrusted(long id, Object data) {
+            ActorRuntime.ActorRef<Object> actor = isolatedUntrustedRef(id);
+            // Scalar-only transport; never reinterpret handles or host objects
+            // as a guest ActorRef. Each actor has its own bounded mailbox.
+            actor.send(UntrustedJitScalarTransport.copyScalar(data));
+        }
+
+        private boolean isolatedUntrustedReady(long id) {
+            return isolatedUntrustedRef(id).ready().isDone();
+        }
+
+        private boolean isolatedUntrustedDone(long id) {
+            return isolatedUntrustedRef(id).done().isDone();
+        }
+
+        private boolean cancelIsolatedUntrusted(long id) {
+            ActorRuntime.ActorRef<Object> actor = isolatedUntrustedRef(id);
+            boolean canceled = actor.cancel();
+            // We deliberately keep the ID until code-unit retirement so the
+            // caller can poll done and receive a stable terminal signal.
+            return canceled;
+        }
+
+        private void cancelAllIsolatedUntrusted() {
+            requireIsolatedGuestRoot();
+            for (ActorRuntime.ActorRef<Object> actor : isolatedCodeActors.values()) {
+                actor.cancel();
+            }
+            isolatedCodeActors.clear();
         }
 
         private Ast.ClassDecl requireLocalActorClass(String actorTypeName) {
