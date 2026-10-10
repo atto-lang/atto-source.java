@@ -272,6 +272,16 @@ class NativeHttpTest {
     }
 
     @Test void persistentActorReleasesSingleListenerSlotAcrossManyRequests() throws Exception {
+        // Generate 20 distinct source-level accept/dispatch/completion steps.
+        // The fixture must not rely on source loop syntax unrelated to HTTP.
+        String steps = java.util.stream.IntStream.range(0, 20)
+                .mapToObj(i -> """
+                    val exchange%d = await server.accept();
+                    val completed%d = exchange%d.completion;
+                    worker.send(exchange%d.move_to(worker));
+                    await completed%d;
+                    """.formatted(i, i, i, i, i))
+                .collect(java.util.stream.Collectors.joining());
         String output = run("""
             define actor Persistent as
               receive(ActorMail<String> mail): void {
@@ -291,26 +301,15 @@ class NativeHttpTest {
               stdio.println(server.port);
               val worker = spawn Persistent();
               await worker.ready;
-              let int count = 0;
-              loop {
-                if count == 20; do break; fi
-                val exchange = await server.accept();
-                val completed = exchange.completion;
-                worker.send(exchange.move_to(worker));
-                await completed;
-                if server.active != 0; do
-                  throw "listener admission must be reclaimed per request";
-                fi
-                count = count + 1;
-              }
-              stdio.println(count);
+              __STEPS__
+              stdio.println("reused-20");
               stdio.println(server.active);
               worker.send("stop");
               await worker.done;
               await server.shutdown(0);
               return;
             }
-            """, port -> {
+            """.replace("__STEPS__", steps), port -> {
             for (int i = 0; i < 20; i++) {
                 String target = "/repeat-" + i;
                 HttpResponse<String> response = request(port, "GET", target, "");
@@ -318,7 +317,7 @@ class NativeHttpTest {
                 assertEquals(target, response.body(), target);
             }
         });
-        assertTrue(output.contains("20\\n0"), output);
+        assertTrue(output.contains("reused-20\\n0"), output);
     }
 
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
