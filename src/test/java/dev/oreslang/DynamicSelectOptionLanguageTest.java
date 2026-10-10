@@ -62,11 +62,14 @@ final class DynamicSelectOptionLanguageTest {
                   ]);
                   val Option<SelectResult> winner = select first from mixed;
                   stdio.stdout.write(winner.unwrap().operation);
+                  stdio.stdout.write(":");
+                  val Option<SelectResult> stillReadable = await ready;
+                  stdio.stdout.write(stillReadable.unwrap().value);
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
-        assertEquals("await", run(program));
+        assertEquals("await:9", run(program));
     }
 
     @Test
@@ -85,6 +88,24 @@ final class DynamicSelectOptionLanguageTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
         assertEquals("timeout", run(program));
+    }
+
+    @Test
+    void selectingAWriteDescriptorMovesPayloadAtRegistrationConstruction() {
+        String source = """
+                pub fnc main(): void {
+                  val Channel<Array<int>> output = Channel.new<Array<int>>(1);
+                  val Array<int> owned = [1, 2];
+                  val SelectSet choices = SelectSet.new([
+                    SelectCase.write(output, owned),
+                    SelectCase.timeout(0)
+                  ]);
+                  stdio.stdout.write(owned.size);
+                  return;
+                }
+                """;
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
