@@ -8,7 +8,8 @@ public final class OresExceptionPolicy {
 
     /** Host-fatal > cancellation > panic > raise > ordinary throw. */
     private static int priority(Throwable failure) {
-        if (failure instanceof VirtualMachineError
+        if (failure instanceof ProcessExitSignal
+                || failure instanceof VirtualMachineError
                 || failure instanceof ThreadDeath
                 || failure instanceof LinkageError) return 5;
         if (failure instanceof ActorRuntime.ActorCancellationSignal
