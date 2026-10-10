@@ -61,7 +61,10 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     }
 
     private static final class TrackedCleanup extends WeakReference<Object> {
-        private final Object domain;
+        // A completed weak-reference entry may remain in ReferenceQueue after
+        // its registry slot is gone. Sever its actor-domain link on completion
+        // so queued stale notifications cannot pin retired actor heaps.
+        private volatile Object domain;
         private Runnable cleanup;
         private final AtomicBoolean cleaning = new AtomicBoolean();
         private final AtomicBoolean cleaned = new AtomicBoolean();
@@ -77,7 +80,9 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         }
 
         private boolean eligible(Set<Object> retiredDomains) {
-            return get() == null || retiredDomains.contains(domain);
+            Object currentDomain = domain;
+            return get() == null
+                    || (currentDomain != null && retiredDomains.contains(currentDomain));
         }
 
         private boolean tryClean() {
@@ -433,12 +438,19 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         synchronized (lifecycleLock) {
             tracked.remove(entry);
             retryableFailures.remove(entry);
-            Set<TrackedCleanup> domainEntries = trackedByDomain.get(entry.domain);
-            if (domainEntries == null) return;
-            domainEntries.remove(entry);
-            if (domainEntries.isEmpty()) {
-                trackedByDomain.remove(entry.domain, domainEntries);
-                retiredDomains.remove(entry.domain);
+            Object domain = entry.domain;
+            if (domain != null) {
+                Set<TrackedCleanup> domainEntries = trackedByDomain.get(domain);
+                if (domainEntries != null) {
+                    domainEntries.remove(entry);
+                    if (domainEntries.isEmpty()) {
+                        trackedByDomain.remove(domain, domainEntries);
+                        retiredDomains.remove(domain);
+                    }
+                }
+                // Clear even when a concurrent release already removed the map
+                // entry; the queue can retain this weak-reference object.
+                entry.domain = null;
             }
             // Deterministic final release is the normal path. Stop even the
             // bounded fallback ticker when no unmanaged registrations remain.
