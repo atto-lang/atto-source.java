@@ -218,7 +218,12 @@ final class IdentityReturnChecker {
         List<Ast.ClassDecl> candidates = qualifiedClasses.entrySet().stream()
                 .filter(e -> e.getKey().endsWith("." + name))
                 .map(Map.Entry::getValue).distinct().toList();
-        return candidates.size() == 1 ? candidates.getFirst() : null;
+        if (candidates.size() > 1) {
+            throw new IllegalArgumentException(
+                    "ambiguous inherited class type '" + name + "' from module '" + module
+                            + "'; qualify its declaring module");
+        }
+        return candidates.isEmpty() ? null : candidates.getFirst();
     }
 
     private Ast.InterfaceDecl resolveInterface(String module, String name) {
@@ -229,7 +234,12 @@ final class IdentityReturnChecker {
         List<Ast.InterfaceDecl> candidates = qualifiedInterfaces.entrySet().stream()
                 .filter(e -> e.getKey().endsWith("." + name))
                 .map(Map.Entry::getValue).distinct().toList();
-        return candidates.size() == 1 ? candidates.getFirst() : null;
+        if (candidates.size() > 1) {
+            throw new IllegalArgumentException(
+                    "ambiguous inherited interface type '" + name + "' from module '" + module
+                            + "'; qualify its declaring module");
+        }
+        return candidates.isEmpty() ? null : candidates.getFirst();
     }
 
     private String classModule(Ast.ClassDecl declaration, String fallback) {
