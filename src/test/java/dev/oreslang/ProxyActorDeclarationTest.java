@@ -65,6 +65,45 @@ final class ProxyActorDeclarationTest {
     }
 
     @Test
+    void declarationWithoutSpawnResolvesRemoteContractButDoesNotConnect() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(DECLARATION)));
+        Ast.Program nested = Parser.parse("""
+                define module gateway as
+                    define contract RemoteTransformer as
+                        fnc transform(int value) => int;
+                    end
+                    define proxy actor TransformProxy
+                        conforms to RemoteTransformer
+                        discover "workers.transform.v1"
+                        transport auto
+                    as
+                    end
+                end
+                """);
+        assertEquals(2, nested.modules().getFirst().declarations().size());
+    }
+
+    @Test
+    void rejectsUnknownContractAndUntrustedServiceKeys() {
+        String unknownContract = DECLARATION.replace(
+                "conforms to RemoteTransformer", "conforms to MissingContract");
+        IllegalArgumentException unknown = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(unknownContract)));
+        assertTrue(unknown.getMessage().contains("unknown remote contract"),
+                unknown::getMessage);
+
+        for (String key : new String[] {"http://internal/metadata", "../worker", "tenant//worker"}) {
+            String source = DECLARATION.replace("workers.transform.v1", key);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains("bounded service identifier"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void contextualProxyWordRemainsAnOrdinaryIdentifier() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc echo(int proxy): int { return proxy; }
