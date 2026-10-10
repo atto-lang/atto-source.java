@@ -155,6 +155,46 @@ final class DynamicSelectOptionLanguageTest {
     }
 
     @Test
+    void moveOnlySelectCaseCannotBeConsumedTwiceBySeparateSets() {
+        String source = """
+                pub fnc main(): void {
+                  val Channel<Array<int>> outbound =
+                      Channel.new<Array<int>>(1);
+                  val Array<int> payload = [1, 2];
+                  val SelectCase once = SelectCase.write(outbound, payload);
+                  val SelectSet first = SelectSet.new([once]);
+                  val SelectSet second = SelectSet.new([once]);
+                  return;
+                }
+                """;
+        IllegalArgumentException rejected =
+                org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                        () -> OresCompiler.parseAndTypeCheck(source));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                rejected.getMessage().toLowerCase().contains("mov"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void moveOnlySelectSetCannotBeTransferredToTwoPlanOwners() {
+        String source = """
+                pub fnc main(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  val SelectSet source = SelectSet.new([SelectCase.read(input)]);
+                  val SelectPlan first = SelectPlan.new(source);
+                  val SelectPlan second = SelectPlan.new(source);
+                  return;
+                }
+                """;
+        IllegalArgumentException rejected =
+                org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                        () -> OresCompiler.parseAndTypeCheck(source));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                rejected.getMessage().toLowerCase().contains("mov"),
+                rejected.getMessage());
+    }
+
+    @Test
     void selectPlanCannotTravelAsAnActorMailPayload() {
         String source = """
                 define actor Worker as
