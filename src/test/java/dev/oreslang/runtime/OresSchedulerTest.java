@@ -15,6 +15,33 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresSchedulerTest {
     @Test
+    void pendingHostFutureReadsCannotParkRootSchedulerCarrier() throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<String> task = scheduler.startSync(() -> {
+                assertThrows(IllegalStateException.class, producer::get);
+                assertThrows(IllegalStateException.class,
+                        () -> producer.get(30, TimeUnit.SECONDS));
+                assertThrows(IllegalStateException.class, producer::join);
+                assertThrows(IllegalStateException.class,
+                        () -> AsyncRuntime.await(producer));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> producer.get(0, TimeUnit.NANOSECONDS));
+                assertEquals(9, OresFuture.completed(9).get());
+                return "continued";
+            });
+
+            assertEquals("continued", task.get(2, TimeUnit.SECONDS),
+                    "a pending host get/join must fail, never park a root carrier");
+            assertEquals(8, scheduler.startSync(() -> 8).get(2, TimeUnit.SECONDS),
+                    "the same single carrier must be able to serve peer work");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isDone(),
+                    "denied host waits cannot cancel or mutate the producer");
+        }
+    }
+
+    @Test
     void closeHooksRunExactlyOnceWithConcurrentRegistration() throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
         final int hooks = 400;
