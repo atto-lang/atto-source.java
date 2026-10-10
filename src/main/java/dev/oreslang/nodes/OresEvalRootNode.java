@@ -5169,6 +5169,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof ChannelRuntime.SelectPlan plan) return plan.snapshot();
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
@@ -5839,6 +5840,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -6630,6 +6632,46 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("unknown SelectSet factory member " + name);
                 }
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof SelectPlanFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException("unknown SelectPlan factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof ChannelRuntime.SelectPlan plan) {
+                return switch (name) {
+                    case "revision" -> plan.revision();
+                    case "addCase" -> (Invokable) args -> {
+                        requireOne(args, "SelectPlan.addCase");
+                        plan.addCase(requireSelectCase(args.getFirst()));
+                        return null;
+                    };
+                    case "removeCase" -> (Invokable) args -> {
+                        requireOne(args, "SelectPlan.removeCase");
+                        if (!(args.getFirst() instanceof Number index)) {
+                            throw new IllegalArgumentException("SelectPlan.removeCase expects integer index");
+                        }
+                        plan.removeCase(Math.toIntExact(index.longValue()));
+                        return null;
+                    };
+                    case "replaceCase" -> (Invokable) args -> {
+                        requireTwo(args, "SelectPlan.replaceCase");
+                        if (!(args.getFirst() instanceof Number index)) {
+                            throw new IllegalArgumentException("SelectPlan.replaceCase expects integer index");
+                        }
+                        plan.replaceCase(Math.toIntExact(index.longValue()),
+                                requireSelectCase(args.get(1)));
+                        return null;
+                    };
+                    case "replaceCases" -> (Invokable) args -> {
+                        requireOne(args, "SelectPlan.replaceCases");
+                        plan.replaceCases(asSelectSet(args.getFirst()).cases());
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectPlan instance member " + name);
+                };
             }
             if (receiver instanceof SelectResultValue selected) {
                 return switch (name) {
@@ -9115,6 +9157,14 @@ public final class OresEvalRootNode extends RootNode {
         private Object create(List<Object> args) {
             requireOne(args, "SelectSet.new");
             return owner.asSelectSet(args.getFirst());
+        }
+    }
+
+    private record SelectPlanFactory(Evaluator owner) {
+        private Object create(List<Object> args) {
+            requireOne(args, "SelectPlan.new");
+            return new ChannelRuntime.SelectPlan(
+                    owner.asSelectSet(args.getFirst()).cases());
         }
     }
 
