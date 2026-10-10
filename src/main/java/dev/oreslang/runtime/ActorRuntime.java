@@ -343,6 +343,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    /** An actor can be a member of many groups but has one lifecycle owner. */
+    private final Map<ActorId, ActorGroupId> workerOwners = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
@@ -1970,11 +1972,17 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "ActorGroup member limit exceeded: maximum " + memberLimit);
                 }
+                ActorGroupId owner = workerOwners.putIfAbsent(ref.id(), id);
+                if (owner != null && !owner.equals(id)) {
+                    throw new IllegalStateException(
+                            "actor " + ref.id() + " already has a managing ActorGroup");
+                }
                 boolean added = members.add(ref.id());
                 workers.putIfAbsent(ref.id(), ref);
                 // Concurrent actor retirement must not leave a stale strong ref.
                 if (groupClosed.get() || actors.get(ref.id()) != cell || cell.stopped.get()) {
                     workers.remove(ref.id(), ref);
+                    workerOwners.remove(ref.id(), id);
                     if (added) members.remove(ref.id());
                     throw new IllegalStateException("ActorGroup or worker closed during admission");
                 }
@@ -2016,6 +2024,52 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure == null) result.completeFromRuntime(ref);
                 else result.failFromRuntime(failure);
             });
+            return result;
+        }
+
+        /**
+         * Release lifecycle ownership without stopping the worker. The actor
+         * may remain a cooperative member of this group, or be adopted by a
+         * different group. Caller must hold group management authority.
+         */
+        public boolean releaseWorker(ActorRef<?> ref) {
+            requireManager("release an ActorGroup worker");
+            Objects.requireNonNull(ref, "ref");
+            if (!ref.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+            }
+            synchronized (authorityLock) {
+                requireOpen();
+                if (!workers.remove(ref.id(), ref)) return false;
+                workerOwners.remove(ref.id(), id);
+                return true;
+            }
+        }
+
+        /**
+         * A snapshot-wide nonblocking finalization barrier. Workers added
+         * after this call are not included; failed workers reject the barrier.
+         */
+        public OresFuture<Void> workersDone() {
+            requireManager("await ActorGroup worker termination");
+            List<ActorRef<?>> snapshot = List.copyOf(workers.values());
+            OresFuture<Void> result = new OresFuture<>(() -> false, () -> { });
+            if (snapshot.isEmpty()) {
+                result.completeFromRuntime(null);
+                return result;
+            }
+            AtomicInteger remaining = new AtomicInteger(snapshot.size());
+            AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+            for (ActorRef<?> ref : snapshot) {
+                ref.done().whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null) firstFailure.compareAndSet(null, failure);
+                    if (remaining.decrementAndGet() == 0) {
+                        Throwable terminal = firstFailure.get();
+                        if (terminal == null) result.completeFromRuntime(null);
+                        else result.failFromRuntime(terminal);
+                    }
+                });
+            }
             return result;
         }
 
@@ -2247,7 +2301,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void actorTerminated(ActorId actorId) {
-            workers.remove(actorId);
+            if (workers.remove(actorId) != null) workerOwners.remove(actorId, id);
             leaveId(actorId);
             if (Objects.equals(creator, actorId)) closeFromRuntime();
         }
@@ -2272,6 +2326,7 @@ public final class ActorRuntime implements AutoCloseable {
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(workers.values());
                 workers.clear();
+                for (ActorRef<?> ref : owned) workerOwners.remove(ref.id(), id);
             }
             GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
             if (mailman != null) mailman.close();
