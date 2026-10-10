@@ -152,18 +152,28 @@ public final class ChannelRuntime {
                         throw new IllegalStateException(
                                 "channel iterator cannot park an actor/root carrier; use suspendable for-of");
                     }
+                    // Only the runtime-owned virtual-thread compatibility
+                    // reader can arrive here. Use interruptible Future.get:
+                    // join() deliberately ignores interruption and would leave
+                    // cancelled generator reads registered indefinitely.
+                    OresFuture<T> pending = readAsync();
                     try {
-                        value = readAsync().join();
+                        value = pending.get();
                         buffered = true;
                         return true;
-                    } catch (java.util.concurrent.CompletionException error) {
+                    } catch (InterruptedException interrupted) {
+                        pending.cancel(false); // remove the exact registered read
+                        Thread.currentThread().interrupt();
+                        throw new java.util.concurrent.CancellationException(
+                                "channel iterator was cancelled");
+                    } catch (java.util.concurrent.ExecutionException error) {
                         Throwable cause = OresFuture.unwrap(error);
                         if (cause instanceof ChannelClosedException closed
                                 && closed.getCause() == null) {
                             finished = true;
                             return false;
                         }
-                        throw error;
+                        throw new java.util.concurrent.CompletionException(cause);
                     }
                 }
 
