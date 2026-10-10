@@ -2297,12 +2297,23 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void leaveId(ActorId actorId) {
-            if (members.remove(actorId)) eventBus.removeActor(actorId);
+            synchronized (authorityLock) {
+                if (workers.containsKey(actorId)) {
+                    throw new IllegalStateException(
+                            "managed ActorGroup worker must be released before leaving: " + actorId);
+                }
+                if (members.remove(actorId)) eventBus.removeActor(actorId);
+            }
         }
 
         private void actorTerminated(ActorId actorId) {
-            if (workers.remove(actorId) != null) workerOwners.remove(actorId, id);
-            leaveId(actorId);
+            // Finalization and admission must share one linearization point:
+            // otherwise an old retirement callback can erase a newly managed
+            // worker or leave a stale owner mapping after a concurrent join.
+            synchronized (authorityLock) {
+                if (workers.remove(actorId) != null) workerOwners.remove(actorId, id);
+                if (members.remove(actorId)) eventBus.removeActor(actorId);
+            }
             if (Objects.equals(creator, actorId)) closeFromRuntime();
         }
 
