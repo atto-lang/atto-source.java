@@ -9,7 +9,7 @@ public final class ProcessExitSignal extends Error {
     private final int exitStatus;
 
     public ProcessExitSignal(int exitStatus) {
-        super("Oreslang process exit " + exitStatus, null, false, false);
+        super("Oreslang process exit " + exitStatus, null, true, false);
         if (exitStatus < 0 || exitStatus > 255) {
             throw new IllegalArgumentException("process exit status must be in 0..255");
         }
