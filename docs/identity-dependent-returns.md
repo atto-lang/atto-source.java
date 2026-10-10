@@ -35,6 +35,17 @@ identity-returning functions can preserve identity transitively.
 Mutable parameters may update fields but cannot rebind the original value.
 Overrides must retain an ancestor's exact-identity guarantee. An unknown
 callable or a nominally compatible replacement cannot manufacture proof.
+
+Callable types preserve provenance even when checking structural method shapes
+and first-class function values. A return contract carries either the original
+receiver (`: this`) or a zero-based parameter position (`: v`, based on the
+parameter's slot, not its name). An identity-preserving callable may be used
+where only the nominal return type is required, but the reverse conversion is
+not sound. Different identity-source slots are never interchangeable.
+
+Discarding `do select` arms do not return from the enclosing callable, but
+their captured expressions can still execute. Captured identity parameters
+cannot be rebound within those arms, including nested control flow or `defer`.
 Contract checking is performed before executable admission, alongside type
 checking and ownership checking. Type compatibility, mutable capabilities,
 borrows and lifetime rules remain independent checks.
