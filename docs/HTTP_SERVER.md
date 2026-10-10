@@ -5,6 +5,25 @@ HTTP/1.1 server under the supervisor's scoped NET permission. Port zero selects
 an ephemeral port. The native backend uses `jdk.httpserver`; Java socket,
 exchange, executor, and stream objects are never available to guest code.
 
+## Actor-level concurrency versus listener capacity
+
+The existing `http.listen(host, port, capacity, ...)` capacity counts active
+**HTTP exchanges for one listener**, not concurrent actor connections and
+not per-connection message-handler activations. The current JDK
+`HttpExchange` does not expose a stable public transport connection
+identifier, so enforcing the new `http actor` dual-axis policy requires
+a connection-aware broker adapter.
+
+The proposed `@concurrency(messages = N)` ordinary actor policy and
+`@concurrency(connections = C, messages_per_connection = M)`
+`http`/`tcp`/`ws` actor policies are specified in
+[HTTP actor envelopes](HTTP_ACTOR_ENVELOPES.md). The host-only
+`ActorIngressConcurrency` admission gate and its tests are implemented;
+**the new source syntax, actor scheduler integration and broker
+per-connection enforcement are not yet implemented.** The one-carrier
+execution lease remains fixed regardless of these logical in-flight
+limits.
+
 ## Ownership and dispatch
 
 `server.accept()` returns `Future<HttpExchange>` to the supervisor. Register a
