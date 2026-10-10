@@ -1835,6 +1835,17 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            // Parse 'pipe' now, but fail closed until the actor-stream runtime
+            // provides type-safe output ports, bounded mailbox admission and
+            // a lifecycle-managed forwarding loop. Existing ActorRef.outputs()
+            // has no declared element type, and self.send fails on overflow:
+            // treating either as a streaming guarantee would be unsound.
+            if (binary.operator().equals("pipe")) {
+                throw new IllegalArgumentException(
+                        "'pipe' actor-stream connection is not executable yet: "
+                        + "typed StreamStage input/output ports and backpressure-aware "
+                        + "actor graph wiring are required; use '|>' for function application");
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
