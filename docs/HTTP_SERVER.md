@@ -35,6 +35,32 @@ an isolated heap. Private actor-local objects remain confined. Shared actors
 use the same synchronized native exchange state and single-writer rule; this
 API does not grant a second actor concurrent access to a request.
 
+## Reusable actors and message-scoped authority (draft PR #519)
+
+The legacy `http.handler("Name").dispatch(exchange)` still spawns **one actor
+per request**, retaining server capacity until that actor retires.
+
+For intentionally long-lived SHARED or PRIVATE actors, the draft adds
+`exchange.move_to_reusable(actor)` and
+`http.handler("Name").dispatch_to(exchange, actor)`. Multiple independent
+HTTP exchanges can enter one actor; its existing `concurrency` is the
+unfinished receive-handler bound, never native execution parallelism.
+Each moved exchange now binds its claimed response authority to the **exact
+receiving actor message** across `await`. Another pending request on the
+same actor cannot read/write that exchange merely because the actor ID
+matches. Once a reusable response closes, capacity is released without
+waiting for the shared actor to die. Request timeout aborts that request,
+not the reusable actor.
+
+The current source API still uses `ActorMail<String>` transfer tickets and
+`http.claim(mail.value)`; untrusted actors remain ineligible for native
+exchange transfer. It does **not yet** model stable TCP/HTTP connection IDs
+or multiple separate actor messages sharing one HTTP request response
+capability. Proposed protocol-specific actors and independent connection/
+message admission rules are in
+[Network actor protocol ownership](NETWORK_ACTOR_PROTOCOL_OWNERSHIP.md).
+The JDK HTTP backend is not raw FD handoff, WebSocket, or HTTP/2 support.
+
 ## Exchange API
 
 | API | Result / purpose |
