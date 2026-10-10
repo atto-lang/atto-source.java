@@ -1045,7 +1045,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor '" + klass.name()
                             + "' cannot shadow final builtin actor member '" + name
-                            + "' through local or inherited state");
+                            + "' through local or inherited state (reserved)");
                 }
             }
             for (String name : effectiveInstanceMethodNames) {
@@ -1053,7 +1053,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor '" + klass.name()
                             + "' cannot override final builtin actor method '" + name
-                            + "' through local or inherited methods");
+                            + "' through local or inherited methods (reserved)");
                 }
             }
             for (Ast.MethodDecl method : klass.methods()) {
@@ -1061,7 +1061,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor '" + klass.name()
                             + "' cannot hide final builtin actor method '"
-                            + method.name() + "' with a static method");
+                            + method.name() + "' with a static method (reserved)");
                 }
             }
         }
