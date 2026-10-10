@@ -36,6 +36,32 @@ final class CriticalKeywordTest {
                 () -> Parser.parse("define actor Foo as critical let int value = 1; end"));
     }
 
+    @Test void criticalDeclarationsCompileAndExecute() throws Exception {
+        String code = """
+                pub critical fnc file_value(): int { return 23; }
+                define class Foo as
+                  pub critical answer(): int { return 11; }
+                end
+                pub fnc main(): void {
+                    val foo = new Foo();
+                    stdio.stdout.write(foo.answer());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(file_value());
+                    return;
+                }
+                """;
+        dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(code);
+        java.io.ByteArrayOutputStream stdout = new java.io.ByteArrayOutputStream();
+        try (org.graalvm.polyglot.Context context =
+                     org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                             .allowAllAccess(false).out(stdout).build()) {
+            context.eval(org.graalvm.polyglot.Source
+                    .newBuilder(OresLanguage.ID, code, "critical-run.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("11|23", stdout.toString().strip());
+    }
+
     @Test void criticalCanAppearAfterVisibilityOrBeforeStatic() {
         Ast.Program parsed = Parser.parse("""
                 define class Foo as
