@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -60,11 +59,29 @@ public final class SupervisorFailureLane {
     private static final class Slot {
         Failure failure;
         boolean inFlight;
+        boolean queued;
+        Slot next;
     }
 
     private final int capacity;
     private final Map<ActorKey, Slot> children = new HashMap<>();
-    private final ArrayDeque<ActorKey> pending = new ArrayDeque<>();
+    // FIFO links are reserved in Slot objects before child admission.
+    // Publication never grows an ArrayDeque or allocates queue nodes.
+    private Slot head;
+    private Slot tail;
+    private int queuedCount;
+
+    private void enqueue(Slot slot) {
+        if (slot.queued || slot.inFlight) {
+            throw new IllegalStateException("duplicate supervisor enqueue");
+        }
+        slot.next = null;
+        slot.queued = true;
+        if (tail == null) head = slot;
+        else tail.next = slot;
+        tail = slot;
+        queuedCount++;
+    }
 
     public SupervisorFailureLane(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("capacity must be positive");
@@ -89,7 +106,7 @@ public final class SupervisorFailureLane {
         Slot slot = requireSlot(failure.actor());
         if (slot.failure != null) return false;
         slot.failure = failure;
-        pending.addLast(failure.actor());
+        enqueue(slot);
         return true;
     }
 
@@ -98,12 +115,16 @@ public final class SupervisorFailureLane {
      * until the supervisor acknowledges it; a crashed consumer may retry.
      */
     public synchronized Optional<Failure> poll() {
-        ActorKey key = pending.pollFirst();
-        if (key == null) return Optional.empty();
-        Slot slot = requireSlot(key);
-        if (slot.inFlight || slot.failure == null) {
+        Slot slot = head;
+        if (slot == null) return Optional.empty();
+        if (slot.inFlight || !slot.queued || slot.failure == null) {
             throw new IllegalStateException("supervisor queue invariant violated");
         }
+        head = slot.next;
+        if (head == null) tail = null;
+        slot.next = null;
+        slot.queued = false;
+        queuedCount--;
         slot.inFlight = true;
         return Optional.of(slot.failure);
     }
@@ -119,7 +140,7 @@ public final class SupervisorFailureLane {
         Slot slot = requireSlot(child);
         if (!slot.inFlight) throw new IllegalStateException("failure has not been delivered");
         slot.inFlight = false;
-        pending.addLast(child);
+        enqueue(slot);
     }
 
     /** Graceful, already-observed completion may release an unused slot. */
@@ -154,7 +175,7 @@ public final class SupervisorFailureLane {
     }
 
     public synchronized int reservedCount() { return children.size(); }
-    public synchronized int pendingCount() { return pending.size(); }
+    public synchronized int pendingCount() { return queuedCount; }
 
     private Slot requireSlot(ActorKey child) {
         Objects.requireNonNull(child, "child");
