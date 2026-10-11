@@ -20,6 +20,8 @@ public final class ActorPipeTransport implements AutoCloseable {
     private final List<ActorPipelineContract.Connection> schema;
     private final List<Class<?>> payloadClasses;
     private final List<ChannelRuntime.Channel<Object>> links;
+    private final List<java.util.concurrent.atomic.AtomicInteger> pendingWrites;
+    private final List<java.util.concurrent.atomic.AtomicInteger> pendingReads;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     private ActorPipeTransport(
@@ -47,6 +49,14 @@ public final class ActorPipeTransport implements AutoCloseable {
         for (int i = 0; i < schema.size(); i++)
             reserved.add(new ChannelRuntime.Channel<>(capacity));
         this.links = List.copyOf(reserved);
+        ArrayList<java.util.concurrent.atomic.AtomicInteger> writers = new ArrayList<>();
+        ArrayList<java.util.concurrent.atomic.AtomicInteger> readers = new ArrayList<>();
+        for (int i = 0; i < schema.size(); i++) {
+            writers.add(new java.util.concurrent.atomic.AtomicInteger());
+            readers.add(new java.util.concurrent.atomic.AtomicInteger());
+        }
+        this.pendingWrites = List.copyOf(writers);
+        this.pendingReads = List.copyOf(readers);
         // Construction-time supervisor assignment is authoritative. There
         // must never be a published, but unsupervised, transport.
         this.group = runtime.createActorGroup(supervisor);
@@ -97,22 +107,24 @@ public final class ActorPipeTransport implements AutoCloseable {
 
     /** Host-only stage wiring. The returned write capability cannot read. */
     public <T> ForwardWriter<T> writer(int edgeIndex, Class<T> type) {
-        return new ForwardWriter<>(requireEdge(edgeIndex, type), type);
+        return new ForwardWriter<>(requireEdge(edgeIndex, type), type, pendingWrites.get(edgeIndex));
     }
 
     /** Host-only stage wiring. The returned read capability cannot write. */
     public <T> ForwardReader<T> reader(int edgeIndex, Class<T> type) {
-        return new ForwardReader<>(requireEdge(edgeIndex, type), type);
+        return new ForwardReader<>(requireEdge(edgeIndex, type), type, pendingReads.get(edgeIndex));
     }
 
     public final class ForwardWriter<T> {
         private final ChannelRuntime.Channel<Object> channel;
         private final Class<T> type;
-        private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
+        private final java.util.concurrent.atomic.AtomicInteger pending;
 
-        private ForwardWriter(ChannelRuntime.Channel<Object> channel, Class<T> type) {
+        private ForwardWriter(ChannelRuntime.Channel<Object> channel, Class<T> type,
+                java.util.concurrent.atomic.AtomicInteger pending) {
             this.channel = channel;
             this.type = type;
+            this.pending = pending;
         }
 
         private T checked(T message) {
@@ -154,11 +166,13 @@ public final class ActorPipeTransport implements AutoCloseable {
     public final class ForwardReader<T> {
         private final ChannelRuntime.Channel<Object> channel;
         private final Class<T> type;
-        private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
+        private final java.util.concurrent.atomic.AtomicInteger pending;
 
-        private ForwardReader(ChannelRuntime.Channel<Object> channel, Class<T> type) {
+        private ForwardReader(ChannelRuntime.Channel<Object> channel, Class<T> type,
+                java.util.concurrent.atomic.AtomicInteger pending) {
             this.channel = channel;
             this.type = type;
+            this.pending = pending;
         }
 
         public OresFuture<T> readAsync() {
