@@ -141,6 +141,35 @@ final class SourcePendingCleanupExecutionTest {
     }
 
     @Test
+    void onlyOriginalTrustedEmbedderAndActualCarrierHaveConcurrentThreadAdmission()
+            throws Exception {
+        OresLanguage language = new OresLanguage();
+        java.lang.reflect.Field owner = OresLanguage.class.getDeclaredField(
+                "trustedEmbedderThread");
+        owner.setAccessible(true);
+        owner.set(language, Thread.currentThread());
+        Thread unrelated = Thread.ofPlatform().unstarted(() -> { });
+        assertTrue(language.isThreadAccessAllowed(Thread.currentThread(), false),
+                "original embedding thread remains entitled to unwrap an async Future");
+        assertFalse(language.isThreadAccessAllowed(unrelated, false),
+                "unregistered host thread cannot enter an occupied guest context");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            assertEquals(17, scheduler.start(resume -> {
+                assertTrue(language.isThreadAccessAllowed(Thread.currentThread(), false),
+                        "scheduler-owned carrier remains admitted");
+                assertFalse(language.isThreadAccessAllowed(unrelated, false),
+                        "carrier's thread-local authority may not be projected to another thread");
+                return OresScheduler.done(17);
+            }).get(5, TimeUnit.SECONDS));
+        }
+        owner.set(language, null);
+        assertFalse(language.isThreadAccessAllowed(Thread.currentThread(), false),
+                "adversarial mode must not inherit trusted host re-entry authority");
+        assertTrue(language.isThreadAccessAllowed(Thread.currentThread(), true),
+                "sequential single-thread access is unaffected");
+    }
+
+    @Test
     void failingPendingFinallyRetainsCancellationAndDoesNotRunDeferTwice()
             throws Exception {
         String source = """
