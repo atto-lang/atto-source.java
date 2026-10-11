@@ -81,7 +81,13 @@ public final class NativeIo {
         // symbolic link. Requiring READ on the child would canonicalize a
         // symlink to its target and incorrectly reject detecting unsafe links.
         // Resolve/check the parent instead; ancestor escapes still fail.
-        Path canonicalParent = realPath(parent);
+        // Metadata is a non-mutating probe. Missing parent components under an
+        // authorized root imply a missing target; do not throw merely because
+        // toRealPath() requires every intermediate component to exist.
+        // canonicalWritePath resolves only the nearest existing ancestor and
+        // preserves the canonical permission boundary. Dangling/escaping
+        // symlink ancestors still fail closed during realPath() resolution.
+        Path canonicalParent = canonicalWritePath(parent.toString());
         Path target = canonicalParent.resolve(lexical.getFileName());
         try {
             context.requirePermission(RuntimePermissions.Permission.READ,
