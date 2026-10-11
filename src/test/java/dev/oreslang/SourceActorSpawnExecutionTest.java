@@ -154,26 +154,55 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
-    void sourceStateSchemaCannotSilentlyFallBackToJvmMap() throws Exception {
+    void scalarStatePersistsAcrossActorMailboxTurnsInNativeArena() throws Exception {
         String program = """
                 define actor Counter as
-                  state { count: int = 0; }
-                  receive(ActorMail<String> mail): void {
-                    self.end();
+                  state { count: int = 0; enabled: bool = true; }
+                  receive(ActorMail<String> mail): void using state.read, state.write {
+                    val next = self.handle_state(|s| -> {
+                      s.count = s.count + 1;
+                      return s.count;
+                    });
+                    self.send(next);
+                    if mail.value == "stop"; do
+                      self.end();
+                    fi
                     return;
                   }
                 end
                 pub async routine main(): void {
                   val counter = spawn Counter();
                   await counter.ready;
+                  counter.send("first");
+                  counter.send("stop");
+                  val first = (await counter.outputs.next()).value.unwrap();
+                  val second = (await counter.outputs.next()).value.unwrap();
+                  stdio.stdout.write(first.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.value);
+                  await counter.done;
                   return;
                 }
                 """;
-        PolyglotException failure =
-                assertThrows(PolyglotException.class,
-                        () -> run(program, "source-actor-state-fail-closed.ores"));
-        assertTrue(
-                failure.getMessage().contains("arena-backed handle_state lowering"),
+        assertEquals("1|2", run(program, "source-actor-native-scalar-state.ores"));
+    }
+
+    @Test
+    void unsupportedReferenceStateFailsClosedBeforeActorReady() throws Exception {
+        String program = """
+                define actor Cache as
+                  state { values: Map<string, int>; }
+                  receive(ActorMail<String> mail): void { self.end(); return; }
+                end
+                pub async routine main(): void {
+                  val cache = spawn Cache();
+                  await cache.ready;
+                  return;
+                }
+                """;
+        PolyglotException failure = assertThrows(PolyglotException.class,
+                () -> run(program, "source-actor-reference-state-denied.ores"));
+        assertTrue(failure.getMessage().contains("requires scalar i64/bool lowering"),
                 failure.getMessage());
     }
 
