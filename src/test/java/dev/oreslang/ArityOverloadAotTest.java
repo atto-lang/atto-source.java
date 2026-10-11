@@ -21,8 +21,7 @@ final class ArityOverloadAotTest {
                 define class Counter as
                   pub descend(int n): int {
                     if n == 0; do return 0; fi
-                    val Fnc<int, int> next = self.descend;
-                    return next(n - 1);
+                    return self.descend(n - 1);
                   }
                   pub static fnc count(int n): int {
                     if n == 0; do return 0; fi
@@ -56,14 +55,14 @@ final class ArityOverloadAotTest {
                   private read(int extra): int { return self.base + extra; }
                   private static fnc secret(): int { return 1; }
                   private static fnc secret(int value): int { return value * 2; }
-                  pub reader(): Fnc<int> { return self.read; }
+                  pub reader(): int { return self.read(); }
                   pub static fnc multiplier(): Fnc<int, int> { return Box.secret; }
                 end
                 pub routine main(): void {
                   val box = new Box(10);
                   val read = box.reader();
                   val multiply = Box.multiplier();
-                  stdio.stdout.write(read());
+                  stdio.stdout.write(read);
                   stdio.stdout.write(":");
                   stdio.stdout.write(multiply(9));
                   return;
@@ -325,11 +324,11 @@ final class ArityOverloadAotTest {
                   }
 
                   pub via_self0() : int {
-                    return call0(self.pick);
+                    return self.pick();
                   }
 
                   pub via_self1() : int {
-                    return call1(self.pick);
+                    return self.pick(5);
                   }
 
                   pub static fnc select() : int {
@@ -346,10 +345,10 @@ final class ArityOverloadAotTest {
                   val right = new Box(20);
                   val typed = new Box(30);
 
-                  stdio.println(call0(left.pick));
-                  stdio.println(call1(right.pick));
+                  stdio.println(left.pick());
+                  stdio.println(right.pick(5));
 
-                  val Fnc<int> callback = typed.pick;
+                  val Fnc<int> callback = || -> { return typed.pick(); };
                   stdio.println(callback());
 
                   stdio.println(new Box(40).via_self0());
