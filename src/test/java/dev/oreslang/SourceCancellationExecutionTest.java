@@ -111,9 +111,16 @@ final class SourceCancellationExecutionTest {
             assertFalse(task.isDone(), "worker should still await its rendezvous channel");
             assertTrue(task.cancel(false));
 
-            var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+            Throwable observed = assertThrows(Throwable.class,
                     () -> task.get(5, TimeUnit.SECONDS));
-            Throwable failure = observed.getCause();
+            assertEquals("""
+                    armed
+                    inner-finally
+                    outer-finally
+                    """, output.toString(StandardCharsets.UTF_8),
+                    "unexpected terminal " + observed);
+            assertInstanceOf(java.util.concurrent.ExecutionException.class, observed);
+            Throwable failure = ((java.util.concurrent.ExecutionException) observed).getCause();
             assertInstanceOf(ArithmeticException.class, failure);
             assertTrue(java.util.Arrays.stream(failure.getSuppressed())
                             .anyMatch(dev.oreslang.runtime.OresScheduler.TaskCancelledException.class::isInstance),
