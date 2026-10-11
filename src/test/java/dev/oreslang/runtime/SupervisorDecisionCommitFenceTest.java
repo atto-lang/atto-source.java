@@ -38,6 +38,8 @@ final class SupervisorDecisionCommitFenceTest {
             };
             AtomicInteger policies = new AtomicInteger();
             AtomicInteger effects = new AtomicInteger();
+            java.util.concurrent.ConcurrentLinkedQueue<Long> turnKeys =
+                    new java.util.concurrent.ConcurrentLinkedQueue<>();
             CountDownLatch completed = new CountDownLatch(2);
             SupervisorProcess process = new SupervisorProcess(
                     supervisor, group, replaying, 2,
@@ -46,6 +48,7 @@ final class SupervisorDecisionCommitFenceTest {
                         return CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP);
                     },
                     resolution -> {
+                        turnKeys.add(resolution.turnGeneration());
                         effects.incrementAndGet();
                         completed.countDown();
                     });
@@ -61,6 +64,8 @@ final class SupervisorDecisionCommitFenceTest {
                     "executor replay started the same logical policy twice");
             assertEquals(2, effects.get(),
                     "executor replay duplicated an authoritative side effect");
+            assertEquals(java.util.List.of(1L, 2L), java.util.List.copyOf(turnKeys),
+                    "separate CONTROL turns must have unique monotonic commit keys");
             assertEquals(2, process.resolved());
             assertEquals(0, process.queued());
             assertEquals(0, process.undelivered());
