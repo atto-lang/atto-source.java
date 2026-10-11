@@ -16,6 +16,91 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class PatternMatchingHardeningTest {
     @Test
+    void bracedSwitchSupportsGroupedCasesCatchAllFirstAndArmSeparators() {
+        var typed = TypeChecker.check(Parser.parse("""
+                fnc choose(string v): string {
+                  switch (v) {
+                    _ { return "star"; },
+                    case "foo", "car", "mar" { return "bar"; };
+                  }
+                  return "fallback";
+                }
+                fnc chooseBare(string v): string {
+                  switch v {
+                    case "foo" { return "bar"; }
+                    default { return "star"; }
+                  }
+                  return "fallback";
+                }
+                """));
+        assertNotNull(typed);
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc invalid(string v): void {
+                  switch v {
+                    default { return; }
+                    _ { return; }
+                  }
+                }
+                """));
+        IllegalArgumentException duplicated = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid(string v): void {
+                  switch v {
+                    case "foo", "foo" { return; }
+                  }
+                }
+                """)));
+        assertTrue(duplicated.getMessage().contains("duplicate switch case"));
+    }
+
+    @Test
+    void bracedMatchAcceptsNominalIsAsAndTupleBindings() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc consume(int x): void {
+                  match x over {
+                    on is MessagePatterns.Reset as m { return; }
+                    on MessagePatterns.Delta as m { return; }
+                    on MessagePatterns.Tuple as (m1, m2) { return; }
+                    on MessagePatterns.Reset m { return; }
+                    on _ { return; }
+                  }
+                }
+                fnc consumeEnd(int x): void {
+                  match x over
+                    on is MessagePatterns.Reset as m { return; }
+                    on MessagePatterns.Delta m { return; }
+                    on _ { return; }
+                  end
+                }
+                """));
+    }
+
+    @Test
+    void fallbackFirstDoesNotShadowSpecificSwitchCasesAtRuntime() throws Exception {
+        String program = """
+                fnc choose(string v): string {
+                  switch v {
+                    _ { return "star"; },
+                    case "foo", "car", "mar" { return "bar"; };
+                  }
+                  return "unreachable";
+                }
+                pub fnc main(): void {
+                  stdio.println(choose("foo"));
+                  stdio.println(choose("else"));
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "switch-fallback-first.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("bar\nstar", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
+    @Test
     void matchAndSwitchUseContextualArmKeywordsAndSlimArrows() {
         var tokens = new Lexer("is matches match when case default first switch on").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IS));
