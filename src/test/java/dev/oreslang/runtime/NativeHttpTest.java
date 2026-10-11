@@ -175,7 +175,7 @@ class NativeHttpTest {
               val first = await server.accept();
               val observedFirst = first.completion;
               handler.dispatch(rt borrow mut first);
-              handler.actor.send("tick");
+              handler.send("tick");
               val second = await server.accept();
               val observedSecond = second.completion;
               handler.dispatch(rt borrow mut second);
