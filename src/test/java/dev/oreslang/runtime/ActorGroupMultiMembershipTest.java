@@ -134,4 +134,65 @@ final class ActorGroupMultiMembershipTest {
             assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void perActorRoomLimitIsAtomicAndSlotsAreReclaimedAfterLeaveAndClose() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy twoRooms = new IsolatePolicy(
+                base.capabilities(), base.maxHeapBytes(), 2, base.maxWallTime());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup a = runtime.createActorGroup();
+            ActorRuntime.ActorGroup b = runtime.createActorGroup();
+            ActorRuntime.ActorGroup c = runtime.createActorGroup();
+            ActorRuntime.ActorGroup d = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability ca = a.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability cb = b.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability cc = c.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability cd = d.joinCapability();
+
+            CountDownLatch first = new CountDownLatch(1);
+            CountDownLatch second = new CountDownLatch(1);
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnShared(
+                    twoRooms, () -> (step, ctx) -> {
+                        try {
+                            if (step == 1) {
+                                ca.join();
+                                cb.join();
+                                cb.join(); // idempotent: consumes no extra slot
+                                assertThrows(IllegalStateException.class, cc::join);
+                                a.leaveCurrent();
+                                cc.join();
+                                assertTrue(b.contains(ctx.self()));
+                                assertTrue(c.contains(ctx.self()));
+                                assertFalse(a.contains(ctx.self()));
+                            } else if (step == 2) {
+                                // Closing B from the host must free a room
+                                // slot without terminating this actor or C.
+                                cd.join();
+                                assertTrue(c.contains(ctx.self()));
+                                assertTrue(d.contains(ctx.self()));
+                                assertFalse(b.contains(ctx.self()));
+                            }
+                        } catch (Throwable failure) {
+                            error.compareAndSet(null, failure);
+                        } finally {
+                            if (step == 1) first.countDown();
+                            if (step == 2) second.countDown();
+                        }
+                    });
+            connection.send(1);
+            assertTrue(first.await(5, TimeUnit.SECONDS));
+            assertNull(error.get());
+            b.close();
+            assertTrue(connection.isAlive());
+            connection.send(2);
+            assertTrue(second.await(5, TimeUnit.SECONDS));
+            assertNull(error.get());
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, c.memberCount());
+            assertEquals(0, d.memberCount());
+        }
+    }
 }
