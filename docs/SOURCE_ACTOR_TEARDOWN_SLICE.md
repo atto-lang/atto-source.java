@@ -51,6 +51,29 @@ the evaluator; only the runtime's lifecycle lane invokes the hook.
   native arenas and actor memory accounting must still respect outstanding
   pinned loans and FFI callbacks.
 
+## Bounded async host completion gate (not source lowering)
+
+`ActorAsyncTeardownGate` is a separately tested **host-only primitive**.
+It observes a `CompletionStage`, installs a trusted scheduler timeout, and
+atomically records SUCCESS/FAILURE/TIMED_OUT. Producer and timer callbacks
+may **only** ask the CONTROL scheduler to enqueue a turn; they do not invoke
+Oreslang guest code. A delayed operation cannot overwrite a timeout result,
+and constructor failure does not silently leave a Future with no deadline.
+
+**Not yet connected:** `ActorRuntime`'s stopped-actor CONTROL admissions,
+the `OresEvalRootNode` source method continuation scheduler, and the
+native/FFI resource registry. In particular, a timeout only terminates
+logical waiting and is **not** evidence that a live native loan, file descriptor
+or raw callback can be freed. Source `async tear_down` remains fail-closed.
+The next change must reserve a lifecycle continuation slot after user mail
+is sealed, reenter the actor's exclusive lane on completion, run the
+last guest cleanup callback exactly once, fence remaining resources, and
+only then settle `done`.
+
+Standalone exact Git blob `ActorAsyncTeardownGate.java` has been compiled
+with JDK 21 and exercised against success, deadline, failure and duplicate
+completion races. Full project Maven/JUnit remains outstanding.
+
 ## Required before merge
 
 1. Run `mvn -Dtest=ActorSourceTearDownTest,ActorSupervisorPseudoHandlerAdmissionTest,SourceActorEndCleanupExecutionTest,ActorEndCleanupTest test`
