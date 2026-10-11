@@ -66,6 +66,14 @@ public final class NativeHttp implements AutoCloseable {
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
+        // This adapter creates one actor per HTTP request. A serial actor must
+        // instead retain one actor identity and state across ALL requests/mail.
+        // Fail closed until persistent per-route actor dispatch is implemented.
+        if (code.isSerialActor(type)) {
+            throw new UnsupportedOperationException(
+                    "serial HTTP handler requires persistent actor-wide HTTP/mail admission; "
+                            + "spawn-per-request routing is not serial actor execution");
+        }
         return new Handler(code, type, kind);
     }
 
