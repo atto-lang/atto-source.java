@@ -1841,6 +1841,11 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
+            if (unary.operator().equals("trap")) {
+                // Expression-level trap has the same lossy Option effect as trap fnc.
+                // Do not flatten Option<T> or discard the success value of a void call.
+                return new Named("Option", List.of(operand));
+            }
             if (unary.operator().equals("&")) {
                 // Reborrow an existing loan; borrowing the wrapper must not
                 // create Borrow<Borrow<T>> or erase the source lifetime.
