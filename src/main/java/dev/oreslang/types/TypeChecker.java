@@ -2312,6 +2312,13 @@ public final class TypeChecker {
                                     "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
                             yield Primitive.VOID;
                         }
+                        case "get_ready", "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member() + " expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
                         case "stop" -> {
                             if (!call.arguments().isEmpty()) {
                                 throw new IllegalArgumentException(
@@ -2831,7 +2838,7 @@ public final class TypeChecker {
                             List.of(Unknown.INSTANCE));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "stop", "cancel", "kill" ->
+                    case "send", "stop", "cancel", "kill", "get_ready", "get_done" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
