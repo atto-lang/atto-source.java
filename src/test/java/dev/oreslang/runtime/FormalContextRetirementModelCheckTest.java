@@ -209,14 +209,15 @@ final class FormalContextRetirementModelCheckTest {
             }
             case ACTOR_EXIT -> actor = false;
             case MARK_ABORT_REJECTED -> {
-                // A callback arriving after executor shutdown may only
-                // record pending socket ownership; it cannot release it.
-                if (!ioOpen && !socketClosed && tracked) rejected = true;
+                // Includes an unexpected rejection before executor shutdown;
+                // recovery must still be possible without releasing early.
+                if (!socketClosed && tracked && !queued) rejected = true;
             }
             case SHUTDOWN_IO -> {
-                // The corrected close path keeps its executor admitting
-                // already-owned cleanup until the exchange is released.
-                if (!tracked) ioOpen = false;
+                // Normally the exchange releases before executor shutdown.
+                // A rejected abort is exceptional: stop admission, drain
+                // existing carriers, then close that socket after exit.
+                if (!tracked || rejected) ioOpen = false;
             }
             case PHYSICAL_IO_EXIT -> {
                 if (!ioOpen && !queued) ioExited = true;
@@ -269,6 +270,19 @@ final class FormalContextRetirementModelCheckTest {
         }
         assertTrue(sawRetired);
         assertTrue(sawStoppedButStillTracked);
+        HttpState rejected = HttpState.initiallyActive();
+        rejected = httpStep(rejected, HttpEvent.STOP_LISTENER);
+        rejected = httpStep(rejected, HttpEvent.MARK_ABORT_REJECTED);
+        assertTrue(rejected.abortRejected);
+        rejected = httpStep(rejected, HttpEvent.SHUTDOWN_IO);
+        assertFalse(rejected.ioOpen);
+        rejected = httpStep(rejected, HttpEvent.PHYSICAL_IO_EXIT);
+        rejected = httpStep(rejected, HttpEvent.RECLAIM_REJECTED_AFTER_IO_EXIT);
+        assertTrue(rejected.socketClosed, "socket may close only after I/O carrier exit");
+        rejected = httpStep(rejected, HttpEvent.ACTOR_EXIT);
+        rejected = httpStep(rejected, HttpEvent.RELEASE_EXCHANGE);
+        assertFalse(rejected.tracked, "last exchange must release after actor exit");
+        assertTrue(httpStep(rejected, HttpEvent.CLOSE_RETRY).retired);
         assertTrue(visited.size() >= 15,
                 "HTTP shutdown exploration unexpectedly small: " + visited.size());
     }
