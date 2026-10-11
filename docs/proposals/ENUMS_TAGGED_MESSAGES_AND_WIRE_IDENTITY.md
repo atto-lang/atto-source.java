@@ -106,6 +106,47 @@ An arm-level `on Status.Running` tests an enum **value**; `on is Status status` 
 - `do match` has no result. Value-producing `match<R>` constrains its *whole expression result*, not each pattern; `R` is otherwise inferred from arm results. The planned arm-local `return` returns from that match arm's result scope, not from the containing function. No `-> R` requirement per arm. Preserve slim arrow `->` for executable arms; fat `=>` is for types.
 - The proposed `<messages=WorkerMessage>` actor metadata constrains the one public `send` entrypoint (no arbitrary external actor method invocation), while `receive` stays in the actor's exclusive scheduler lane. Static and runtime admission both reject out-of-domain messages; no cast, dynamic import, serializer, FFI, or unsafe host value may bypass that contract. Message ownership transfers or copies according to explicit sendability rules.
 
+## Mandatory `Serializable` actor message contract
+
+**Normative decision:** *Every value supplied to the single public `ActorRef.send(value)` is recursively `Serializable`*, independent of SHARED/PRIVATE/UNTRUSTED placement, current process, deployment topology and whether the runtime elides a physical byte encoding on an optimized local path. **`Sendable`/frozen/read-only is necessary for isolation but is not a proof of portable serialization.** A host pointer, actor reference, lock, Future, channel, borrowed view or closure is not automatically a valid mailbox value. An actor reference can only be forwarded in the future through an explicitly schema-defined, authority-scoped, revocable capability descriptor with verified serialization semantics; no raw pointer or process-local token enters a data envelope.
+
+`Serializable` is a built-in, compiler-verified type **constraint** with a versioned codec descriptor, not a mutable interface method that arbitrary guest code can claim to implement. Proposed `@Serializable` derives this descriptor and the encode/decode implementation for eligible user-defined structs/classes/enums; it must not mean Java `java.io.Serializable`, Graal host reflection, JSON field accessors alone, or a promise that an arbitrary pointer is copyable.
+
+```ores
+// Desired semantics; derivation and enum declarations are still proposals.
+const a = await spawn WorkerActor();
+a.send("foo");  // Valid if WorkerActor's declared message domain includes string.
+
+// Automatically serializable: scalar string/bool/int/float, fixed tuples and
+// finite arrays, homogeneous collections and readonly/infer structs whose
+// elements are all Serializable; enums when all case payloads are Serializable.
+define pattern Messages as
+    string | Status | Tuple[bool, string]
+end
+
+@Serializable // PENDING: must generate an executable, versioned codec first.
+define struct JobData as
+    id: string
+    retries: int
+end
+
+// A source actor's only public ingress is a.send(value); no a.receive(...).
+```
+
+**Admission algorithm** for `ActorRef<T>.send(value)`:
+1. Resolve the actor's canonical declared message domain (currently a typed `receive(ActorMail<T>)` on Java; proposed `<messages=...>` syntax must lower to the *same* domain).
+2. Prove that `typeof(value)` is assignable to that domain. This is independent of serializability.
+3. Prove recursively that the **complete static message type** has an Oreslang `Serializable` codec. For a named `pattern` domain, every alternative must be serializable; for an `enum`, every variant's payload must be serializable (even a branch not taken by this particular send).
+4. Validate the dynamic value against the exact schema descriptor (important at `Any`, erased generic, deserialization, host FFI or unsafe boundaries); reject unknown constructors, extra/missing fields, wrong types, stale versions, cycles and unsupported capabilities before mailbox publication.
+5. Serialize to an immutable bounded envelope or produce a proven-equivalent isolated immutable value on a **local-only optimized fast path**, with a real codec available for relocation; enforce max byte size, node/depth limits, quota reservation and cancellation-aware cleanup. Success acknowledges bounded mailbox **admission**, never execution or durability. Failed encode/admission has no delivered partial message.
+6. Decoder reconstructs a fresh value with no shared writable alias into the sender's actor-owned heap. It validates schema ID/version/variant, sender isolation and destination generation and cannot instantiate host objects or execute arbitrary user methods as a side effect.
+
+`Serializable` is **transitive**: `List<Serializable>` is not a magical dynamic back door; a concrete `List<T>` qualifies only when `T` does. An `Option<T>`/`Result<T,E>`, tuple, finite array, map, inferred struct, or pattern domain qualifies only if *all* component types have codecs. The result type of `match<R>` is unrelated to this constraint, and a named pattern remains type-only, never a runtime constructor/tag. A class explicitly annotated `@Serializable` requires generated field codecs and a safe construction path; simply having the annotation is not enough.
+
+**Format:** use a portable length-delimited tagged encoding with a versioned schema identity and stable variant labels. The precise binary format and canonical scalar encodings require separate cross-implementation vectors; neither JVM identity, `ObjectOutputStream`, `Symbol` interning, nor PostgreSQL-local OIDs are wire contracts. Text/JSON may be a diagnostic/debug encoding. Unknown/malformed or oversized messages fail closed, and no decoder dynamically interns attacker-controlled symbols.
+
+**Current implementation gap (as of this RFC):** Java source currently has `ActorMail<T>` typing and frozen/isolated-copy runtime transport, and formerly uses a broader `sendable` check that can admit explicitly scoped capabilities; the parser does **not** yet generate `@Serializable` codecs or named enums/patterns. This PR adds a *first strict source-level admission pass* for primitive and structural built-in types and rejects `@Serializable` until derivation exists; it **does not yet certify a portable binary codec or change every host-privileged transport path**. LLVM still lacks full source-level actor/send/receive lowering. Migrating previously permitted host capability mail must use a separate audited control path or a genuinely serializable capability type; do not silently weaken the new public `send` contract.
+
 ## Cross-runtime identity and durability
 
 Separate three layers:
