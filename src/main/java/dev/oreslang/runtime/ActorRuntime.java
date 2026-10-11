@@ -1187,6 +1187,27 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * A supervisor receives child terminal events on its own single-flight
+     * actor turn, never on the failed child's carrier or a Mailman carrier.
+     * Each method is mandatory: missing typed-effect coverage is a host
+     * compile error. Guest-source hook lowering is a separate release gate.
+     */
+    public interface SupervisionHandler {
+        SupervisionDecision onThrow(SupervisorFailureLane.Failure failure);
+        SupervisionDecision onRaise(SupervisorFailureLane.Failure failure);
+        SupervisionDecision onPanic(SupervisorFailureLane.Failure failure);
+        SupervisionDecision onCancel(SupervisorFailureLane.Failure failure);
+        SupervisionDecision onHostFailure(SupervisorFailureLane.Failure failure);
+    }
+
+    public enum SupervisionDecision {
+        /** The failed child is already finalized; consume this notification. */
+        ACKNOWLEDGE,
+        /** Leave the already-published root event for ancestor/host handling. */
+        ESCALATE
+    }
+
+    /**
      * Compiler/interpreter callback for a one-shot source-level actor callable.
      * Guest code never receives this host callback object.
      */
@@ -1234,6 +1255,15 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        /** Fail closed to root supervision until source hooks are lowered. */
+        default SupervisionDecision superviseChild(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                SupervisorFailureLane.Failure failure,
+                ActorContext<Object> context) throws Exception {
+            return SupervisionDecision.ESCALATE;
+        }
     }
 
     public interface ActorContext<M> {
@@ -3531,6 +3561,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
+                        parent.childFailures.reserve(supervisorKey(id));
                         parent.children.add(cell);
                         linkedToParent = true;
                         actors.put(id, cell);
@@ -3540,7 +3571,12 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
-                if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (linkedToParent && cell != null) {
+                    synchronized (parent.lifecycleLock) {
+                        parent.children.remove(cell);
+                        parent.childFailures.retireGracefully(supervisorKey(id));
+                    }
+                }
                 if (supervisionReserved) supervisorFailures.retireGracefully(supervisorKey(id));
                 actorCount.decrementAndGet();
                 throw failure;
@@ -5683,6 +5719,9 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
+        /** Pre-reserved per-child urgent CONTROL events, distinct from mail. */
+        private final SupervisorFailureLane childFailures =
+                new SupervisorFailureLane(dispatcherConfig.maxActors());
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -5861,7 +5900,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return childFailures.pendingCount() > 0
+                    || !continuationMailbox.isEmpty()
+                    || (!sourceReceiveSuspended && !mailbox.isEmpty());
         }
 
         private OresScheduler sourceScheduler() {
@@ -5985,9 +6026,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // are best-effort and retryable by the process collector.
             }
             unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
             SupervisorFailureLane.ActorKey supervised = supervisorKey(ref.id());
+            SupervisorFailureLane.Failure controlEvent = null;
             if (terminal == null) {
                 supervisorFailures.retireGracefully(supervised);
             } else {
@@ -5995,8 +6036,9 @@ public final class ActorRuntime implements AutoCloseable {
                 String message = terminal.getMessage();
                 String summary = type + (message == null ? "" : ": " + message);
                 String parentId = parent == null ? "" : parent.ref.id().value().toString();
-                supervisorFailures.publish(new SupervisorFailureLane.Failure(
-                        supervised, supervisorFailureKind(terminal), summary, parentId));
+                controlEvent = new SupervisorFailureLane.Failure(
+                        supervised, supervisorFailureKind(terminal), summary, parentId);
+                supervisorFailures.publish(controlEvent);
             }
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
@@ -6010,15 +6052,30 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
+            // The child is fully finalized before its parent observes control.
+            // Child carriers enqueue metadata, never execute parent guest code.
+            if (parent != null) parent.childFinalized(this, controlEvent);
             lifecycleLock.notifyAll();
         }
 
-        private void childFinalized(ActorCell<?> child) {
+        private void childFinalized(
+                ActorCell<?> child,
+                SupervisorFailureLane.Failure controlEvent) {
+            boolean wake = false;
             synchronized (lifecycleLock) {
                 children.remove(child);
+                if (controlEvent == null) {
+                    childFailures.retireGracefully(supervisorKey(child.ref.id()));
+                } else {
+                    childFailures.publish(controlEvent);
+                    wake = !stopped.get() && !finalized && !forceKillFenced;
+                }
                 if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+            // This schedules the parent's own single-flight execution lease.
+            // If stopped, the root lane still retains its independent event.
+            if (wake) schedule();
         }
 
         private boolean finalized() {
@@ -6221,6 +6278,18 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private SupervisionDecision dispatchSupervisorHook(
+                SupervisionHandler handler,
+                SupervisorFailureLane.Failure failure) {
+            return switch (failure.kind()) {
+                case THROW -> handler.onThrow(failure);
+                case RAISE -> handler.onRaise(failure);
+                case PANIC -> handler.onPanic(failure);
+                case CANCEL -> handler.onCancel(failure);
+                case HOST_FAILURE -> handler.onHostFailure(failure);
+            };
+        }
+
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
             currentActor.set(this);
@@ -6295,6 +6364,38 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                    // Urgent supervisor CONTROL outranks continuations and
+                    // user traffic even when a source receive is suspended.
+                    Optional<SupervisorFailureLane.Failure> childFailure =
+                            childFailures.poll();
+                    if (childFailure.isPresent()) {
+                        SupervisorFailureLane.Failure failure = childFailure.orElseThrow();
+                        try {
+                            SupervisionDecision decision = SupervisionDecision.ESCALATE;
+                            if (behavior instanceof SupervisionHandler handler) {
+                                decision = Objects.requireNonNull(
+                                        dispatchSupervisorHook(handler, failure),
+                                        "supervision hook returned null decision");
+                            } else if (codeExecutor != null) {
+                                @SuppressWarnings("unchecked")
+                                ActorContext<Object> sourceContext =
+                                        (ActorContext<Object>) (ActorContext<?>) context;
+                                decision = Objects.requireNonNull(
+                                        codeExecutor.superviseChild(
+                                                codeActorType, codeActorState, failure, sourceContext),
+                                        "source supervisor returned null decision");
+                            }
+                            // Root already has a durable copy, including for
+                            // ESCALATE. A child can never poison the parent by
+                            // requesting a non-existent restart mechanism.
+                            childFailures.ack(failure.actor());
+                        } catch (Throwable handlerFailure) {
+                            childFailures.retry(failure.actor());
+                            throw handlerFailure;
+                        }
+                        processed++;
+                        continue;
+                    }
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
                         // Stop closes the user mailbox under this same lock.
