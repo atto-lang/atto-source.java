@@ -101,6 +101,7 @@ public final class SourceSupervisorLowering {
                 // reconciliation rather than silently reopening RESTART.
                 var permit = group.reserveFinalizedStop(resolution);
                 hostDecision.accept(resolution);
+                group.recordAppliedStop(permit);
                 group.commitReservedStop(permit);
             });
         }
@@ -153,6 +154,7 @@ public final class SourceSupervisorLowering {
             var permit = pendingStops.remove(resolution.turnGeneration());
             if (permit == null)
                 throw new IllegalStateException("missing reserved STOP turn");
+            group.recordAppliedStop(permit);
             group.commitReservedStop(permit);
         });
     }
