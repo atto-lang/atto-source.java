@@ -199,6 +199,20 @@ final class ActorStateAndEffectsParserTest {
                 }
             end
             """)));
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse("""
+            define actor Worker as
+                state { count: int = 0; }
+                pub tick(): void {
+                    self.handle_state(|s| -> {
+                        loop {
+                            s.count = s.count + 1;
+                            break;
+                        }
+                    });
+                    return;
+                }
+            end
+            """)));
         // Direct scalar operations stay legal and nested synchronous
         // self.handle_state calls are still tested above.
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
