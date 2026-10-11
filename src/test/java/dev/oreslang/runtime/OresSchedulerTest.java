@@ -690,4 +690,63 @@ final class OresSchedulerTest {
         }
     }
 
+    @Test
+    void runtimeOwnedCloseWaitsForFailedTaskCarrierExitBeforeRetirement() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch guestTurnExited = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        CountDownLatch closeFinished = new CountDownLatch(1);
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        IllegalStateException guestFailure =
+                new IllegalStateException("guest task failure before context exit");
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "close-failed-carrier-exit-test", 1, carrier,
+                turn -> {
+                    turn.run();
+                    guestTurnExited.countDown();
+                    try {
+                        if (!allowExit.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("failed task carrier exit gate timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("failed task carrier exit interrupted",
+                                interrupted);
+                    }
+                });
+        try {
+            OresFuture<Integer> failed = scheduler.start(resume -> {
+                throw guestFailure;
+            });
+            assertTrue(guestTurnExited.await(5, TimeUnit.SECONDS));
+
+            Thread closing = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                } finally {
+                    closeFinished.countDown();
+                }
+            });
+            assertFalse(closeFinished.await(150, TimeUnit.MILLISECONDS),
+                    "close must retain a failed task until its entered context exits");
+            assertFalse(failed.isDone(), "failure must not publish before context exit");
+
+            allowExit.countDown();
+            assertTrue(closeFinished.await(5, TimeUnit.SECONDS));
+            closing.join(5000);
+            assertNull(closeFailure.get());
+            var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.get(5, TimeUnit.SECONDS));
+            assertSame(guestFailure, observed.getCause(),
+                    "carrier-exit settlement must preserve original task failure identity");
+        } finally {
+            allowExit.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
