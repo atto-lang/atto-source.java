@@ -659,10 +659,15 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void scheduleInitial() {
-            CarrierLease lease = reserveCarrier();
-            if (!phase.compareAndSet(NEW, QUEUED)) {
-                lease.release();
-                throw new IllegalStateException("scheduler task was already started");
+            CarrierLease lease;
+            synchronized (terminalAdmissionLock) {
+                // The reservation and QUEUED transition are one admission:
+                // close/cancel cannot observe QUEUED without its revocable
+                // lease, or a second producer replace the published lease.
+                if (phase.get() != NEW)
+                    throw new IllegalStateException("scheduler task was already started");
+                lease = reserveCarrier();
+                phase.set(QUEUED);
             }
             enqueueTurn(lease);
         }
@@ -880,12 +885,16 @@ public final class OresScheduler implements AutoCloseable {
         private void scheduleReadyResume() {
             if (executing.get()) return;
             if (pendingResume.get() == null) return;
-            // Reserve before WAITING->QUEUED so concurrent cancellation sees
-            // the still-pending physical carrier rather than a drained task.
-            CarrierLease lease = reserveCarrier();
-            if (!phase.compareAndSet(WAITING, QUEUED)) {
-                lease.release();
-                return;
+            CarrierLease lease;
+            synchronized (terminalAdmissionLock) {
+                if (executing.get() || pendingResume.get() == null
+                        || phase.get() != WAITING) return;
+                // Producers and carrier-exit callbacks may both try to
+                // requeue this WAITING task. Serializing lease installation
+                // with QUEUED publication prevents a losing reservation from
+                // clobbering the winner's revocable queuedCarrierLease.
+                lease = reserveCarrier();
+                phase.set(QUEUED);
             }
             try {
                 enqueueTurn(lease);
