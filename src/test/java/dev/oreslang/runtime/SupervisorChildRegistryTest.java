@@ -271,4 +271,21 @@ final class SupervisorChildRegistryTest {
         assertEquals(1, failed.get());
         assertEquals(2, registry.snapshot(first.child()).incarnation());
     }
+    @Test
+    void reconciledStopCannotReactivateChild() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actor = ActorRuntime.ActorId.create();
+        var child = registry.register(actor);
+        registry.finalized(child.child(), actor, 1);
+        var permit = registry.beginStop(child.child(), actor, 1, 42);
+        registry.markStopUncertain(permit);
+        assertEquals(1, registry.unresolvedStops().size());
+        registry.reconcileVerifiedStop(permit);
+        assertTrue(registry.unresolvedStops().isEmpty());
+        assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                registry.reconcileVerifiedStop(permit).phase());
+        assertThrows(IllegalStateException.class, () -> registry.beginRestart(child.child(), actor, 1));
+    }
+
 }
