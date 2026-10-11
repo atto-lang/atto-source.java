@@ -647,7 +647,8 @@ public final class OwnershipChecker {
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
-                    || state.immutableBorrows > 0 || state.mutableBorrowed))) {
+                    || state.immutableBorrows > 0 || state.mutableBorrowed
+                    || containsBorrowType(state.type)))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
     }
@@ -3247,7 +3248,8 @@ public final class OwnershipChecker {
             for (VarState state : visibleStates()) {
                 if (state.moved) continue;
                 if (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
-                        || state.immutableBorrows > 0 || state.mutableBorrowed) {
+                        || state.immutableBorrows > 0 || state.mutableBorrowed
+                        || containsBorrowType(state.type)) {
                     return true;
                 }
             }
