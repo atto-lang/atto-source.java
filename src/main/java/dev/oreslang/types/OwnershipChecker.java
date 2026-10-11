@@ -689,6 +689,35 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            // PR #661: a typed value match returns a COPY scalar. Traverse its
+            // subject, guard and selected arm result with independent pattern
+            // scopes so moved/borrowed/captured values cannot evade checks.
+            ValueInfo subject = checkExpr(matched.subject(), scope, false);
+            VarState source = matched.subject() instanceof Ast.NameExpr name
+                    ? scope.lookup(name.name()) : null;
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            for (Ast.MatchArm arm : matched.arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                try {
+                    definePatternAliases(arm.pattern(), subject.type, source, armScope);
+                    if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                    if (arm.body().size() != 1
+                            || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
+                            || returned.value() == null) {
+                        throw error("unlowered typed value match arm in ownership checker");
+                    }
+                    checkExpr(returned.value(), armScope, false);
+                } finally {
+                    armScope.close();
+                }
+                exits.add(stateSnapshot(scope));
+            }
+            mergeBranchState(base, exits);
+            return new ValueInfo(matched.returnContract(), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -1956,6 +1985,20 @@ public final class OwnershipChecker {
     }
 
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            // Capture analysis must see every free scalar name used in a
+            // value-producing match inside a lambda, but pattern bindings
+            // remain arm-local and cannot be captured from the outer frame.
+            scanExpr(matched.subject(), locals, outer, recursiveBinding, captures, false);
+            for (Ast.MatchArm arm : matched.arms()) {
+                Set<String> armLocals = new HashSet<>(locals);
+                collectPatternBindingNames(arm.pattern(), armLocals);
+                if (arm.guard() != null)
+                    scanExpr(arm.guard(), armLocals, outer, recursiveBinding, captures, false);
+                scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
+            }
+            return;
+        }
         if (expr instanceof Ast.NameExpr name) {
             if (name.name().equals(recursiveBinding)) return;
             if (!locals.contains(name.name())) {
