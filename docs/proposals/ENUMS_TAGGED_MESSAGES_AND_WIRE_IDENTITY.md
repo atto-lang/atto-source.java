@@ -6,9 +6,10 @@
 
 Keep **values**, **types**, and **matching** separate:
 
-1. `define enum E as ... end` declares a closed *nominal* sum/variant type. A variant may carry no payload or a statically typed payload.
-2. `type T = A | B | C;` is the existing transparent *union type* alias, not a special `type match` declaration.
-3. `match` inspects a value. It is not a declaration kind. The return type of a value-producing match is contextually inferred or optionally constrained with `match<R>`; arms do not need individual return type annotations.
+1. `define pattern P as TypeA | TypeB | ... end` declares a **type-only**, transparent, statically-closed domain of allowed shapes. It is not an instance, constructor, enum, or enum namespace. The existing `type T = A | B | C;` remains the ordinary type-alias form; `define pattern` retains declaration-kind metadata for domain restrictions, diagnostics and actor-message admission.
+2. `define enum E as ... end` declares a closed **nominal type and a namespace of value constructors/constants**. The enum declaration is not itself a runtime value; `E.Case` is a value (or a constructor of values). A variant may carry no payload or a statically typed payload.
+3. Dependency is strictly **pattern -> enum**, never **enum -> pattern**. Patterns may contain enum *types*, not arbitrary evaluated expressions. Enum case payload types cannot reference any named `pattern` (including through type aliases, generic arguments or transitive dependencies). Reject direct/indirect cycles.
+4. `match` inspects values using patterns. It is not a declaration kind. The result of a value-producing match is inferred or optionally constrained using `match<R>`; neither a named pattern nor individual match arms require return-type annotations. `do match` produces no value.
 
 These choices are compatible with the direction of [TYPEOF_AND_TYPED_MATCH.md](TYPEOF_AND_TYPED_MATCH.md) and the planned canonical `match ... over / on ... / end` forms. Existing grammar/docs include older `match` spellings. **Reconcile the active match PRs and parser grammar before enabling new source syntax.** Do not create a parallel expression-match AST.
 
@@ -28,11 +29,16 @@ define enum WorkerMessage as
   Stop
 end
 
-type Shapes =
+define pattern Shapes as
     Tuple[bool, string]
   | string
   | FixedArray[string, string, string]
-  | FixedList[bool, bool];
+  | FixedList[bool, bool]
+  | Status
+end
+
+// The enum type contributes all cases of Status to Shapes.
+// Shapes.Status and Shapes("hello") are NOT constructors or values.
 
 define actor Worker<messages=WorkerMessage> as
   receive(WorkerMessage m): void {
@@ -48,6 +54,13 @@ end
 worker.send(WorkerMessage.Start("job-123"));
 worker.send(WorkerMessage.Stop);
 
+// Another actor may choose the heterogeneous pattern domain.
+// Its only external entrypoint is still send(Shapes), not arbitrary methods.
+// define actor MixedWorker<messages=Shapes> as ... end
+// mixed_worker.send(Status.Running);  // admissible by Shapes
+// mixed_worker.send("hello");        // admissible by Shapes
+// mixed_worker.send(42);             // type error
+
 const string label = match<string> Status.Running over
   on Status.Pending -> { return "waiting"; }
   on Status.Running -> { return "busy"; }
@@ -56,6 +69,32 @@ end;
 ```
 
 `Array[T]`/`List[T]` are variable-extent core collections. Exact 3-element or 2-element shapes use `FixedArray`/`FixedList` (or `Tuple` when tuple/product semantics are intended). `Shapes` is structurally distinguishable on kind and arity; if alternate arms overlap, use the existing explicit ordered matching contract once reconciled.
+
+## Named pattern semantics and one-way dependency
+
+A `define pattern` declaration is *type-only*: its constituent entries are type expressions, not objects created at declaration time. `pattern` is a declaration keyword; unlike an arm-level pattern, it cannot bind a variable, execute a guard, or evaluate arbitrary expressions. It has no identity-bearing runtime constructor, tag, UUID or Symbol. Compiler analysis may normalize it into a union type while retaining source declaration-kind metadata to diagnose illegal enum -> pattern references.
+
+For a pattern domain `P`, `P` can type actor message admissions, function parameters, or scrutinee values where that domain is required. `P.SomeCase`, `P(value)` and `new P` are invalid. For `E` an enum, `E` is usable in a type position and `E.Case` is usable in a value/pattern-match position; the bare enum declaration is not a first-class namespace object.
+
+A pattern may include an enum **type**, e.g. `| Status`, which includes all of its variants; the enum may never include a named pattern as a payload type. Reject transitive violations through `type Alias = PatternName`, generic type parameters or imported aliases. Ordinary enum fields may still use other legal non-pattern types, including tuples and arrays. A bare enum-case value such as `Status.Running` is **not a type expression** in this v1 declaration grammar; match arms may still test that value as a constant pattern.
+
+Use an explicit `|` between alternatives: source newlines are generally ignored by the existing lexer and must not be used as semantic union separators. A named pattern's *domain* is statically closed (no dynamic registered cases), although a member such as `string` may of course admit infinitely many runtime values. No additional implicit runtime discriminant appears when a value is assigned to a transparent pattern domain. The matcher must reject ambiguous/reified-erased shape tests, or use the chosen explicit ordered-match grammar; do not pretend shapes are disjoint when they overlap.
+
+Example invalid dependency, including the indirect case:
+
+```ores
+define pattern Accepted as
+  string | Status
+end
+type AliasToAccepted = Accepted;
+
+// Invalid: enum payload refers to a pattern (directly or through an alias).
+// define enum Bad as Data(payload: AliasToAccepted) end
+```
+
+## Match result semantics
+
+An arm-level `on Status.Running` tests an enum **value**; `on is Status status` tests an enum **type** (with binding). A `match<R>` expression has optional overall result type `R`, independent of the scrutinee and of the declared pattern domain. Each value arm must produce a result compatible with `R` or with the inferred common result type. There is **no** per-case return type in `define pattern` and no required `-> R` after an arm. A `receive(Shapes m): void` declaration types the handler independently; `do match` remains statement-only.
 
 ## Enum type and runtime semantics
 
@@ -97,6 +136,8 @@ Payload-bearing variants generally map to `tag TEXT` + validated JSONB, discrimi
 
 ```ebnf
 enum_decl     = visibility "define" "enum" IDENT [ generic_params ] "as" { enum_variant } "end" ;
+pattern_decl  = visibility "define" "pattern" IDENT "as" type_ref "end" ;
+                (* type_ref admits explicit | union alternatives; pattern declarations are nonconstructible *)
 enum_variant  = IDENT [ "(" [ named_type_param { "," named_type_param } ] ")" ]
                 [ "=" STRING_LITERAL ] [ ";" ] ;
 named_type_param = IDENT ":" type_ref ;
@@ -105,7 +146,7 @@ named_type_param = IDENT ":" type_ref ;
 Do not reserve `match` as a declaration modifier. Add `enum` to named-type imports (or include it under the existing `import types` selector) and exports with normal nominal type resolution. Specify whether enum declarations can occur at module scope in the actual grammar, consistent with other type declarations.
 
 Implementation phases:
-1. **Shared spec and fixtures:** positive and negative syntax, typed constructors, duplicate tag errors, import/alias behavior, exhaustive and nonexhaustive matching, exact collection shapes, `match<R>` vs `do match`.
+1. **Shared spec and fixtures:** distinct named `pattern` versus `enum` declarations, no pattern constructors, pattern includes enum type, reject direct/transitive enum -> pattern payload dependencies and cycles, positive and negative syntax, typed constructors, duplicate tags, import/alias behavior, exhaustive and nonexhaustive matching, exact collection shapes, `match<R>` vs `do match`.
 2. **Java/Graal:** lexer/AST/compiler typed descriptors; constructors, runtime representation, source-level matching and fail-closed actor `send` admission; interpreted/JIT/native-image tests.
 3. **LLVM:** equivalent front-end syntax, typed sum discriminant/payload ABI, ownership-safe destruction and constructor lowering; source-compiled execution tests (parsing only or rejection is NOT support).
 4. **Protocol/database:** explicit stable codec with conformance fixtures, round trips across backends, unknown tags, changed schema versions, collision/rename migration behavior, PostgreSQL schema/migration tests.
@@ -113,6 +154,6 @@ Implementation phases:
 
 ## Open questions for review
 
-- Whether the public syntax should name payload-bearing declarations `enum` (one construct) or `variant`/`data` (two constructs). Favor one construct initially for less complexity, while keeping payload distinction in ABI.
+- Whether the public syntax should name payload-bearing declarations `enum` (one construct) or `variant`/`data` (two constructs). Favor one construct initially for less complexity, while keeping payload distinction in ABI. A separate `define pattern` remains necessary because it declares a non-constructible structural domain, not a value family.
 - Whether persisted/public enums require explicit labels instead of merely recommending them.
 - The exact source grammar of `receive` and `<messages=...>` after integration with the current ActorGroup/actor single-send design. This RFC does **not** claim these source forms currently parse.
