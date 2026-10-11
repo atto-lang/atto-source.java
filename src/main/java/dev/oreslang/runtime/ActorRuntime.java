@@ -5844,12 +5844,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         boolean dispatchersTerminated = stillRunning.isEmpty() && !interrupted;
-        if (dispatchersTerminated && sourceCleanupPending) {
-            // Quiescence is proven. Graceful shutdown does not discard queued
-            // tasks or interrupt the final carrier-exit boundary.
-            for (ExecutorService dispatcher :
-                    List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
-                dispatcher.shutdown();
+        if (dispatchersTerminated) {
+            // Only source-owning shutdowns need the graceful drain path.
+            // All shutdown paths must still verify physical dispatcher exit.
+            if (sourceCleanupPending) {
+                for (ExecutorService dispatcher :
+                        List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
+                    dispatcher.shutdown();
+                }
             }
             for (ExecutorService dispatcher :
                     List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
