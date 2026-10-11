@@ -143,6 +143,22 @@ public final class OresEvalRootNode extends RootNode {
         return cleanupFailure;
     }
 
+    /**
+     * Cancellation is not a guest-catchable exception, even when a nested
+     * finally/defer fails and replaces its throwable while preserving the
+     * cancellation as suppressed evidence. Ordinary errors raised by an
+     * already admitted cleanup block may still be handled by its own catch.
+     *
+     * The cancellation flag is published by the scheduler before its
+     * cancellation continuation can re-enter the source task.
+     */
+    static boolean shouldEnterSourceCatch(
+            Throwable failure, boolean cancellationRequested, boolean inCleanup) {
+        Objects.requireNonNull(failure, "failure");
+        return !(failure instanceof OresScheduler.TaskCancelledException)
+                && (!cancellationRequested || inCleanup);
+    }
+
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
@@ -2154,7 +2170,10 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             (t, flow) -> {
                                 if (flow.kind() == SourceFlowKind.THROW
-                                        && !(flow.failure() instanceof OresScheduler.TaskCancelledException)) {
+                                        && shouldEnterSourceCatch(
+                                                flow.failure(),
+                                                t.cancellationRequested,
+                                                t.cleanupInProgress())) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
