@@ -121,6 +121,11 @@ public final class StdChannels implements AutoCloseable {
     private final AtomicBoolean startedOutput = new AtomicBoolean();
     private final AtomicBoolean startedError = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Identity-only zero-byte frames are private flush acknowledgement markers.
+    // Guest-written empty strings are never mistaken for a privileged marker.
+    private final java.util.Map<String, java.util.concurrent.CompletableFuture<Void>>
+            stdoutFlushBarriers = java.util.Collections.synchronizedMap(
+                    new java.util.IdentityHashMap<>());
     // Prevent close() from missing a worker still being published by a starter.
     // Never hold this lock while closing ChannelRuntime channels or joining workers:
     // channel admission owns COORDINATOR and would otherwise invert lock order.
@@ -286,6 +291,61 @@ public final class StdChannels implements AutoCloseable {
         }
     }
 
+    /**
+     * Actual host-flush completion, not mere rendezvous admission.
+     * Returns a Future settled only when the sole stdout worker has flushed
+     * this private marker after all preceding admitted output frames.
+     */
+    public OresFuture<Void> flushStdoutAsync() {
+        OutputChannel sink = output(); // checks the current actor capability
+        String marker = new String(""); // distinct identity from guest empty frames
+        var completion = new java.util.concurrent.CompletableFuture<Void>();
+        synchronized (stdoutFlushBarriers) {
+            if (closed.get()) {
+                return OresFuture.failed(new IllegalStateException("stdio is closed"));
+            }
+            stdoutFlushBarriers.put(marker, completion);
+        }
+        try {
+            OresFuture<Void> admission = sink.writeAsync(marker);
+            // Clean up if rendezvous admission fails or gets cancelled.
+            admission.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) finishStdoutBarrier(marker, failure);
+            });
+            completion.whenComplete((ignored, failure) -> {
+                if (completion.isCancelled()) {
+                    admission.cancel(true);
+                    synchronized (stdoutFlushBarriers) {
+                        stdoutFlushBarriers.remove(marker);
+                    }
+                }
+            });
+        } catch (RuntimeException | Error failure) {
+            finishStdoutBarrier(marker, failure);
+            throw failure;
+        }
+        return OresFuture.from(completion);
+    }
+
+    private void finishStdoutBarrier(String marker, Throwable failure) {
+        java.util.concurrent.CompletableFuture<Void> completion;
+        synchronized (stdoutFlushBarriers) {
+            completion = stdoutFlushBarriers.remove(marker);
+        }
+        if (completion == null) return;
+        if (failure == null) completion.complete(null);
+        else completion.completeExceptionally(failure);
+    }
+
+    private void failOutstandingStdoutBarriers(Throwable failure) {
+        java.util.List<java.util.concurrent.CompletableFuture<Void>> pending;
+        synchronized (stdoutFlushBarriers) {
+            pending = java.util.List.copyOf(stdoutFlushBarriers.values());
+            stdoutFlushBarriers.clear();
+        }
+        for (var completion : pending) completion.completeExceptionally(failure);
+    }
+
     private void pumpOutput(OutputChannel channel, PrintWriter target, String descriptor) {
         try {
             for (;;) {
@@ -302,8 +362,10 @@ public final class StdChannels implements AutoCloseable {
                 if (target.checkError()) {
                     throw new IOException(descriptor + " sink failed");
                 }
+                if (channel == output) finishStdoutBarrier(frame, null);
             }
         } catch (Throwable err) {
+            if (channel == output) failOutstandingStdoutBarriers(err);
             // A sink failure after graceful close was initiated is still a
             // real I/O failure and must be reported to the context owner.
             recordFailure(err);
@@ -338,6 +400,8 @@ public final class StdChannels implements AutoCloseable {
         // silently claiming writes were flushed when its worker is still alive.
         joinSink(drainOutput, "stdout");
         joinSink(drainError, "stderr");
+        failOutstandingStdoutBarriers(
+                new IllegalStateException("stdout closed before flush acknowledgement"));
         Throwable failed = failure;
         if (failed != null) throw new IllegalStateException("stdio channel failed", failed);
     }

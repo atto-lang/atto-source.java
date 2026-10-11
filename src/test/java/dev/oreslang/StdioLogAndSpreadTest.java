@@ -18,6 +18,58 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class StdioLogAndSpreadTest {
     @Test
+    @org.junit.jupiter.api.Timeout(20)
+    void asyncFlushDoesNotResolveUntilHostFlushCompletes() throws Exception {
+        var enteredFlush = new java.util.concurrent.CountDownLatch(1);
+        var releaseFlush = new java.util.concurrent.CountDownLatch(1);
+        var armed = new java.util.concurrent.atomic.AtomicBoolean();
+        java.io.OutputStream slowOutput = new java.io.OutputStream() {
+            @Override
+            public void write(int value) { }
+
+            @Override
+            public void flush() throws java.io.IOException {
+                if (!armed.get()) return;
+                enteredFlush.countDown();
+                try {
+                    if (!releaseFlush.await(8, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new java.io.IOException("test flush timed out");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException("test flush interrupted", e);
+                }
+            }
+        };
+        Source code = Source.newBuilder(OresLanguage.ID, """
+                pub async routine main(): void {
+                  await stdio.flush_async_logs();
+                  return;
+                }
+                """, "async-flush-ack.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            var evaluation = pool.submit(() -> {
+                try (Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).out(slowOutput).build()) {
+                    armed.set(true);
+                    context.eval(code);
+                }
+            });
+            assertTrue(enteredFlush.await(6, java.util.concurrent.TimeUnit.SECONDS),
+                    "flush marker must reach the stdout worker");
+            assertFalse(evaluation.isDone(),
+                    "flush_async_logs must not resolve at mere channel admission");
+            releaseFlush.countDown();
+            evaluation.get(8, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            releaseFlush.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void asyncLogAndFlushShareOneBoundedOutputPump() throws Exception {
         String output = run("""
                 pub async routine main(): void {

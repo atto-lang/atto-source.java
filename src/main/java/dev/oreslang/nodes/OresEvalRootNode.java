@@ -6218,9 +6218,9 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "stdio.flush_async_logs");
                         stdio.context().requireCapability(IsolatePolicy.Capability.STDOUT,
                                 "stdio.flush_async_logs");
-                        // A zero-byte output frame is admitted only after the
-                        // sole stdout pump flushed every preceding accepted frame.
-                        return stdio.context().standardChannels().output().writeAsync("");
+                        // Unlike channel write admission, this Future completes
+                        // only after the sole stdout worker finishes host flush.
+                        return stdio.context().standardChannels().flushStdoutAsync();
                     };
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin", "in" -> stdio.context().standardChannels().input();
