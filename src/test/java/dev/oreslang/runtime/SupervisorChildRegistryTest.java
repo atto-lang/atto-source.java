@@ -171,6 +171,8 @@ final class SupervisorChildRegistryTest {
                 "a forged acknowledgement must not release the reservation");
 
         registry.markStopApplied(stop);
+        assertThrows(IllegalStateException.class, () -> registry.markStopUncertain(stop),
+                "a verified host effect must never be downgraded to uncertain");
         registry.commitStop(stop);
         assertEquals(SupervisorChildRegistry.Phase.STOPPED,
                 registry.snapshot(first.child()).phase());
