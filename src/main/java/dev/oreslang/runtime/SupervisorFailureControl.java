@@ -212,6 +212,24 @@ public final class SupervisorFailureControl {
                 return;
             }
             synchronized (this) {
+                // A concurrently failed child-finalization barrier may have
+                // retired the entire queue while this host callback ran.
+                // The active notice was already counted as undelivered;
+                // never remove from an empty retired queue or count success.
+                if (handlerFailure != null) {
+                    draining = false;
+                    drainActive = false;
+                    return;
+                }
+                if (pending.peekFirst() != next) {
+                    handlerFailure = new IllegalStateException(
+                            "supervisor CONTROL queue changed during delivery");
+                    undelivered.addAndGet(pending.size());
+                    pending.clear();
+                    draining = false;
+                    drainActive = false;
+                    return;
+                }
                 pending.removeFirst();
             }
             processed++;
