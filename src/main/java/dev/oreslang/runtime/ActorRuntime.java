@@ -4899,7 +4899,7 @@ public final class ActorRuntime implements AutoCloseable {
             return ownerRuntime == runtime && Objects.equals(ownerActor, actor);
         }
 
-        void enter() {
+        synchronized void enter() {
             if (ownerRuntime != null) {
                 ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
                 if (context == null || context.runtime() != ownerRuntime
@@ -4916,17 +4916,18 @@ public final class ActorRuntime implements AutoCloseable {
             segmentActive = true;
         }
 
-        void chargeSafepoint() {
+        synchronized void chargeSafepoint() {
             requireActive();
-            if (fuelRemaining-- <= 0L) {
+            if (fuelRemaining == 0L) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.FUEL,
                         "untrusted logical task exhausted execution fuel");
             }
+            fuelRemaining--;
             check();
         }
 
-        void check() {
+        synchronized void check() {
             requireActive();
             long elapsed = wallClock.getAsLong() - startedNanos;
             // Fail closed on a monotonic clock overflow instead of treating
@@ -4944,7 +4945,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        void leave() {
+        synchronized void leave() {
             requireActive();
             long now = cpuClock.getAsLong();
             if (segmentCpuStarted >= 0 && now >= segmentCpuStarted) {
