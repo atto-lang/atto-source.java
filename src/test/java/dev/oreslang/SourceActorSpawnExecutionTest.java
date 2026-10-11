@@ -331,6 +331,48 @@ final class SourceActorSpawnExecutionTest {
         }
     }
 
+    @Test
+    void sourceActorMailboxUsesCompilerBoundBinaryMessagePackForListAndTuple() throws Exception {
+        String source = """
+                define actor ListWorker as
+                  receive(ActorMail<List<string>> mail): void {
+                    self.send(mail.value[0]);
+                    self.end();
+                    return;
+                  }
+                end
+
+                define isoactor TupleWorker as
+                  receive(ActorMail<Tuple[bool, string]> mail): void {
+                    self.send(mail.value[1]);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val listWorker = spawn ListWorker();
+                  val tupleWorker = spawn TupleWorker();
+                  await listWorker.get_ready();
+                  await tupleWorker.get_ready();
+
+                  listWorker.send(["from-list"]);
+                  tupleWorker.send((true, "from-tuple"));
+
+                  val a = (await listWorker.outputs.next()).value.unwrap();
+                  val b = (await tupleWorker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(a.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(b.value);
+                  await listWorker.get_done();
+                  await tupleWorker.get_done();
+                  return;
+                }
+                """;
+        assertEquals("from-list|from-tuple",
+                run(source, "source-actor-msgpack-v2-collections.ores"));
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
