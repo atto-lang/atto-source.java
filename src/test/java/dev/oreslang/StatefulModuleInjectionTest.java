@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class StatefulModuleInjectionTest {
 
     @Test
-    void parserAndTypecheckerDistinguishGlobalAndSlotSingletonModules() {
+    void parserAndTypecheckerDistinguishMutableGlobalAndFrozenProcessSingletonModules() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define global module GlobalCounter
                   let int value = 0;
@@ -30,11 +30,10 @@ final class StatefulModuleInjectionTest {
                 end
 
                 define singleton module SlotCounter
-                  let int value = 10;
+                  pub val int value = 10;
 
                   pub fnc increment(int by) : int {
-                    value = value + by;
-                    return value;
+                    return value + by;
                   }
                 end
 
@@ -80,11 +79,10 @@ final class StatefulModuleInjectionTest {
                 end
 
                 define singleton module SlotCounter
-                  let int value = 10;
+                  pub val int value = 10;
 
                   pub fnc increment(int by) : int {
-                    value = value + by;
-                    return value;
+                    return value + by;
                   }
                 end
 
@@ -119,7 +117,7 @@ final class StatefulModuleInjectionTest {
         }
 
         assertEquals(
-                "12\n16",
+                "12\n14",
                 output.toString(StandardCharsets.UTF_8).trim().replace("\r\n", "\n"));
     }
 
