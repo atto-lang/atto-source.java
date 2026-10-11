@@ -93,6 +93,46 @@ final class SerialActorImplicitCriticalTest {
                         "define serial actor Counter from serial actor")));
     }
 
+    @Test void guestSerialCounterPreservesOneReceiveAcrossCooperation() throws Exception {
+        // The actor's logical handler lifetime must survive a physical
+        // carrier handoff; the next user mail is not admitted early.
+        String source = SERIAL_COUNTER.replace(
+                "val next = self.increment();",
+                "val next = self.increment();\n                    rt cooperate;");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            Source compiled = Source.newBuilder(
+                    OresLanguage.ID, source, "serial-cooperation.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertDoesNotThrow(() -> context.eval(compiled));
+        }
+        assertEquals("3\\n", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void serialHttpRegistrationFailsClosedWhileAdapterSpawnsPerRequest() throws Exception {
+        String source = """
+                define serial actor Counter as
+                    receive(ActorMail<String> mail): void { return; }
+                end
+                pub routine main(): void {
+                    val handler = http.handler("Counter");
+                    return;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            Source compiled = Source.newBuilder(
+                    OresLanguage.ID, source, "serial-http-must-be-persistent.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            Exception failure = assertThrows(Exception.class,
+                    () -> context.eval(compiled));
+            String details = String.valueOf(failure.getMessage());
+            assertTrue(details.contains("serial HTTP handler requires persistent"),
+                    "serial HTTP must fail closed, not spawn one actor per request: " + details);
+        }
+    }
+
     @Test void guestSerialCounterExecutesWithoutCriticalKeyword() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
