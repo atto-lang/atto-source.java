@@ -92,6 +92,7 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                rejectUnloweredRuntimeEntityDeclaration();
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -270,6 +271,7 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            rejectUnloweredRuntimeEntityDeclaration();
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
@@ -633,6 +635,21 @@ public final class Parser {
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         return parseActorClass(kind, modifiers.visibility);
+    }
+
+    /**
+     * Do not treat supervision, proxying, scheduling or mail routing as a
+     * class/actor alias before compiler-enforced CONTROL, isolation and
+     * versioned hot-code replacement exist in both backends.
+     */
+    private void rejectUnloweredRuntimeEntityDeclaration() {
+        if (!check(IDENT)) return;
+        String name = peek().lexeme();
+        if (!name.equals("supervisor") && !name.equals("mailman")
+                && !name.equals("scheduler") && !name.equals("proxy")) return;
+        throw error(peek(), "source " + name + " declarations require "
+                + "compiler-checked runtime entity lowering, supervisor "
+                + "CONTROL admission and cross-backend parity; not yet enabled");
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
