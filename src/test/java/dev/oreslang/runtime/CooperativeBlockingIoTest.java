@@ -101,11 +101,11 @@ class CooperativeBlockingIoTest {
               }
               return;
             }
-            """.formatted(missing.toString().replace("\\\\", "\\\\\\\\"));
+            """.formatted(missing.toString().replace("\\", "\\\\"));
         String output = run(source, RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.READ, root.toString()),
-                new ByteArrayOutputStream()).replace("\\r", "");
-        assertEquals("caught-once\\nfinally-once\\n", output);
+                new ByteArrayOutputStream()).replace("\r", "");
+        assertEquals("caught-once\nfinally-once\n", output);
     }
 
     @Test void firstClassBlockingNativeIoAliasFailsClosed() {
