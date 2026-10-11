@@ -95,6 +95,19 @@ public final class SupervisorChildRegistry {
     public synchronized Snapshot snapshot(ChildId child) {
         return requireCurrent(child);
     }
+    /**
+     * Trusted owner rolls back an admission or releases a still-active child
+     * before it has physically terminated. Never treat this as finalization:
+     * no Failure is emitted and no restart is authorized by the old key.
+     */
+    synchronized void detachActive(ChildId child, ActorRuntime.ActorId actor, long incarnation) {
+        Snapshot current = requireExpected(child, actor, incarnation, Phase.ACTIVE);
+        activeActors.remove(current.actor());
+        children.remove(child.logicalId());
+        // Preserve seenActors: a detached actor identity must not be reused
+        // as an unrelated incarnation of this supervisor (ABA).
+    }
+
 
     /**
      * The lifecycle owner must complete the actor's physical finalization
