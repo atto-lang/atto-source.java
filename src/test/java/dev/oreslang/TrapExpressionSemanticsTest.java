@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
@@ -155,6 +157,67 @@ final class TrapExpressionSemanticsTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         PolyglotException failure = assertThrows(PolyglotException.class, () -> run(source));
         assertTrue(failure.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void trapConsumesMoveOnlyOperandsLikeSomeConstruction() {
+        String source = """
+                define class Payload as
+                end
+                fnc invalid(): void {
+                  val Payload owned = new Payload();
+                  val Option<Payload> wrapped = trap owned;
+                  val Payload aliased = owned;
+                  return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("moved"), failure.getMessage());
+    }
+
+    @Test
+    void trapCannotSmuggleBorrowIntoOwnedOption() {
+        String source = """
+                define class Payload as
+                end
+                fnc invalid(): void {
+                  val Payload owned = new Payload();
+                  val wrapped = trap (rt borrow owned);
+                  return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("trap cannot store a borrow"), failure.getMessage());
+    }
+
+    @Test
+    void trapPreservesOwnershipForCopyPayloads() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val int number = 7;
+                  val Option<int> first = trap number;
+                  val Option<int> second = trap number;
+                  stdio.stdout.write(first.unwrap() + second.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("14", run(source));
+    }
+
+    @Test
+    void awaitOutsideTrapCannotAccidentallyFlattenOptionFuture() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                async fnc operation(): int { return 7; }
+                pub async fnc main(): void {
+                  val Option<int> bad = await trap operation();
+                  return;
+                }
+                """));
     }
 
     private static String run(String program) throws Exception {
