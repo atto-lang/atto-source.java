@@ -2431,13 +2431,15 @@ public final class Parser {
 
         boolean canonicalOver = matchContextualIdentifier("over");
         if (!canonicalOver) match(SEMICOLON);
+        // 'over { ... }' uses a closing brace; 'over ... end' stays valid.
+        boolean bracedArms = canonicalOver && match(LBRACE);
 
         List<Ast.MatchArm> arms = new ArrayList<>();
-        while (!check(END) && !check(EOF)) {
+        while (!check(EOF) && !(bracedArms ? check(RBRACE) : check(END))) {
             if (canonicalOver) {
                 if (!matchContextualIdentifier("on")) {
                     if (check(ELSE) || check(DEFAULT)) {
-                        throw error(peek(), "match has no default/else keyword; use 'on _ -> { ... }'");
+                        throw error(peek(), "match has no default/else keyword; use 'on _ { ... }'");
                     }
                     throw error(peek(), "every 'match ... over' arm must start with contextual keyword 'on'");
                 }
@@ -2448,17 +2450,23 @@ public final class Parser {
                 pattern = new Ast.WildcardPattern();
             } else {
                 pattern = parsePattern();
+                if (canonicalOver) pattern = parseCanonicalMatchBinding(pattern);
             }
 
             Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
-            consume(ARROW, "match arms use the slim arrow '->'");
+            // Arrow-free braced bodies are canonical; keep '-> { ... }'.
+            if (!match(ARROW) && !check(LBRACE)) {
+                throw error(peek(), "match arm requires '{ ... }' or '-> { ... }'");
+            }
             List<Ast.Stmt> body = parseBlock();
             arms.add(new Ast.MatchArm(pattern, guard, body));
+            if (bracedArms) while (match(COMMA, SEMICOLON)) { /* arm separators */ }
         }
-        consume(END, "expected 'end' to close match");
+        if (bracedArms) consume(RBRACE, "expected '}' to close match");
+        else consume(END, "expected 'end' to close match");
         if (arms.isEmpty()) {
             throw error(previous(), canonicalOver
                     ? "match requires at least one 'on' arm"
@@ -2516,6 +2524,9 @@ public final class Parser {
                     String binding = advance().lexeme();
                     return new Ast.TypePattern(target, binding);
                 }
+                // Qualified tag patterns have a nominal type even without a
+                // binding: 'on MessagePatterns.Reset { ... }'.
+                if (target.name().contains(".")) return new Ast.TypePattern(target, null);
             } catch (IllegalArgumentException ignored) {
                 // Fall through to constructor/binding parsing from the same token.
             }
@@ -2545,39 +2556,74 @@ public final class Parser {
         throw error(peek(), "expected match pattern");
     }
 
+    private Ast.Pattern parseCanonicalMatchBinding(Ast.Pattern pattern) {
+        if (!match(AS)) return pattern;
+        Ast.TypeRef tag = switch (pattern) {
+            case Ast.TypePattern typed -> typed.type();
+            case Ast.ConstructorPattern ctor when ctor.arguments().isEmpty() ->
+                    Ast.TypeRef.simple(ctor.constructor());
+            default -> throw error(previous(), "'as' requires a nominal type/tag pattern");
+        };
+        if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) {
+            throw error(previous(), "match tag cannot bind both with and without 'as'");
+        }
+        if (match(LPAREN)) {
+            List<Ast.Pattern> components = new ArrayList<>();
+            if (!check(RPAREN)) {
+                do components.add(parsePattern()); while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after tuple match binding");
+            if (components.size() < 2) {
+                throw error(previous(), "tuple match binding requires at least two elements");
+            }
+            return new Ast.TaggedTuplePattern(tag, new Ast.TuplePattern(components));
+        }
+        String name = consume(IDENT, "expected binding after 'as'").lexeme();
+        if (name.equals("_")) return new Ast.TypePattern(tag, null);
+        return new Ast.TypePattern(tag, name);
+    }
+
     private Ast.SwitchStmt parseSwitch() {
         Ast.Expr subject = parseExpression();
-        match(SEMICOLON);
+        boolean bracedArms = match(LBRACE);
+        if (!bracedArms) match(SEMICOLON); // Legacy 'switch x ... end'.
         List<Ast.SwitchCase> cases = new ArrayList<>();
         List<Ast.Stmt> defaultBody = List.of();
         boolean sawDefault = false;
 
-        while (!check(END) && !check(EOF)) {
+        while (!check(EOF) && !(bracedArms ? check(RBRACE) : check(END))) {
+            if (bracedArms && match(COMMA, SEMICOLON)) continue;
             if (matchContextualKeyword("case")) {
-                if (sawDefault) throw error(previous(), "switch case cannot appear after default");
                 List<Ast.Expr> constants = new ArrayList<>();
                 do constants.add(parseExpression()); while (match(COMMA));
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
-                consume(ARROW, "switch cases use the slim arrow '->'");
+                if (!match(ARROW) && !check(LBRACE)) {
+                    throw error(peek(), "switch case requires '{ ... }' or '-> { ... }'");
+                }
                 cases.add(new Ast.SwitchCase(constants, parseBlock()));
                 continue;
             }
-            if (match(DEFAULT)) {
-                if (sawDefault) throw error(previous(), "switch can contain only one default arm");
+            if (match(DEFAULT) || (check(IDENT) && peek().lexeme().equals("_") && advance() != null)) {
+                if (sawDefault) throw error(previous(), "switch can contain only one default/_ arm");
                 sawDefault = true;
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
-                consume(ARROW, "switch default uses the slim arrow '->'");
+                if (!match(ARROW) && !check(LBRACE)) {
+                    throw error(peek(), "switch default requires '{ ... }' or '-> { ... }'");
+                }
                 defaultBody = parseBlock();
                 continue;
             }
-            throw error(peek(), "expected 'case', 'default', or 'end' in switch");
+            throw error(peek(), bracedArms
+                    ? "expected 'case', 'default', '_', or '}' in switch"
+                    : "expected 'case', 'default', '_', or 'end' in switch");
         }
 
-        consume(END, "expected 'end' to close switch");
+        if (bracedArms) consume(RBRACE, "expected '}' to close switch");
+        else consume(END, "expected 'end' to close switch");
         return new Ast.SwitchStmt(subject, cases, defaultBody);
     }
 
