@@ -538,6 +538,10 @@ public final class OresScheduler implements AutoCloseable {
                 if (!phase.compareAndSet(observed, TERMINAL)) return false;
                 terminalOutcome.set(new TerminalCancelled<T>(cancellation));
             }
+            // A cancelled WAITING task must not retain the shared producer.
+            // Unregister it before terminal completion can unblock context
+            // teardown or synchronous Future observers.
+            detachActiveAwaitRegistration();
             if (!executing.get()) publishTerminalIfReady();
             return true;
         }
@@ -552,7 +556,6 @@ public final class OresScheduler implements AutoCloseable {
                 if (task instanceof CancellationAwareTask<?> aware) {
                     aware.cancellationRequested(cancellation);
                     if (cancelWithoutExecutingWhenIdle(true)) {
-                        detachActiveAwaitRegistration();
                         return;
                     }
                 } else {
@@ -560,7 +563,6 @@ public final class OresScheduler implements AutoCloseable {
                     // while idle. Compare-and-set prevents a stale WAITING or
                     // QUEUED read from aborting a newly RUNNING guest turn.
                     if (cancelWithoutExecutingWhenIdle(false)) {
-                        detachActiveAwaitRegistration();
                         return;
                     }
                 }
