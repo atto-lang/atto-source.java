@@ -35,6 +35,20 @@ final class SharedNativeDeferSourceParityTest {
     }
 
     @Test
+    void deferredFieldWritesKeepTheAlreadyEvaluatedReturnValue() throws Exception {
+        Path fixture = Path.of("contracts/v1/semantics/fixtures/native-defer-field-return.ores");
+        String source = Files.readString(fixture, StandardCharsets.UTF_8);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
+                "native and GraalVM must admit the same field-defer return fixture");
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Value result = context.eval(Source.newBuilder("ores", source, fixture.toString()).build());
+            assertTrue(result.fitsInLong());
+            assertEquals(222L, result.asLong(),
+                    "pending scalar return snapshots must survive deferred mutation");
+        }
+    }
+
+    @Test
     void exactNativeLifoSourceChecksAndExecutesOnGraalVM() throws Exception {
         Path fixture = Path.of("contracts/v1/semantics/fixtures/native-defer-lifo-cfg.ores");
         String source = Files.readString(fixture, StandardCharsets.UTF_8);
