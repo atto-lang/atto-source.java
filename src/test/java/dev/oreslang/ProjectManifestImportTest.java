@@ -108,7 +108,7 @@ final class ProjectManifestImportTest {
                         new ByteArrayOutputStream(),
                         new ByteArrayOutputStream()));
 
-        assertTrue(failure.getMessage().contains("mailbox-oriented actor composition"));
+        assertTrue(failure.getMessage().contains("mailbox-oriented actor composition"), failure.getMessage());
     }
 
     @Test
@@ -224,8 +224,8 @@ final class ProjectManifestImportTest {
                             Map.of(),
                             new ByteArrayOutputStream(),
                             new ByteArrayOutputStream()));
-            assertTrue(failure.getMessage().contains("function wrapped returned String"));
-            assertTrue(failure.getMessage().contains("name=int"));
+            assertTrue(failure.getMessage().contains("function wrapped returned String"), failure.getMessage());
+            assertTrue(failure.getMessage().contains("name=int"), failure.getMessage());
         }
     }
 
