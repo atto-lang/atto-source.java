@@ -3623,14 +3623,9 @@ public final class TypeChecker {
     }
 
     /**
-     * Resolve a first-class class callable using the function type supplied by
-     * its context.  This is what makes doWork(self.someMethod) AOT-safe even
-     * when someMethod is overloaded: the expected callback arity selects the
-     * same closed-world CallableSelector slot that a direct call would use.
-     *
-     * <p>No runtime parameter types participate in selection.  Generic method
-     * values remain intentionally unsupported until Oreslang has an explicit
-     * method-value specialization surface.
+     * Resolve static functions against an expected function type; instance
+     * methods always require a receiver and cannot be implicit callbacks.
+     * Users must explicitly capture the receiver in a lambda instead.
      */
     private Type contextualCallableMemberType(
             Ast.MemberExpr member,
@@ -3667,47 +3662,14 @@ public final class TypeChecker {
 
         if (normalized instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
-            if (klass == null) return null;
-
-            // Runtime member lookup gives fields precedence over methods.
-            if (findFieldTarget(klass, named, member.member(), new LinkedHashSet<>()) != null) {
-                return null;
-            }
-
-            ResolvedMethod target = findMethodTarget(
-                    klass, named, member.member(), arity, new LinkedHashSet<>());
-            if (target == null) {
-                if (!findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "no overload of method '" + klass.name() + "." + member.member()
-                                    + "' matches callback arity " + arity);
-                }
-                return null;
-            }
-
-            Ast.MethodDecl method = target.method();
-            requireClassMemberVisible(method.visibility(), target.owner(), "method", method.name());
-            if (!method.genericParameters().isEmpty()) {
+            if (klass != null
+                    && findFieldTarget(klass, named, member.member(), new LinkedHashSet<>()) == null
+                    && !findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
                 throw new IllegalArgumentException(
-                        "generic method '" + target.owner().name() + "." + method.name()
-                                + "' must be specialized by a direct call; polymorphic bound-method values are not supported yet");
+                        "instance method '" + klass.name() + "." + member.member()
+                                + "' is direct-call-only and cannot be passed as a callback; "
+                                + "wrap the receiver call in an explicit lambda");
             }
-
-            Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
-            memberGenerics.addAll(method.genericParameters());
-            Type callableReceiver = receiverValueType instanceof SelfType
-                    ? receiverValueType
-                    : named;
-            Type signature = functionType(
-                    method.parameters(),
-                    method.returnType(),
-                    method.async(),
-                    false,
-                    memberGenerics,
-                    callableReceiver);
-            return substituteGenerics(
-                    signature,
-                    classGenericBindings(target.owner(), target.ownerType()));
         }
 
         return null;
