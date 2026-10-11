@@ -479,7 +479,8 @@ final class OresSchedulerTest {
                         private volatile boolean cancellationRequested;
 
                         @Override
-                        public void cancellationRequested() {
+                        public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) {
                             cancellationRequested = true;
                         }
 
@@ -538,7 +539,8 @@ final class OresSchedulerTest {
         CountDownLatch started = new CountDownLatch(1);
         OresFuture<Integer> task = scheduler.start(
                 new OresScheduler.CancellationAwareTask<>() {
-                    @Override public void cancellationRequested() { }
+                    @Override public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) { }
                     @Override public boolean cleanupInProgress() { return false; }
                     @Override public OresScheduler.Step<Integer> resume(
                             OresScheduler.Resume input) {
