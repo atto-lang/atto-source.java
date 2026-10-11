@@ -70,9 +70,21 @@ is sealed, reenter the actor's exclusive lane on completion, run the
 last guest cleanup callback exactly once, fence remaining resources, and
 only then settle `done`.
 
-Standalone exact Git blob `ActorAsyncTeardownGate.java` has been compiled
-with JDK 21 and exercised against success, deadline, failure and duplicate
-completion races. Full project Maven/JUnit remains outstanding.
+The exact Java host-gate source has been compiled with
+`javac --release 21 -Xlint:all -Werror` and independently exercised against
+success, failure, deadline, duplicate/late completion, rejected CONTROL
+notifications, and a timer which executes synchronously before `schedule()`
+returns its handle. All focused local smoke tests passed. The terminal
+notification now drops references to the original CONTROL closure after
+completion/timeout, preventing a never-resolving producer Future from retaining
+that closure indefinitely. A rejected CONTROL wake is observable via
+`notificationFailure()` and **must** be escalated or polled by the trusted
+supervisor once integrated.
+
+The actual source-level `async tear_down` is still unavailable. In particular,
+none of these focused tests prove actor-affine continuation scheduling, native
+resource quiescence or `actor.done` finalization. Full project Maven/JUnit
+remains outstanding.
 
 ## Required before merge
 
