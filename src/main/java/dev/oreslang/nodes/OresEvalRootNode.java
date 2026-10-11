@@ -143,6 +143,18 @@ public final class OresEvalRootNode extends RootNode {
         return cleanupFailure;
     }
 
+    /**
+     * Cancellation bypasses ordinary guest catch blocks. Errors raised from
+     * already-running cleanup may be handled by that cleanup's own catch,
+     * but they cannot let an enclosing user catch swallow cancellation.
+     */
+    static boolean shouldEnterSourceCatch(
+            Throwable failure, boolean cancellationRequested, boolean inCleanup) {
+        Objects.requireNonNull(failure, "failure");
+        return !(failure instanceof OresScheduler.TaskCancelledException)
+                && (!cancellationRequested || inCleanup);
+    }
+
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
@@ -2154,7 +2166,10 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             (t, flow) -> {
                                 if (flow.kind() == SourceFlowKind.THROW
-                                        && !(flow.failure() instanceof OresScheduler.TaskCancelledException)) {
+                                        && shouldEnterSourceCatch(
+                                                flow.failure(),
+                                                t.cancellationRequested,
+                                                t.cleanupInProgress())) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
