@@ -265,6 +265,38 @@ final class ActorGroupMultiMembershipTest {
     }
 
     @Test
+    void actorWithoutSpawnAuthorityCannotCreateGroupsThroughAnyRuntimeCall() throws Exception {
+        IsolatePolicy deniedPolicy = IsolatePolicy.developer()
+                .withoutCapabilities(IsolatePolicy.Capability.ACTOR_SPAWN);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch completed = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(
+                    deniedPolicy, () -> (message, context) -> {
+                        try {
+                            SecurityException denied = assertThrows(
+                                    SecurityException.class,
+                                    context.runtime()::createActorGroup);
+                            assertTrue(denied.getMessage().contains("ACTOR_SPAWN"));
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            completed.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorGroupCount());
+            // The host/supervisor control path retains explicit authority.
+            ActorRuntime.ActorGroup hostGroup = runtime.createActorGroup();
+            hostGroup.close();
+        }
+    }
+
+    @Test
     void concurrentRoomJoinsCannotExceedActorMembershipQuota() throws Exception {
         IsolatePolicy base = IsolatePolicy.developer();
         IsolatePolicy twoRooms = new IsolatePolicy(
