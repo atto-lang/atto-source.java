@@ -431,9 +431,10 @@ final class TypedOpenMapKeysTest {
             String signature = operation.equals("put")
                     ? "on_put(string key, unknown value)"
                     : "on_" + operation + "(string key)";
-            String invocation = operation.equals("put")
-                    ? "self.put(\"label\", \"nested\");"
-                    : "self." + operation + "(\"label\");";
+            // Hook receivers are read-only: put/remove on self are already
+            // rejected statically. A nested get is a valid read-only call and
+            // must still fail closed at the runtime reentrancy boundary.
+            String invocation = "self.get(\"label\");";
             String outer = operation.equals("put")
                     ? "m.put(\"label\", \"initial\");"
                     : "m.put(\"label\", \"initial\"); m." + operation + "(\"label\");";
