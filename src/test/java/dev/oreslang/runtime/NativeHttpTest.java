@@ -208,7 +208,7 @@ class NativeHttpTest {
                     }
                     """, "shutdown-unanswered-http.ores").build());
             assertTrue(output.toString(StandardCharsets.UTF_8).contains("accepted"));
-            assertDoesNotThrow(context::close,
+            assertDoesNotThrow(() -> { context.close(); },
                     "context retirement must physically drain an unanswered exchange");
             request.get(8, TimeUnit.SECONDS);
         }
