@@ -54,4 +54,57 @@ final class ProjectedBorrowOwnershipTest {
                         """)));
         assertTrue(failure.getMessage().contains("temporary"), failure.getMessage());
     }
+    @Test
+    void indexedElementBorrowRetainsElementType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + """
+                fnc read(): int {
+                  val Array<Inner> items = new Array<Inner>();
+                  items.add(new Inner());
+                  val view = rt borrow items[0];
+                  return view.value;
+                }
+                """)));
+    }
+
+    @Test
+    void indexedElementBorrowBlocksContainerMutation() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(BOX + """
+                        fnc bad(): int {
+                          val Array<Inner> items = new Array<Inner>();
+                          items.add(new Inner());
+                          val view = rt borrow items[0];
+                          items.add(new Inner());
+                          return view.value;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"), failure.getMessage());
+    }
+
+    @Test
+    void projectedBorrowMustNotCrossCooperation() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(BOX + """
+                        fnc bad(): int {
+                          val Outer parent = new Outer();
+                          val view = rt borrow parent.child;
+                          rt cooperate;
+                          return view.value;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"), failure.getMessage());
+    }
+
+    @Test
+    void projectedBorrowOfLocalCannotEscapeViaReturn() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(BOX + """
+                        fnc bad(): borrow Inner {
+                          val Outer parent = new Outer();
+                          return rt borrow parent.child;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().toLowerCase().contains("borrow"), failure.getMessage());
+    }
+
 }
