@@ -221,7 +221,8 @@ public final class SupervisorChildRegistry {
     synchronized StopReservation beginStop(
             ChildId child, ActorRuntime.ActorId actor,
             long incarnation, long turnGeneration) {
-        requireExpected(child, actor, incarnation, Phase.FINALIZED);
+        Snapshot finalized = requireExpected(
+                child, actor, incarnation, Phase.FINALIZED);
         if (stopReservations.containsKey(child.logicalId())
                 || stopReceipts.containsKey(child.logicalId())) {
             throw new IllegalStateException("logical child already has a STOP ledger entry");
@@ -243,8 +244,7 @@ public final class SupervisorChildRegistry {
             stopReceipts.remove(child.logicalId());
             // The previous FINALIZED entry is restored even if publication
             // failed during the last map write. No host effect has run yet.
-            children.put(child.logicalId(),
-                    new Snapshot(child, actor, incarnation, Phase.FINALIZED));
+            children.put(child.logicalId(), finalized);
             throw admissionFailure;
         }
         return reservation;
