@@ -101,7 +101,14 @@ public final class OresEvalRootNode extends RootNode {
                 && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String functionName) {
             current.link();
-            return current.invokePublic(functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            Object result = current.invokePublic(
+                    functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            // A raw Java Future is not a valid Truffle interop return value.
+            // Only this host-invocation boundary adapts the scheduler-owned
+            // handle to an embedding-compatible guest value; ordinary guest
+            // dispatch still receives the exact OresFuture instance.
+            if (result instanceof OresFuture<?>) return context.env().asGuestValue(result);
+            return result;
         }
 
         // Backward-compatible single-source execution. Multi-file hosts use
