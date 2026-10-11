@@ -154,6 +154,24 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void rejectedResourceCleanupNeverRunsUnderAdmissionLock() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            io.close();
+            java.util.concurrent.atomic.AtomicBoolean closedResource =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicBoolean underLock =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            assertThrows(IllegalStateException.class,
+                    () -> io.register(() -> {
+                        underLock.set(Thread.holdsLock(io));
+                        closedResource.set(true);
+                    }));
+            assertTrue(closedResource.get());
+            assertFalse(underLock.get(),
+                    "resource cleanup must not execute while holding the I/O monitor");
+        }
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
