@@ -163,4 +163,113 @@ final class FormalContextRetirementModelCheckTest {
         s = step(s, Event.EXIT_HTTP);
         assertTrue(step(s, Event.CLOSE).retired);
     }
+
+    private enum HttpEvent {
+        STOP_LISTENER, REQUEST_ABORT, ABORT_WORKER_CLOSES_SOCKET, ACTOR_EXIT,
+        MARK_ABORT_REJECTED, SHUTDOWN_IO, PHYSICAL_IO_EXIT,
+        RECLAIM_REJECTED_AFTER_IO_EXIT, RELEASE_EXCHANGE, CLOSE_RETRY
+    }
+
+    private record HttpState(
+            boolean accepting,
+            boolean tracked,
+            boolean socketClosed,
+            boolean actorRunning,
+            boolean abortQueued,
+            boolean abortRejected,
+            boolean ioOpen,
+            boolean ioExited,
+            boolean retired) {
+
+        static HttpState initiallyActive() {
+            return new HttpState(true, true, false, true, false, false,
+                    true, false, false);
+        }
+    }
+
+    private static HttpState httpStep(HttpState s, HttpEvent e) {
+        boolean accepting = s.accepting, tracked = s.tracked;
+        boolean socketClosed = s.socketClosed, actor = s.actorRunning;
+        boolean queued = s.abortQueued, rejected = s.abortRejected;
+        boolean ioOpen = s.ioOpen, ioExited = s.ioExited, retired = s.retired;
+
+        switch (e) {
+            case STOP_LISTENER -> accepting = false;
+            case REQUEST_ABORT -> {
+                if (!accepting && tracked && !socketClosed && !queued && !rejected) {
+                    if (ioOpen) queued = true;
+                    else rejected = true;
+                }
+            }
+            case ABORT_WORKER_CLOSES_SOCKET -> {
+                if (queued) {
+                    socketClosed = true;
+                    queued = false;
+                }
+            }
+            case ACTOR_EXIT -> actor = false;
+            case MARK_ABORT_REJECTED -> {
+                // A callback arriving after executor shutdown may only
+                // record pending socket ownership; it cannot release it.
+                if (!ioOpen && !socketClosed && tracked) rejected = true;
+            }
+            case SHUTDOWN_IO -> {
+                // The corrected close path keeps its executor admitting
+                // already-owned cleanup until the exchange is released.
+                if (!tracked) ioOpen = false;
+            }
+            case PHYSICAL_IO_EXIT -> {
+                if (!ioOpen && !queued) ioExited = true;
+            }
+            case RECLAIM_REJECTED_AFTER_IO_EXIT -> {
+                if (rejected && ioExited) {
+                    socketClosed = true;
+                    rejected = false;
+                }
+            }
+            case RELEASE_EXCHANGE -> {
+                if (socketClosed && !actor && !queued && !rejected) tracked = false;
+            }
+            case CLOSE_RETRY -> {
+                if (!accepting && !tracked && ioExited && !rejected) retired = true;
+            }
+        }
+        return new HttpState(accepting, tracked, socketClosed, actor, queued,
+                rejected, ioOpen, ioExited, retired);
+    }
+
+    @Test
+    void exhaustiveHttpShutdownRetainsUnreleasedExchangesAcrossRetry() {
+        java.util.ArrayDeque<HttpState> pending = new java.util.ArrayDeque<>();
+        java.util.Set<HttpState> visited = new java.util.HashSet<>();
+        pending.add(HttpState.initiallyActive());
+        visited.add(HttpState.initiallyActive());
+        boolean sawRetired = false, sawStoppedButStillTracked = false;
+        while (!pending.isEmpty()) {
+            HttpState s = pending.removeFirst();
+            if (s.retired) {
+                sawRetired = true;
+                assertFalse(s.tracked, "retired HTTP context retained an exchange");
+                assertTrue(s.socketClosed, "HTTP socket was never physically closed");
+                assertFalse(s.actorRunning, "actor turn still owned HTTP transfer");
+                assertTrue(s.ioExited, "I/O carriers had not exited");
+            }
+            if (!s.accepting && s.tracked) sawStoppedButStillTracked = true;
+            if (s.tracked && !s.socketClosed) {
+                assertFalse(s.retired, "unclosed socket cannot be reclaimed");
+            }
+            if (s.abortRejected && !s.ioExited) {
+                assertFalse(s.socketClosed,
+                        "rejected abort cannot fabricate physical close");
+            }
+            for (HttpEvent e : HttpEvent.values()) {
+                HttpState next = httpStep(s, e);
+                if (visited.add(next)) pending.addLast(next);
+            }
+        }
+        assertTrue(sawRetired);
+        assertTrue(sawStoppedButStillTracked);
+        assertTrue(visited.size() >= 15,
+                "HTTP shutdown exploration unexpectedly small: " + visited.size());
+    }
 }
