@@ -1860,10 +1860,15 @@ public final class TypeChecker {
         Env local = new Env(parent);
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BindingStmt binding) {
-                if (!safeValueMatchScalarExpr(binding.initializer()))
+                // A nested value match is recursively admitted against its
+                // own lexical ARM_RESULT boundary and proven scalar type.
+                // It is not equivalent to an unverified arbitrary call.
+                boolean nestedValueMatch = binding.initializer() instanceof Ast.ValueMatchExpr;
+                if (!nestedValueMatch && !safeValueMatchScalarExpr(binding.initializer()))
                     throw new IllegalArgumentException(
                             "typed value match binding initializer must be a pure scalar expression");
-                requireValueMatchOwnedScalarNames(binding.initializer(), local);
+                if (!nestedValueMatch)
+                    requireValueMatchOwnedScalarNames(binding.initializer(), local);
                 Type value = typeOf(binding.initializer(), local, generics, self);
                 if (!isOwnedScalarValueMatchType(value))
                     throw new IllegalArgumentException(
