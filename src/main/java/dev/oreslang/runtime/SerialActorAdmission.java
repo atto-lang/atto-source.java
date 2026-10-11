@@ -23,6 +23,8 @@ public final class SerialActorAdmission implements AutoCloseable {
     private final int capacity;
     private long nextGeneration;
     private boolean closed;
+    /** Guards iterative delivery when CompletableFuture callbacks finish inline. */
+    private boolean delivering;
     private Lease active;
 
     public SerialActorAdmission(int pendingCapacity) {
@@ -53,9 +55,15 @@ public final class SerialActorAdmission implements AutoCloseable {
         public State state() {
             synchronized (lock) { return state; }
         }
-        /** A transport adapter must call this before dispatch or continuation reentry. */
+        /** A transport adapter must call this before guest execution. A
+         * suspended lease owns admission but is NOT runnable. */
         public void requireActive() {
-            synchronized (lock) { requireCurrent(); }
+            synchronized (lock) {
+                requireCurrent();
+                if (state != State.RUNNING) {
+                    throw new IllegalStateException("suspended serial handler is not runnable");
+                }
+            }
         }
         public void suspend() {
             synchronized (lock) {
@@ -79,83 +87,99 @@ public final class SerialActorAdmission implements AutoCloseable {
         @Override public void close() { finish(this); }
     }
 
-    /** Non-blocking FIFO admission, safe for callbacks on pooled native carriers. */
+    /** Bounded non-blocking FIFO admission; never runs user callbacks under lock.
+     * Completion callbacks can themselves finish synchronously, so delivery is
+     * trampolined through one iterative drainer rather than recursively nested. */
     public CompletableFuture<Lease> submit(Kind kind) {
         Objects.requireNonNull(kind, "handler kind");
         CompletableFuture<Lease> future = new CompletableFuture<>();
-        Lease now = null;
-        Waiter waiter = null;
+        Waiter waiter = new Waiter(kind, future);
         synchronized (lock) {
             if (closed) {
                 throw new IllegalStateException("serial actor admission is closed");
             }
-            if (active == null && pending.isEmpty()) {
-                now = newLease(kind);
-                active = now;
-            } else {
-                if (pending.size() >= capacity) {
-                    throw new IllegalStateException("serial actor admission queue full");
-                }
-                waiter = new Waiter(kind, future);
-                pending.addLast(waiter);
+            // The first queued event is immediately eligible; subsequent
+            // reservations count against the bounded waiting-mail capacity.
+            if ((active != null || !pending.isEmpty()) && pending.size() >= capacity) {
+                throw new IllegalStateException("serial actor admission queue full");
             }
+            pending.addLast(waiter);
         }
-        if (waiter != null) {
-            // Canceled pending admissions must not exhaust the bounded queue.
-            Waiter queued = waiter;
-            future.whenComplete((ignored, error) -> {
-                if (future.isCancelled()) {
-                    synchronized (lock) { pending.remove(queued); }
-                }
-            });
-        }
-        if (now != null) future.complete(now); // Never run callbacks under lock.
+        future.whenComplete((ignored, error) -> {
+            if (future.isCancelled()) {
+                synchronized (lock) { pending.remove(waiter); }
+            }
+        });
+        drain();
         return future;
     }
 
-    private Lease newLease(Kind kind) {
-        if (nextGeneration == Long.MAX_VALUE) {
-            throw new IllegalStateException("serial actor generation exhausted");
-        }
-        return new Lease(kind, ++nextGeneration);
-    }
-
     private void finish(Lease completed) {
-        CompletableFuture<Lease> toWake = null;
-        Lease next = null;
         synchronized (lock) {
             completed.requireCurrent();
             completed.state = State.FINISHED;
             active = null;
-            if (!closed) {
+        }
+        drain();
+    }
+
+    /**
+     * Only one drainer may deliver futures; a dependent stage is allowed to
+     * close its lease inline without recursively completing the next future.
+     * If cancellation races promotion, retire that lease and keep draining.
+     */
+    private void drain() {
+        synchronized (lock) {
+            if (delivering) return;
+            delivering = true;
+        }
+        while (true) {
+            Waiter next = null;
+            Lease lease = null;
+            List<CompletableFuture<Lease>> exhausted = null;
+            synchronized (lock) {
+                if (closed || active != null) {
+                    delivering = false;
+                    return;
+                }
                 while (!pending.isEmpty()) {
-                    Waiter entry = pending.removeFirst();
-                    if (entry.future().isDone()) continue;
-                    next = newLease(entry.kind());
-                    active = next;
-                    toWake = entry.future();
-                    break;
+                    Waiter candidate = pending.removeFirst();
+                    if (!candidate.future().isDone()) {
+                        next = candidate;
+                        break;
+                    }
+                }
+                if (next == null) {
+                    delivering = false;
+                    return;
+                }
+                if (nextGeneration == Long.MAX_VALUE) {
+                    closed = true; // Fail closed; no generation-token wrap.
+                    exhausted = new ArrayList<>();
+                    exhausted.add(next.future());
+                    while (!pending.isEmpty()) {
+                        exhausted.add(pending.removeFirst().future());
+                    }
+                    delivering = false;
+                } else {
+                    lease = new Lease(next.kind(), ++nextGeneration);
+                    active = lease;
                 }
             }
-        }
-        // Never wake a guest continuation inside the admission bookkeeping lock.
-        while (toWake != null && !toWake.complete(next)) {
-            // Canceled before completion raced promotion: retire and advance.
-            synchronized (lock) {
-                if (active == next) {
-                    next.state = State.FINISHED;
-                    active = null;
+            if (exhausted != null) {
+                for (CompletableFuture<Lease> rejected : exhausted) {
+                    rejected.completeExceptionally(
+                            new IllegalStateException("serial actor admission generation exhausted"));
                 }
-                toWake = null;
-                next = null;
-                if (!closed) {
-                    while (!pending.isEmpty()) {
-                        Waiter entry = pending.removeFirst();
-                        if (entry.future().isDone()) continue;
-                        next = newLease(entry.kind());
-                        active = next;
-                        toWake = entry.future();
-                        break;
+                return;
+            }
+            // CompletableFuture.complete invokes dependent actions synchronously.
+            // The delivering flag prevents a nested close() from recursing.
+            if (!next.future().complete(lease)) {
+                synchronized (lock) {
+                    if (active == lease) {
+                        lease.state = State.FINISHED;
+                        active = null;
                     }
                 }
             }
