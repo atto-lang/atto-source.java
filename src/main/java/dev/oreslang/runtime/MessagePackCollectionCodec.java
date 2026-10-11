@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -164,7 +165,17 @@ public final class MessagePackCollectionCodec {
 
         void string(String s) {
             if (s.length() > MAX_BYTES) throw new IllegalArgumentException("string exceeds byte budget");
-            byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+            byte[] bytes;
+            try {
+                ByteBuffer utf8 = StandardCharsets.UTF_8.newEncoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT)
+                        .encode(CharBuffer.wrap(s));
+                bytes = new byte[utf8.remaining()];
+                utf8.get(bytes);
+            } catch (CharacterCodingException malformed) {
+                throw new IllegalArgumentException("malformed UTF-16 input string", malformed);
+            }
             int n = bytes.length;
             if (n <= 31) add(0xa0 | n);
             else if (n <= 255) { add(0xd9); uint(1, n); }
