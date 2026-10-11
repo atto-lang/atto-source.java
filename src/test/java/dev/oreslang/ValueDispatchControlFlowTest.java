@@ -319,6 +319,47 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void unorderedMatchFallbackDoesNotMaskLaterConcreteAwaitedArm() throws Exception {
+        assertEquals("42\n", execute("""
+                async fnc answer(int value): int { return value; }
+
+                async fnc choose(): int {
+                  return match 1
+                    _ -> { return await answer(0); }
+                    1 -> { return await answer(42); }
+                  end
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await choose());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void guardedMatchArmMayAwaitBeforeSelectingItsValue() throws Exception {
+        assertEquals("42\n", execute("""
+                async fnc allowed(): bool { return true; }
+                async fnc answer(): int { return 42; }
+
+                async fnc choose(): int {
+                  return match 1 over
+                    on 1 when await allowed() {
+                      return await answer();
+                    }
+                    on _ { return 0; }
+                  end
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await choose());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void lexicalArmReturnSurvivesTryFinallyAndRunsCleanupExactlyOnce() throws Exception {
         assertEquals("finally\narm-defer\narm\ndo-finally\ndo-defer\nearly\ncase\ndefault\n",
                 execute("""
