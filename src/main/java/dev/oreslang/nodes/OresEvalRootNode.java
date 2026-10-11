@@ -8444,6 +8444,8 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
+            if ("_".equals(name)) throw new IllegalArgumentException(
+                    "'_' is a wildcard/discard, not a user binding");
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void reserve(String name, Ast.BindingKind kind) {
