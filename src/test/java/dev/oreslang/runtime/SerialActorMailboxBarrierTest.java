@@ -63,8 +63,14 @@ final class SerialActorMailboxBarrierTest {
             actor.send(1);
             assertTrue(admitted.await(5, TimeUnit.SECONDS));
             actor.send(2);
+            assertEquals(1, method.pendingRuntimeWaiterCount());
+            assertEquals(1, response.pendingRuntimeWaiterCount());
             actor.cancel();
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, method.pendingRuntimeWaiterCount(),
+                    "cancelled actor must release its callback from a pending producer");
+            assertEquals(0, response.pendingRuntimeWaiterCount(),
+                    "cancelled actor must release all independent producer callbacks");
             method.completeFromRuntime(null);
             response.completeFromRuntime(null);
             assertEquals(1, executed.get(),
