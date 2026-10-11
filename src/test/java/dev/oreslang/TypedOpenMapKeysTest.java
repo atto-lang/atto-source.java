@@ -248,7 +248,6 @@ final class TypedOpenMapKeysTest {
                   val string key = "items";
                   m.put(key, items);
                   items.set(0, 42);
-                  m.get("items");
                   return;
                 }
                 """;
