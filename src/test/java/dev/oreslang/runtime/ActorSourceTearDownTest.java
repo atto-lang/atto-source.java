@@ -140,7 +140,12 @@ final class ActorSourceTearDownTest {
             var ref = runtime.spawnCodeActor(
                     ActorRuntime.ActorKind.SHARED, executor, "Worker");
             ref.ready().join();
-            assertThrows(CompletionException.class, ref::stop);
+            ref.stop();
+            CompletionException failure =
+                    assertThrows(CompletionException.class, () -> ref.done().join());
+            assertEquals("teardown failure", failure.getCause().getMessage());
+            assertFalse(ref.isAlive());
+            assertEquals(1, executor.teardowns.get());
         }
     }
 }
