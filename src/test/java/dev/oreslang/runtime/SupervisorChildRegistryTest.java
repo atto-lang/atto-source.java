@@ -147,6 +147,91 @@ final class SupervisorChildRegistryTest {
     }
 
     @Test
+    void reservedStopExcludesRestartAndStaleAcknowledgments() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actor = ActorRuntime.ActorId.create();
+        var first = registry.register(actor);
+        registry.finalized(first.child(), actor, 1);
+
+        var stop = registry.beginStop(first.child(), actor, 1, 17);
+        assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                registry.snapshot(first.child()).phase());
+        assertThrows(IllegalStateException.class, () ->
+                registry.beginRestart(first.child(), actor, 1));
+        assertThrows(IllegalStateException.class, () ->
+                registry.beginStop(first.child(), actor, 1, 18));
+        assertThrows(IllegalStateException.class, () ->
+                registry.stop(first.child(), actor, 1));
+        var wrong = new SupervisorChildRegistry.StopReservation(
+                first.child(), actor, 1, 17, java.util.UUID.randomUUID());
+        assertThrows(IllegalStateException.class, () -> registry.commitStop(wrong));
+        assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                registry.snapshot(first.child()).phase(),
+                "a forged acknowledgement must not release the reservation");
+
+        registry.commitStop(stop);
+        assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                registry.snapshot(first.child()).phase());
+        assertThrows(IllegalStateException.class, () -> registry.commitStop(stop));
+        assertThrows(IllegalStateException.class, () ->
+                registry.beginRestart(first.child(), actor, 1));
+    }
+
+    @Test
+    void concurrentStopAndRestartReservationsHaveExactlyOneWinner() throws Exception {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actor = ActorRuntime.ActorId.create();
+        var first = registry.register(actor);
+        registry.finalized(first.child(), actor, 1);
+        var ready = new java.util.concurrent.CountDownLatch(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var successes = new java.util.concurrent.atomic.AtomicInteger();
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var stopTask = pool.submit(() -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        throw new IllegalStateException("race timed out");
+                    registry.beginStop(first.child(), actor, 1, 19);
+                    successes.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    failures.incrementAndGet();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            var restartTask = pool.submit(() -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        throw new IllegalStateException("race timed out");
+                    registry.beginRestart(first.child(), actor, 1);
+                    successes.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    failures.incrementAndGet();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            start.countDown();
+            stopTask.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            restartTask.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertEquals(1, successes.get(), "STOP and RESTART must never both own a turn");
+        assertEquals(1, failures.get());
+        assertTrue(registry.snapshot(first.child()).phase()
+                == SupervisorChildRegistry.Phase.STOPPING
+                || registry.snapshot(first.child()).phase()
+                == SupervisorChildRegistry.Phase.RESTARTING);
+    }
+
+    @Test
     void concurrentReplacementOfSameGenerationHasSingleWinner() throws Exception {
         var registry = new SupervisorChildRegistry(
                 ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
