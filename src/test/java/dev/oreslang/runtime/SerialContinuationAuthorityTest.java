@@ -66,6 +66,10 @@ final class SerialContinuationAuthorityTest {
         var lease = admission.submit(SerialActorAdmission.Kind.MESSAGE).join();
         assertThrows(IllegalArgumentException.class,
                 () -> new SerialContinuationAuthority(null, lease));
+        SerialActorAdmission foreign = new SerialActorAdmission(1);
+        assertThrows(IllegalArgumentException.class,
+                () -> new SerialContinuationAuthority(foreign, lease));
+        foreign.close();
         lease.close();
         admission.close();
     }
