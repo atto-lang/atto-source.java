@@ -114,6 +114,28 @@ final class SupervisorHttpResponseRelayTest {
     }
 
     @Test
+    void failedDownstreamSocketWriterIsFencedAfterPartialCommit() {
+        final int[] aborts = {0};
+        SupervisorHttpResponseRelay.Sink failing = new SupervisorHttpResponseRelay.Sink() {
+            @Override public void headers(int status, Map<String, String> h) { }
+            @Override public void chunk(byte[] bytes) {
+                throw new IllegalStateException("socket write failed");
+            }
+            @Override public void end() { }
+            @Override public void abort(String why) { aborts[0]++; }
+        };
+        var relay = new SupervisorHttpResponseRelay(ACTOR, REQUEST, 64, 128, failing);
+        relay.grantCredit(10);
+        relay.accept(ACTOR, 0, headers("text/html"));
+        assertThrows(IllegalStateException.class,
+                () -> relay.accept(ACTOR, 1, chunk("partial")));
+        assertEquals(SupervisorHttpResponseRelay.State.ABORTED, relay.state());
+        assertEquals(1, aborts[0]);
+        assertThrows(IllegalStateException.class,
+                () -> relay.accept(ACTOR, 1, chunk("retry")));
+    }
+
+    @Test
     void existingActorOutputTransportCarriesOnlyDataToTrustedSupervisor() throws Exception {
         // The real actor ID is minted by ActorRuntime and cannot be supplied
         // by the guest wire map; bind a new per-request relay to that ID.
