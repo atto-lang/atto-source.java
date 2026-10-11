@@ -71,12 +71,12 @@ public final class ActorStateContract {
             if (method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
-            visit(method.body(), klass.name(), keys, null, false);
+            visit(method.body(), klass.name(), keys, null, false, klass.serial());
         }
     }
 
     private static void visit(Object node, String actor, Set<String> keys,
-                              String activeAccess, boolean nestedClosure) {
+                              String activeAccess, boolean nestedClosure, boolean serialActor) {
         if (node == null) return;
         if (node instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.MemberExpr callee
@@ -90,7 +90,7 @@ public final class ActorStateContract {
                     || lambda.parameters().size() != 1) {
                 throw new IllegalArgumentException("self.handle_state expects exactly one single-argument lambda");
             }
-            if (!lambda.critical()) {
+            if (!lambda.critical() && !serialActor) {
                 throw new IllegalArgumentException(
                         "self.handle_state is intrinsically critical and requires a critical callback");
             }
@@ -106,8 +106,8 @@ public final class ActorStateContract {
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
-            visit(lambda.expressionBody(), actor, keys, variable, false);
-            visit(lambda.blockBody(), actor, keys, variable, false);
+            visit(lambda.expressionBody(), actor, keys, variable, false, serialActor);
+            visit(lambda.blockBody(), actor, keys, variable, false, serialActor);
             return;
         }
         if (node instanceof Ast.MemberExpr member
@@ -142,8 +142,8 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "critical state callback may only appear inline in self.handle_state");
             }
-            visit(lambda.expressionBody(), actor, keys, activeAccess, true);
-            visit(lambda.blockBody(), actor, keys, activeAccess, true);
+            visit(lambda.expressionBody(), actor, keys, activeAccess, true, serialActor);
+            visit(lambda.blockBody(), actor, keys, activeAccess, true, serialActor);
             return;
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
@@ -154,7 +154,7 @@ public final class ActorStateContract {
                     "actor state-backed borrow requires continuation-aware loan lowering");
         }
         if (node instanceof Iterable<?> items) {
-            for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure);
+            for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, serialActor);
             return;
         }
         if (node instanceof java.lang.Record record
@@ -162,7 +162,7 @@ public final class ActorStateContract {
             for (RecordComponent component : record.getClass().getRecordComponents()) {
                 try {
                     visit(component.getAccessor().invoke(record),
-                            actor, keys, activeAccess, nestedClosure);
+                            actor, keys, activeAccess, nestedClosure, serialActor);
                 } catch (ReflectiveOperationException failure) {
                     throw new IllegalStateException("failed to validate actor state AST", failure);
                 }
