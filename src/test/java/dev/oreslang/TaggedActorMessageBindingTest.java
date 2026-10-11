@@ -75,9 +75,10 @@ final class TaggedActorMessageBindingTest {
     void anyReorderingOrTagChangeBreaksWireCompatibility() {
         var original = binding();
         var reordered = TaggedActorMessageBinding.fromRegistry(
-                TaggedMessageContracts.verify(Parser.parse(SOURCE.replace(
-                    "Status.Message2\n                Status.Message3",
-                    "Status.Message3\n                Status.Message2"))),
+                TaggedMessageContracts.verify(Parser.parse(SOURCE
+                        .replace("Status.Message2", "Status.__TEMP__")
+                        .replace("Status.Message3", "Status.Message2")
+                        .replace("Status.__TEMP__", "Status.Message3"))),
                 "WorkerMessages");
         assertNotEquals(original.fingerprint(), reordered.fingerprint());
         assertThrows(IllegalArgumentException.class,
