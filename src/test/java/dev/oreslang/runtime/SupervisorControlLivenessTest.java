@@ -51,7 +51,11 @@ final class SupervisorControlLivenessTest {
                 new ActorRuntime.DispatcherConfig(1, 1, 8, 16),
                 injectedCarrierGate)) {
             // The first private actor consumes the ONLY private actor carrier.
-            runtime.spawnPrivate(factory -> (msg, context) -> { });
+            ActorRuntime.ActorRef<String> busy = runtime.spawnPrivate(
+                    factory -> (msg, context) -> { });
+            // Actor initialization alone may be lazy. Deliver an actual
+            // mailbox turn to occupy the private carrier deterministically.
+            busy.send("occupy");
             assertTrue(privateCarrierEntered.await(5, TimeUnit.SECONDS));
 
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
