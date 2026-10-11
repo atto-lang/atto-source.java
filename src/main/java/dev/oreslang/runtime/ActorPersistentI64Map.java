@@ -7,11 +7,13 @@ import java.util.function.Function;
 /**
  * One actor-owned, bounded native i64-to-i64 state field. The only public
  * read/write operations live on a temporary Access object passed to critical().
- * Nested synchronous critical calls on the same admitted actor turn are allowed.\n * The map's slots are allocated in ActorArena's persistent FFM region and
+ * Nested synchronous critical calls on one actor turn are allowed.\n * The map's slots are allocated in ActorArena's persistent FFM region and
  * survive mailbox messages; the Access object does not survive its callback.
  *
- * This is a host ABI, NOT a general Oreslang Map<K,V> or the source-level
- * `critical suspend` compiler lowering. Critical callbacks cannot suspend.
+ * This is a synchronous host prototype, NOT a general Oreslang Map<K,V>,
+ * the scheduler's logical CriticalGate, or suspendable handle_state lowering.
+ * A JVM monitor is held only for this non-suspending callback; never extend
+ * it across await, reentrancy boundaries, or a carrier migration.
  */
 public final class ActorPersistentI64Map implements AutoCloseable {
     private static final long EMPTY = 0L;
@@ -63,8 +65,9 @@ public final class ActorPersistentI64Map implements AutoCloseable {
 
     /**
      * Exclusive, non-suspending access to native persistent actor state.
-     * The actor mailbox is already single-flight; this additional lexical
-     * gate scopes nested access and revokes escaped Access views.
+     * The actor mailbox is expected to be single-flight. Nested callbacks
+     * temporarily fence the outer Access view; finally restores it. This
+     * host monitor is NOT a scheduler-owned continuation lock.
      * Never block a carrier or retain an Access across await/FFI.
      */
     public synchronized <R> R critical(Function<? super Access, ? extends R> body) {
