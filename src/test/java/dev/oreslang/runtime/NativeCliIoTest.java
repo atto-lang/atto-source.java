@@ -183,7 +183,7 @@ final class NativeCliIoTest {
                 PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
                 Set.of(), System.getenv(), out, new ByteArrayOutputStream());
         String logged = out.toString(java.nio.charset.StandardCharsets.UTF_8);
-        assertEquals("false\\nfalse\\ntrue", logged.trim().replace("\\r", ""));
+        assertEquals("false\nfalse\ntrue", logged.trim().replace("\r", ""));
 
         // A symlink in the parent is never treated as a missing ordinary
         // directory; an escaping existing parent is still denied.
