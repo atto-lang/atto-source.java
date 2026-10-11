@@ -153,6 +153,13 @@ public final class ActorStateContract {
     private static boolean referencesAccess(Object node, String access) {
         if (node == null) return false;
         if (node instanceof Ast.NameExpr name) return name.name().equals(access);
+        if (node instanceof Ast.LambdaExpr lambda) {
+            // A nested callback may intentionally shadow the outer loan name.
+            // Its accesses then belong to its own scoped state capability.
+            if (lambda.parameters().stream().anyMatch(p -> p.name().equals(access))) return false;
+            return referencesAccess(lambda.expressionBody(), access)
+                    || referencesAccess(lambda.blockBody(), access);
+        }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) if (referencesAccess(item, access)) return true;
             return false;
