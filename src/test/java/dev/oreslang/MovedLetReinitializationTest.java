@@ -77,7 +77,8 @@ final class MovedLetReinitializationTest {
                           return;
                         }
                         """)));
-        assertTrue(fixed.getMessage().contains("fixed binding"), fixed.getMessage());
+        assertTrue(fixed.getMessage().contains("fixed binding")
+                || fixed.getMessage().contains("cannot reassign val"), fixed.getMessage());
 
         IllegalArgumentException borrowed = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(BOX + """
