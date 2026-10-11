@@ -913,7 +913,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Map " + method.name() + " is compiler-managed; use on_" + method.name() + " as an interception hook");
                 }
                 if (Set.of("on_get", "on_put", "on_remove").contains(method.name())
-                        && (method.async() || method.suspends() || method.generator())) {
+                        && (method.async() || method.suspends())) {
                     throw new IllegalArgumentException("map interception hook " + method.name() + " must not suspend");
                 }
             }
