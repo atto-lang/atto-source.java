@@ -4115,10 +4115,33 @@ public final class OresEvalRootNode extends RootNode {
 
         private OptionValue mapRead(OresObject object, String key) {
             mapHook(object, "on_get", key);
-            return new OptionValue(object.mapEntries.containsKey(key), object.mapEntries.get(key));
+            if (!object.mapEntries.containsKey(key)) return new OptionValue(false, null);
+            Object value = object.mapEntries.get(key);
+            validateMapReadValue(object, key, value);
+            return new OptionValue(true, value);
+        }
+
+        private void validateMapReadValue(OresObject object, String key, Object value) {
+            for (Ast.MapKeyDecl declared : object.klass.mapKeys()) {
+                if (declared.name().equals(key)) {
+                    Ast.TypeRef target = declared.valueType().arguments().getFirst();
+                    if (value == null || !mapStoredTypeMatches(value, target)) {
+                        throw new IllegalArgumentException(
+                                "Map key '" + key + "' no longer satisfies " + target.name()
+                                        + " (mutable alias or corrupted map value)");
+                    }
+                    return;
+                }
+            }
+            if (value == null) {
+                throw new IllegalArgumentException("Map cannot store a void/null value");
+            }
         }
 
         private void mapWrite(OresObject object, String key, Object value) {
+            if (value == null) {
+                throw new IllegalArgumentException("Map cannot store a void/null value");
+            }
             for (Ast.MapKeyDecl declared : object.klass.mapKeys()) {
                 if (declared.name().equals(key)) {
                     Ast.TypeRef target = declared.valueType().arguments().getFirst();
@@ -4137,42 +4160,64 @@ public final class OresEvalRootNode extends RootNode {
          * the outer Option/List/Result carrier for generic types.
          */
         private boolean mapStoredTypeMatches(Object value, Ast.TypeRef target) {
+            return mapStoredTypeMatches(value, target, new IdentityHashMap<>(), 0);
+        }
+
+        private boolean mapStoredTypeMatches(
+                Object value, Ast.TypeRef target, IdentityHashMap<Object, Boolean> active, int depth) {
+            // Prevent stack exhaustion and cyclic objects posing as finite typed values.
+            if (depth > 64 || value == null) return false;
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
-                    if (mapStoredTypeMatches(value, option)) return true;
+                    if (mapStoredTypeMatches(value, option, active, depth + 1)) return true;
                 }
                 return false;
             }
-            if (target.name().equals("Option") && target.arguments().size() == 1) {
-                return value instanceof OptionValue option
-                        && (!option.present()
-                            || mapStoredTypeMatches(option.value(), target.arguments().getFirst()));
-            }
-            if (target.name().equals("Result") && target.arguments().size() == 2) {
-                return value instanceof ResultValue result
-                        && mapStoredTypeMatches(result.value(),
-                            target.arguments().get(result.ok() ? 0 : 1));
-            }
-            if ((target.name().equals("Array") || target.name().equals("List"))
-                    && target.arguments().size() == 1) {
-                if (!(value instanceof List<?> list)) return false;
-                for (Object member : list) {
-                    if (!mapStoredTypeMatches(member, target.arguments().getFirst())) return false;
+            if (target.name().equals("unknown") && target.arguments().isEmpty()) return true;
+            if (target.inferArguments()) return false;
+            if (!activeValueEnters(value, active)) return false;
+            try {
+                if (target.name().equals("Option") && target.arguments().size() == 1) {
+                    return value instanceof OptionValue option
+                            && (!option.present()
+                                || mapStoredTypeMatches(option.value(), target.arguments().getFirst(), active, depth + 1));
                 }
-                return true;
+                if (target.name().equals("Result") && target.arguments().size() == 2) {
+                    return value instanceof ResultValue result
+                            && mapStoredTypeMatches(result.value(),
+                                target.arguments().get(result.ok() ? 0 : 1), active, depth + 1);
+                }
+                if ((target.name().equals("Array") || target.name().equals("List"))
+                        && target.arguments().size() == 1) {
+                    if (!(value instanceof List<?> list)) return false;
+                    for (Object member : list) {
+                        if (!mapStoredTypeMatches(member, target.arguments().getFirst(), active, depth + 1)) return false;
+                    }
+                    return true;
+                }
+                if (target.isRecordType()) {
+                    return oresTypeMatches(value, target);
+                }
+                if (!target.arguments().isEmpty()) return false;
+                return oresTypeMatches(value, target);
+            } finally {
+                active.remove(value);
             }
-            if (target.inferArguments() || !target.arguments().isEmpty()) {
-                // No reified generic proof for other types yet; deny instead
-                // of silently validating only a nominal outer carrier.
-                return false;
-            }
-            return oresTypeMatches(value, target);
+        }
+
+        private static boolean activeValueEnters(
+                Object value, IdentityHashMap<Object, Boolean> active) {
+            // Repeated siblings are fine; only cycles along the active path are rejected.
+            return active.put(value, Boolean.TRUE) == null;
         }
 
         private OptionValue mapRemove(OresObject object, String key) {
             mapHook(object, "on_remove", key);
-            boolean present = object.mapEntries.containsKey(key);
-            return new OptionValue(present, object.mapEntries.remove(key));
+            if (!object.mapEntries.containsKey(key)) return new OptionValue(false, null);
+            Object value = object.mapEntries.get(key);
+            validateMapReadValue(object, key, value);
+            object.mapEntries.remove(key);
+            return new OptionValue(true, value);
         }
 
         private void mapHook(OresObject object, String name, Object... args) {
