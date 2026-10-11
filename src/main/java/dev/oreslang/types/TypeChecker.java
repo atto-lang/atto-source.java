@@ -2826,6 +2826,18 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && member.receiver() instanceof Ast.NameExpr selfName
+                    && selfName.name().equals("self")
+                    && (member.member().equals("forward")
+                        || member.member().equals("backward")
+                        || member.member().equals("respond")
+                        || member.member().equals("done"))) {
+                throw new IllegalArgumentException(
+                        "self." + member.member()
+                                + " requires compiler-bound pipeline/reply routing; "
+                                + "this backend has no authorized lowering yet");
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
