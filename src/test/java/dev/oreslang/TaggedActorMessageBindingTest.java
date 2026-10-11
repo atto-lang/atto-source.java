@@ -55,6 +55,20 @@ final class TaggedActorMessageBindingTest {
     }
 
     @Test
+    void compilerAdapterIsExactlyByteCompatibleWithProductionTaggedCodec() {
+        var registry = TaggedMessageContracts.verify(Parser.parse(SOURCE));
+        var compiled = TaggedActorMessageBinding.fromRegistry(registry, "WorkerMessages");
+        var production = new dev.oreslang.runtime.TaggedMessageCodec(
+                registry.requireDomain("WorkerMessages"));
+        byte[] expected = production.encode(
+                new dev.oreslang.runtime.TaggedMessageCodec.TaggedValue(
+                        "Status", "Message2", 2, "portable"));
+        assertArrayEquals(expected, compiled.encode("Status.Message2", "portable"));
+        var decoded = compiled.decode(expected);
+        assertEquals("Status.Message2", decoded.qualifiedCase());
+    }
+
+    @Test
     void rejectsWrongShapesUnlistedVariantsAndTamperedMessages() {
         var compiled = binding();
         assertThrows(IllegalArgumentException.class,
@@ -72,7 +86,7 @@ final class TaggedActorMessageBindingTest {
     }
 
     @Test
-    void anyReorderingOrTagChangeBreaksWireCompatibility() {
+    void reorderIsNominallyCompatibleButRetaggingIsNot() {
         var original = binding();
         var reordered = TaggedActorMessageBinding.fromRegistry(
                 TaggedMessageContracts.verify(Parser.parse(SOURCE
@@ -80,9 +94,9 @@ final class TaggedActorMessageBindingTest {
                         .replace("Status.Message3", "Status.Message2")
                         .replace("Status.__TEMP__", "Status.Message3"))),
                 "WorkerMessages");
-        assertNotEquals(original.fingerprint(), reordered.fingerprint());
-        assertThrows(IllegalArgumentException.class,
-                () -> reordered.decode(original.encode("Status.Message2", "x")));
+        assertEquals(
+                new TaggedActorMessageBinding.TaggedMessage("Status.Message2", 2, "x"),
+                reordered.decode(original.encode("Status.Message2", "x")));
         var retagged = TaggedActorMessageBinding.fromRegistry(
                 TaggedMessageContracts.verify(Parser.parse(SOURCE.replace(
                         "Message2: string = 2", "Message2: string = 10"))), "WorkerMessages");
@@ -91,7 +105,7 @@ final class TaggedActorMessageBindingTest {
     }
 
     @Test
-    void valuelessEnumCaseFailsClosedUntilUnitCodecExists() {
+    void valuelessEnumCaseUsesCanonicalUnitTupleCodec() {
         var registry = TaggedMessageContracts.verify(Parser.parse("""
                 define enum Flags as
                     Ping = 1
@@ -100,7 +114,8 @@ final class TaggedActorMessageBindingTest {
                     Flags.Ping
                 end
                 """));
-        assertThrows(IllegalArgumentException.class,
-                () -> TaggedActorMessageBinding.fromRegistry(registry, "All"));
+        var compiled = TaggedActorMessageBinding.fromRegistry(registry, "All");
+        assertEquals(new TaggedActorMessageBinding.TaggedMessage("Flags.Ping", 1, null),
+                compiled.decode(compiled.encode("Flags.Ping", null)));
     }
 }
