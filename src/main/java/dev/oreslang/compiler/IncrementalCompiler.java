@@ -193,6 +193,11 @@ public final class IncrementalCompiler {
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
+            // A changed 'conforms' list must invalidate downstream code even
+            // when the module's exported callables are byte-for-byte identical.
+            for (Ast.TypeRef contract : module.contracts()) {
+                abi.append(" conforms ").append(typeRef(contract)).append('\n');
+            }
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
@@ -265,7 +270,8 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
-            abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
+            abi.append(iface.moduleContract() ? "contract " : "interface ")
+                    .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
@@ -275,7 +281,9 @@ public final class IncrementalCompiler {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    memberEntries.add(" iface-field " + field.name() + ":" + typeRef(field.type()) + "\n");
+                    memberEntries.add(" iface-field " + field.name() + ":" + typeRef(field.type())
+                            + " binding=" + field.bindingKind()
+                            + " mutableReferent=" + field.mutableReferent() + "\n");
                 }
             }
             memberEntries.stream().sorted().forEach(abi::append);
