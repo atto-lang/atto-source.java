@@ -95,7 +95,7 @@ Complete ==
 CancelQueued(h) ==
     /\ h \in outstanding
     /\ h # owner
-    /\ h \in SeqToSet(pending)
+    /\ h \in Queued
     /\ pending' = SelectSeq(pending, LAMBDA x : x # h)
     /\ outstanding' = outstanding \ {h}
     /\ UNCHANGED <<phase, owner, generation, incarnation, tickets, executions>>
@@ -148,10 +148,12 @@ SingleHandlerLifetime ==
     /\ (owner # NoOwner => owner \in outstanding)
     /\ (phase = "STOPPED" => owner = NoOwner /\ pending = <<>>)
 
+Queued == {pending[i] : i \in 1..Len(pending)}
+
 FifoAndOwnership ==
     /\ \A i, j \in 1..Len(pending) : i # j => pending[i] # pending[j]
-    /\ SeqToSet(pending) \subseteq outstanding
-    /\ (owner # NoOwner => owner \notin SeqToSet(pending))
+    /\ Queued \subseteq outstanding
+    /\ (owner # NoOwner => owner \notin Queued)
 
 NoForgedExecution ==
     \A i \in 1..Len(executions) :
