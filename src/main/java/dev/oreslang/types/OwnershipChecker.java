@@ -808,12 +808,22 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
+            // Evaluate the RHS while the destination is still moved: self-use
+            // (x = x) must fail, not silently revive a consumed binding.
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
             }
             if (isBorrowValue(assigned)) {
                 throw error("borrowed references cannot be assigned into longer-lived storage; create a fresh lexical borrow binding instead");
+            }
+            if (assignment.target() instanceof Ast.NameExpr name) {
+                VarState destination = requireState(scope, name.name());
+                if (destination.moved) {
+                    // A fresh owned RHS reinstates an evacuated LOCAL binding.
+                    // Never revive an aliased, borrowed or actor-owned place.
+                    destination.moved = false;
+                }
             }
             return assigned;
         }
@@ -1606,9 +1616,23 @@ public final class OwnershipChecker {
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
         if (target instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
-            requireUsable(state, name.name(), true);
             if (!state.rebindable) throw error("cannot reassign fixed binding '" + name.name() + "'; use let or let mut");
-            if (state.immutableBorrows > 0 || state.mutableBorrowed) throw error("cannot assign '" + name.name() + "' while it is borrowed");
+            VarState root = ownershipRoot(state);
+            if (root.moved) {
+                // Rust-like reinitialization after move is safe only for a
+                // direct, writable local with no outstanding loan or alias.
+                // Field/index reinitialization remains fail-closed.
+                if (root != state || state.origin != Origin.LOCAL
+                        || state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                        || state.type.isBorrow() || state.borrowLease
+                        || !state.aggregateSources.isEmpty()
+                        || root.immutableBorrows > 0 || root.mutableBorrowed) {
+                    throw error("cannot reinitialize moved alias or borrowed value '" + name.name() + "'");
+                }
+                return;
+            }
+            requireUsable(state, name.name(), true);
+            if (root.immutableBorrows > 0 || root.mutableBorrowed) throw error("cannot assign '" + name.name() + "' while it is borrowed");
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
