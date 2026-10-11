@@ -24,7 +24,11 @@ def main():
     if not deps:
         raise ValueError("missing Maven dependency classpath")
     classes = project / "target" / "classes"
-    argv = ["java", "-cp", str(classes) + os.pathsep + deps,
+    # Truffle needs host native access to load its runtime library on JDK 25.
+    # Explicitly authorize that capability for this isolated test process;
+    # never suppress or discard process stderr (including guest failures).
+    argv = ["java", "--enable-native-access=ALL-UNNAMED",
+            "-cp", str(classes) + os.pathsep + deps,
             "dev.oreslang.launcher.OresMain",
             *([] if execute else ["--check"]), str(path)]
     result = subprocess.run(argv, cwd=project, timeout=80, check=False)
