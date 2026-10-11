@@ -113,6 +113,34 @@ final class ActorGroupSupervisorBindingTest {
     }
 
     @Test
+    void hotUpgradeDoesNotReparentOrCloseSupervisedActorGroups() {
+        java.util.concurrent.atomic.AtomicInteger reclaimed = new java.util.concurrent.atomic.AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.createSupervisor();
+            var daddy = runtime.createChildSupervisor(parent);
+            var sibling = runtime.createChildSupervisor(parent);
+            var group = runtime.createActorGroup(daddy);
+            var code = new SupervisorCodeSlot<>("ABI", "Daddy-v1", reclaimed::incrementAndGet, 2);
+            daddy.installPolicyCode(code);
+            assertEquals(1L, daddy.policyRevision().orElseThrow().revision());
+            assertThrows(IllegalStateException.class, () -> sibling.installPolicyCode(code),
+                    "one code image slot cannot be installed in two supervisors");
+            var old = code.acquire();
+            code.activate(1, "ABI", "Daddy-v2", reclaimed::incrementAndGet);
+            assertEquals("Daddy-v1", old.code());
+            assertEquals(2L, daddy.policyRevision().orElseThrow().revision());
+            assertEquals(daddy.id(), group.supervisorId());
+            assertEquals(Set.of(group.id()), daddy.advisedGroupIds());
+            assertEquals(java.util.Optional.of(parent.id()), daddy.parentId());
+            assertEquals(0, reclaimed.get());
+            old.close();
+            assertEquals(1, reclaimed.get());
+            group.close();
+        }
+        assertEquals(2, reclaimed.get(), "runtime close must retire final code revision");
+    }
+
+    @Test
     void foreignAndNullSupervisorParentsAreRejected() {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime other = new ActorRuntime()) {
