@@ -50,8 +50,33 @@ final class SharedStructuredWasmOwnershipParityTest {
     }
 
     @Test
-    void exactMutableClassBorrowHasSameResultOnGraal() throws Exception {
-        assertExecutesFortyTwo("class-mutable.ores", "3cad92b8c5f7c4d5b97472a7247ab0c10455078b");
+    void exactNativeMutableClassFixtureRevealsImmutableOwnerMismatch() throws Exception {
+        // Keep the exact original source unchanged. Graal correctly refuses an
+        // exclusive loan from an owner lacking Java's explicit 'let mut'.
+        String source = fixture("class-mutable.ores",
+                "3cad92b8c5f7c4d5b97472a7247ab0c10455078b");
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(rejection.getMessage().contains("cannot mutably borrow immutable owner 'player'"),
+                rejection::getMessage);
+    }
+
+    @Test
+    void explicitMutableOwnerVariantExecutesWithoutRelaxingOwnership() throws Exception {
+        String source = fixture("class-mutable.ores",
+                "3cad92b8c5f7c4d5b97472a7247ab0c10455078b");
+        // Deliberately a NEW source variant, not a parity claim about the
+        // original unmarked owner. It must earn its own LLVM/Wasm proof.
+        String corrected = source.replace("let Player player = new Player();",
+                "let mut Player player = new Player();");
+        assertNotEquals(source, corrected);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(corrected)));
+        try (Context context = Context.newBuilder("ores").allowAllAccess(true).build()) {
+            Value observed = context.eval(Source.newBuilder("ores", corrected,
+                    "explicit-mutable-class.ores").build());
+            assertTrue(observed.fitsInLong());
+            assertEquals(42L, observed.asLong());
+        }
     }
 
     @Test
