@@ -73,4 +73,30 @@ final class MessagePackActorContractTest {
         assertThrows(IllegalArgumentException.class, () -> domain.decode(extra));
         assertThrows(IllegalArgumentException.class, () -> domain.decode(new byte[0]));
     }
+    @Test
+    void enforcesNativeDescriptorLimitAtContractRegistration() {
+        MessagePackCollectionCodec.Shape[] huge =
+                new MessagePackCollectionCodec.Shape[3000];
+        java.util.Arrays.fill(huge, string());
+        IllegalArgumentException bad = assertThrows(IllegalArgumentException.class,
+                () -> new MessagePackActorContract("demo.Oversized.v1",
+                        new MessagePackActorContract.Alternative(1, tuple(huge))));
+        assertTrue(bad.getMessage().contains("native limit"), bad.getMessage());
+    }
+
+    @Test
+    void rejectsInvalidFloatAndRetainsNoAliasToDecodedWireBytes() {
+        MessagePackActorContract floatContract = new MessagePackActorContract("demo.Float.v1",
+                new MessagePackActorContract.Alternative(1, float64()));
+        assertEquals(1.5, floatContract.decode(floatContract.encode(1, 1.5)).value());
+        assertThrows(IllegalArgumentException.class,
+                () -> floatContract.encode(1, Double.NaN));
+        assertThrows(IllegalArgumentException.class,
+                () -> floatContract.encode(1, Double.NEGATIVE_INFINITY));
+        byte[] encoded = contract().encode(12, List.of("safe", 5L));
+        var decoded = contract().decode(encoded);
+        java.util.Arrays.fill(encoded, (byte) 0);
+        assertEquals(List.of("safe", 5L), decoded.value());
+    }
+
 }
