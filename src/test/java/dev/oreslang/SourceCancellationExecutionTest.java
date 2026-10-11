@@ -214,7 +214,7 @@ final class SourceCancellationExecutionTest {
                     "incomplete cleanup must remain an explicit shutdown error: " + failure);
             assertFalse(task.isDone(),
                     "context shutdown failure must not fabricate terminal guest cleanup");
-            assertEquals("armed\\ncleanup-armed\\n",
+            assertEquals("armed\ncleanup-armed\n",
                     output.toString(StandardCharsets.UTF_8));
         } finally {
             // Intentionally unresolved source cleanup: do not treat a second
