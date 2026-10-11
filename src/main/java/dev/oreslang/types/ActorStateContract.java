@@ -48,6 +48,16 @@ public final class ActorStateContract {
     }
 
     private static void verifyActor(Ast.ClassDecl klass) {
+        // This compiler branch does not yet join inherited actor state
+        // schemas or prove that a parent actor uses the same serial lane.
+        // In particular an inherited mutable field cannot silently become
+        // a second state aggregate outside the sealed handle_state contract.
+        if (klass.serial() && !klass.parents().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "serial actor '" + klass.name()
+                    + "' cannot extend another class until inherited state/lane "
+                    + "ownership is verified; use from/implements interfaces");
+        }
         Ast.FieldDecl state = stateField(klass);
         if (state == null) {
             // Legacy scalar actor fields are not the one-state aggregate
