@@ -805,7 +805,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, ARM_RETURN, BREAK, CONTINUE, THROW
         }
 
         private record SourceFlow(
@@ -818,6 +818,10 @@ public final class OresEvalRootNode extends RootNode {
 
             private static SourceFlow returning(Object value) {
                 return new SourceFlow(SourceFlowKind.RETURN, value, null);
+            }
+
+            private static SourceFlow armReturning(Object value) {
+                return new SourceFlow(SourceFlowKind.ARM_RETURN, value, null);
             }
 
             private static SourceFlow breaking() {
@@ -1079,9 +1083,9 @@ public final class OresEvalRootNode extends RootNode {
                             done(null);
                         }
                         case THROW -> throw sourceFailure(flow.failure());
-                        case BREAK, CONTINUE ->
+                        case BREAK, CONTINUE, ARM_RETURN ->
                                 throw new IllegalStateException(
-                                        "loop control crossed a source continuation boundary");
+                                        "lexical control flow crossed a source continuation boundary");
                     }
                     return;
                 }
@@ -1090,9 +1094,9 @@ public final class OresEvalRootNode extends RootNode {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
                     case THROW -> throw sourceFailure(flow.failure());
-                    case BREAK, CONTINUE ->
+                    case BREAK, CONTINUE, ARM_RETURN ->
                             throw new IllegalStateException(
-                                    "loop control crossed a source function boundary");
+                                    "lexical control flow crossed a source function boundary");
                 }
             }
 
@@ -1319,6 +1323,10 @@ public final class OresEvalRootNode extends RootNode {
                         && expressionContainsPotentialSuspension(
                                 ret.value(), seen);
             }
+            if (stmt instanceof Ast.ArmReturnStmt ret) {
+                return ret.value() != null
+                        && expressionContainsPotentialSuspension(ret.value(), seen);
+            }
             if (stmt instanceof Ast.ExprStmt expr) {
                 return expressionContainsPotentialSuspension(
                         expr.expression(), seen);
@@ -1423,6 +1431,24 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Set<Object> seen) {
             if (expr == null) return false;
+            if (expr instanceof Ast.ValueMatchExpr matched) {
+                return expressionContainsPotentialSuspension(matched.subject(), seen)
+                        || matched.arms().stream().anyMatch(arm ->
+                            (arm.guard() != null
+                                && expressionContainsPotentialSuspension(arm.guard(), seen))
+                            || arm.body().stream().anyMatch(stmt ->
+                                statementContainsPotentialSuspension(stmt, seen)));
+            }
+            if (expr instanceof Ast.ValueSwitchExpr switched) {
+                return expressionContainsPotentialSuspension(switched.subject(), seen)
+                        || switched.cases().stream().anyMatch(arm ->
+                            arm.constants().stream().anyMatch(constant ->
+                                expressionContainsPotentialSuspension(constant, seen))
+                            || arm.body().stream().anyMatch(stmt ->
+                                statementContainsPotentialSuspension(stmt, seen)))
+                        || switched.defaultBody().stream().anyMatch(stmt ->
+                            statementContainsPotentialSuspension(stmt, seen));
+            }
             if (expr instanceof Ast.AwaitExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
@@ -1622,6 +1648,7 @@ public final class OresEvalRootNode extends RootNode {
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
+                    && !(stmt instanceof Ast.ArmReturnStmt)
                     && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(
                     stmt,
@@ -1629,6 +1656,10 @@ public final class OresEvalRootNode extends RootNode {
                             new IdentityHashMap<>()))) {
                 try {
                     executeStatement(stmt, env, defers, false);
+                } catch (ArmReturnSignal returned) {
+                    finishBlock(task, env, defers,
+                            SourceFlow.armReturning(returned.value), continuation);
+                    return;
                 } catch (ReturnSignal returned) {
                     finishBlock(
                             task,
@@ -1846,6 +1877,20 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure2));
                                 }
                             });
+                    return;
+                }
+
+                if (stmt instanceof Ast.ArmReturnStmt returned) {
+                    if (returned.value() == null) {
+                        continuation.accept(task, SourceFlow.throwing(
+                                new IllegalStateException("value arm completed without result")));
+                    } else {
+                        evalSuspendableExpr(task, returned.value(), env,
+                                (t, value, failure) ->
+                                    continuation.accept(t, failure == null
+                                            ? SourceFlow.armReturning(value)
+                                            : SourceFlow.throwing(failure)));
+                    }
                     return;
                 }
 
