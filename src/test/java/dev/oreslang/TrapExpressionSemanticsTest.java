@@ -112,6 +112,51 @@ final class TrapExpressionSemanticsTest {
                 """));
     }
 
+    @Test
+    void trapBoundarySurvivesAwaitAndCapturesLateOrdinaryFailure() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+                pub async fnc later(Animal animal): Dog {
+                  rt cooperate;
+                  return animal as Dog;
+                }
+                pub async routine main(): void {
+                  val Option<Dog> good = trap await later(new Dog());
+                  val Option<Dog> bad = trap await later(new Cat());
+                  stdio.stdout.write(good.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(bad.is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:true", run(source));
+    }
+
+    @Test
+    void trapBoundaryCannotSuppressPanicAfterSuspension() throws Exception {
+        String source = """
+                pub async fnc later(): int {
+                  rt cooperate;
+                  val Option<int> missing = None;
+                  return missing.unwrap();
+                }
+                pub async routine main(): void {
+                  val Option<int> ignored = trap await later();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(failure.getMessage().contains("Option::unwrap"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
