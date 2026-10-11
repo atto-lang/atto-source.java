@@ -3228,14 +3228,17 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
-        // Only an immediate '{' denotes the statement-block form. Everything
-        // else starts a normal expression body. This is intentionally lexical:
-        // future prefix expressions such as `struct{...}{...}` must remain
-        // expression bodies rather than being confused with a lambda block.
-        if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        // Lambdas are fresh lexical return scopes. A lambda declared inside
+        // a value match arm must NOT inherit that arm's return target.
+        int outerArmDepth = valueArmDepth;
+        valueArmDepth = 0;
+        try {
+            if (check(LBRACE))
+                return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+            return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        } finally {
+            valueArmDepth = outerArmDepth;
         }
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
     }
 
     private boolean looksLikeLambda() {
