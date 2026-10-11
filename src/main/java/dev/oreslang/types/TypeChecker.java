@@ -1459,6 +1459,14 @@ public final class TypeChecker {
             if (loopDepth == 0) throw new IllegalArgumentException("'continue' may only appear inside loop or for");
             return;
         }
+        if (stmt instanceof Ast.ArmReturnStmt returned) {
+            if (finallyDepth > 0) throw new IllegalArgumentException(
+                    "return is forbidden directly inside finally; value match cannot bypass finally");
+            Type actual = typeOfAgainstExpected(returned.value(), expectedReturn, env, generics, self);
+            requireReadonlyCapabilityPreserved(actual, expectedReturn, "value match arm result");
+            requireAssignable(actual, expectedReturn, "value match arm result");
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (finallyDepth > 0) {
                 throw new IllegalArgumentException(
@@ -1757,14 +1765,13 @@ public final class TypeChecker {
                     "typed value match currently supports scalar subjects only");
         }
         for (Ast.MatchArm arm : matched.arms()) {
-            if (arm.guard() != null && !safeValueMatchScalarExpr(arm.guard())) {
-                throw new IllegalArgumentException("typed value match guards must be non-suspending scalar expressions");
-            }
-            if (arm.body().size() != 1 || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
-                    || returned.value() == null || !safeValueMatchScalarExpr(returned.value())) {
+            if (arm.guard() != null && !safeValueMatchScalarExpr(arm.guard()))
                 throw new IllegalArgumentException(
-                        "typed value match currently requires one direct return of a non-suspending scalar expression per arm; "
-                                + "defer/finally/loops and nested control-flow await continuation lowering");
+                        "typed value match guards must be non-suspending scalar expressions");
+            if (typedValueArmFlow(arm.body()) != TYPED_MATCH_RETURN) {
+                throw new IllegalArgumentException(
+                        "typed value match arm must produce a local result on every reachable path; "
+                                + "fallthrough or escape is forbidden");
             }
         }
         // The enclosing callable return type is intentionally NOT consulted.
@@ -1773,21 +1780,140 @@ public final class TypeChecker {
         Ast.MatchStmt checked = new Ast.MatchStmt(
                 matched.subject(), matched.ordered(), matched.arms(), false, null, false);
         checkMatch(checked, subject, env, generics, result, self);
-        // checkMatch verifies pattern-local bindings and ordinary return
-        // types. Independently require every name read by this experimental
-        // pure-scalar lowering to be a resolved, *owned* scalar value. In
-        // particular Unknown imports and &mut/borrowed bindings cannot gain
-        // scalar semantics by flowing through an arithmetic expression.
+        // Type analysis and the bounded effect/ownership admission are
+        // independent; all lexical paths must be checked with their own scopes.
         requireValueMatchOwnedScalarNames(matched.subject(), env);
         for (Ast.MatchArm arm : matched.arms()) {
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
             if (arm.guard() != null)
                 requireValueMatchOwnedScalarNames(arm.guard(), armEnv);
-            Ast.ReturnStmt returned = (Ast.ReturnStmt) arm.body().getFirst();
-            requireValueMatchOwnedScalarNames(returned.value(), armEnv);
+            verifyTypedValueArm(arm.body(), armEnv, generics, result, self);
         }
         return result;
+    }
+
+    /**
+     * Restricted, sound synchronous completion proof. A nested function
+     * definition/call cannot count as the enclosing arm's local result.
+     * Loops, procedural dispatch, select and unusual control-flow remain
+     * rejected until continuation lowering models them explicitly.
+     */
+    private int typedValueArmFlow(List<Ast.Stmt> body) {
+        int outcomes = TYPED_MATCH_FALLTHROUGH;
+        for (Ast.Stmt stmt : body) {
+            // Reject unsupported AST even if it follows a terminating arm.
+            int current = typedValueStatementFlow(stmt);
+            if ((outcomes & TYPED_MATCH_FALLTHROUGH) != 0) {
+                outcomes = (outcomes & ~TYPED_MATCH_FALLTHROUGH) | current;
+            }
+        }
+        return outcomes;
+    }
+
+    private int typedValueStatementFlow(Ast.Stmt stmt) {
+        if (stmt instanceof Ast.ArmReturnStmt) return TYPED_MATCH_RETURN;
+        if (stmt instanceof Ast.BindingStmt || stmt instanceof Ast.DeferStmt
+                || stmt instanceof Ast.ExprStmt) return TYPED_MATCH_FALLTHROUGH;
+        if (stmt instanceof Ast.BlockStmt block) return typedValueArmFlow(block.body());
+        if (stmt instanceof Ast.IfStmt conditional) {
+            int result = conditional.elseBody().isEmpty()
+                    ? TYPED_MATCH_FALLTHROUGH
+                    : typedValueArmFlow(conditional.elseBody());
+            for (Ast.IfBranch branch : conditional.branches())
+                result |= typedValueArmFlow(branch.body());
+            return result;
+        }
+        if (stmt instanceof Ast.TryStmt attempted) {
+            int body = typedValueArmFlow(attempted.body());
+            if (!attempted.catchBody().isEmpty())
+                body |= typedValueArmFlow(attempted.catchBody());
+            int cleanup = typedValueArmFlow(attempted.finallyBody());
+            if (cleanup != TYPED_MATCH_FALLTHROUGH) {
+                throw new IllegalArgumentException(
+                        "value match finally cannot produce or override an arm result");
+            }
+            return body;
+        }
+        throw new IllegalArgumentException(
+                "unsupported control flow inside typed value match arm: "
+                        + stmt.getClass().getSimpleName());
+    }
+
+    private boolean isSafeTypedValuePrint(Ast.Expr expr) {
+        if (!(expr instanceof Ast.CallExpr call)
+                || !(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr ns)
+                || !ns.name().equals("stdio")
+                || !(member.member().equals("print") || member.member().equals("println"))
+                || call.arguments().size() > 1 || call.typeArgumentsPresent()) return false;
+        return call.arguments().stream().allMatch(this::safeValueMatchScalarExpr);
+    }
+
+    /**
+     * Validate expressions and name lifetimes after normal typing, not merely
+     * AST shape. The value match currently admits scalar bindings, conditional
+     * control flow and a specifically known synchronous defer/print effect.
+     */
+    private void verifyTypedValueArm(
+            List<Ast.Stmt> body, Env parent, Set<String> generics, Type result, Type self) {
+        Env local = new Env(parent);
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BindingStmt binding) {
+                if (!safeValueMatchScalarExpr(binding.initializer()))
+                    throw new IllegalArgumentException(
+                            "typed value match binding initializer must be a pure scalar expression");
+                requireValueMatchOwnedScalarNames(binding.initializer(), local);
+                Type value = typeOf(binding.initializer(), local, generics, self);
+                if (!isOwnedScalarValueMatchType(value))
+                    throw new IllegalArgumentException(
+                            "typed value match binding must be an owned scalar value");
+                checkStatement(binding, local, generics, result, self);
+            } else if (stmt instanceof Ast.ArmReturnStmt returned) {
+                if (!safeValueMatchScalarExpr(returned.value()))
+                    throw new IllegalArgumentException(
+                            "typed value match arm result must be a pure scalar expression");
+                requireValueMatchOwnedScalarNames(returned.value(), local);
+            } else if (stmt instanceof Ast.ExprStmt statement) {
+                if (!safeValueMatchScalarExpr(statement.expression())
+                        && !isSafeTypedValuePrint(statement.expression()))
+                    throw new IllegalArgumentException(
+                            "typed value match expression statement has unverified effects");
+                if (isSafeTypedValuePrint(statement.expression())) {
+                    Ast.CallExpr call = (Ast.CallExpr) statement.expression();
+                    for (Ast.Expr arg : call.arguments())
+                        requireValueMatchOwnedScalarNames(arg, local);
+                } else requireValueMatchOwnedScalarNames(statement.expression(), local);
+            } else if (stmt instanceof Ast.DeferStmt defer) {
+                if (!isSafeTypedValuePrint(defer.expression()))
+                    throw new IllegalArgumentException(
+                            "typed value match defer currently requires synchronous stdio.print/println");
+                Ast.CallExpr call = (Ast.CallExpr) defer.expression();
+                for (Ast.Expr arg : call.arguments())
+                    requireValueMatchOwnedScalarNames(arg, local);
+            } else if (stmt instanceof Ast.BlockStmt block) {
+                verifyTypedValueArm(block.body(), local, generics, result, self);
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (!safeValueMatchScalarExpr(branch.condition()))
+                        throw new IllegalArgumentException(
+                                "typed value match conditions must be pure scalar expressions");
+                    requireValueMatchOwnedScalarNames(branch.condition(), local);
+                    verifyTypedValueArm(branch.body(), local, generics, result, self);
+                }
+                verifyTypedValueArm(conditional.elseBody(), local, generics, result, self);
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                verifyTypedValueArm(attempted.body(), local, generics, result, self);
+                Env caught = new Env(local);
+                caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
+                verifyTypedValueArm(attempted.catchBody(), caught, generics, result, self);
+                verifyTypedValueArm(attempted.finallyBody(), local, generics, result, self);
+            } else {
+                throw new IllegalArgumentException(
+                        "unsupported typed value match arm statement: "
+                                + stmt.getClass().getSimpleName());
+            }
+        }
     }
 
     private void requireValueMatchOwnedScalarNames(Ast.Expr expr, Env env) {
