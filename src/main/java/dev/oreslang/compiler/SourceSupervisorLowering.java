@@ -9,7 +9,9 @@ import dev.oreslang.runtime.SupervisorProcess;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Intentionally small first source-to-CONTROL lowering slice.
@@ -35,15 +37,21 @@ public final class SourceSupervisorLowering {
     public static final class StopOnlySupervisor {
         private final String sourceName;
         private final boolean explicitlyBoundFailure;
+        private final boolean awaitsStopAcknowledgment;
 
-        private StopOnlySupervisor(String sourceName, boolean explicitlyBoundFailure) {
+        private StopOnlySupervisor(
+                String sourceName, boolean explicitlyBoundFailure,
+                boolean awaitsStopAcknowledgment) {
             this.sourceName = sourceName;
             this.explicitlyBoundFailure = explicitlyBoundFailure;
+            this.awaitsStopAcknowledgment = awaitsStopAcknowledgment;
         }
 
         public String sourceName() { return sourceName; }
         /** True only when the guest named its own typed Failure parameter. */
         public boolean explicitlyBoundFailure() { return explicitlyBoundFailure; }
+        /** Whether `await self.stop(f)` waits for an authoritative host acknowledgment. */
+        public boolean awaitsStopAcknowledgment() { return awaitsStopAcknowledgment; }
 
         /**
          * Installs the compiled source hook on a real supervisor-owned
@@ -57,6 +65,9 @@ public final class SourceSupervisorLowering {
                 Consumer<SupervisorProcess.Resolution> hostDecision) {
             Objects.requireNonNull(group, "group");
             Objects.requireNonNull(hostDecision, "hostDecision");
+            if (awaitsStopAcknowledgment) {
+                throw unsupported("async on_panic requires installAwaitingStop with a CompletionStage host acknowledgment");
+            }
             ActorRuntime.ActorGroupId expectedGroup = group.id();
             ActorRuntime.SupervisorId expectedSupervisor = group.supervisorId();
             return group.installSupervisorProcess(capacity, notice -> {
@@ -89,6 +100,21 @@ public final class SourceSupervisorLowering {
     }
 
     /**
+     * Restricted executable async guest hook:
+     * `pub async on_panic(f: Failure): void { await self.stop(f); return; }`
+     * The caller-provided CompletionStage MUST represent the host's actual
+     * STOP effect acknowledgment; mere enqueue is not success. The logical
+     * CONTROL lease remains owned until this stage completes. The compiler
+     * admits no post-await guest statements other than `return;`.
+     */
+    public SupervisorProcess installAwaitingStop(
+            ActorRuntime.ActorGroup group,
+            int capacity,
+            Function<SupervisorProcess.Resolution, CompletionStage<Void>> hostAcknowledgment) {
+        throw new UnsupportedOperationException("placeholder");
+    }
+
+    /**
      * Separate, opt-in entry point: normal program/type/isolate admission must
      * continue rejecting source supervisors until all hooks/effects are lowered.
      */
@@ -118,7 +144,7 @@ public final class SourceSupervisorLowering {
         }
         Ast.MethodDecl hook = target.hooks().getFirst();
         if (!hook.name().equals("on_panic")
-                || hook.isStatic() || hook.isAbstract() || hook.async()
+                || hook.isStatic() || hook.isAbstract()
                 || hook.suspends() || hook.structural()
                 || hook.explicitReceiverType() != null
                 || !hook.genericParameters().isEmpty()
@@ -129,7 +155,7 @@ public final class SourceSupervisorLowering {
                 || hook.parameters().getFirst().name().equals("self")
                 || !hook.parameters().getFirst().type().equals(Ast.TypeRef.simple("Failure"))
                 || !hook.returnType().equals(Ast.TypeRef.simple("void"))) {
-            throw unsupported("on_panic requires synchronous (f: Failure): void");
+            throw unsupported("on_panic requires (f: Failure): void with a supported STOP body");
         }
         for (Ast.Annotation annotation : hook.annotations()) {
             if (!annotation.name().equals("Implements") || !annotation.arguments().isEmpty()) {
@@ -141,7 +167,7 @@ public final class SourceSupervisorLowering {
                 || !(body.getFirst() instanceof Ast.ExprStmt statement)
                 || !(body.getLast() instanceof Ast.ReturnStmt returned)
                 || returned.value() != null
-                || !(statement.expression() instanceof Ast.CallExpr call)
+                || !(stopCall(statement.expression()) instanceof Ast.CallExpr call)
                 || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()
                 || call.arguments().size() > 1
                 || !(call.callee() instanceof Ast.MemberExpr member)
@@ -149,6 +175,10 @@ public final class SourceSupervisorLowering {
                 || !receiver.name().equals("self")
                 || !member.member().equals("stop")) {
             throw unsupported("only 'self.stop(); return;' or 'self.stop(f); return;' is executable");
+        }
+        boolean awaitsAcknowledgment = statement.expression() instanceof Ast.AwaitExpr;
+        if (hook.async() != awaitsAcknowledgment) {
+            throw unsupported("await self.stop(...) requires async on_panic; synchronous hooks cannot await");
         }
         boolean explicitlyBoundFailure = !call.arguments().isEmpty();
         if (explicitlyBoundFailure
@@ -160,7 +190,12 @@ public final class SourceSupervisorLowering {
         }
         // No dynamic interpretation, reflection, heap capture or ambient host
         // authority. Both forms resolve to the *current* delivered failure.
-        return new StopOnlySupervisor(target.name(), explicitlyBoundFailure);
+        return new StopOnlySupervisor(target.name(), explicitlyBoundFailure, awaitsAcknowledgment);
+    }
+
+    private static Ast.Expr stopCall(Ast.Expr expression) {
+        return expression instanceof Ast.AwaitExpr await
+                ? await.expression() : expression;
     }
 
     private static IllegalArgumentException unsupported(String reason) {
