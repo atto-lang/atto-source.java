@@ -8,6 +8,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
@@ -100,7 +101,7 @@ final class SourcePendingCleanupExecutionTest {
         assertTrue(output(output).contains(marker), "guest never reached " + marker + "; output: " + output(output));
     }
 
-    @Test
+    @RepeatedTest(12)
     void cancellationWaitsForTwoGenuinelyPendingCleanupFuturesInLifoOrder() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
