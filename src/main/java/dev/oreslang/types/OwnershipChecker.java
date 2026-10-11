@@ -1091,6 +1091,37 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // The sealed handle_state intrinsic is the only lexical boundary
+        // allowed to create a mutable actor-state loan. A plain |s| lambda
+        // must NOT become mutable when used anywhere else. The actor state
+        // and effect checkers independently verify this exact source form.
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr self
+                && self.name().equals("self")
+                && member.member().equals("handle_state")) {
+            Ast.ClassDecl actor = classOfReceiver(member.receiver(), scope);
+            if (actor == null || actor.actorKind() == Ast.ActorKind.NONE
+                    || ActorStateContract.stateField(actor) == null
+                    || call.typeArgumentsPresent() || call.arguments().size() != 1
+                    || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)
+                    || lambda.parameters().size() != 1 || lambda.nonLexical()
+                    || (!lambda.critical() && !actor.serial())) {
+                throw error("state loan requires sealed inline critical callback on an actor");
+            }
+            Ast.Param loan = lambda.parameters().getFirst();
+            if (loan.structural()) {
+                throw error("actor state loan parameter cannot be a structural view");
+            }
+            // Only this checked lexical callback gets an exclusive mutable
+            // borrow. The guest AST remains unchanged and cannot reify or
+            // return the synthesized mutable capability.
+            Ast.Param scoped = new Ast.Param(loan.type(), loan.name(), false, true);
+            Ast.LambdaExpr checked = new Ast.LambdaExpr(
+                    List.of(scoped), lambda.expressionBody(), lambda.blockBody(),
+                    false, lambda.critical());
+            checkLambda(checked, scope, null);
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
