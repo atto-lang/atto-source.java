@@ -177,6 +177,14 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(SupervisorProcess.Directive.STOP, decision.directive());
             assertEquals(failedId, decision.notice().actorId(),
                     "typed Failure STOP retargeted a different child");
+            var logicalChild = decision.notice().logicalChild().orElseThrow();
+            assertEquals(1, decision.notice().incarnation());
+            var incarnation = group.childSnapshot(logicalChild);
+            assertEquals(failedId, incarnation.actor());
+            assertEquals(1, incarnation.incarnation());
+            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.FINALIZED,
+                    incarnation.phase(),
+                    "CONTROL received failure before registered child was finalized");
             assertEquals(Boolean.TRUE, doneAtDecision.get(),
                     "CONTROL delivered STOP before child done/finalization barrier");
             assertEquals(group.supervisorId(), decision.notice().supervisorId());
@@ -268,6 +276,13 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(group.id(), decision.notice().groupId());
             assertEquals(group.supervisorId(), decision.notice().supervisorId());
             assertEquals("source-stop-test", decision.notice().diagnostic());
+            assertTrue(decision.notice().logicalChild().isPresent(),
+                    "nested inherited child had no stable logical identity");
+            var child = group.childSnapshot(decision.notice().logicalChild().orElseThrow());
+            assertEquals(decision.notice().actorId(), child.actor());
+            assertEquals(decision.notice().incarnation(), child.incarnation());
+            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.FINALIZED,
+                    child.phase());
             assertEquals(Boolean.FALSE, onActorCarrier.get(),
                     "compiled guest STOP ran on a child actor carrier");
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
