@@ -35,7 +35,7 @@ fnc example(): void {
 - `Option<T>` describes the *presence* of a key; the stored value is `T` (not an Option wrapper).
 - Literal-key accesses and `get` / `put` / `remove` are statically typed. A nonliteral key returns `Option<unknown>` and accepts unknown values.
 - Dynamic writes are validated again at the storage boundary. Invalid writes do not invoke `on_put` and do not modify storage.
-- Reads and removes of known keys also validate their current values before returning a typed `Option<T>`; this detects mutable alias corruption rather than exposing a mismatched value.
+- Reads and removes of known keys also validate their current values before returning a typed `Option<T>`; this detects mutable alias corruption rather than exposing a mismatched value. Before `on_get`, dynamic reads additionally verify that the stored payload can be copied (rather than borrowed or moved): rejected reads do not trigger the read hook.
 - `void`/null payloads, cyclic runtime values during recursive schema checking, and recursively nested values deeper than 64 levels are rejected. A finite nested `Option`/`Result`/`Array`/`List` value is validated recursively; `unknown` remains an open top type.
 - Typed key payloads must be runtime-reifiable. Bare Map construction, Map subclasses with type parameters, second-generation Map subclass inheritance, unsupported parameterized payload types and suspending/mutable-parameter hooks are rejected statically.
 - Open maps are mutable, identity-bearing objects. A map insertion moves non-Copy values according to ordinary Oreslang ownership rules. Mutable aliases must not be used after moves; implicit actor/async value transport of map objects is not a supported isolation boundary.
@@ -45,7 +45,7 @@ fnc example(): void {
 - Bracket access uses the same read/write hooks as `get` and `put`. `remove` invokes `on_remove`.
 - Hooks execute synchronously in the calling actor/task, may raise an error to reject an operation, and must not suspend.
 - `put`, `remove`, and indexed writes require exclusive mutable receiver access; immutable borrows cannot mutate a map. Both method calls and indexed writes reject borrowed references, callable closures, and unresolved generics as stored payloads, including borrows nested in sum types.
-- For present entries, `on_get` and `on_remove` hooks run **after initial value validation**. The runtime validates again after the hook before returning or removing the value. Hooks still fire for missing keys and can have observable effects, but cannot reenter the same Map. Safe readonly-hook effects and actor `critical` guard enforcement require further compiler integration.
+- For present entries, `on_get` and `on_remove` hooks run **after initial value validation**. The runtime validates again after the hook before returning or removing the value. `on_put` likewise revalidates the incoming value and existing overwrite safety **after** the hook, before committing a write. Hooks still fire for missing keys and can have observable effects, but cannot reenter the same Map; reentrancy is rejected before storage access or validation. Safe readonly-hook effects and actor `critical` guard enforcement require further compiler integration.
 - The underlying map retains arbitrary additional string keys.
 - The compiler owns map operations: classes cannot override `get`, `put`, or `remove`; interception is through the three hooks.
 - All supported public operations route to the same storage implementation; no iterator-based mutable entry API is exported in this iteration.
