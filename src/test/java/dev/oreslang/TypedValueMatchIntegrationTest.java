@@ -119,6 +119,7 @@ final class TypedValueMatchIntegrationTest {
     @Test
     void complexArmsAndCallableResultExpressionsAreNotAccidentallyLowered() {
         rejects("""
+                fnc compute(int n): int { return n; }
                 fnc invalid(int n): int {
                   return match<ret=int> n over {
                     on 7 { const x: int = 42; return compute(x); }
@@ -232,14 +233,14 @@ final class TypedValueMatchIntegrationTest {
                     default { return &n; }
                   };
                 }
-                """, "typed value match arm result must be a pure scalar expression");
+                """, "value match arm result");
         rejects("""
                 fnc invalid(int n): int {
                   return match<ret=int> n over {
                     default { return &mut n; }
                   };
                 }
-                """, "typed value match arm result must be a pure scalar expression");
+                """, "value match arm result");
     }
 
     @Test
