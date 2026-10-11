@@ -110,7 +110,26 @@ class SharedUntrustedGraalIsolateTest {
                 // This positive Native Image gate is deliberately stronger than
                 // the JVM fail-closed smoke: both actors must start, exchange
                 // mailbox traffic and terminate inside the SAME guest Context.
-                domain.submitSource("""
+                // First isolate guest actor admission from inter-actor
+                // mailbox/lifecycle interactions. A distinct error label
+                // identifies the failing phase even when Graal masks a guest
+                // exception during sandbox listener onLeaveThread().
+                assertGuestPhase(domain, "one actor lifecycle", """
+                        define untrusted actor Worker as
+                          receive(ActorMail<String> mail): void {
+                            self.end();
+                            return;
+                          }
+                        end
+                        pub async routine main(): void {
+                          val worker = spawn Worker();
+                          await worker.ready;
+                          worker.send("single");
+                          await worker.done;
+                          return;
+                        }
+                        """);
+                assertGuestPhase(domain, "two actor mailbox", """
                         define untrusted actor Worker as
                           receive(ActorMail<String> mail): void {
                             self.end();
@@ -129,11 +148,22 @@ class SharedUntrustedGraalIsolateTest {
                           await right.done;
                           return;
                         }
-                        """).get(30, TimeUnit.SECONDS);
+                        """);
             }
         } finally {
             domain.close();
         }
         assertThrows(IllegalStateException.class, () -> domain.submitSource("const a = 1;"));
+    }
+
+    private static void assertGuestPhase(
+            SharedUntrustedGraalIsolate domain, String phase, String source) throws Exception {
+        try {
+            domain.submitSource(source).get(30, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException failure) {
+            throw new AssertionError(
+                    "shared native isolate failed during " + phase
+                            + "; guest context may have been invalidated by sandbox leave", failure);
+        }
     }
 }
