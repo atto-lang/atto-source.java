@@ -185,6 +185,46 @@ final class SourceLoopSoftPreemptionTest {
                 "automatic handoffs must preserve defer/finally obligations until exit");
     }
 
+
+    @Test
+    void emptyLoopBodyStillHasSafeCooperationBackedges() throws Exception {
+        String output = run("""
+                async fnc tight(): int {
+                  for (let i = 0; i < 20000; i = i + 1) { }
+                  return 7;
+                }
+                pub async fnc main(): void {
+                  stdio.stdout.write(await tight());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("7|"), output);
+        assertTrue(Long.parseLong(output.substring(2)) > 0,
+                "an empty busy-loop must still reach a safe scheduler backedge");
+    }
+
+    @Test
+    void asyncGeneratorYieldIsNotSchedulerCooperate() throws Exception {
+        assertEquals("12|0", run("""
+                async generator fnc values(): int {
+                  yield 1;
+                  yield 2;
+                  return;
+                }
+                pub async fnc main(): void {
+                  val AsyncIterator<int> iterator = values();
+                  stdio.stdout.write((await iterator.next()).value.unwrap());
+                  stdio.stdout.write((await iterator.next()).value.unwrap());
+                  iterator.close();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """));
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
