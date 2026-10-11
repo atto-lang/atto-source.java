@@ -5787,6 +5787,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
+                    if (receiver instanceof dev.oreslang.runtime.SealedActorState.Access loan) {
+                        loan.write(target.member(), value);
+                        return value;
+                    }
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
                             throw new IllegalArgumentException("unknown field " + target.member());
