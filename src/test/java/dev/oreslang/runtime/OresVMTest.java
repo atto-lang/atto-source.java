@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.TimeUnit;
@@ -86,6 +87,51 @@ final class OresVMTest {
             assertEquals(vm.rootScheduler().parallelism(), vm.controlCarrierCount());
         } finally {
             vm.close();
+        }
+    }
+    @Test
+    void vmOwnsActorRuntimeAndClosesAllThreeActorDomainsBeforeControl() {
+        OresVM vm = OresVM.create(Runnable::run);
+        ActorRuntime actors = vm.createActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 3, 64, 128),
+                ActorRuntime.TurnExecutor.direct());
+        try {
+            assertEquals(2, actors.carrierParallelism(ActorRuntime.ActorKind.PRIVATE));
+            assertEquals(3, actors.carrierParallelism(ActorRuntime.ActorKind.SHARED));
+            assertEquals(
+                    Integer.getInteger("ores.runtime.actor.untrusted.parallelism", 5),
+                    actors.carrierParallelism(ActorRuntime.ActorKind.UNTRUSTED));
+            assertThrows(IllegalStateException.class, () ->
+                    vm.createActorRuntime(
+                            IsolatePolicy.developer(),
+                            ActorRuntime.DispatcherConfig.defaults(),
+                            ActorRuntime.TurnExecutor.direct()));
+        } finally {
+            vm.close();
+        }
+        assertTrue(actors.isClosed(), "VM close must retire the owned actor runtime");
+        assertTrue(vm.rootScheduler().isClosed(), "VM close must retire CONTROL");
+        assertThrows(IllegalStateException.class, () ->
+                vm.createActorRuntime(
+                        IsolatePolicy.developer(),
+                        ActorRuntime.DispatcherConfig.defaults(),
+                        ActorRuntime.TurnExecutor.direct()));
+    }
+
+    @Test
+    void defaultPoolsHaveIndependentFiveCarrierBudgets() {
+        var config = ActorRuntime.DispatcherConfig.defaults();
+        assertEquals(
+                Integer.getInteger("ores.runtime.actor.private.parallelism", 5),
+                config.privateParallelism());
+        assertEquals(
+                Integer.getInteger("ores.runtime.actor.shared.parallelism", 5),
+                config.sharedParallelism());
+        try (OresVM vm = OresVM.create(Runnable::run)) {
+            assertEquals(
+                    Integer.getInteger("ores.runtime.control.parallelism", 5),
+                    vm.rootScheduler().parallelism());
         }
     }
 }
