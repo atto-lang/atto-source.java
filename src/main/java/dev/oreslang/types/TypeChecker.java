@@ -4692,6 +4692,21 @@ public final class TypeChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.TaggedTuplePattern tagged) {
+            requireRuntimeReifiableType(tagged.tag(), "tagged tuple pattern");
+            Type target = deref(resolve(tagged.tag(), generics, self));
+            if (!typesMayOverlap(subject, target)) {
+                throw new IllegalArgumentException("unreachable tagged tuple pattern: " + subject + " cannot be " + target);
+            }
+            // Keep the current implementation fail-closed: tuple payloads
+            // can bind directly; nominal tagged-union payload extraction
+            // needs a separate runtime representation and lowering pass.
+            if (!(target instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException("tagged tuple destructuring requires a runtime Tuple payload type; nominal variant payload extraction is not implemented");
+            }
+            checkPattern(tagged.tuple(), target, bindings, generics, self);
+            return;
+        }
         if (pattern instanceof Ast.TuplePattern tuplePattern) {
             if (!(subject instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
                 throw new IllegalArgumentException(
@@ -4862,6 +4877,10 @@ public final class TypeChecker {
             return assignable(laterType, earlierShape);
         }
 
+        if (earlier instanceof Ast.TaggedTuplePattern a && later instanceof Ast.TaggedTuplePattern b) {
+            if (!a.tag().equals(b.tag())) return false;
+            return patternSubsumes(a.tuple(), b.tuple(), subject, generics, self);
+        }
         if (earlier instanceof Ast.TuplePattern a && later instanceof Ast.TuplePattern b) {
             if (!(subject instanceof Tuple tuple)
                     || tuple.kind() != TupleKind.TUPLE
@@ -5014,6 +5033,9 @@ public final class TypeChecker {
             Type resolved = deref(resolve(structural.target(), generics, self));
             Record shape = structuralPatternShape(structural.target(), resolved, generics);
             return assignable(subject, shape);
+        }
+        if (pattern instanceof Ast.TaggedTuplePattern tagged) {
+            return patternCoversType(tagged.tuple(), subject, generics, self);
         }
         if (pattern instanceof Ast.TuplePattern tuplePattern
                 && subject instanceof Tuple tuple
@@ -6350,6 +6372,11 @@ public final class TypeChecker {
             Ast.MethodDecl method) {
         if (pattern instanceof Ast.TypePattern typed) {
             rejectStaticClassGenericReference(typed.type(), classGenerics, klass, method);
+        } else if (pattern instanceof Ast.TaggedTuplePattern tagged) {
+            rejectStaticClassGenericReference(tagged.tag(), classGenerics, klass, method);
+            for (Ast.Pattern nested : tagged.tuple().elements()) {
+                rejectStaticClassGenericReferences(nested, classGenerics, klass, method);
+            }
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
             for (Ast.Pattern nested : constructor.arguments()) {
                 rejectStaticClassGenericReferences(nested, classGenerics, klass, method);
