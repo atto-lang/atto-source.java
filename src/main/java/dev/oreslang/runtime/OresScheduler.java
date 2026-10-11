@@ -304,10 +304,14 @@ public final class OresScheduler implements AutoCloseable {
      */
     public <T> OresFuture<T> start(Task<T> task) {
         Objects.requireNonNull(task, "task");
-        ensureOpen();
-
-        TaskRunner<T> runner = new TaskRunner<>(task);
-        tasks.add(runner);
+        // Admission and close share the same monitor. No new task may slip
+        // into the live registry after close() snapshots cancellation targets.
+        TaskRunner<T> runner;
+        synchronized (tasks) {
+            ensureOpen();
+            runner = new TaskRunner<>(task);
+            tasks.add(runner);
+        }
         // close() may win after ensureOpen() and before registration. Do not
         // admit a new task after close snapshots and drains live tasks.
         if (closed.get()) {
@@ -425,9 +429,13 @@ public final class OresScheduler implements AutoCloseable {
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
         }
-        if (!closed.compareAndSet(false, true)) return;
+        Set<TaskRunner<?>> closingTasks;
+        synchronized (tasks) {
+            if (!closed.compareAndSet(false, true)) return;
+            closingTasks = Set.copyOf(tasks);
+        }
 
-        for (TaskRunner<?> task : Set.copyOf(tasks)) {
+        for (TaskRunner<?> task : closingTasks) {
             task.cancelFromSchedulerClose();
         }
 
@@ -491,7 +499,12 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
+        // Cancellation admission and terminal outcome arbitration must be
+        // indivisible. The atomic phase transitions alone were insufficient:
+        // cancel() could succeed after finish() selected a success outcome.
+        private final Object terminalAdmissionLock = new Object();
         private final AtomicBoolean cancelRequested = new AtomicBoolean();
+        private final AtomicBoolean everStarted = new AtomicBoolean();
         private final TaskCancelledException cancellation = new TaskCancelledException();
 
         private TaskRunner(Task<T> task) {
@@ -501,8 +514,32 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private boolean admitCancellation() {
-            return phase.get() != TERMINAL
-                    && cancelRequested.compareAndSet(false, true);
+            synchronized (terminalAdmissionLock) {
+                if (phase.get() == TERMINAL || cancelRequested.get()) {
+                    return false;
+                }
+                cancelRequested.set(true);
+                return true;
+            }
+        }
+
+        /**
+         * Never enter a guest source task merely to cancel it before its first
+         * dispatch. Once a source frame has started, only a lane-owned unwind
+         * may complete cancellation; QUEUED can mean a pending cleanup turn.
+         */
+        private boolean cancelWithoutExecutingWhenIdle(boolean requireUnstarted) {
+            synchronized (terminalAdmissionLock) {
+                if (requireUnstarted && everStarted.get()) return false;
+                int observed = phase.get();
+                if (observed != NEW && observed != QUEUED && observed != WAITING) {
+                    return false;
+                }
+                if (!phase.compareAndSet(observed, TERMINAL)) return false;
+                terminalOutcome.set(new TerminalCancelled<T>(cancellation));
+            }
+            if (!executing.get()) publishTerminalIfReady();
+            return true;
         }
 
         private boolean isCleaningUp() {
@@ -511,23 +548,25 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void onCancellationRequested() {
-            if (task instanceof CancellationAwareTask<?> aware) {
-                aware.cancellationRequested(cancellation);
-            } else {
-                // Compiler-independent fire-and-forget tasks have no saved
-                // lexical cleanup. Cancelling thousands of already-queued
-                // actor bookkeeping turns must not require dispatching them
-                // just to discover that they are cancelled.
-                int observed = phase.get();
-                if (observed == NEW || observed == QUEUED || observed == WAITING) {
-                    failTerminal(cancellation);
-                    return;
+            try {
+                if (task instanceof CancellationAwareTask<?> aware) {
+                    aware.cancellationRequested(cancellation);
+                    if (cancelWithoutExecutingWhenIdle(true)) return;
+                } else {
+                    // Tasks without lexical cleanup can be cancelled directly
+                    // while idle. Compare-and-set prevents a stale WAITING or
+                    // QUEUED read from aborting a newly RUNNING guest turn.
+                    if (cancelWithoutExecutingWhenIdle(false)) return;
                 }
-            }
-            if (phase.get() == WAITING && !isCleaningUp()) {
-                detachActiveAwaitRegistration();
-                pendingResume.set(Resume.completed(null, cancellation));
-                scheduleReadyResume();
+                if (phase.get() == WAITING && !isCleaningUp()) {
+                    detachActiveAwaitRegistration();
+                    pendingResume.set(Resume.completed(null, cancellation));
+                    scheduleReadyResume();
+                }
+            } catch (RuntimeException | Error failure) {
+                // OresFuture's cancellation hook suppresses callback failures.
+                // Settle the scheduler task explicitly instead of stranding it.
+                failTerminal(failure);
             }
         }
 
@@ -559,6 +598,7 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
 
+            everStarted.set(true);
             Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
             CURRENT_TASK_DOMAIN.set(this);
             try {
@@ -709,6 +749,10 @@ public final class OresScheduler implements AutoCloseable {
                     value,
                     failure == null ? null : OresFuture.unwrap(failure));
             if (!pendingResume.compareAndSet(null, resume)) {
+                // Cancellation can replace a concurrently delivered await
+                // result. It owns the one pending resume; that is not a
+                // duplicate-delivery bug and must not bypass lexical cleanup.
+                if (cancelRequested.get() && !isCleaningUp()) return;
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
                 return;
@@ -746,12 +790,12 @@ public final class OresScheduler implements AutoCloseable {
 
         private void finish(T value) {
             detachActiveAwaitRegistration();
-            if (!phase.compareAndSet(RUNNING, TERMINAL)) {
-                return;
+            synchronized (terminalAdmissionLock) {
+                if (!phase.compareAndSet(RUNNING, TERMINAL)) return;
+                terminalOutcome.set(cancelRequested.get()
+                        ? new TerminalCancelled<T>(cancellation)
+                        : new TerminalSuccess<>(value));
             }
-            terminalOutcome.set(cancelRequested.get()
-                    ? new TerminalCancelled<T>(cancellation)
-                    : new TerminalSuccess<>(value));
             // Keep this task in the live registry until afterCarrierTurn()
             // publishes completion. Otherwise close() may dispose a shared
             // context while guest code is still leaving its carrier turn.
@@ -760,19 +804,19 @@ public final class OresScheduler implements AutoCloseable {
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
             detachActiveAwaitRegistration();
-            int observed;
-            do {
-                observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
+            synchronized (terminalAdmissionLock) {
+                int observed;
+                do {
+                    observed = phase.get();
+                    if (observed == TERMINAL) return;
+                } while (!phase.compareAndSet(observed, TERMINAL));
 
-            terminalOutcome.compareAndSet(null,
-                    failure == cancellation
-                            ? new TerminalCancelled<T>(cancellation)
-                            : new TerminalFailure<T>(failure));
-            if (!executing.get()) {
-                publishTerminalIfReady();
+                terminalOutcome.compareAndSet(null,
+                        failure == cancellation
+                                ? new TerminalCancelled<T>(cancellation)
+                                : new TerminalFailure<T>(failure));
             }
+            if (!executing.get()) publishTerminalIfReady();
         }
 
         private void publishTerminalIfReady() {
