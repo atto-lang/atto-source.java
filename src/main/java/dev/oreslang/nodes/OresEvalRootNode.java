@@ -813,34 +813,42 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, ARM_RESULT, BREAK, CONTINUE, THROW
         }
 
         private record SourceFlow(
                 SourceFlowKind kind,
                 Object value,
-                Throwable failure) {
+                Throwable failure,
+                long matchFrameId) {
             private static SourceFlow normal() {
-                return new SourceFlow(SourceFlowKind.NORMAL, null, null);
+                return new SourceFlow(SourceFlowKind.NORMAL, null, null, 0);
             }
 
             private static SourceFlow returning(Object value) {
-                return new SourceFlow(SourceFlowKind.RETURN, value, null);
+                return new SourceFlow(SourceFlowKind.RETURN, value, null, 0);
+            }
+
+            private static SourceFlow armResult(Object value, long matchFrameId) {
+                if (matchFrameId <= 0) throw new IllegalStateException(
+                        "ARM_RESULT requires an owned lexical match frame");
+                return new SourceFlow(SourceFlowKind.ARM_RESULT, value, null, matchFrameId);
             }
 
             private static SourceFlow breaking() {
-                return new SourceFlow(SourceFlowKind.BREAK, null, null);
+                return new SourceFlow(SourceFlowKind.BREAK, null, null, 0);
             }
 
             private static SourceFlow continuing() {
-                return new SourceFlow(SourceFlowKind.CONTINUE, null, null);
+                return new SourceFlow(SourceFlowKind.CONTINUE, null, null, 0);
             }
 
             private static SourceFlow throwing(Throwable failure) {
                 return new SourceFlow(
                         SourceFlowKind.THROW,
                         null,
-                        Objects.requireNonNull(failure, "failure"));
+                        Objects.requireNonNull(failure, "failure"),
+                        0);
             }
         }
 
@@ -888,6 +896,14 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
             private Env initialBlockEnv;
+
+            // Monotonic within the logical SourceTask; never derived from a carrier thread.
+            private long nextMatchFrameId;
+            private long newMatchFrameId() {
+                if (nextMatchFrameId == Long.MAX_VALUE) throw new IllegalStateException(
+                        "value match frame id overflow");
+                return ++nextMatchFrameId;
+            }
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
@@ -1110,6 +1126,8 @@ public final class OresEvalRootNode extends RootNode {
                             done(null);
                         }
                         case THROW -> throw sourceFailure(flow.failure());
+                        case ARM_RESULT -> throw new IllegalStateException(
+                                "ARM_RESULT escaped its owning value match frame");
                         case BREAK, CONTINUE ->
                                 throw new IllegalStateException(
                                         "loop control crossed a source continuation boundary");
@@ -1121,6 +1139,8 @@ public final class OresEvalRootNode extends RootNode {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
                     case THROW -> throw sourceFailure(flow.failure());
+                    case ARM_RESULT -> throw new IllegalStateException(
+                            "ARM_RESULT escaped its owning value match frame");
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
@@ -1455,6 +1475,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Set<Object> seen) {
             if (expr == null) return false;
+            // All typed value-match expressions inside SourceTask take the
+            // frame-aware continuation path, even when the subject is ready.
+            if (expr instanceof Ast.ValueMatchExpr) return true;
             if (expr instanceof Ast.AwaitExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
@@ -1654,6 +1677,7 @@ public final class OresEvalRootNode extends RootNode {
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
+                    && !(stmt instanceof Ast.ArmReturnStmt)
                     && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(
                     stmt,
@@ -1897,6 +1921,22 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure2));
                                 }
                             });
+                    return;
+                }
+
+                if (stmt instanceof Ast.ArmReturnStmt returned) {
+                    long owner = env.valueMatchFrameId;
+                    if (owner <= 0) throw new IllegalStateException(
+                            "ARM_RESULT outside owning typed match frame");
+                    evalSuspendableExpr(
+                            task,
+                            returned.value(),
+                            env,
+                            (t, value, failure) ->
+                                    continuation.accept(t,
+                                            failure == null
+                                                    ? SourceFlow.armResult(value, owner)
+                                                    : SourceFlow.throwing(failure)));
                     return;
                 }
 
@@ -2937,12 +2977,89 @@ public final class OresEvalRootNode extends RootNode {
                     Map.copyOf(bindings));
         }
 
+        /**
+         * Match evaluation belongs to the same logical SourceTask across await.
+         * One monotonically allocated frame id identifies the selected arm;
+         * inner typed matches allocate distinct ids and cannot steal its result.
+         */
+        private void runValueMatchArms(
+                SourceTask task,
+                Ast.ValueMatchExpr matched,
+                Object subject,
+                Env parent,
+                int index,
+                SourceValueCont continuation) {
+            if (index >= matched.arms().size()) {
+                continuation.accept(task, null, new IllegalStateException(
+                        "exhaustive typed value match invariant violated: no arm matched"));
+                return;
+            }
+            Ast.MatchArm arm = matched.arms().get(index);
+            LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+            final boolean matches;
+            try {
+                matches = patternMatches(arm.pattern(), subject, bindings);
+            } catch (RuntimeException | Error error) {
+                continuation.accept(task, null, error);
+                return;
+            }
+            if (!matches) {
+                runValueMatchArms(task, matched, subject, parent, index + 1, continuation);
+                return;
+            }
+            Env armEnv = new Env(parent);
+            bindings.forEach((name, value) ->
+                    armEnv.define(name, value, Ast.BindingKind.VAL));
+            // Guard is currently non-suspending by static admission. Evaluate
+            // it before creating the new lexical result owner.
+            final boolean selected;
+            try {
+                selected = arm.guard() == null || truth(eval(arm.guard(), armEnv));
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            if (!selected) {
+                runValueMatchArms(task, matched, subject, parent, index + 1, continuation);
+                return;
+            }
+            final long owner = task.newMatchFrameId();
+            armEnv.valueMatchFrameId = owner;
+            runBlock(task, arm.body(), armEnv, (t, flow) -> {
+                if (flow.kind() == SourceFlowKind.ARM_RESULT) {
+                    if (flow.matchFrameId() != owner) {
+                        continuation.accept(t, null, new IllegalStateException(
+                                "ARM_RESULT crossed another lexical match boundary"));
+                    } else {
+                        continuation.accept(t, flow.value(), null);
+                    }
+                } else if (flow.kind() == SourceFlowKind.THROW) {
+                    continuation.accept(t, null, flow.failure());
+                } else {
+                    continuation.accept(t, null, new IllegalStateException(
+                            "typed value match arm terminated without its owned ARM_RESULT: "
+                                    + flow.kind()));
+                }
+            });
+        }
+
         private void evalSuspendableExpr(
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation) {
             try {
+                if (expr instanceof Ast.ValueMatchExpr matched) {
+                    evalSuspendableExpr(task, matched.subject(), env,
+                            (t, subject, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                runValueMatchArms(t, matched, subject, env, 0, continuation);
+                            });
+                    return;
+                }
                 if (!expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
@@ -8515,6 +8632,8 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Zero means this frame is not owned by a typed value match.
+        private long valueMatchFrameId;
         private Env(Env parent) {
             this(
                     parent,
@@ -8566,6 +8685,7 @@ public final class OresEvalRootNode extends RootNode {
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+            this.valueMatchFrameId = parent == null ? 0 : parent.valueMatchFrameId;
         }
 
         private Env lexicalBoundaryOnly() {
