@@ -4810,7 +4810,8 @@ public final class OresEvalRootNode extends RootNode {
                 // caller still owns exception/cleanup semantics after the call.
                 try { executeBlock(tried.body(), env, true); }
                 catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                // A value-dispatch arm yield is lexical control flow, never a catchable error.
+                catch (ReturnSignal | ArmReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
