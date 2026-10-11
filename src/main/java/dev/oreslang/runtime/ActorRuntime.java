@@ -4481,6 +4481,13 @@ public final class ActorRuntime implements AutoCloseable {
             // actor execution turn to establish the recipient-owned graph.
             binaryFrame = schema.encode(message);
             message = (M) schema.decode(binaryFrame);
+            if (message instanceof TaggedMessageCodec.TaggedValue tagged) {
+                // The trusted tagged decoder already checks the nominal
+                // identity, tag and recursive payload shape. Only its data
+                // payload is exposed to legacy host quota/ownership walks;
+                // the mailbox retains the typed frame, never this object.
+                message = (M) tagged.payload();
+            }
         }
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
