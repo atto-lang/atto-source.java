@@ -58,11 +58,16 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
+        // Truffle can invoke this on a different physical caller while
+        // inspecting a thread that is concurrently entering the context.
+        // Current-thread ThreadLocal markers are NOT authorization for that
+        // requested thread; never grant a foreign thread because a scheduler
+        // happened to be the thread running this admission callback.
         return singleThreaded
                 || thread == initialContextHostThread
-                || ActorRuntime.isActorCarrierThread()
-                || AsyncRuntime.isAsyncCarrierThread()
-                || OresScheduler.isSchedulerCarrierThread();
+                || ActorRuntime.isActorCarrierThread(thread)
+                || AsyncRuntime.isAsyncCarrierThread(thread)
+                || OresScheduler.isSchedulerCarrierThread(thread);
     }
 
     @Override
