@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.SupervisorFailureControl;
+import dev.oreslang.runtime.SupervisorChildRegistry;
 import dev.oreslang.runtime.SupervisorProcess;
 
 import java.util.List;
@@ -79,14 +80,7 @@ public final class SourceSupervisorLowering {
                         || !expectedGroup.equals(notice.groupId())) {
                     throw new SecurityException("foreign supervisor failure");
                 }
-                if (notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
-                    throw new IllegalStateException(
-                            "STOP-only on_panic cannot handle cancellation");
-                }
-                if (targetsLogicalChild && notice.logicalChild().isEmpty()) {
-                    throw new IllegalStateException(
-                            "STOP target requires verified logical child identity");
-                }
+                requireFinalizedFailure(group, notice);
                 // This instruction was emitted from the checked guest AST.
                 // No guest callback runs on the failed child carrier.
                 return CompletableFuture.completedFuture(
@@ -97,6 +91,10 @@ public final class SourceSupervisorLowering {
                         || !expectedSupervisor.equals(resolution.notice().supervisorId())) {
                     throw new SecurityException("invalid compiled supervisor decision");
                 }
+                // A stale/forged or already stopped child must never reach
+                // the host effect, even if the identity changed after policy
+                // admission but before its scheduled decision continuation.
+                requireFinalizedFailure(group, resolution.notice());
                 // The embedder first acknowledges the requested effect.
                 // Only then permanently retire the *same finalized*
                 // incarnation in the supervisor-owned logical-child registry.
@@ -130,15 +128,14 @@ public final class SourceSupervisorLowering {
                     || !expectedGroup.equals(notice.groupId())) {
                 throw new SecurityException("foreign supervisor failure");
             }
-            if (notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE
-                    || notice.logicalChild().isEmpty()) {
-                throw new IllegalStateException(
-                        "async STOP requires a finalized typed logical child");
-            }
+            requireFinalizedFailure(group, notice);
             // Compiler-validated self.stop(f) emits one owned STOP intent.
             return CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP);
         }, resolution -> {
             verifyStopResolution(resolution, expectedGroup, expectedSupervisor);
+            // Reject a stale child before any external STOP side effect is
+            // requested, not only when acknowledging its final disposition.
+            requireFinalizedFailure(group, resolution.notice());
             // This Stage must signal the actual STOP effect completion, not
             // request admission. On exceptional completion the turn fails
             // closed and no logical child is marked STOPPED.
@@ -243,6 +240,28 @@ public final class SourceSupervisorLowering {
         // authority. These closed plans name the current delivered failure.
         return new StopOnlySupervisor(target.name(), explicitlyBoundFailure,
                 targetsLogicalChild, awaitsAcknowledgment);
+    }
+
+    /**
+     * Trusted lifecycle preflight. The presence of a logical ChildId alone
+     * proves neither finalization nor that it still names this incarnation.
+     * Verify against the host-owned registry before invoking any side effect.
+     * The post-effect registry transition remains an independent final fence.
+     */
+    private static void requireFinalizedFailure(
+            ActorRuntime.ActorGroup group, SupervisorFailureControl.Notice notice) {
+        if (notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+            throw new IllegalStateException("STOP requires a terminal Failure");
+        }
+        var child = notice.logicalChild().orElseThrow(() ->
+                new IllegalStateException("STOP requires a verified logical child"));
+        SupervisorChildRegistry.Snapshot current = group.childSnapshot(child);
+        if (current.phase() != SupervisorChildRegistry.Phase.FINALIZED
+                || !current.actor().equals(notice.actorId())
+                || current.incarnation() != notice.incarnation()) {
+            throw new IllegalStateException(
+                    "stale or unfinalized supervisor STOP target incarnation");
+        }
     }
 
     private static void verifyStopResolution(
