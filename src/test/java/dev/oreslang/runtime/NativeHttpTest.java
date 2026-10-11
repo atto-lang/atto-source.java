@@ -234,7 +234,7 @@ class NativeHttpTest {
             assertEquals("ok", request(port, "GET", "/before-restart", "").body());
             assertEquals("ok", request(port, "GET", "/after-restart", "").body());
         });
-        assertTrue(output.endsWith("1\\n1\\n"), output);
+        assertTrue(output.endsWith("1\n1\n"), output);
     }
 
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
