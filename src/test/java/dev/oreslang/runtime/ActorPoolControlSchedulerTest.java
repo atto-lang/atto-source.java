@@ -189,4 +189,78 @@ final class ActorPoolControlSchedulerTest {
             assertTrue(scheduler.awaitTermination(3, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void shutdownRejectsQueuedAdmissionButCompletesAnAlreadySelectedRequest() throws Exception {
+        var scheduler = new ActorPoolControlScheduler("test-admission-race", 4);
+        scheduler.registerActor(id());
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var ran = new CountDownLatch(1);
+        var firstFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var queuedFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        java.util.concurrent.ThreadPoolExecutor workers =
+                new java.util.concurrent.ThreadPoolExecutor(1, 1, 0L,
+                        TimeUnit.MILLISECONDS, new java.util.concurrent.ArrayBlockingQueue<>(4),
+                        runnable -> {
+                            Thread t = new Thread(runnable, "test-admission-worker");
+                            t.setDaemon(true);
+                            return t;
+                        }) {
+                    @Override
+                    public void execute(Runnable task) {
+                        entered.countDown();
+                        try {
+                            if (!release.await(3, TimeUnit.SECONDS)) {
+                                throw new java.util.concurrent.RejectedExecutionException(
+                                        "test admission gate timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new java.util.concurrent.RejectedExecutionException(interrupted);
+                        }
+                        super.execute(task);
+                    }
+                };
+        var first = Thread.ofPlatform().start(() -> {
+            try {
+                scheduler.dispatch(workers, -1, ran::countDown);
+            } catch (Throwable failure) {
+                firstFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            var second = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.dispatch(workers, -1,
+                            () -> fail("shutdown must fence queued dispatch"));
+                } catch (Throwable failure) {
+                    queuedFailure.set(failure);
+                }
+            });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (scheduler.pendingDispatches() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, scheduler.pendingDispatches());
+            scheduler.shutdown();
+            release.countDown();
+            first.join(3000);
+            second.join(3000);
+            assertFalse(first.isAlive(), "selected admission must be acknowledged");
+            assertFalse(second.isAlive(), "shutdown must unblock queued admission");
+            assertNull(firstFailure.get(), "pre-shutdown selected request can finish admission");
+            assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                    queuedFailure.get());
+            assertTrue(ran.await(3, TimeUnit.SECONDS));
+            assertTrue(scheduler.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            scheduler.shutdown();
+            workers.shutdownNow();
+            first.join(3000);
+            assertTrue(scheduler.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
 }
