@@ -145,6 +145,52 @@ class NativeHttpTest {
             """, port -> assertEquals("onetwo", request(port, "GET", "/", "").body()));
     }
 
+    @Test void serialHttpRequestsAndOrdinaryMailReuseOneActorState() throws Exception {
+        String output = run("""
+            define serial actor Counter as
+              state { count: int = 0; }
+
+              pub increment(): int using state.read, state.write {
+                return self.handle_state(|s| -> {
+                  s.count = s.count + 1;
+                  return s.count;
+                });
+              }
+
+              receive(ActorMail<String> mail): void {
+                if (mail.value == "tick") {
+                  stdio.println(self.increment());
+                  return;
+                } fi
+                val request = http.claim(mail.value);
+                stdio.println(self.increment());
+                await request.respond(200, "text/plain", "serial-ok");
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val handler = http.handler("Counter");
+              val first = await server.accept();
+              val observedFirst = first.completion;
+              handler.dispatch(rt borrow mut first);
+              handler.actor.send("tick");
+              val second = await server.accept();
+              val observedSecond = second.completion;
+              handler.dispatch(rt borrow mut second);
+              await observedFirst;
+              await observedSecond;
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+                assertEquals("serial-ok", request(port, "GET", "/first", "").body());
+                assertEquals("serial-ok", request(port, "GET", "/second", "").body());
+            });
+        assertTrue(output.contains("1\\n2\\n3\\n"), output);
+    }
+
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
         for (String binding : new String[] {
                 "val borrowed = rt borrow values;",
