@@ -108,6 +108,7 @@ final class ActorHttpMatrixBenchmarkTest {
             ActorRuntime.ActorRef<Long>[] actors = new ActorRuntime.ActorRef[ACTORS];
             CountDownLatch initialized = new CountDownLatch(ACTORS);
             for (int index = 0; index < ACTORS; index++) {
+                final int actorIndex = index;
                 var arena = new AtomicReference<ActorArena>();
                 var slot = new AtomicReference<ExplicitNativeI64Region.Slot>();
                 var factory = (java.util.function.Supplier<ActorRuntime.Behavior<Long>>) () -> (mail, ctx) -> {
@@ -128,7 +129,7 @@ final class ActorHttpMatrixBenchmarkTest {
                             if (scope.read(ephemeral) != mail) throw new IllegalStateException("scratch corrupted");
                             long next = nativeArena.readPersistent(slot.get()) + 1;
                             nativeArena.writePersistent(slot.get(), next);
-                            long computed = functions[index].execute(
+                            long computed = functions[actorIndex].execute(
                                     dev.oreslang.nodes.OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
                                     "handle_request", next).asLong();
                             promise.complete(new ActorValue(next, computed));
