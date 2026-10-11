@@ -117,7 +117,9 @@ public final class DeclaredEffectVerifier {
             if (assign.target() instanceof Ast.MemberExpr member && stateAccess != null
                     && member.receiver() instanceof Ast.NameExpr name
                     && name.name().equals(stateAccess)) {
-                effects.add(FunctionEffects.Effect.STATE_READ);
+                // Assignment to a state field is a WRITE, not an implicit
+                // READ. A read-modify-write operation contributes STATE_READ
+                // separately when its right-hand side observes the field.
                 effects.add(FunctionEffects.Effect.STATE_WRITE);
                 collect(assign.value(), effects, stateAccess, callableName);
                 return;
