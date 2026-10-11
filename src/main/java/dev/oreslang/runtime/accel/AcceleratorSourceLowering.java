@@ -125,7 +125,12 @@ public final class AcceleratorSourceLowering {
         private Token.Type previousType;
 
         Cursor(String source) {
-            tokens = new Lexer(Objects.requireNonNull(source)).scan();
+            Objects.requireNonNull(source);
+            if (source.length() > 65_536)
+                throw new IllegalArgumentException("accelerator source exceeds 64 KiB admission limit");
+            tokens = new Lexer(source).scan();
+            if (tokens.size() > 4_096)
+                throw new IllegalArgumentException("accelerator source exceeds token admission limit");
         }
         Token peek() { return tokens.get(at); }
         boolean check(Token.Type kind) { return peek().type() == kind; }
@@ -154,11 +159,14 @@ public final class AcceleratorSourceLowering {
             if (negative && !check(INT) && !check(FLOAT)) throw error("expected finite f32 constant");
             if (!check(INT) && !check(FLOAT)) throw error("expected finite f32 constant");
             String lexeme = peek().lexeme().replace("_", "");
+            if (lexeme.length() > 128) throw error("f32 coefficient token too long");
             at++;
             try {
                 float value = Float.parseFloat(lexeme);
                 if (negative) value = -value;
                 if (!Float.isFinite(value)) throw error("GPU scalar coefficient must be finite");
+                if (value == 0f && new java.math.BigDecimal(lexeme).signum() != 0)
+                    throw error("nonzero f32 coefficient underflowed to zero");
                 return value;
             } catch (NumberFormatException e) {
                 throw error("invalid f32 coefficient");
