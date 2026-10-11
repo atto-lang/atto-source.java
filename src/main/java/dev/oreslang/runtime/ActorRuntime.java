@@ -360,6 +360,9 @@ public final class ActorRuntime implements AutoCloseable {
      */
     private final Object groupMembershipLock = new Object();
     private final Map<ActorId, Set<ActorGroupId>> groupMemberships = new java.util.HashMap<>();
+    /** Actor-created groups remain structurally owned even after creator leaves. */
+    private final Map<ActorId, Set<ActorGroupId>> createdGroupsByActor =
+            new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
@@ -2488,6 +2491,13 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 members.clear();
+                if (creator != null) {
+                    Set<ActorGroupId> created = createdGroupsByActor.get(creator);
+                    if (created != null) {
+                        created.remove(id);
+                        if (created.isEmpty()) createdGroupsByActor.remove(creator);
+                    }
+                }
             }
             // Attach completion handlers before requesting cancellation: an
             // actor might finalize synchronously during the first stop call.
@@ -3188,7 +3198,11 @@ public final class ActorRuntime implements AutoCloseable {
                     ActorGroupId id = ActorGroupId.create();
                     ActorGroup group = new ActorGroup(id, creator, creatorPolicy);
                     if (actorGroups.putIfAbsent(id, group) == null) {
-                        if (joined != null) joined.add(id);
+                        if (joined != null) {
+                            joined.add(id);
+                            createdGroupsByActor.computeIfAbsent(
+                                    creator, ignored -> new java.util.HashSet<>()).add(id);
+                        }
                         // Finalization calls unregisterActor() while holding
                         // ActorCell.lifecycleLock. Never acquire that lock here:
                         // instead recheck the stop flag after publication. If
@@ -4161,8 +4175,20 @@ public final class ActorRuntime implements AutoCloseable {
         // part of its termination contract has completed. ActorRef.awaitTermination()
         // treats absence from this map as terminal, so removing the actor first
         // would let observers race ahead of creator-owned ActorGroup cleanup.
-        for (ActorGroup group : List.copyOf(actorGroups.values())) {
-            group.actorTerminated(cell.ref.id());
+        Set<ActorGroupId> affected = new java.util.HashSet<>();
+        synchronized (groupMembershipLock) {
+            Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
+            if (memberships != null) affected.addAll(memberships);
+            Set<ActorGroupId> created = createdGroupsByActor.get(cell.ref.id());
+            if (created != null) affected.addAll(created);
+            // An explicitly managed worker is not necessarily a cooperating
+            // member. The owner needs its independent termination callback.
+            ActorGroupId managedBy = cell.managedByGroup.get();
+            if (managedBy != null) affected.add(managedBy);
+        }
+        for (ActorGroupId groupId : affected) {
+            ActorGroup group = actorGroups.get(groupId);
+            if (group != null) group.actorTerminated(cell.ref.id());
         }
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
