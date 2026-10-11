@@ -79,7 +79,7 @@ specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
 
-## Process globals, memory-slot singletons, and Symbols
+## Process globals, process-immutable singletons, and Symbols
 
 Oreslang deliberately separates **state scope** from **identity**.
 
@@ -93,12 +93,12 @@ define global module ProcessConfig
   }
 end
 
-define singleton module RequestCache
-  private let int hits = 0;
+define singleton module ImmutableConfig
+  pub val int revision = 10;
+  pub const Symbol status = :ready;
 
-  pub fnc hit() : int {
-    hits = hits + 1;
-    return hits;
+  pub fnc revision_plus(int n) : int {
+    return revision + n;
   }
 end
 ```
@@ -110,12 +110,21 @@ isolated heaps eventually reach the same authority through the supervisor bridge
 an isolate-local static registry is never considered a valid substitute for
 process-global identity.
 
-A `singleton module` has one logical mutable authority **per semantic memory
-slot**. Main/root execution and shared actors inhabit the same slot. Each
-private/isolated actor has its own slot and therefore its own singleton instance.
-A private actor's slot-singleton state is reclaimed when that actor is finalized.
-Calls are serialized inside the slot cell and do not expose the mutable state
-object.
+A `singleton module` has one logical **deeply immutable** snapshot for the
+entire trusted host OS-process runtime. Singleton field initializers must be
+deterministic constants, and `let` fields are rejected. The registry validates
+and deeply freezes the complete field graph before atomically publishing it.
+Nested mutation, raw host objects, and live actor/capability handles are
+rejected. All trusted shared/private actors in the same host heap see the
+same canonical instance ID, and reads need no mailbox or lock. Ordinary actor
+termination does not destroy process singleton state.
+
+A separately spawned Graal isolate has different host statics, so the current
+local backend **cannot** deliver physical process-global identity across that
+boundary. It must use a supervisor-owned coordinator or fail closed, never
+silently create another per-isolate copy. Untrusted actors have no singleton
+authority. The older `MemorySlotSingletonRegistry` remains a private runtime
+primitive; it no longer implements source `singleton module`.
 
 Dependency injection uses capabilities, not pointers:
 
@@ -124,8 +133,8 @@ define class Handler as
   @InjectGlobal(ProcessConfig)
   private val GlobalRef<ProcessConfig> process_config;
 
-  @InjectSingleton(RequestCache)
-  private val SingletonRef<RequestCache> request_cache;
+  @InjectSingleton(ImmutableConfig)
+  private val SingletonRef<ImmutableConfig> config;
 end
 ```
 
