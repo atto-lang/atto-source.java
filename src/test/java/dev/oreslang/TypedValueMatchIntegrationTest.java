@@ -442,4 +442,44 @@ final class TypedValueMatchIntegrationTest {
                     () -> context.eval(guest));
         }
         assertEquals("last-cleanup", out.toString(StandardCharsets.UTF_8).trim());
-    }}
+    }
+    @Test
+    void lexicalStdioShadowMustNotMasqueradeAsPureBuiltinCleanup() {
+        rejects("""
+                define class ShadowPrinter as
+                  pub println(string message): void {
+                    stdio.println(message);
+                  }
+                end
+                fnc invalid(int n): int {
+                  val stdio = new ShadowPrinter();
+                  return match<ret=int> n over {
+                    default {
+                      defer stdio.println("side effect");
+                      return 7;
+                    }
+                  };
+                }
+                """, "requires synchronous stdio.print/println");
+    }
+
+    @Test
+    void lexicalStdioShadowMustNotMasqueradeAsImmediateBuiltinEffect() {
+        rejects("""
+                define class ShadowPrinter as
+                  pub println(string message): void {
+                    stdio.println(message);
+                  }
+                end
+                fnc invalid(int n): int {
+                  val stdio = new ShadowPrinter();
+                  return match<ret=int> n over {
+                    default {
+                      stdio.println("side effect");
+                      return 7;
+                    }
+                  };
+                }
+                """, "expression statement has unverified effects");
+    }
+}
