@@ -1773,7 +1773,10 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.finalized || cell.forceKillFenced || closed.get()
+                // Repeat the ownership/finalization fence under the lock,
+                // but not the global close flag: cleanup source commands are
+                // allowed after close until this actor's drain completes.
+                if (cell.finalized || cell.forceKillFenced
                         || (cell.stopped.get() && !cell.sourceCleanupDraining)) {
                     return false;
                 }
