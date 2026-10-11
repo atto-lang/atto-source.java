@@ -925,6 +925,23 @@ public final class OresScheduler implements AutoCloseable {
                     if (observed == TERMINAL) return;
                 } while (!phase.compareAndSet(observed, TERMINAL));
 
+                // Cleanup failure is the primary outcome, but losing the
+                // original cancellation hides the reason lexical finally/defer
+                // ran. Preserve that reason exactly once as suppressed evidence.
+                if (cancelRequested.get() && failure != cancellation
+                        && !(failure instanceof TaskCancelledException)) {
+                    boolean reasonAlreadyRecorded = false;
+                    for (Throwable earlier : failure.getSuppressed()) {
+                        if (earlier == cancellation
+                                || earlier instanceof TaskCancelledException) {
+                            reasonAlreadyRecorded = true;
+                            break;
+                        }
+                    }
+                    if (!reasonAlreadyRecorded) {
+                        failure.addSuppressed(cancellation);
+                    }
+                }
                 terminalOutcome.compareAndSet(null,
                         failure == cancellation
                                 ? new TerminalCancelled<T>(cancellation)
