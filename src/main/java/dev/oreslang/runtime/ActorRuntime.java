@@ -1673,7 +1673,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         final OresFuture<T> future;
         synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized) throw terminated(cell.ref);
+            if (closed.get() || cell.stopped.get() || cell.finalized) {
+                throw terminated(cell.ref);
+            }
             future = cell.sourceScheduler().start(task);
             cell.sourceTaskFutures.add(future);
         }
@@ -1747,8 +1749,11 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(command, "source task continuation");
         final boolean cleanupOnly;
         synchronized (cell.lifecycleLock) {
+            // This scheduler capability belongs only to an already-admitted
+            // source task. A concurrent runtime close may seal new work just
+            // before it marks this actor stopped; keep the command queued so
+            // structured cancellation can drain it on the cleanup CONTROL lane.
             if (cell.finalized || cell.forceKillFenced
-                    || (closed.get() && !cell.sourceCleanupDraining)
                     || (cell.stopped.get() && !cell.sourceCleanupDraining)) return false;
             cleanupOnly = cell.stopped.get() && cell.sourceCleanupDraining;
         }
@@ -1768,8 +1773,10 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
+                // Repeat the ownership/finalization fence under the lock,
+                // but not the global close flag: cleanup source commands are
+                // allowed after close until this actor's drain completes.
                 if (cell.finalized || cell.forceKillFenced
-                        || (closed.get() && !cell.sourceCleanupDraining)
                         || (cell.stopped.get() && !cell.sourceCleanupDraining)) {
                     return false;
                 }
@@ -4625,6 +4632,9 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         ActorCell<?> cell = currentActor.get();
+        // Closing revokes ordinary guest work, not already-owned lexical
+        // cancellation cleanup dispatched on the actor-only CONTROL lane.
+        // Never generalize this exception to normal user/mail callbacks.
         if (closed.get() && (cell == null || !cell.sourceCleanupTurn)) {
             throw new ActorCancellationSignal("actor runtime is closing");
         }
@@ -5793,27 +5803,20 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
 
-        final boolean firstClose;
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
-            firstClose = closed.compareAndSet(false, true);
+            // Seal external admissions first. Already-owned source cancellation
+            // CONTROL continuations retain their narrowly scoped permission to
+            // run until lexical cleanup completes.
+            closed.set(true);
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
-        // Source execution-context tasks may have suspended defer/finally.
-        // During this phase only their owner CONTROL mailbox can still run.
-        // Closing the dispatchers now would strand that cleanup forever.
-        boolean needsSourceDrain = snapshot.stream()
-                .anyMatch(cell -> !cell.sourceTaskFutures.isEmpty());
-        if (firstClose && !needsSourceDrain) {
-            // Keep existing non-source host shutdown behavior. No source
-            // execution context remains to discharge lexical obligations.
-            privateDispatcher.shutdownNow();
-            sharedDispatcher.shutdownNow();
-            untrustedDispatcher.shutdownNow();
-            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
-        }
+        // Do not shutdownNow() or interrupt the actor carriers here. Finalizers
+        // can suspend on Futures and require these dispatchers to re-enter the
+        // actor's cleanup-only CONTROL lane. Timed-out cleanup must remain owned
+        // and reported, not falsely published as a completed actor.
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
         boolean interrupted = false;
@@ -5831,58 +5834,37 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
-        if (needsSourceDrain) {
-            if (!stillRunning.isEmpty() || interrupted) {
-                if (interrupted) Thread.currentThread().interrupt();
-                // Never release shared storage or claim runtime quiescence if
-                // any source cleanup failed the deadline. Callers may retry
-                // close() after an explicit isolation escalation / completion.
-                throw new IllegalStateException(
-                        "ActorRuntime source cleanup drain incomplete; "
-                                + stillRunning.size() + " actor(s) retained");
+        boolean dispatchersTerminated = stillRunning.isEmpty() && !interrupted;
+        if (dispatchersTerminated) {
+            // Quiescence is proven. Graceful shutdown does not discard queued
+            // tasks or interrupt the final carrier-exit boundary.
+            for (ExecutorService dispatcher :
+                    List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
+                dispatcher.shutdown();
             }
-            privateDispatcher.shutdown();
-            sharedDispatcher.shutdown();
-            untrustedDispatcher.shutdown();
-        } else if (!firstClose) {
-            // Retry after a previous failed drain that intentionally kept the
-            // carriers alive. No source owners remain, so shutdown can proceed.
-            privateDispatcher.shutdown();
-            sharedDispatcher.shutdown();
-            untrustedDispatcher.shutdown();
-        }
-
-        boolean dispatchersTerminated = true;
-        for (ExecutorService dispatcher : List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) {
-                dispatchersTerminated = false;
-                break;
-            }
-            try {
-                if (!dispatcher.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+            for (ExecutorService dispatcher :
+                    List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
                     dispatchersTerminated = false;
                     break;
                 }
-            } catch (InterruptedException waitInterrupted) {
-                interrupted = true;
-                dispatchersTerminated = false;
-                break;
+                try {
+                    if (!dispatcher.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                        dispatchersTerminated = false;
+                        break;
+                    }
+                } catch (InterruptedException waitInterrupted) {
+                    interrupted = true;
+                    dispatchersTerminated = false;
+                    break;
+                }
             }
         }
 
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
-
+        // Do not reclaim runtime-shared objects while an actor owns suspended
+        // finalizers or while carrier quiescence is unproven. A failed close is
+        // retryable and retains owned resources for later cleanup.
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -5897,6 +5879,19 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
+
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
+        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+            stream.closeAndDrainFromRuntime();
+        }
+        actorOutputStreams.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
+        sharedMemoryBytes.set(0L);
+
         actors.clear();
         actorCount.set(0);
     }
@@ -6048,7 +6043,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** Dedicated bounded scheduler CONTROL lane, never user-callable. */
         private final ArrayDeque<SourceTaskCommand> sourceTaskMailbox = new ArrayDeque<>();
         /** Guarded by lifecycleLock; only actual source tasks retain this lane. */
-        private boolean sourceCleanupDraining;
+        // schedule() runs on producer/completion threads outside lifecycleLock.
+        // Publish cleanup admission with volatile visibility after stop().
+        private volatile boolean sourceCleanupDraining;
         /** Actor single-writer lease only; safepoints still charge fuel. */
         private boolean sourceCleanupTurn;
         /** True while one source receive owns actor state across suspension. */
@@ -6493,8 +6490,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void schedule() {
             if ((stopped.get() && !sourceCleanupDraining)
-                    || forceKillFenced
-                    || (closed.get() && !sourceCleanupDraining)) return;
+                    || forceKillFenced || (closed.get() && !sourceCleanupDraining)) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
@@ -6526,8 +6522,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!scheduled.get()) return;
 
                     if ((stopped.get() && !sourceCleanupDraining)
-                            || (closed.get() && !sourceCleanupDraining)
-                            || forceKillFenced) {
+                            || (closed.get() && !sourceCleanupDraining) || forceKillFenced) {
                         scheduled.set(false);
                         if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
                         lifecycleLock.notifyAll();
@@ -6860,6 +6855,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            boolean queuedOwnedCleanup;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -6882,9 +6878,17 @@ public final class ActorRuntime implements AutoCloseable {
                 toCancel.addAll(sourceTaskFutures);
                 pending = List.copyOf(toCancel);
                 pendingOperations.clear();
+                queuedOwnedCleanup = sourceCleanupDraining && !sourceTaskMailbox.isEmpty();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+
+            // A producer completion can enqueue a source command between
+            // runtime.closed=true and actor stop(). The original schedule()
+            // then properly rejects ordinary admission. Once stop() installs
+            // the cleanup-only CONTROL lane, explicitly dispatch that queued
+            // command; otherwise no producer is obliged to wake it again.
+            if (queuedOwnedCleanup) schedule();
 
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.

@@ -1,7 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -144,18 +146,18 @@ final class ActorSourceCleanupDrainTest {
             assertEquals(1, gates.cleanupCompletes.get());
         }
     }
+
     @Test
-    void globalRuntimeCloseDrainsOwnedActorCleanupBeforeDispatcherShutdown()
-            throws Exception {
+    void runtimeCloseKeepsSourceCleanupControlLaneAlive() throws Exception {
         ActorRuntime runtime = new ActorRuntime();
+        Gates gates = new Gates();
+        ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        Thread closer = null;
         try {
-            Gates gates = new Gates();
-            ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
             actor.send("run");
             assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
-
-            AtomicReference<Throwable> closeFailure = new AtomicReference<>();
-            Thread closer = Thread.ofPlatform().start(() -> {
+            closer = Thread.ofPlatform().start(() -> {
                 try {
                     runtime.close();
                 } catch (Throwable failure) {
@@ -163,48 +165,93 @@ final class ActorSourceCleanupDrainTest {
                 }
             });
             assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS),
-                    "runtime close must keep actor scheduler CONTROL cleanup runnable");
+                    "runtime close must retain the actor-owned source CONTROL lane");
             assertFalse(actor.get_done().isDone(),
-                    "global close cannot publish done before awaited cleanup");
+                    "runtime close cannot publish actor done before suspended cleanup finishes");
+            assertEquals(0, gates.cleanupCompletes.get());
             assertTrue(closer.isAlive(),
-                    "runtime close must drain, not destroy the pending cleanup carrier");
+                    "runtime close must wait for source cleanup instead of destroying carriers");
 
             gates.cleanupAwait.completeFromRuntime(null);
-            closer.join(3000);
-            assertFalse(closer.isAlive(), "global close should finish after cleanup");
-            assertNull(closeFailure.get(), () -> String.valueOf(closeFailure.get()));
+            closer.join(5000);
+            assertFalse(closer.isAlive(), "close must terminate once owned cleanup drains");
+            assertNull(closeFailure.get(), "global close should finish after source cleanup");
             assertTrue(actor.get_done().isDone());
+            assertTrue(gates.task.get().isCancelled());
             assertEquals(1, gates.cleanupStarts.get());
             assertEquals(1, gates.cleanupCompletes.get());
+            assertEquals(1, gates.userMessages.get());
         } finally {
+            gates.cleanupAwait.completeFromRuntime(null);
+            if (closer != null) closer.join(5000);
+            if (closer == null || !closer.isAlive()) {
+                runtime.close();
+            }
+        }
+    }
+    @Test
+    void preStopGlobalCloseRaceRetainsQueuedOwnedSourceResume() throws Exception {
+        // Deterministically create the very short production interval between
+        // closed=true and ActorCell.terminateTree(). The pending source task is
+        // already admitted; no new user work is authorized.
+        ActorRuntime runtime = new ActorRuntime();
+        Gates gates = new Gates();
+        try {
+            ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
+            actor.send("run");
+            assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
+
+            Field closedField = ActorRuntime.class.getDeclaredField("closed");
+            closedField.setAccessible(true);
+            AtomicBoolean closed = (AtomicBoolean) closedField.get(runtime);
+            closed.set(true);
+
+            // Publish a producer completion while the runtime is closed but
+            // before its actor is stopped. The source command must be accepted
+            // into the owned CONTROL queue, but cannot run ordinary guest work.
+            assertTrue(gates.userAwait.completeFromRuntime(null));
+            assertFalse(gates.task.get().isDone());
+            assertThrows(IllegalStateException.class, () -> actor.send("forbidden"));
+
+            assertTrue(actor.cancel());
+            assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS),
+                    "stop must wake source work queued after closed=true");
+            assertFalse(actor.get_done().isDone());
+            gates.cleanupAwait.completeFromRuntime(null);
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, gates.cleanupStarts.get());
+            assertEquals(1, gates.cleanupCompletes.get());
+            assertEquals(1, gates.userMessages.get());
+        } finally {
+            gates.cleanupAwait.completeFromRuntime(null);
             runtime.close();
         }
     }
 
     @Test
-    void globalCloseTimeoutRetainsOwnerUntilExplicitRetry() throws Exception {
+    void runtimeCloseDeadlineDoesNotPublishDoneAndCanRetryAfterDrain()
+            throws Exception {
         ActorRuntime runtime = new ActorRuntime();
+        Gates gates = new Gates();
         try {
-            Gates gates = new Gates();
             ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
             actor.send("run");
             assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
 
-            IllegalStateException timeout = assertThrows(
-                    IllegalStateException.class, runtime::close);
-            assertTrue(timeout.getMessage().contains("source cleanup drain incomplete"),
-                    () -> timeout.toString());
+            IllegalStateException deadline =
+                    assertThrows(IllegalStateException.class, runtime::close);
+            assertTrue(deadline.getMessage().contains("did not observe full actor termination"),
+                    () -> String.valueOf(deadline));
             assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS));
             assertFalse(actor.get_done().isDone(),
-                    "cleanup timeout cannot fake actor quiescence");
+                    "timed-out cleanup cannot impersonate physical retirement");
+
             gates.cleanupAwait.completeFromRuntime(null);
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
             assertEquals(1, gates.cleanupCompletes.get());
-
-            // A failed cleanup drain does not consume the right to a clean
-            // shutdown after the owner actually releases its obligations.
             assertDoesNotThrow(runtime::close);
         } finally {
+            gates.cleanupAwait.completeFromRuntime(null);
             runtime.close();
         }
     }
