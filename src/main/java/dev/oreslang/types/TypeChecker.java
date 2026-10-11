@@ -1792,6 +1792,8 @@ public final class TypeChecker {
             return list.elements().stream().anyMatch(this::valueDispatchHasSuspension);
         if (expr instanceof Ast.TupleExpr tuple)
             return tuple.elements().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.ObjectExpr object)
+            return object.fields().stream().anyMatch(field -> valueDispatchHasSuspension(field.value()));
         if (expr instanceof Ast.SpreadExpr spread)
             return valueDispatchHasSuspension(spread.expression());
         if (expr instanceof Ast.CastExpr cast)
@@ -1831,6 +1833,10 @@ public final class TypeChecker {
             return valueDispatchHasSuspension(value.initializer());
         if (stmt instanceof Ast.DeferStmt value)
             return valueDispatchHasSuspension(value.expression());
+        // Yield and nested loops must never evade the value-arm suspension fence.
+        if (stmt instanceof Ast.YieldStmt) return true;
+        if (stmt instanceof Ast.LoopStmt loop)
+            return loop.body().stream().anyMatch(this::valueArmStmtSuspends);
         if (stmt instanceof Ast.BlockStmt nested)
             return nested.body().stream().anyMatch(this::valueArmStmtSuspends);
         if (stmt instanceof Ast.IfStmt conditional)
