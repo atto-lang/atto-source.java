@@ -62,10 +62,17 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // Truffle access checks. A carrier-local flag cannot authorize some
         // *other* thread. Explicitly restrict those privileges to the caller.
         boolean currentThread = thread == Thread.currentThread();
-        return thread == trustedEmbedderThread
+        boolean allowed = thread == trustedEmbedderThread
                 || (currentThread && (ActorRuntime.isActorCarrierThread()
                     || AsyncRuntime.isAsyncCarrierThread()
                     || OresScheduler.isSchedulerCarrierThread()));
+        if (!allowed && "main".equals(thread.getName())) {
+            System.err.println("ORES_TRUFFLE_DENIED requested=" + thread
+                    + " trustedOwner=" + trustedEmbedderThread
+                    + " current=" + Thread.currentThread()
+                    + " sameCurrent=" + currentThread);
+        }
+        return allowed;
     }
 
     @Override
