@@ -38,6 +38,8 @@ struct ores_carrier_pool {
     ores_carrier_arg *args;
     int max_threads;
     int desired_threads;
+    int created_threads;
+    size_t stack_bytes;
     int started;
     int shutdown;
     int attach_ready_count;
@@ -145,6 +147,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     }
     pool->max_threads = (int)max_threads;
     pool->desired_threads = (int)desired_threads;
+    pool->stack_bytes = (size_t)stack_bytes;
     pthread_mutex_init(&pool->mutex, NULL);
     pthread_cond_init(&pool->condition, NULL);
 
@@ -189,44 +192,19 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         return 0;
     }
 
-    pthread_attr_t attr;
-    if (pthread_attr_init(&attr) != 0) {
-        (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
-        free_pool(env, pool);
-        throw_illegal_state(env, "pthread_attr_init failed for native carrier");
-        return 0;
-    }
-    if (pthread_attr_setstacksize(&attr, (size_t)stack_bytes) != 0) {
-        pthread_attr_destroy(&attr);
-        (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
-        free_pool(env, pool);
-        throw_illegal_state(env, "failed to configure native carrier stack size");
-        return 0;
-    }
-
-    int created = 0;
+    /* Bootstrap allocates carrier descriptors only; no pthread exists yet. */
     for (int i = 0; i < max_threads; i++) {
         pool->args[i].pool = pool;
         pool->args[i].slot = i;
         pool->args[i].name = copy_thread_name(prefix, i);
-        if (pool->args[i].name == NULL
-                || pthread_create(&pool->threads[i], &attr, carrier_main, &pool->args[i]) != 0) {
-            pthread_mutex_lock(&pool->mutex);
-            pool->shutdown = 1;
-            pool->started = 1;
-            pthread_cond_broadcast(&pool->condition);
-            pthread_mutex_unlock(&pool->mutex);
-            for (int j = 0; j < created; j++) pthread_join(pool->threads[j], NULL);
-            pthread_attr_destroy(&attr);
+        if (pool->args[i].name == NULL) {
             (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
             free_pool(env, pool);
-            throw_illegal_state(env, "pthread_create failed for Oreslang carrier");
+            throw_illegal_state(env, "failed to allocate carrier name");
             return 0;
         }
-        created++;
     }
 
-    pthread_attr_destroy(&attr);
     (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
     return (jlong)(intptr_t)pool;
 }
@@ -238,15 +216,47 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
     if (pool == NULL) return;
     pthread_mutex_lock(&pool->mutex);
+    if (pool->shutdown || pool->started) {
+        pthread_mutex_unlock(&pool->mutex);
+        throw_illegal_state(env, "native carrier pool already started or retired");
+        return;
+    }
+
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0) {
+        pthread_mutex_unlock(&pool->mutex);
+        throw_illegal_state(env, "pthread_attr_init failed for native carrier");
+        return;
+    }
+    if (pthread_attr_setstacksize(&attr, pool->stack_bytes) != 0) {
+        pthread_attr_destroy(&attr);
+        pthread_mutex_unlock(&pool->mutex);
+        throw_illegal_state(env, "failed to configure native carrier stack size");
+        return;
+    }
+
+    int failed = 0;
+    for (int i = 0; i < pool->max_threads; i++) {
+        if (pthread_create(&pool->threads[i], &attr, carrier_main, &pool->args[i]) != 0) {
+            failed = 1;
+            break;
+        }
+        pool->created_threads++;
+    }
+    pthread_attr_destroy(&attr);
+    if (failed) pool->shutdown = 1;
     pool->started = 1;
     pthread_cond_broadcast(&pool->condition);
-    while (!pool->shutdown && pool->attach_ready_count < pool->max_threads) {
+    while (!failed && !pool->shutdown
+            && pool->attach_ready_count < pool->created_threads) {
         pthread_cond_wait(&pool->condition, &pool->mutex);
     }
     int failures = pool->attach_failures;
     pthread_mutex_unlock(&pool->mutex);
-    if (failures != 0) {
-        throw_illegal_state(env, "one or more native carrier pthreads failed to attach to the JVM");
+    if (failed || failures != 0) {
+        throw_illegal_state(env, failed
+            ? "pthread_create failed for Oreslang carrier"
+            : "one or more native carrier pthreads failed to attach to the JVM");
     }
 }
 
@@ -286,7 +296,7 @@ static void *carrier_reaper_main(void *raw) {
     // Joining happens off the runtime/control-plane caller. A carrier that is
     // still inside non-cooperative guest code may delay reclamation of this
     // retired pool, but can no longer block ActorRuntime.close()/shutdownNow().
-    for (int i = 0; i < pool->max_threads; i++) {
+    for (int i = 0; i < pool->created_threads; i++) {
         pthread_join(pool->threads[i], NULL);
     }
 
