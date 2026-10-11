@@ -427,7 +427,7 @@ public final class OresScheduler implements AutoCloseable {
         // Typed scheduler lifecycle; no integer states or magic ordinals.
         // Phase.NEW -> Phase.QUEUED -> Phase.RUNNING -> (Phase.WAITING -> Phase.QUEUED)* -> Phase.TERMINAL.
         // Cancellation may transition any non-terminal phase to Phase.TERMINAL.
-        private enum Phase { Phase.NEW, Phase.QUEUED, Phase.RUNNING, Phase.WAITING, Phase.TERMINAL }
+        private enum Phase { NEW, QUEUED, RUNNING, WAITING, TERMINAL }
 
         private final Task<T> task;
         private final Executor taskPlacement;
