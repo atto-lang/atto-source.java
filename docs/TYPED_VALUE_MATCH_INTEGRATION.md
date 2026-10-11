@@ -4,28 +4,43 @@ This branch is a **staged** integration on top of PR #634, not an implicit merge
 of PR #567. PR #567 and this branch diverge deeply; defer importing its
 continuation state machinery until control-flow and cleanup equivalence is proven.
 
-## Current positive scope
+## Current positive scope: lexical ARM_RESULT
 
 ```ores
 fnc f(int n): int {
   const value: int = match<ret=int> n over {
     default { return 5; }
-    on 7 { return 41; }
+    on 7 {
+      const next: int = n + 1;
+      defer stdio.println("cleanup");
+      return next;
+    }
   };
   return value + 1;
 }
 ```
 
+The parser emits `Ast.ArmReturnStmt` inside value-producing match
+arms, but `Ast.ReturnStmt` for ordinary function/procedural returns.
+The runtime delivers `ArmResultSignal` only to the closest value-match
+evaluation boundary, **after** nested `executeBlock` defer/finally
+unwinding. Guest `try/catch` does not intercept this lexical signal.
+A nested value-producing match has its own independent result boundary.
+
 This form produces an expression result, **not a containing-callable return**.
 The compiler requires an explicit return type, canonical ordered `over`
-dispatch, an exhaustively covered scalar subject (int, bool, string, float or
-decimal), and exactly one direct `return scalar-expression;` in each arm.
-Results are currently limited to the same scalar families. Subject, guard,
-and returned expressions allow only literals, locally resolved **owned scalar**
-names, and a vetted subset of unary, binary and conditional scalar operations.
-Borrow-producing `&` / `&mut` operators, borrowed return contracts, unknown
-imports, identities, calls, await, assignments and other complex effects
-fail closed until ownership/continuation admission has been proved.
+dispatch and exhaustive scalar subject coverage (int, bool, string,
+float or decimal). Each arm must **prove a lexical result on every reachable
+normal path**. The checker admits owned scalar bindings, nested blocks,
+exhaustive `if/else`, nested typed value-matches used as scalar initializers,
+and `try/catch/finally` when `finally` does not override the result.
+Only explicitly admitted synchronous `stdio.print/println` calls are allowed
+as arm-side-effect statements and deferred cleanup in this stage.
+The arm-local result and conditions still require pure owned scalar
+expressions, with a vetted subset of unary/binary operations.
+Borrow-producing `&`/`&mut`, non-scalar ownership, unverified calls,
+await, assignments, loops, procedural nested dispatch, and general
+`recover` continue to fail closed.
 Async/suspending/generator callables and complex arm control flow are
 explicitly unsupported in this stage.
 
@@ -34,9 +49,10 @@ containing callable. This distinction must not be erased by later lowering.
 
 ## Follow-on integration work
 
-1. Port an explicit lexical `ARM_RESULT` completion kind and context
-   ownership from PR #567. Replace the direct single-return runtime path only
-   once the continuation unwinder handles it correctly.
+1. Extend the synchronous `ArmResultSignal` into the resumable
+   execution-context/`SourceFlow` completion contract from PR #567,
+   retaining single-delivery and exact lexical ownership across await.
+   This is **not yet done** in the current draft.
 2. Expand type/ownership/effect checking for arm bodies, including non-scalar
    move/borrow semantics and calls, before admitting such expressions.
 3. Cover nesting of match/switch and `try/catch/finally`, plus `defer` and
@@ -81,3 +97,27 @@ source are tracked in
 [run 38178032203](https://github.com/zed-pkg-test/java-app/actions/runs/38178032203);
 they were still in progress at the audit snapshot and must not be
 represented as complete until confirmed.
+
+## Lexical completion gate (October 11, 2026)
+
+The new implementation uses `Ast.ArmReturnStmt` and
+`ArmResultSignal` rather than consuming a normal `ReturnSignal`.
+It is an intentionally **synchronous** engine. The compiler rejects
+async, suspends and generator callables around `match<ret=T>`;
+this means these changes do not claim `Future<T>` continuation support.
+
+The compiler proof rejects fallthrough, loops, nested procedural
+dispatch, effectful arm results and unsupported cleanup calls; the
+ownership scanner now traverses all admitted arm statements and
+captures pattern-local names correctly.
+
+Exact-source funded [Maven CI 38180097957](https://github.com/zed-pkg-test/java-app/actions/runs/38180097957):
+**1,460/1,460 full tests**, including **22/22 typed-match integration
+tests**, zero failures/errors/skips. The source/test tree hashes are
+`5387e4ea418f56485d743ca5368891761b07b47a` and
+`cea57b0e4903f870e268b8c599778b0e30b30c13`.
+Native-image guest conformance for this revision is tracked separately in
+[run 38180097958](https://github.com/zed-pkg-test/java-app/actions/runs/38180097958).
+
+Cleanup failure suppression, generalized defer/recover effects, and
+suspendable ARM_RESULT are release blockers, not completed features.
