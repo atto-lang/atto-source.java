@@ -370,6 +370,9 @@ public final class SupervisorProcess implements AutoCloseable {
                 }
             });
         } catch (Throwable registrationFailure) {
+            // Registration happens on CONTROL. A hostile CompletionStage can
+            // throw after a host effect was requested, so retain uncertainty.
+            noteEffectFailure(resolution, registrationFailure);
             synchronized (this) { finishSinkFailureLocked(registrationFailure); }
         }
     }
