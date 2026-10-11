@@ -98,6 +98,62 @@ final class ActorParentSupervisionTest {
         }
     }
 
+    private static final class FailingRestartCallbackParent extends Parent
+            implements ActorRuntime.SupervisionHandler {
+        final AtomicReference<ActorRuntime.ActorRef<?>> replacement = new AtomicReference<>();
+        @Override public ActorRuntime.SupervisionDecision onPanic(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.RESTART;
+        }
+        @Override public ActorRuntime.SupervisionDecision onThrow(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onRaise(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onCancel(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onHostFailure(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public void onRestarted(
+                SupervisorFailureLane.Failure failed, ActorRuntime.ActorRef<?> next) {
+            replacement.set(next);
+            throw new IllegalStateException("restart callback rejected replacement");
+        }
+    }
+
+    @Test
+    void rejectedRestartCallbackStopsNewChildAndEscalatesWithoutParentFailure()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            FailingRestartCallbackParent handler = new FailingRestartCallbackParent();
+            var supervisor = runtime.<Integer>spawnSharedTrusted(context -> handler);
+            supervisor.send(0);
+            assertTrue(handler.entered.await(5, TimeUnit.SECONDS));
+            handler.child.get().send(1);
+            handler.release.countDown();
+
+            SupervisorFailureLane.Failure event = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline && event == null) {
+                event = runtime.pollSupervisionFailure().orElse(null);
+                if (event == null) Thread.sleep(5);
+            }
+            assertNotNull(event, "failed restart must escalate original child panic");
+            assertEquals(SupervisorFailureLane.Kind.PANIC, event.kind());
+            assertTrue(supervisor.isAlive(), "restart callback must not crash parent");
+            ActorRuntime.ActorRef<?> replacement = handler.replacement.get();
+            assertNotNull(replacement, "restart did admit a replacement");
+            assertNotEquals(handler.child.get().id(), replacement.id());
+            assertTrue(replacement.awaitTermination(5, TimeUnit.SECONDS),
+                    "an orphan restart must be revoked after callback failure");
+            assertTrue(replacement.failure().isEmpty(), "revoked restart exits gracefully");
+            runtime.acknowledgeSupervisionFailure(event.actor());
+            runtime.stop(supervisor);
+        }
+    }
+
     @Test
     void repeatedGuestPanicsExhaustBoundedRestartAndEscalateWithoutKillingParent()
             throws Exception {
