@@ -89,6 +89,50 @@ but `on _` is a default alias and is normalized to a fallback-only arm
 regardless of its source position. The type checker requires matches
 to be provably exhaustive.
 
+## Typed match return contracts
+
+The new grammar reserves these parameter forms:
+
+```ores
+match<bool> value over { default { return false; } }
+match<ret=bool> value over { default { return false; } }
+do match<ret=bool> value over { default { return false; } }
+```
+
+`ret` is the canonical *named* parameter. `match<T>` is positional
+shorthand for `match<ret=T>`; `type=` is not a valid named parameter
+because it could be confused with the matched subject's type.
+Unknown/duplicate parameters fail parsing.
+
+Two distinct contracts must **not** be conflated:
+
+- `match<ret=T>` is **value-producing**. A `return value` inside its
+  selected arm must end that arm and provide the match result, not return
+  from the enclosing function. Its arms must exhaustively produce a
+  `T`; using it as a statement should eventually warn about unused
+  match results. **This lowering is NOT implemented in the current
+  Java/GraalVM production source. The parser and AST accept the syntax,
+  but the type checker rejects it with an explicit fail-closed error
+  rather than silently using non-local function returns.**
+- `do match<ret=T>` is a **procedural** match with a contract on
+  non-local `return` statements. It produces no match expression result:
+  every reachable arm must return a value assignable to `T` (subject
+  to future proof of throwing/non-returning control flow). The declared
+  `T` must also be assignable to the containing callable's return type.
+  `do match<T>` is parsed as a compatibility shorthand but emits a
+  warning recommending the named spelling. An ordinary expression
+  computed inside a do arm and not returned is discarded.
+
+Without a typed return contract, `do match` retains the historical
+statement-level dispatch behavior. Do not infer that unannotated plain
+`match` has already been converted into a value-producing expression
+on all execution backends.
+
+`return do match`, typed `return match`, exhaustive inference,
+`await`/suspended continuation handling, and cross-backend LLVM/WASM
+lowering must be validated before declaring general expression-match
+support.
+
 ## Formatter
 
 One canonical style: two-space indentation, braces for compact examples,
