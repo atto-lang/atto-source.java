@@ -5417,6 +5417,23 @@ public final class OresEvalRootNode extends RootNode {
                         return object.owner.methodInvocation(object, method, args);
                     }
 
+                    if (object.mapEntries != null
+                            && java.util.Set.of("get", "put", "remove").contains(methodCall.member())) {
+                        return object.owner.invokableInvocation(ignored -> {
+                            int expected = methodCall.member().equals("put") ? 2 : 1;
+                            if (args.size() != expected || !(args.getFirst() instanceof String key)) {
+                                throw new IllegalArgumentException("Map." + methodCall.member()
+                                        + " expects " + expected + " argument(s), beginning with a string key");
+                            }
+                            return switch (methodCall.member()) {
+                                case "get" -> object.owner.mapRead(object, key);
+                                case "put" -> { object.owner.mapWrite(object, key, args.get(1)); yield null; }
+                                case "remove" -> object.owner.mapRemove(object, key);
+                                default -> throw new IllegalStateException("unknown Map operation");
+                            };
+                        }, List.of());
+                    }
+
                     OwnedField ownedField = object.owner.findField(
                             object.klass, methodCall.member(), new LinkedHashSet<>());
                     if (ownedField != null) {
