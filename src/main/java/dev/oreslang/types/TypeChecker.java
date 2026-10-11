@@ -4506,9 +4506,11 @@ public final class TypeChecker {
      */
     private void requireSerializableActorMessageType(Type type, String where) {
         if (type instanceof Primitive primitive) {
-            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+            if (primitive != Primitive.INT && primitive != Primitive.FLOAT
+                    && primitive != Primitive.BOOL && primitive != Primitive.STRING) {
                 throw new IllegalArgumentException(where
-                        + " requires Serializable data; void/null cannot be mailbox values");
+                        + " requires Serializable data; primitive " + primitive
+                        + " has no portable actor-message codec yet");
             }
             return;
         }
@@ -4523,29 +4525,11 @@ public final class TypeChecker {
             }
             return;
         }
-        if (type instanceof Union union) {
-            for (Type option : union.options()) {
-                requireSerializableActorMessageType(option, where + " union alternative");
-            }
-            return;
-        }
-        if (type instanceof Record record) {
-            for (Map.Entry<String, Type> entry : record.members().entrySet()) {
-                requireSerializableActorMessageType(entry.getValue(),
-                        where + " field '" + entry.getKey() + "'");
-            }
-            return;
-        }
-        if (type instanceof Named named) {
-            int count = named.arguments().size();
-            if ((named.name().equals("Option") && count == 1)
-                    || (named.name().equals("Result") && count == 2)) {
-                for (Type argument : named.arguments()) {
-                    requireSerializableActorMessageType(argument, where + " " + named.name() + " payload");
-                }
-                return;
-            }
-        }
+        // Tagged union/pattern alternatives need a stable alternative ID.
+        // Unannotated records, Option/Result and named classes need generated
+        // schema descriptors. All must fail closed until binary codecs exist.
+        // Recursive admission here proves only the executable scalar/sequence
+        // subset, not general structural sendability.
         throw new IllegalArgumentException(where + " requires Serializable data; "
                 + "non-serializable, opaque, borrowed, executable and capability types "
                 + "cannot be sent in an actor mailbox: " + type);
