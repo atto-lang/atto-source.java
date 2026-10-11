@@ -480,7 +480,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ArmReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
@@ -534,6 +534,13 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
+    /** Completion local to the lexically enclosing value-producing match. */
+    public record ArmReturnStmt(Expr value) implements Stmt {
+        public ArmReturnStmt {
+            if (value == null) throw new IllegalArgumentException(
+                    "value match arm return requires a value");
+        }
+    }
     public record YieldStmt(Expr value, boolean delegated) implements Stmt {
         public YieldStmt(Expr value) {
             this(value, false);
