@@ -1,0 +1,127 @@
+package dev.oreslang;
+
+import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresHostFutureBridge;
+import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.OresFuture;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.graalvm.polyglot.Value;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Host Future extraction must never re-enter Truffle after guest task dispatch. */
+@Timeout(value = 80, unit = TimeUnit.SECONDS)
+final class HostFutureBridgeExecutionTest {
+    private static final String PROGRAM = """
+            define module gates as
+              pub val Channel<int> start = Channel.new<int>(0);
+              pub val Channel<int> cleanup = Channel.new<int>(0);
+            end
+
+            pub fnc exposeCleanup(): Channel<int> {
+              return gates.cleanup;
+            }
+
+            pub fnc ordinary(): int { return 17; }
+
+            pub async fnc work(): int {
+              try {
+                stdio.println("armed");
+                const ignored = await (nb readch gates.start);
+              } finally {
+                stdio.println("cleanup-entered");
+                const finished = await (nb readch gates.cleanup);
+                stdio.println(finished);
+              }
+              return 17;
+            }
+            """;
+
+    private static final class ConcurrentOutput extends ByteArrayOutputStream {
+        @Override
+        public synchronized void write(int value) {
+            super.write(value);
+        }
+
+        @Override
+        public synchronized void write(byte[] bytes, int offset, int count) {
+            super.write(bytes, offset, count);
+        }
+
+        @Override
+        public synchronized String toString() {
+            return super.toString(StandardCharsets.UTF_8);
+        }
+    }
+
+    private static void awaitOutput(ConcurrentOutput output, String text)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!output.toString().contains(text) && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertTrue(output.toString().contains(text),
+                "guest did not reach " + text + ": " + output);
+    }
+
+    @Test
+    void hostExtractsFutureWithoutPolyglotValueReentryDuringCleanup()
+            throws Exception {
+        for (int iteration = 0; iteration < 32; iteration++) {
+            ConcurrentOutput output = new ConcurrentOutput();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(true).out(output).build()) {
+                Source guest = Source.newBuilder(OresLanguage.ID, PROGRAM,
+                        "host-bridged-future.ores")
+                        .mimeType(OresLanguage.MIME_TYPE).build();
+                Value parsed = context.parse(guest);
+                parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                @SuppressWarnings("unchecked")
+                ChannelRuntime.Channel<Integer> cleanup =
+                        (ChannelRuntime.Channel<Integer>) parsed.execute(
+                                OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                                "exposeCleanup").asHostObject();
+
+                // No call to Value.asHostObject follows the scheduler start.
+                OresFuture<Integer> result =
+                        OresHostFutureBridge.invokePublicFuture(parsed, "work");
+                awaitOutput(output, "armed");
+                assertFalse(result.isDone());
+                assertTrue(result.cancel(false),
+                        "cancellation was not admitted at repetition " + iteration);
+                awaitOutput(output, "cleanup-entered");
+                assertFalse(result.isDone(),
+                        "pending guest cleanup must keep the Future nonterminal");
+                cleanup.writeAsync(33).get(5, TimeUnit.SECONDS);
+                assertThrows(CancellationException.class,
+                        () -> result.get(5, TimeUnit.SECONDS));
+                assertEquals("armed\ncleanup-entered\n33\n", output.toString());
+            }
+        }
+    }
+
+    @Test
+    void rejectingSyncFunctionDoesNotLeaveStaleHostCapture()
+            throws Exception {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).build()) {
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    PROGRAM, "host-bridged-sync.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresHostFutureBridge.invokePublicFuture(parsed, "ordinary"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresHostFutureBridge.invokePublicFuture(parsed, "ordinary"),
+                    "failed invocation must not retain a prior host capture scope");
+        }
+    }
+}
