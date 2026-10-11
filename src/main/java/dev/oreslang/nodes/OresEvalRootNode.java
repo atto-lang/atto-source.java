@@ -5462,7 +5462,8 @@ public final class OresEvalRootNode extends RootNode {
                 // never return the view, native slots or segment to guest code.
                 return invokableInvocation(ignored -> {
                     SourceScalarState state = actor.nativeState;
-                    state.requireOwner();
+                    // The authority check belongs to state.begin(), after
+                    // acquiring (or reusing) the logical ticket.
                     CriticalGate gate = actor.criticalGate;
                     CriticalGate.Ticket ticket = gate.heldByCurrentLogicalDomain()
                             ? null : gate.newTicket();
