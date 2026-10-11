@@ -5975,7 +5975,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         /** Graceful source teardown is a reserved once-only actor turn. */
-        private boolean gracefulTeardownPending;
+        // schedule() is also called outside lifecycleLock by host stops and
+        // producer threads. Its admission read must see the shutdown request.
+        private volatile boolean gracefulTeardownPending;
         private boolean gracefulTeardownStarted;
         private boolean gracefulTeardownActive;
         /** Cancellation, fatal failure and runtime close revoke all further
