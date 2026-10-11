@@ -7602,6 +7602,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
+            if (pattern instanceof Ast.TaggedTuplePattern tagged) {
+                return oresTypeMatches(value, tagged.tag())
+                        && patternMatches(tagged.tuple(), value, bindings);
+            }
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
                 if (!(value instanceof List<?> tuple)
                         || tuple.size() != tuplePattern.elements().size()) return false;
