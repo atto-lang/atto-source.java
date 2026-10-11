@@ -21,10 +21,10 @@ fnc classify(string v): string {
 - `case` accepts comma-separated compile-time constants.
 - `default` and `_` are aliases for **one** fallback arm.
 - The fallback arm may appear anywhere in source, but is semantically considered **only after all explicit cases**. It never shadows a case written after it.
-- Source order among concrete cases is preserved; duplicate constants and a second fallback are errors.
+- Source order among concrete cases is preserved; **folded scalar-value duplicates** and a second fallback are errors. The compiler compares folded values rather than source-expression spelling; unsupported structured case constants are rejected until their compile-time-equality ABI is defined.
 - Each branch body is a block. No implicit fallthrough.
 - Optional commas and semicolons **after complete arm bodies** are not part of expression syntax and may be stripped by the canonical formatter.
-- Existing runtime/compiler type checking of constant cases is retained.
+- Switch labels must be provable compile-time scalar constants, checked against the subject type. Sync and suspended execution use the same guest `valueEquals` relation.
 
 ## Match
 
@@ -101,3 +101,7 @@ Future work: canonicalize optional `is` and implicit nominal binders to
 rewrite fallback aliases in legacy `end`-delimited syntax;
 unify the typed variant payload representation between Java/GraalVM and LLVM;
 test catch-all placement, narrowing, arity, and exhaustive-return statements.
+
+## Audit / certification status (2026-10-11)
+
+Formatter PR #32: private funded exact-blob CI passed `cargo test --all-targets` and `cargo fmt --check` (see gha-indie-worker/gha-indie-worker-docs Actions run 38166794034). Java parser in PR #634: exact four source Git blobs compiled with JDK 21 and 23 parser/AST smoke checks passed in the same run. The whole Java Truffle/typechecker/runtime, LLVM, actor mail variant payload extraction, and source organization's current-head CI have **not** been certified by this smoke test. Keep implementation PRs draft until those gates execute and pass.
