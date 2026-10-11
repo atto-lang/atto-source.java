@@ -320,4 +320,85 @@ final class SourceSupervisorAwaitStopTest {
         }
     }
 
+    @Test
+    void originalSuccessfulFutureAfterReconciliationIsStillResolvedOnce() throws Exception {
+        var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var seen = new CountDownLatch(1);
+            var request = new AtomicReference<SupervisorProcess.Resolution>();
+            var hostAcknowledgment = new CompletableFuture<Void>();
+            var process = compiled.installAwaitingStop(group, 2, resolution -> {
+                request.set(resolution);
+                seen.countDown();
+                return hostAcknowledgment;
+            });
+            var actor = group.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        throw new IllegalStateException("late-authoritative-ack");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("panic");
+            assertTrue(seen.await(10, TimeUnit.SECONDS));
+            var permit = group.reservedStopFor(request.get());
+            var verificationCalls = new AtomicInteger();
+            group.reconcileConfirmedStop(permit, () -> {
+                verificationCalls.incrementAndGet();
+                return true;
+            });
+            hostAcknowledgment.complete(null);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (process.resolved() == 0 && process.failure().isEmpty()
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, process.resolved(),
+                    "a confirmed original Future must not fail after exact reconciliation");
+            assertTrue(process.failure().isEmpty());
+            assertEquals(0, process.undelivered());
+            assertEquals(1, verificationCalls.get());
+            assertEquals(SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
+                    group.stopReceipt(permit.child()).status());
+            assertTrue(group.unresolvedSupervisorStops().isEmpty());
+            process.close();
+            group.close();
+        }
+    }
+
+    @Test
+    void forgedReconciliationDoesNotInvokeHostVerifier() throws Exception {
+        var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var seen = new CountDownLatch(1);
+            var request = new AtomicReference<SupervisorProcess.Resolution>();
+            var neverAck = new CompletableFuture<Void>();
+            var process = compiled.installAwaitingStop(group, 2, resolution -> {
+                request.set(resolution);
+                seen.countDown();
+                return neverAck;
+            });
+            var actor = group.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        throw new IllegalStateException("forged-reconciliation");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("panic");
+            assertTrue(seen.await(10, TimeUnit.SECONDS));
+            var permit = group.reservedStopFor(request.get());
+            var forged = new SupervisorChildRegistry.StopReservation(
+                    permit.child(), permit.failedActor(), permit.incarnation(),
+                    permit.turnGeneration() + 1, permit.nonce());
+            var calls = new AtomicInteger();
+            assertThrows(IllegalStateException.class, () ->
+                    group.reconcileConfirmedStop(forged, () -> {
+                        calls.incrementAndGet();
+                        return true;
+                    }));
+            assertEquals(0, calls.get(), "stale ticket caused a host verification effect");
+            assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                    group.childSnapshot(permit.child()).phase());
+            process.close();
+            group.close();
+        }
+    }
+
 }
