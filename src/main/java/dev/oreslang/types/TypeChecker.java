@@ -5188,19 +5188,33 @@ public final class TypeChecker {
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
+        if (subject instanceof Named named && named.name().equals("Option")
+                && named.arguments().size() == 1) {
             boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
+                if (c.constructor().equals("Some") && c.arguments().size() == 1) {
+                    // Some(1) narrows its payload and does NOT cover every Some<T>.
+                    some |= patternCoversType(c.arguments().getFirst(),
+                            named.arguments().getFirst(), generics, self);
+                } else if (c.constructor().equals("None") && c.arguments().isEmpty()) {
+                    none = true;
+                }
             }
             return some && none;
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
+        if (subject instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
             boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
+                if (c.constructor().equals("Ok") && c.arguments().size() == 1) {
+                    ok |= patternCoversType(c.arguments().getFirst(),
+                            named.arguments().get(0), generics, self);
+                } else if (c.constructor().equals("Err") && c.arguments().size() == 1) {
+                    err |= patternCoversType(c.arguments().getFirst(),
+                            named.arguments().get(1), generics, self);
+                }
             }
             return ok && err;
         }
