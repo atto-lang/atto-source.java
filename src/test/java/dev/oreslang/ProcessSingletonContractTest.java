@@ -24,6 +24,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ProcessSingletonContractTest {
     private static final IsolatePolicy TRUSTED = IsolatePolicy.developer();
+    // Test-only host probes are static so source actor factories stay stateless.
+    private static volatile CountDownLatch actorFinished;
+    private static final AtomicReference<UUID> sharedActorSeen = new AtomicReference<>();
+    private static final AtomicReference<UUID> privateActorSeen = new AtomicReference<>();
+    private static volatile ProcessSingletonRegistry.Handle testCapturedHandle;
+    private static final AtomicReference<Throwable> sandboxDenial = new AtomicReference<>();
 
     @Test
     void concurrentInitializationCreatesExactlyOneFrozenSnapshot() throws Exception {
@@ -67,58 +73,59 @@ final class ProcessSingletonContractTest {
         UUID hostId = ProcessSingletonRegistry.getOrCreate(
                 key, "schema-v1", TRUSTED, () -> Map.of("region", "nyc")).instanceId();
         try (ActorRuntime runtime = new ActorRuntime(TRUSTED)) {
-            CountDownLatch finished = new CountDownLatch(2);
-            AtomicReference<UUID> sharedSeen = new AtomicReference<>();
-            AtomicReference<UUID> privateSeen = new AtomicReference<>();
+            actorFinished = new CountDownLatch(2);
+            sharedActorSeen.set(null);
+            privateActorSeen.set(null);
 
             ActorRuntime.ActorRef<String> shared = runtime.spawnShared(
                     factory -> (message, turn) -> {
-                        sharedSeen.set(ProcessSingletonRegistry.getOrCreate(
-                                key, "schema-v1", turn.policy(), () -> Map.of()).instanceId());
-                        finished.countDown();
+                        sharedActorSeen.set(ProcessSingletonRegistry.getOrCreate(
+                                message, "schema-v1", turn.policy(), Map::of).instanceId());
+                        actorFinished.countDown();
                         turn.self().stop();
                     });
             ActorRuntime.ActorRef<String> isolated = runtime.spawnPrivate(
                     factory -> (message, turn) -> {
-                        privateSeen.set(ProcessSingletonRegistry.getOrCreate(
-                                key, "schema-v1", turn.policy(), () -> Map.of()).instanceId());
-                        finished.countDown();
+                        privateActorSeen.set(ProcessSingletonRegistry.getOrCreate(
+                                message, "schema-v1", turn.policy(), Map::of).instanceId());
+                        actorFinished.countDown();
                         turn.self().stop();
                     });
-            shared.send("read");
-            isolated.send("read");
-            assertTrue(finished.await(5, TimeUnit.SECONDS));
-            assertEquals(hostId, sharedSeen.get());
-            assertEquals(hostId, privateSeen.get());
+            shared.send(key);
+            isolated.send(key);
+            assertTrue(actorFinished.await(5, TimeUnit.SECONDS));
+            assertEquals(hostId, sharedActorSeen.get());
+            assertEquals(hostId, privateActorSeen.get());
         }
     }
 
     @Test
     void untrustedActorCannotCreateOrReadCapturedSingletonHandle() throws Exception {
         String key = "untrusted-singleton-" + UUID.randomUUID();
-        ProcessSingletonRegistry.Handle captured = ProcessSingletonRegistry.getOrCreate(
+        testCapturedHandle = ProcessSingletonRegistry.getOrCreate(
                 key, "schema-v1", TRUSTED, () -> Map.of("secret", "hidden"));
         assertThrows(SecurityException.class, () -> ProcessSingletonRegistry.getOrCreate(
                 key, "schema-v1", IsolatePolicy.strictFaas(), Map::of));
 
         try (ActorRuntime runtime = new ActorRuntime(TRUSTED)) {
-            CountDownLatch finished = new CountDownLatch(1);
-            AtomicReference<Throwable> denied = new AtomicReference<>();
+            actorFinished = new CountDownLatch(1);
+            sandboxDenial.set(null);
             ActorRuntime.ActorRef<String> sandbox = runtime.spawnPrivate(
                     IsolatePolicy.strictFaas(),
                     factory -> (message, turn) -> {
                         try {
-                            captured.snapshot();
+                            testCapturedHandle.snapshot();
                         } catch (Throwable failure) {
-                            denied.set(failure);
+                            sandboxDenial.set(failure);
                         } finally {
-                            finished.countDown();
+                            actorFinished.countDown();
                             turn.self().stop();
                         }
                     });
             sandbox.send("read");
-            assertTrue(finished.await(5, TimeUnit.SECONDS));
-            assertInstanceOf(SecurityException.class, denied.get());
+            assertTrue(actorFinished.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, sandboxDenial.get());
+            testCapturedHandle = null;
         }
     }
 
