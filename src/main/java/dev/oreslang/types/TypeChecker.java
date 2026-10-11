@@ -4481,11 +4481,17 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        // Opaque ActorGroup authorities are intentionally NOT the generic
+        // ActorRef capability exception below. The future scoped permit-transfer
+        // protocol must validate provenance, intended recipient, generation,
+        // and revocation before the compiler admits such payloads.
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")
+                || named.name().equals("ActorGroup") || named.name().equals("ActorGroupJoinCapability")
+                || named.name().equals("$ActorGroupFactory")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
