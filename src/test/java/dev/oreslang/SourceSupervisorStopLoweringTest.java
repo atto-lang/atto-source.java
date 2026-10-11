@@ -84,7 +84,7 @@ final class SourceSupervisorStopLoweringTest {
                 "self.stop(problem.actor); return;",
                 "using self.control { self.stop(); } return;",
                 "using supervisor.control { self.stop(); } return;",
-                "self.stop(problem, problem); return;"
+                "self.stop(problem, problem); return;",
                 "self.stop(42); return;",
                 "self.stop(); self.stop(problem); return;"
         }) {
@@ -151,7 +151,14 @@ final class SourceSupervisorStopLoweringTest {
             CountDownLatch delivered = new CountDownLatch(1);
             AtomicReference<SupervisorProcess.Resolution> observed =
                     new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorRef<String>> failedRef =
+                    new AtomicReference<>();
+            AtomicReference<Boolean> doneAtDecision = new AtomicReference<>();
             var process = compiled.install(group, 2, resolution -> {
+                ActorRuntime.ActorRef<String> finished = failedRef.get();
+                doneAtDecision.set(finished != null
+                        && finished.done().isDone()
+                        && !finished.isAlive());
                 observed.set(resolution);
                 delivered.countDown();
             });
@@ -162,6 +169,7 @@ final class SourceSupervisorStopLoweringTest {
                     });
             failed.getReady().get(5, TimeUnit.SECONDS);
             var failedId = failed.id();
+            failedRef.set(failed);
             failed.send("panic");
             assertTrue(delivered.await(10, TimeUnit.SECONDS));
             var decision = observed.get();
@@ -169,6 +177,8 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(SupervisorProcess.Directive.STOP, decision.directive());
             assertEquals(failedId, decision.notice().actorId(),
                     "typed Failure STOP retargeted a different child");
+            assertEquals(Boolean.TRUE, doneAtDecision.get(),
+                    "CONTROL delivered STOP before child done/finalization barrier");
             assertEquals(group.supervisorId(), decision.notice().supervisorId());
             assertTrue(decision.turnGeneration() > 0);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
