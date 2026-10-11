@@ -37,8 +37,8 @@ final class SharedHttpGuestHandlerSourceTest {
                         "counter_response", (long) (i + 1)).asLong();
                 assertEquals((long) (i + 1) * 43L, observed);
                 if (i != 0) observations.append(",");
-                observations.append("\\"counter_response(").append(i + 1)
-                        .append(")\\":").append(observed);
+                observations.append((char) 34).append("counter_response(").append(i + 1)
+                        .append(")").append((char) 34).append(":").append(observed);
             }
             observations.append("}");
             System.out.println("GRAAL_GUEST_SHARED_HANDLER_RESULTS " + observations);
