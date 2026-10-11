@@ -1,0 +1,127 @@
+package dev.oreslang;
+
+import dev.oreslang.compiler.OresCompiler;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/** The trap prefix is the expression counterpart of the trap callable modifier. */
+final class TrapExpressionSemanticsTest {
+    @Test
+    void trapExpressionProducesTypedSomeAndNoneWithoutFlattening() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                fnc number(): int { return 17; }
+                fnc empty(): Option<int> { return None; }
+                fnc done(): void { return; }
+                fnc as_dog(Animal animal): Dog { return animal as Dog; }
+
+                pub fnc main(): void {
+                  val Option<int> good = trap number();
+                  val Option<Option<int>> nested = trap empty();
+                  val Option<void> finished = trap done();
+                  val Option<Dog> failed = trap as_dog(new Cat());
+                  stdio.stdout.write(good.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(nested.unwrap().is_none());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(finished.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(failed.is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("17:true:true:true", run(source));
+    }
+
+    @Test
+    void trapWorkerSendReturnsSomeOnAdmissionAndNoneAfterTermination() throws Exception {
+        String source = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  val Option<void> accepted = trap worker.send(42);
+                  await worker.get_done();
+                  val Option<void> rejected = trap worker.send(43);
+                  stdio.stdout.write(accepted.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(rejected.is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:true", run(source));
+    }
+
+    @Test
+    void trapExpressionCannotSuppressPanic() throws Exception {
+        String source = """
+                fnc panics(): int {
+                  val Option<int> missing = None;
+                  return missing.unwrap();
+                }
+                pub fnc main(): void {
+                  val Option<int> caught = trap panics();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(failure.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void trapIsAnExpressionNotANewCallableOrImplicitUnwrap() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                fnc number(): int { return 1; }
+                fnc broken(): void {
+                  val int raw = trap number();
+                  return;
+                }
+                """));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                fnc number(): int { return 1; }
+                fnc valid(): void {
+                  val Option<int> wrapped = trap (number() + 2);
+                  return;
+                }
+                """));
+    }
+
+    private static String run(String program) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "trap-expression.ores")
+                    .mimeType(OresLanguage.MIME_TYPE)
+                    .buildLiteral());
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+}
