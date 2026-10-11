@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -28,7 +30,18 @@ public final class SupervisorChildRegistry {
             Objects.requireNonNull(logicalId);
         }
     }
-    public enum Phase { ACTIVE, FINALIZED, STOPPED }
+    public enum Phase { ACTIVE, FINALIZED, RESTARTING, STOPPED }
+
+    /** A single-use host-side claim; the UUID is not a guest capability. */
+    public record RestartReservation(ChildId child, ActorRuntime.ActorId failedActor,
+                                     long incarnation, UUID nonce) {
+        public RestartReservation {
+            Objects.requireNonNull(child);
+            Objects.requireNonNull(failedActor);
+            Objects.requireNonNull(nonce);
+            if (incarnation <= 0) throw new IllegalArgumentException("invalid incarnation");
+        }
+    }
     public record Snapshot(
             ChildId child,
             ActorRuntime.ActorId actor,
@@ -46,6 +59,11 @@ public final class SupervisorChildRegistry {
     private final ActorRuntime.ActorGroupId group;
     private final Map<UUID, Snapshot> children = new HashMap<>();
     private final Map<ActorRuntime.ActorId, UUID> activeActors = new HashMap<>();
+    private final Map<UUID, RestartReservation> reservations = new HashMap<>();
+    // ActorId must not be recycled (A -> B -> A is another form of ABA).
+    // This is a host bookkeeping ledger, bounded by a per-supervisor ceiling.
+    private static final int MAX_ACTOR_IDENTITIES = 1_000_000;
+    private final Set<ActorRuntime.ActorId> seenActors = new HashSet<>();
 
     SupervisorChildRegistry(
             ActorRuntime.SupervisorId supervisor,
@@ -57,12 +75,20 @@ public final class SupervisorChildRegistry {
     /** Caller has already admitted this newly created actor to the group. */
     synchronized Snapshot register(ActorRuntime.ActorId actor) {
         Objects.requireNonNull(actor);
-        if (activeActors.containsKey(actor))
-            throw new IllegalStateException("actor already has a logical child");
+        requireFreshActor(actor);
         ChildId id = new ChildId(supervisor, group, UUID.randomUUID());
         Snapshot first = new Snapshot(id, actor, 1, Phase.ACTIVE);
-        children.put(id.logicalId(), first);
-        activeActors.put(actor, id.logicalId());
+        // Stage mutations, then roll back all indexes if an allocation fails.
+        seenActors.add(actor);
+        try {
+            activeActors.put(actor, id.logicalId());
+            children.put(id.logicalId(), first);
+        } catch (Throwable failure) {
+            children.remove(id.logicalId());
+            activeActors.remove(actor);
+            seenActors.remove(actor);
+            throw failure;
+        }
         return first;
     }
 
@@ -85,24 +111,69 @@ public final class SupervisorChildRegistry {
     }
 
     /**
-     * Commit identity only after trusted host spawn/admission succeeds. This
-     * function does not spawn, restart, or authorize actors itself.
+     * Claim the finalized generation BEFORE creating a replacement actor.
+     * At most one restart attempt may hold this claim at a time. This does
+     * not spawn an actor or prove the finalization barrier.
      */
-    synchronized Snapshot replace(
-            ChildId child, ActorRuntime.ActorId failedActor,
-            long failedIncarnation, ActorRuntime.ActorId replacement) {
-        Objects.requireNonNull(replacement);
-        Snapshot before = requireExpected(
-                child, failedActor, failedIncarnation, Phase.FINALIZED);
-        if (replacement.equals(failedActor) || activeActors.containsKey(replacement))
-            throw new IllegalStateException("replacement actor identity is not fresh");
-        if (failedIncarnation == Long.MAX_VALUE)
+    synchronized RestartReservation beginRestart(
+            ChildId child, ActorRuntime.ActorId failedActor, long incarnation) {
+        requireExpected(child, failedActor, incarnation, Phase.FINALIZED);
+        if (incarnation == Long.MAX_VALUE)
             throw new IllegalStateException("logical child generation exhausted");
+        RestartReservation permit = new RestartReservation(
+                child, failedActor, incarnation, UUID.randomUUID());
+        reservations.put(child.logicalId(), permit);
+        children.put(child.logicalId(),
+                new Snapshot(child, failedActor, incarnation, Phase.RESTARTING));
+        return permit;
+    }
+
+    /** Caller must have admitted the actual replacement before commit. */
+    synchronized Snapshot replace(
+            RestartReservation permit, ActorRuntime.ActorId replacement) {
+        checkReservation(permit);
+        requireFreshActor(replacement);
         Snapshot after = new Snapshot(
-                child, replacement, failedIncarnation + 1, Phase.ACTIVE);
-        children.put(child.logicalId(), after);
-        activeActors.put(replacement, child.logicalId());
+                permit.child(), replacement, permit.incarnation() + 1, Phase.ACTIVE);
+        // Commit both actor indexes or neither; a failed commit keeps the
+        // reservation so the trusted owner can clean up and abort.
+        seenActors.add(replacement);
+        try {
+            activeActors.put(replacement, permit.child().logicalId());
+            children.put(permit.child().logicalId(), after);
+        } catch (Throwable failure) {
+            activeActors.remove(replacement);
+            seenActors.remove(replacement);
+            throw failure;
+        }
+        reservations.remove(permit.child().logicalId());
         return after;
+    }
+
+    /** Trusted owner rolls back a failed spawn/admission; STOP may then win. */
+    synchronized Snapshot abortRestart(RestartReservation permit) {
+        checkReservation(permit);
+        Snapshot restored = new Snapshot(
+                permit.child(), permit.failedActor(), permit.incarnation(), Phase.FINALIZED);
+        children.put(permit.child().logicalId(), restored);
+        reservations.remove(permit.child().logicalId());
+        return restored;
+    }
+
+    private void checkReservation(RestartReservation permit) {
+        Objects.requireNonNull(permit);
+        requireExpected(permit.child(), permit.failedActor(),
+                permit.incarnation(), Phase.RESTARTING);
+        if (!permit.equals(reservations.get(permit.child().logicalId())))
+            throw new IllegalStateException("foreign or stale restart reservation");
+    }
+
+    private void requireFreshActor(ActorRuntime.ActorId actor) {
+        Objects.requireNonNull(actor);
+        if (seenActors.contains(actor) || activeActors.containsKey(actor))
+            throw new IllegalStateException("actor incarnation identity was already used");
+        if (seenActors.size() >= MAX_ACTOR_IDENTITIES)
+            throw new IllegalStateException("actor identity ledger capacity exhausted");
     }
 
     /** A permanent STOP applies to the finalized incarnation only. */
@@ -123,6 +194,7 @@ public final class SupervisorChildRegistry {
     }
 
     public synchronized int trackedChildren() { return children.size(); }
+    public synchronized int trackedActorIdentities() { return seenActors.size(); }
 
     private Snapshot requireCurrent(ChildId id) {
         Objects.requireNonNull(id);
