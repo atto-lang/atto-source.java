@@ -875,7 +875,7 @@ final class ActorRuntimeTest {
 
 
     @Test
-    void runtimeCloseDoesNotBlockOnActorHeldSyncCellLock() throws Exception {
+    void runtimeCloseDeadlineRetainsActorHeldSyncCellUntilPhysicalRetirement() throws Exception {
         ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 8));
@@ -913,11 +913,15 @@ final class ActorRuntimeTest {
         closer.join(500);
 
         try {
-            assertFalse(closer.isAlive(), "runtime close must not wait for user code holding a SyncCell lock");
+            assertFalse(closer.isAlive(), "runtime close must fail within its deadline on a blocked actor");
             assertInstanceOf(IllegalStateException.class, closeFailure.get());
             assertTrue(closeFailure.get().getMessage().contains("full actor termination"));
-            assertTrue(cell.closed());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+            // Reclaiming a SyncCell while its owner is still executing under
+            // its lock would be a use-after-retirement. Failed global close
+            // retains the real ownership obligation until the actor exits.
+            assertFalse(cell.closed(), "failed close cannot revoke live SyncCell ownership");
+            assertTrue(runtime.sharedMemoryBytes() > 0L,
+                    "failed close must not fabricate zero shared-memory usage");
         } finally {
             release.countDown();
             closer.join(2000);
@@ -925,6 +929,8 @@ final class ActorRuntimeTest {
 
         assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
         assertDoesNotThrow(runtime::close);
+        assertTrue(cell.closed(), "successful retry releases the now-quiescent shared cell");
+        assertEquals(0L, runtime.sharedMemoryBytes());
     }
 
 

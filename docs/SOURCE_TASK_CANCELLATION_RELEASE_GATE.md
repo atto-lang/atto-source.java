@@ -159,3 +159,26 @@ source task creation/settlement races, partial shutdown retry, nested source
 `await`/`finally`/`defer`, source-level output authority during cleanup,
 Graal Native Image, and LLVM guest continuation parity remain release gates.
 Keep all stacked branches draft.
+
+## Runtime close timeout and held SyncCell ownership (audit follow-up)
+
+When `ActorRuntime.close()` reaches its deadline while a guest turn still
+owns a shared SyncCell lock, the runtime **must not** mark the SyncCell
+closed, reset shared-memory accounting to zero, or claim physical quiescence.
+The close call fails explicitly, retains the actor and its memory reservations,
+and allows a subsequent close after the guest turn actually exits. The
+existing legacy test that expected early physical reclamation has been
+corrected to assert retention before the deadline and release after a
+successful retry.
+
+An actor with no outstanding source execution-context tasks still uses the
+existing fail-stop dispatcher interruption/queued-batch cancellation path,
+because ordinary blocking host behaviors do not have lexical continuation
+cleanup rights. When source tasks exist, shutdown instead keeps their
+scheduler-owned CONTROL lane alive. Audit test gates check both cases.
+
+The independently discovered close/stop window is fenced by a volatile
+cleanup admission state and an explicit stop-time wake of source turns queued
+after the global close flag but before actor stop. The race fixture injects
+this timing deterministically. Full JVM/native-image conformance and
+LLVM parity remain release gates; a passing focused suite is not sufficient.
