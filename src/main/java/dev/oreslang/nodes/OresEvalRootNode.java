@@ -4114,9 +4114,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OptionValue mapRead(OresObject object, String key) {
+            // Invalid stored data must not trigger observable hook side effects.
+            if (object.mapEntries.containsKey(key)) {
+                validateMapReadValue(object, key, object.mapEntries.get(key));
+            }
             mapHook(object, "on_get", key);
             if (!object.mapEntries.containsKey(key)) return new OptionValue(false, null);
             Object value = object.mapEntries.get(key);
+            // A hook may affect reachable values without reentering this map.
             validateMapReadValue(object, key, value);
             // A read cannot move the stored value or expose a mutable alias.
             // Explicit remove() is the consuming operation for owned values.
@@ -4259,6 +4264,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OptionValue mapRemove(OresObject object, String key) {
+            // Do not invoke user hooks for corrupted stored values.
+            if (object.mapEntries.containsKey(key)) {
+                validateMapReadValue(object, key, object.mapEntries.get(key));
+            }
             mapHook(object, "on_remove", key);
             if (!object.mapEntries.containsKey(key)) return new OptionValue(false, null);
             Object value = object.mapEntries.get(key);
