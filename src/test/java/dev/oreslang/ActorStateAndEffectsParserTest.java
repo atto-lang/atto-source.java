@@ -228,6 +228,41 @@ final class ActorStateAndEffectsParserTest {
             """)));
     }
 
+    @Test void referenceStateProjectionCannotBecomeUnscopedAlias() {
+        // A lexical state access callback currently has no scoped
+        // Map/List/class projection type. Direct projection must fail closed
+        // rather than permit returning a mutable reference to callers.
+        IllegalArgumentException map = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(Parser.parse("""
+                    define actor Cache as
+                        state { values: Map<string, int>; }
+                        pub leak(): Map<string, int> {
+                            return self.handle_state(|s| -> { return s.values; });
+                        }
+                    end
+                    """)));
+        assertTrue(map.getMessage().contains("non-scalar actor state key"), map::getMessage);
+        IllegalArgumentException direct = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(Parser.parse("""
+                    define actor Cache as
+                        state { values: Map<string, int>; }
+                        pub mutate(): void {
+                            self.handle_state(|s| -> { s.values; });
+                            return;
+                        }
+                    end
+                    """)));
+        assertTrue(direct.getMessage().contains("non-scalar actor state key"), direct::getMessage);
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+            define actor Counter as
+                state { count: int = 0; }
+                pub get(): int {
+                    return self.handle_state(|s| -> { return s.count; });
+                }
+            end
+            """)));
+    }
+
     @Test void effectVocabularyHasMatchingUpperBoundOperations() {
         var allowed = FunctionEffects.ofNames(List.of("state.read", "state.write", "suspend"));
         var actual = FunctionEffects.ofNames(List.of("state.read", "suspend"));
