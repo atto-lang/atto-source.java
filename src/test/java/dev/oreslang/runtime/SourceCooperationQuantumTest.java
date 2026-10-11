@@ -81,4 +81,22 @@ final class SourceCooperationQuantumTest {
         assertEquals(512, q.completedBackedgesThisDispatch());
         assertEquals(0L, q.timeSinceLastCooperateNanos());
     }
+
+    @Test
+    void backedgeAccountingDoesNotRollOverAtTheUnsigned32BitBoundary() throws ReflectiveOperationException {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        var counter = SourceCooperationQuantum.class.getDeclaredField("backedgesThisDispatch");
+        counter.setAccessible(true);
+        assertEquals(long.class, counter.getType());
+        counter.setLong(q, (1L << 32) - 64);
+        for (int i = 1; i <= 64; i++) {
+            assertEquals(i == 64, q.completedBackedgeNeedsCheck());
+        }
+        assertEquals(1L << 32, q.completedBackedgesThisDispatch());
+        assertTrue(q.shouldCooperateAtCheck());
+        // Reduction-cap fast path still avoids an extra monotonic clock read.
+        assertEquals(2, clock.reads.get());
+    }
 }
