@@ -358,6 +358,20 @@ final class SourceSupervisorAwaitStopTest {
             assertEquals(SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
                     group.stopReceipt(permit.child()).status());
             assertTrue(group.unresolvedSupervisorStops().isEmpty());
+            var denied = new CompletableFuture<Boolean>();
+            var watcher = group.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        try {
+                            group.stopReceipt(permit.child());
+                            denied.complete(false);
+                        } catch (SecurityException expected) {
+                            denied.complete(true);
+                        }
+                    });
+            watcher.getReady().get(5, TimeUnit.SECONDS);
+            watcher.send("observe");
+            assertTrue(denied.get(5, TimeUnit.SECONDS),
+                    "actor code obtained privileged nonce-bearing STOP receipt");
             process.close();
             group.close();
         }
