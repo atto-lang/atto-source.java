@@ -366,6 +366,9 @@ public final class CapabilityChecker {
         } else if (pattern instanceof Ast.TuplePattern p) {
             for (Ast.Pattern nested : p.elements()) checkPattern(nested, policy);
         } else if (pattern instanceof Ast.ConstructorPattern p) {
+            // A zero-arity constructor is still a nominal type reference.
+            // Check its authority even without an explicit TypePattern node.
+            checkType(Ast.TypeRef.simple(p.constructor()), policy);
             for (Ast.Pattern nested : p.arguments()) checkPattern(nested, policy);
         }
     }
