@@ -469,6 +469,13 @@ public final class ActorRuntime implements AutoCloseable {
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
+    /** Effective physical maximum, not an actor/continuation concurrency limit. */
+    public int workerCarrierLimit(ActorKind kind) {
+        Objects.requireNonNull(kind, "kind");
+        return Math.min(5, kind == ActorKind.SHARED
+                ? dispatcherConfig.sharedParallelism() : dispatcherConfig.privateParallelism());
+    }
+
     /**
      * Physical carrier implementation currently backing actor turns.
      *
@@ -6043,6 +6050,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+        // Every actor pool is physically limited to five workers, including
+        // legacy explicit configurations that request greater parallelism.
+        // Logical actor concurrency is separate from physical carrier count.
+        parallelism = Math.min(5, parallelism);
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
         if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
         if (!mode.equals("lane") && !mode.equals("cpu")) {
