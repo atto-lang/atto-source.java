@@ -25,6 +25,50 @@ final class SupervisorDecisionCommitFenceTest {
                 "Terminal", "code-37");
     }
 
+
+    @Test
+    void duplicatedExecutorCallbacksCannotStartSamePolicyTwice() throws Exception {
+        try (ExecutorService carriers = Executors.newFixedThreadPool(3)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            // A broken enqueue-only scheduler replays each admitted task.
+            java.util.concurrent.Executor replaying = turn -> {
+                carriers.execute(turn);
+                carriers.execute(turn);
+            };
+            AtomicInteger policies = new AtomicInteger();
+            AtomicInteger effects = new AtomicInteger();
+            CountDownLatch completed = new CountDownLatch(2);
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, replaying, 2,
+                    n -> {
+                        policies.incrementAndGet();
+                        return CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP);
+                    },
+                    resolution -> {
+                        effects.incrementAndGet();
+                        completed.countDown();
+                    });
+            // Reuse the identical immutable object to ensure continuation
+            // identity comes from the turn generation, not notice identity.
+            var sameNotice = notice(supervisor, group);
+            process.accept(sameNotice);
+            process.accept(sameNotice);
+            assertTrue(completed.await(5, TimeUnit.SECONDS),
+                    "valid CONTROL turns were not both committed");
+            carriers.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            assertEquals(2, policies.get(),
+                    "executor replay started the same logical policy twice");
+            assertEquals(2, effects.get(),
+                    "executor replay duplicated an authoritative side effect");
+            assertEquals(2, process.resolved());
+            assertEquals(0, process.queued());
+            assertEquals(0, process.undelivered());
+            assertFalse(process.callbackActive());
+            process.close();
+        }
+    }
+
     @Test
     void closeWaitsForAdmittedLifecycleDecisionToComplete() throws Exception {
         try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
