@@ -4643,11 +4643,19 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
-            cell.untrustedSafepoints++;
+            long safepoints = ++cell.untrustedSafepoints;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.FUEL,
                         "untrusted actor exhausted its execution fuel");
+            }
+            // Fuel is charged at EVERY safepoint, but reading nanoTime and the
+            // JVM thread CPU clock on every loop iteration is expensive.
+            // Check on entry and then every 64 safepoints. This is a bounded
+            // soft sampling interval, NOT a guarantee of asynchronous kill.
+            if (safepoints != 1
+                    && (safepoints & (SourceCooperationQuantum.LOOP_CHECK_INTERVAL - 1)) != 0) {
+                return;
             }
             long wallBudget = cell.policy.maxWallTime().toNanos();
             if (System.nanoTime() - cell.turnStartedWallNanos > wallBudget) {
