@@ -140,6 +140,8 @@ final class SourceCancellationExecutionTest {
                     stdio.println("armed");
                     const unused = await (nb readch gate);
                     stdio.println("INVALID-after-await");
+                  } catch (cancelled) {
+                    stdio.println("INVALID-catch");
                   } finally {
                     val Channel<int> ready = Channel.new<int>(1);
                     writech ready, 33;
