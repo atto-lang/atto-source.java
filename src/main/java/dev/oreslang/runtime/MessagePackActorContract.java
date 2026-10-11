@@ -20,6 +20,9 @@ import java.util.Objects;
  */
 public final class MessagePackActorContract {
     public static final int MAX_VARIANTS = 64;
+    // Native/Java actor contract descriptor parity. The underlying generic
+    // MessagePack codec may accept larger shapes; actor mail cannot.
+    public static final int MAX_DESCRIPTOR_BYTES = 4096;
 
     public record Alternative(int variantId, Shape shape) {
         public Alternative {
@@ -52,8 +55,13 @@ public final class MessagePackActorContract {
                     || schema.chars().anyMatch(c -> c < 33 || c > 126)) {
                 throw new IllegalArgumentException("invalid closed actor message schema ID");
             }
-            // Validate descriptor depth/node rules at contract registration,
-            // rather than allocating or traversing potentially invalid input.
+            // Both Java and native actor mail pin the same bounded canonical
+            // descriptor. Reject oversized/overdeep declarations here, before
+            // accepting a compiled contract or any message payload.
+            int length = descriptorLength(alternative.shape(), 0);
+            if (length > MAX_DESCRIPTOR_BYTES) {
+                throw new IllegalArgumentException("actor shape descriptor exceeds native limit");
+            }
             MessagePackCollectionCodec.shapeDigest(alternative.shape());
             Entry entry = new Entry(alternative.variantId(), schema, alternative.shape());
             if (ids.putIfAbsent(alternative.variantId(), entry) != null
@@ -64,6 +72,31 @@ public final class MessagePackActorContract {
         this.domain = domain;
         this.byId = Map.copyOf(ids);
         this.bySchema = Map.copyOf(schemas);
+    }
+
+    private static int descriptorLength(Shape shape, int depth) {
+        if (depth > MessagePackCollectionCodec.MAX_DEPTH) {
+            throw new IllegalArgumentException("actor shape descriptor exceeds depth limit");
+        }
+        if (shape instanceof MessagePackCollectionCodec.Scalar) return 1;
+        MessagePackCollectionCodec.Sequence seq = (MessagePackCollectionCodec.Sequence) shape;
+        int length = switch (seq.kind()) {
+            case TUPLE, ARRAY, LIST -> 3; // T[...], A[...] or L[...]
+            case FIXED_ARRAY, FIXED_LIST -> 4; // FA[...] or FL[...]
+        };
+        if (seq.kind() == MessagePackCollectionCodec.SequenceKind.TUPLE
+                || seq.kind() == MessagePackCollectionCodec.SequenceKind.FIXED_ARRAY
+                || seq.kind() == MessagePackCollectionCodec.SequenceKind.FIXED_LIST) {
+            for (int i = 0; i < seq.slots().size(); ++i) {
+                length += descriptorLength(seq.slots().get(i), depth + 1);
+                if (i > 0) length++;
+                if (length > MAX_DESCRIPTOR_BYTES)
+                    throw new IllegalArgumentException("actor shape descriptor exceeds native limit");
+            }
+        } else {
+            length += descriptorLength(seq.element(), depth + 1);
+        }
+        return length;
     }
 
     public String domain() { return domain; }
