@@ -153,3 +153,24 @@ Outstanding gates: randomized multi-actor cancellation/borrow races; native
 AOT/hybrid and force-isolate revoker proof; LLVM executable parity; eventual
 source `defer`/`finally`/`recover` with native loans; merged exact-blob
 GitHub Actions; independent safety review. Keep stacked drafts unmerged.
+
+## Pre-stop producer wake order and native quota audit
+
+An owned source continuation can be queued between the global close admission
+fence and actor stop. `terminateTree` must first request cancellation of
+the source Futures (including never-entered tasks) and detach their obsolete
+await registrations, **then** awaken the CONTROL queue. Waking it before
+cancel admission could let a never-entered guest callback begin during
+shutdown. Shutdown-only source continuations still execute under the original
+actor's single-writer lease.
+
+The actor FFM regression now reads an outstanding native loan from inside
+both cleanup continuation turns, proving the native region remains live and
+owner-confined while `finally`-equivalent cleanup awaits. After logical actor
+termination, `ActorRuntime.close()` must retain the native loan's physical
+FFM arena and its aggregate private-memory charge until a separate producer
+closes the loan. At no point is the retired native loan dereferenceable by a
+host/cross-actor caller.
+
+These gates remain JVM-specific. Concurrent native arena reclamation and
+forced-isolation revocation require their own stress/native-image validation.

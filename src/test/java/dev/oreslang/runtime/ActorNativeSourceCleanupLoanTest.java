@@ -61,6 +61,9 @@ final class ActorNativeSourceCleanupLoanTest {
                                         assertTrue(cancelled);
                                         assertInstanceOf(OresScheduler.TaskCancelledException.class,
                                                 resumed.failure());
+                                        assertFalse(arena.closed());
+                                        assertEquals(2026L, hold.read(),
+                                                "cancellation cleanup still owns actor-confined FFM data");
                                         cleaning = true;
                                         cleanupEntered.countDown();
                                         return OresScheduler.await(cleanup);
@@ -68,6 +71,9 @@ final class ActorNativeSourceCleanupLoanTest {
                                     assertEquals(3, phase);
                                     assertTrue(cleaning);
                                     assertNull(resumed.failure());
+                                    assertFalse(arena.closed(),
+                                            "FFM arena cannot retire inside its cleanup continuation");
+                                    assertEquals(2026L, hold.read());
                                     cleaning = false;
                                     return OresScheduler.done(1);
                                 }
@@ -101,6 +107,15 @@ final class ActorNativeSourceCleanupLoanTest {
             assertEquals(1, region.get().activeLoans());
             assertEquals(8L, runtime.privateMemoryBytes(),
                     "pinned native bytes cannot be refunded at logical actor stop");
+            // Runtime-wide close retires actor dispatch and shared storage but
+            // must not pretend a foreign host loan has released its native
+            // arena or erase the retained private quota.
+            assertDoesNotThrow(runtime::close);
+            assertFalse(region.get().physicallyClosed());
+            assertEquals(8L, runtime.privateMemoryBytes(),
+                    "global close must preserve physical native-loan accounting");
+            assertThrows(IllegalStateException.class, loan.get()::read,
+                    "a retired actor's loan must not be dereferenceable by the host");
 
             loan.get().close();
             loan.get().close();

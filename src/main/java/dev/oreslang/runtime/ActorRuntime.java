@@ -6903,14 +6903,16 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            // An admitted source resume may be queued after closed=true and
-            // before stop() enables cleanup admission. Its first schedule()
-            // was correctly refused; the stop transition must awaken it.
-            if (queuedOwnedCleanup) schedule();
-
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
+            // Cancellation must be admitted before waking queued source
+            // commands: otherwise a never-entered guest task could run after
+            // stop() but before its Future receives the cancellation signal.
+            // This also detaches obsolete await registrations before dispatch.
             for (OresFuture<?> future : pending) future.cancel(false);
+
+            // A source resume queued after closed=true but before stop()
+            // could not schedule its own carrier. Wake it only after the
+            // cancellation requests above have settled admission.
+            if (queuedOwnedCleanup) schedule();
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
