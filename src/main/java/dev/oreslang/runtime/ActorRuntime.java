@@ -3733,12 +3733,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
             // The runtime-owned immutable image is scheduling authority.
             // Reject custom executors that disagree about serial admission.
-            boolean serial = SourceActorSchedulingPolicy.isSerialActor(
-                    codeImage.program(), codeActorType);
-            if (codeExecutor.isSerialActor(codeActorType) != serial) {
-                throw new SecurityException(
-                        "source actor executor scheduling metadata disagrees with linked code image");
-            }
+            SourceActorSchedulingPolicy.verifyClaim(
+                    codeImage.program(), codeActorType,
+                    codeExecutor.isSerialActor(codeActorType));
         } else {
             Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         }
