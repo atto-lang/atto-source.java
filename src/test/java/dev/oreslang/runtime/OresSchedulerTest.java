@@ -432,6 +432,47 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void cancellingQueuedTaskCannotPublishBeforeItsCarrierLeavesTheVm() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger contextEntries = new AtomicInteger();
+        AtomicInteger guestRuns = new AtomicInteger();
+        carrier.execute(() -> {
+            entered.countDown();
+            try { release.await(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "queued-cancel-context-fence", 1, carrier,
+                turn -> {
+                    contextEntries.incrementAndGet();
+                    turn.run();
+                });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            OresFuture<Integer> task = scheduler.start(input -> {
+                guestRuns.incrementAndGet();
+                return OresScheduler.done(42);
+            });
+            assertTrue(task.cancel(false));
+            assertFalse(task.isDone(),
+                    "QUEUED cancellation must retain the outstanding context admission");
+            assertEquals(0, contextEntries.get());
+            release.countDown();
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertEquals(1, contextEntries.get());
+            assertEquals(0, guestRuns.get());
+        } finally {
+            release.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void closingSchedulerDetachesSuspendedWaiterWithoutCancellingSharedFuture() throws Exception {
         OresFuture<Integer> shared = new OresFuture<>();
         OresScheduler scheduler = new OresScheduler(1);

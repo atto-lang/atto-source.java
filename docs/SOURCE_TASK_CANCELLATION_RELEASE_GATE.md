@@ -96,3 +96,14 @@ is a failure boundary, not proof that a stuck guest finalizer can always run.
 Run the newly-added scheduler cancellation and ActorEndCleanupTest tests, then
 the entire JVM suite against the exact source head. Do not merge this draft on
 focused test success alone.
+
+## Physical queued-carrier cancellation fence (October 11, 2026)
+
+Cancelling a QUEUED task used to settle the terminal Future even if its
+already-submitted executor dispatch had not entered the owning VM context.
+`outstandingCarrierTurns` reserves dispatch admission before the QUEUED
+transition and decrements only after the carrier exits or submission fails.
+Terminal delivery requires zero outstanding reservations. A deterministic
+blocked-carrier test verifies cancellation does not allow premature context
+retirement or execute cancelled guest code. Suspended lexical-cleanup timeout,
+physical ownership and native-image remain independent release gates.

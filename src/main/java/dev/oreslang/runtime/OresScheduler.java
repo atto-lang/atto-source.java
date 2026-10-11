@@ -510,6 +510,8 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        // Reserved before QUEUED publication; released after VM carrier exit.
+        private final AtomicInteger outstandingCarrierTurns = new AtomicInteger();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -610,23 +612,39 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void scheduleInitial() {
+            outstandingCarrierTurns.incrementAndGet();
             if (!phase.compareAndSet(NEW, QUEUED)) {
+                releaseCarrierReservation();
                 throw new IllegalStateException("scheduler task was already started");
             }
             enqueueTurn();
         }
 
         private void enqueueTurn() {
+            // Every submission owns one reservation, including a cancelled
+            // QUEUED turn which never enters runTurn(). Atomic release handles
+            // inline executors and rejection without double retirement.
+            AtomicBoolean released = new AtomicBoolean();
+            Runnable release = () -> {
+                if (released.compareAndSet(false, true)) releaseCarrierReservation();
+            };
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, () -> afterCarrierTurn(release), this::failTerminal);
             } catch (RuntimeException | Error rejected) {
+                release.run();
                 failTerminal(rejected);
                 throw rejected;
             }
+        }
+
+        private void releaseCarrierReservation() {
+            if (outstandingCarrierTurns.decrementAndGet() < 0)
+                throw new IllegalStateException("scheduler carrier reservation underflow");
+            publishTerminalIfReady();
         }
 
         private void runTurn() {
@@ -704,9 +722,9 @@ public final class OresScheduler implements AutoCloseable {
          * task Future earlier can let a host close its Polyglot Context while
          * this carrier is still executing guest continuation code.
          */
-        private void afterCarrierTurn() {
+        private void afterCarrierTurn(Runnable release) {
             executing.set(false);
-            publishTerminalIfReady();
+            release.run();
             scheduleReadyResume();
         }
 
@@ -821,12 +839,17 @@ public final class OresScheduler implements AutoCloseable {
         private void scheduleReadyResume() {
             if (executing.get()) return;
             if (pendingResume.get() == null) return;
-            if (!phase.compareAndSet(WAITING, QUEUED)) return;
-
+            // Reserve before WAITING->QUEUED so concurrent cancellation sees
+            // the still-pending physical carrier rather than a drained task.
+            outstandingCarrierTurns.incrementAndGet();
+            if (!phase.compareAndSet(WAITING, QUEUED)) {
+                releaseCarrierReservation();
+                return;
+            }
             try {
                 enqueueTurn();
             } catch (RejectedExecutionException rejected) {
-                // enqueueTurn already failed the task.
+                // enqueueTurn already failed the task and released its lease.
             }
         }
 
@@ -871,7 +894,8 @@ public final class OresScheduler implements AutoCloseable {
             // A terminal *phase* is not proof that the carrier has left the
             // entered guest context. The task remains registered until its
             // completion is published outside that execution lease.
-            if (phase.get() != TERMINAL || executing.get()) return;
+            if (phase.get() != TERMINAL || executing.get()
+                    || outstandingCarrierTurns.get() != 0) return;
             if (completion.isDone()) {
                 removeFromTasks();
                 return;
