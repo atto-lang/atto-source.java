@@ -194,7 +194,17 @@ public final class SupervisorProcess implements AutoCloseable {
         } catch (Throwable sinkFailure) {
             synchronized (this) {
                 committingDecision = false;
+                // A reentrant close() must complete even when the sink throws
+                // after requesting shutdown. The host effect's commit status
+                // is unknown: account for the notice as undelivered, preserve
+                // the failure, and never retry the ambiguous side effect.
                 failLocked(sinkFailure);
+                if (closeAfterCommit) {
+                    state = State.CLOSED;
+                    mailbox.clear();
+                    callbackActive = false;
+                    closeAfterCommit = false;
+                }
             }
             return;
         }
