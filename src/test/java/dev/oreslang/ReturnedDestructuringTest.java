@@ -559,7 +559,7 @@ final class ReturnedDestructuringTest {
                 define class Vector<T> as
                   let mut Array<T> items = new Array<T>();
 
-                  pub add(T value): void {
+                  pub add(mut self)(T value): void {
                     self.items.add(value);
                     return;
                   }
