@@ -121,11 +121,23 @@ final class ActorSourceCleanupDrainTest {
             ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
             actor.send("run");
             assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
-            actor.stop();
+            // Host stop() is synchronous. Issue it from another host thread
+            // so this test can release the intentionally suspended cleanup.
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = Thread.ofPlatform().start(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
             assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS));
             assertFalse(actor.get_done().isDone());
 
             gates.cleanupAwait.completeFromRuntime(null);
+            stopper.join(3000);
+            assertFalse(stopper.isAlive(), "host stop should finish after source cleanup");
+            assertNull(stopFailure.get(), "host stop must observe drained cleanup");
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(actor.failure().isEmpty());
             assertTrue(gates.task.get().isCancelled());
