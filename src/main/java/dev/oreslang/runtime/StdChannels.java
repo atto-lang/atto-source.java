@@ -217,9 +217,9 @@ public final class StdChannels implements AutoCloseable {
 
     private void pumpInput() {
         try {
-            BufferedReader reader = context.input();
+            InputLineReader reader = new InputLineReader(context.input());
             while (!closed.get()) {
-                String line = readBoundedLine(reader);
+                String line = reader.readLine();
                 if (line == null) {
                     input.finishFromContext(null);
                     return;
@@ -249,20 +249,40 @@ public final class StdChannels implements AutoCloseable {
         }
     }
 
-    private static String readBoundedLine(BufferedReader reader) throws IOException {
-        StringBuilder value = new StringBuilder();
-        for (;;) {
-            int ch = reader.read();
-            if (ch < 0) return value.isEmpty() ? null : boundedInputLine(value.toString());
-            if (ch == '\n') {
-                int length = value.length();
-                if (length > 0 && value.charAt(length - 1) == '\r') value.setLength(length - 1);
-                return boundedInputLine(value.toString());
+    /**
+     * Incremental, memory-bounded equivalent of BufferedReader.readLine().
+     * Bare CR, LF and CRLF terminate lines. CRLF's LF is consumed on the next
+     * demanded read, avoiding a speculative blocking read after a lone CR.
+     * Do not use BufferedReader.readLine(): it can allocate an unbounded
+     * String before our byte-length admission check runs.
+     */
+    private static final class InputLineReader {
+        private final BufferedReader reader;
+        private boolean skipLf;
+
+        private InputLineReader(BufferedReader reader) {
+            this.reader = reader;
+        }
+
+        private String readLine() throws IOException {
+            StringBuilder value = new StringBuilder();
+            for (;;) {
+                int ch = reader.read();
+                if (ch < 0) return value.isEmpty() ? null : boundedInputLine(value.toString());
+                if (skipLf) {
+                    skipLf = false;
+                    if (ch == '\n') continue;
+                }
+                if (ch == '\n') return boundedInputLine(value.toString());
+                if (ch == '\r') {
+                    skipLf = true;
+                    return boundedInputLine(value.toString());
+                }
+                if (value.length() >= MAX_LINE_CHARS) {
+                    throw new IOException("stdin line exceeds " + MAX_LINE_CHARS + " UTF-16 code units");
+                }
+                value.append((char) ch);
             }
-            if (value.length() >= MAX_LINE_CHARS) {
-                throw new IOException("stdin line exceeds " + MAX_LINE_CHARS + " UTF-16 code units");
-            }
-            value.append((char) ch);
         }
     }
 
