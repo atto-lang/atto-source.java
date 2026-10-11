@@ -122,3 +122,40 @@ pools before an owner cleanup drain; force-isolated revocation, untrusted
 cleanup time budgets, source-level nested await/defer/finally and
 `recover` conformance, stress, Graal native-image and LLVM are still
 required. The integration is not a release certification.
+
+
+## Runtime-global close hardening (draft, not yet green)
+
+The actor-owned cleanup lane cannot make progress if `ActorRuntime.close()`
+interrupts/shuts down dispatcher carriers before the pending source finalizer
+has resumed. The global-close draft now:
+
+- seals runtime user admissions and stops each actor, without `shutdownNow()`
+  before lexical cleanup;
+- continues already-admitted source-task CONTROL commands through both
+  admission checks and the actor's physical dispatch/reschedule path, including
+  the narrow `schedulerSafepoint()` exemption for `sourceCleanupTurn`;
+- rejects new `startActorTask` admissions after runtime close;
+- waits for actor finalization before graceful dispatcher shutdown;
+- leaves shared resources and still-owned actor execution contexts intact on
+  a drain timeout, reporting an explicit failed close instead of claiming that
+  cleanup completed.
+
+**Executed regression:** the first exact-source private GraalVM 25 run
+[38177811733](https://github.com/zed-pkg-test/java-app/actions/runs/38177811733)
+verified all 388 source blobs and compiled Java. The new
+`runtimeCloseKeepsSourceCleanupControlLaneAlive` test failed (1 failure in 67
+focused tests): the *second*, under-lock CONTROL admission check still vetoed
+`closed` runtimes. This exposed a real missed check; it was corrected in
+commit `67eefef745605372adb3a9edd1fc885a4ffedebe`.
+**The revised source head is not yet validated by a new funded run.** The
+previous passing full Maven run was for an earlier exact head and cannot be
+transferred to this change.
+
+**Remaining hazards:** timeout leaves owned carriers and cleanup resources
+pinned for escalation rather than force-interrupting untrusted work; close
+must not be mistaken for a hard-kill primitive. Exhaustive concurrent close,
+source task creation/settlement races, partial shutdown retry, nested source
+`await`/`finally`/`defer`, source-level output authority during cleanup,
+Graal Native Image, and LLVM guest continuation parity remain release gates.
+Keep all stacked branches draft.
