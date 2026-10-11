@@ -61,7 +61,12 @@ final class SourceActorCodeExecutorTest {
     void sourceActorStateIsCreatedOnActorDomainAndReceivesTypedEnvelope()
             throws Exception {
         Ast.Program program =
-                Parser.parse("pub routine main(): void { return; }");
+                Parser.parse("""
+                        define actor Worker as
+                            receive(ActorMail<String> mail): void { return; }
+                        end
+                        pub routine main(): void { return; }
+                        """);
 
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
@@ -97,7 +102,12 @@ final class SourceActorCodeExecutorTest {
     void sourceActorReadyFailsWhenInitializedStateClaimsWrongOwner()
             throws Exception {
         Ast.Program program =
-                Parser.parse("pub routine main(): void { return; }");
+                Parser.parse("""
+                        define actor Worker as
+                            receive(ActorMail<String> mail): void { return; }
+                        end
+                        pub routine main(): void { return; }
+                        """);
 
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
