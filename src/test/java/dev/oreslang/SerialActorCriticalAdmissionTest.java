@@ -82,7 +82,7 @@ final class SerialActorCriticalAdmissionTest {
     @Test void serialActorsWithLegacyFieldsMustMigrateToSingleStateAggregate() {
         var legacy = Parser.parse("""
             define serial actor Legacy as
-                let count: int = 0;
+                let int count = 0;
                 receive(ActorMail<String> mail): void { return; }
             end
             """);
@@ -91,7 +91,7 @@ final class SerialActorCriticalAdmissionTest {
         // Legacy scalar fields remain supported for non-serial migration.
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
             define actor Legacy as
-                let count: int = 0;
+                let int count = 0;
                 receive(ActorMail<String> mail): void { return; }
             end
             """)));
