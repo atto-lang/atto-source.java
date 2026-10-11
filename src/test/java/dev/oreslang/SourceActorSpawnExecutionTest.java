@@ -336,7 +336,11 @@ final class SourceActorSpawnExecutionTest {
         String source = """
                 define actor ListWorker as
                   receive(ActorMail<List<string>> mail): void {
-                    self.send(mail.value[0]);
+                    if mail.value[0] == "from-list"; do
+                      self.send("list-ok");
+                    else
+                      self.send("list-wrong");
+                    fi
                     self.end();
                     return;
                   }
@@ -344,7 +348,11 @@ final class SourceActorSpawnExecutionTest {
 
                 define isoactor TupleWorker as
                   receive(ActorMail<Tuple[bool, string]> mail): void {
-                    self.send(mail.value[1]);
+                    if mail.value[1] == "from-tuple"; do
+                      self.send("tuple-ok");
+                    else
+                      self.send("tuple-wrong");
+                    fi
                     self.end();
                     return;
                   }
@@ -369,7 +377,7 @@ final class SourceActorSpawnExecutionTest {
                   return;
                 }
                 """;
-        assertEquals("from-list|from-tuple",
+        assertEquals("list-ok|tuple-ok",
                 run(source, "source-actor-msgpack-v2-collections.ores"));
     }
 
