@@ -121,6 +121,35 @@ final class TaggedMessageContractTest {
     }
 
     @Test
+    void nominalCaseRejectsTagOrOwnerForgeryEvenWhenShapeDigestIsValid() {
+        var registry = TaggedMessageContracts.verify(Parser.parse(DECLARATIONS));
+        var codec = new TaggedMessageCodec(registry.requireDomain("Messages"));
+        byte[] authentic = codec.encode(
+                new TaggedMessageCodec.TaggedValue("Status", "Message2", 2, "hello"));
+        int ownerStart = -1;
+        byte[] owner = "Status".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        for (int i = 1; i + owner.length < authentic.length; i++) {
+            if ((authentic[i - 1] & 255) != 0xa6) continue;
+            boolean matches = true;
+            for (int j = 0; j < owner.length; j++) {
+                if (authentic[i + j] != owner[j]) { matches = false; break; }
+            }
+            if (matches) { ownerStart = i; break; }
+        }
+        assertTrue(ownerStart > 0);
+        byte[] forgedOwner = authentic.clone();
+        forgedOwner[ownerStart] = 'T'; // Still valid UTF-8 and shape S
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(forgedOwner));
+
+        byte[] forgedTag = authentic.clone();
+        assertEquals(2, forgedTag[ownerStart + owner.length]);
+        forgedTag[ownerStart + owner.length] = 3; // Still a valid shape I
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(forgedTag));
+        assertEquals(new TaggedMessageCodec.TaggedValue("Status", "Message2", 2, "hello"),
+                     codec.decode(authentic));
+    }
+
+    @Test
     void typecheckerAcceptsCheckedVariantConstructionAndRejectsOtherDomainCases() {
         var valid = DECLARATIONS + """
                 define actor Worker as
