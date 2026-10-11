@@ -17,6 +17,9 @@ public final class NativeHttp implements AutoCloseable {
     private final OresContext context;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
+    // Rejected aborts retain their socket and actor reservations until an
+    // observed physical I/O-carrier exit authorizes a synchronous close.
+    private final Set<State> rejectedAborts = ConcurrentHashMap.newKeySet();
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
@@ -247,7 +250,18 @@ public final class NativeHttp implements AutoCloseable {
             return drained;
         }
         private synchronized void completeDrain() {
+            notifyAll(); // HTTP shutdown also waits for actor-owned exchanges.
             if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
+        }
+
+        private synchronized boolean awaitActiveDrain(long deadlineNanos)
+                throws InterruptedException {
+            while (!active.isEmpty()) {
+                long left = deadlineNanos - System.nanoTime();
+                if (left <= 0L) return false;
+                TimeUnit.NANOSECONDS.timedWait(this, left);
+            }
+            return true;
         }
         private synchronized void stopAccepting() {
             stopped = true;
@@ -298,11 +312,40 @@ public final class NativeHttp implements AutoCloseable {
             if (actor != null) actor.cancel();
             if (alreadyClosed) { release(); return; }
             try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            catch (RejectedExecutionException rejected) {
+                // A rejected abort cannot be treated as transport closure.
+                // In particular a queued/write operation may still own the
+                // socket. The root close barrier will reclaim it only after
+                // the *entire* I/O executor has physically exited.
+                rejectedAborts.add(this);
+            }
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
+        }
+        void retireRejectedAbortAfterIoExit() {
+            if (!io.isTerminated()) {
+                throw new IllegalStateException(
+                        "rejected HTTP abort still has unretired I/O carriers");
+            }
+            synchronized (this) {
+                if (transportClosed) {
+                    rejectedAborts.remove(this);
+                    release();
+                    return;
+                }
+            }
+            // This fallback is only reachable after the physical carrier-exit
+            // barrier; it never races a response write on the old executor.
+            try {
+                raw.close();
+            } catch (RuntimeException failure) {
+                throw new IllegalStateException("rejected HTTP socket abort failed", failure);
+            }
+            synchronized (this) { transportClosed = true; }
+            rejectedAborts.remove(this);
+            release();
         }
         void release() {
             // Admission includes the actor lifetime, even after the response ends.
@@ -597,18 +640,55 @@ public final class NativeHttp implements AutoCloseable {
                     closing = retiringServers;
                 }
 
-                // Stop listeners and enqueue all owned exchange aborts BEFORE
-                // sealing the I/O executor. A terminal response Future is not
-                // proof that the exchange's physical socket carrier has exited.
+                // Stop listeners and request owned exchange aborts while the
+                // I/O executor still accepts their transport-close work.
                 for (Server server : closing) server.close();
-                io.shutdown();
                 timers.shutdown();
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                 try {
-                    if (!io.awaitTermination(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
-                                "HTTP I/O carriers still own pending operations after close timeout");
+                    if (io.isShutdown()) {
+                        // Recovery for a rejected abort after an unexpected
+                        // executor stop: wait for physical exit before closing
+                        // its socket directly. No guest/actor carrier executes
+                        // an emergency synchronous socket operation.
+                        long left = deadline - System.nanoTime();
+                        if (left <= 0 || !io.awaitTermination(left, TimeUnit.NANOSECONDS)) {
+                            throw new IllegalStateException(
+                                    "HTTP I/O carriers still own rejected aborts after close timeout");
+                        }
+                        for (State state : List.copyOf(rejectedAborts)) {
+                            state.retireRejectedAbortAfterIoExit();
+                        }
                     }
-                    if (!timers.awaitTermination(5, TimeUnit.SECONDS)) {
+
+                    // An active reservation can outlive HTTP transport work
+                    // while its actor is still finalizing. Keep the I/O
+                    // executor open so late actor callbacks can finish
+                    // already-authorized exchange teardown.
+                    for (Server server : closing) {
+                        if (!server.awaitActiveDrain(deadline)) {
+                            throw new IllegalStateException(
+                                    "HTTP close still owns " + server.active.size()
+                                            + " active exchange/actor reservation(s)");
+                        }
+                    }
+
+                    if (!rejectedAborts.isEmpty()) {
+                        throw new IllegalStateException(
+                                "HTTP close still owns rejected socket aborts");
+                    }
+
+                    // Only after every exchange/actor reservation has drained
+                    // may the I/O executor stop accepting cleanup work.
+                    io.shutdown();
+                    long left = deadline - System.nanoTime();
+                    if (left <= 0 || !io.awaitTermination(left, TimeUnit.NANOSECONDS)) {
+                        throw new IllegalStateException(
+                                "HTTP I/O carriers did not physically exit during close");
+                    }
+                    left = deadline - System.nanoTime();
+                    if (left <= 0 || !timers.awaitTermination(left, TimeUnit.NANOSECONDS)) {
                         throw new IllegalStateException(
                                 "HTTP timer carrier did not physically exit during close");
                     }
@@ -618,16 +698,6 @@ public final class NativeHttp implements AutoCloseable {
                             "interrupted before HTTP physical carrier exit", interrupted);
                 }
 
-                // Socket exit alone is insufficient: an actor-owned exchange
-                // retains its admission/transfer capability until actor.done.
-                // Keep the snapshot after timeout so later retries cannot
-                // mistake removed listeners for fully retired exchanges.
-                long outstanding = closing.stream().mapToLong(s -> s.active.size()).sum();
-                if (outstanding != 0) {
-                    throw new IllegalStateException(
-                            "HTTP close still owns " + outstanding
-                                    + " active exchange/actor reservation(s)");
-                }
                 if (!transfers.isEmpty()) {
                     throw new IllegalStateException(
                             "HTTP close still owns unclaimed transfer capabilities");
