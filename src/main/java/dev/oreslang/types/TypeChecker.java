@@ -1844,8 +1844,22 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
-            if (unary.operator().equals("&")) return new Borrow(operand, false);
-            if (unary.operator().equals("&mut")) return new Borrow(operand, true);
+            if (unary.operator().equals("&")) {
+                // Reborrow an existing loan; borrowing the wrapper must not
+                // create Borrow<Borrow<T>> or erase the source lifetime.
+                if (operand instanceof Borrow existing)
+                    return new Borrow(existing.target(), false);
+                return new Borrow(operand, false);
+            }
+            if (unary.operator().equals("&mut")) {
+                if (operand instanceof Borrow existing) {
+                    // Shared loans cannot be escalated into exclusive loans.
+                    if (!existing.mutable())
+                        throw new IllegalArgumentException("cannot mutably reborrow a shared borrow");
+                    return new Borrow(existing.target(), true);
+                }
+                return new Borrow(operand, true);
+            }
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;

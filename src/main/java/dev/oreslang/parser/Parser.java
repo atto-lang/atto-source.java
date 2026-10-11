@@ -1513,6 +1513,13 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        // Keep these distinct from ordinary calls/identifiers. Exception
+        // effect checking, typed recovery and actor CONTROL delivery have
+        // not yet been lowered in the Java/Graal production compiler.
+        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
+            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
+                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
