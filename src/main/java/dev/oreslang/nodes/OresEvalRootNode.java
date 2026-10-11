@@ -4291,6 +4291,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target instanceof Ast.MemberExpr member) {
                 Object receiver = eval(member.receiver(), env);
+                if (receiver instanceof StateAccessView view) {
+                    return view.set(member.member(), value);
+                }
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
                             object.owner.findField(
@@ -5437,6 +5440,64 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.MemberExpr sealed
+                    && sealed.member().equals("handle_state")
+                    && sealed.receiver() instanceof Ast.NameExpr self
+                    && self.name().equals("self")) {
+                Object owner = env.lookup("self");
+                if (!(owner instanceof OresObject actor)
+                        || actor.klass.actorKind() == Ast.ActorKind.NONE
+                        || actor.nativeState == null) {
+                    throw new IllegalStateException(
+                            "sealed self.handle_state requires an initialized actor native arena");
+                }
+                if (call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)
+                        || lambda.parameters().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "sealed self.handle_state requires one inline callback");
+                }
+                // The compiler admits only a non-escaping, non-suspending
+                // callback. Invoke it before invalidating the borrowed view;
+                // never return the view, native slots or segment to guest code.
+                return invokableInvocation(ignored -> {
+                    SourceScalarState state = actor.nativeState;
+                    state.requireOwner();
+                    CriticalGate gate = actor.criticalGate;
+                    CriticalGate.Ticket ticket = gate.heldByCurrentLogicalDomain()
+                            ? null : gate.newTicket();
+                    if (ticket != null) {
+                        try { ticket.enterSync(); }
+                        catch (RuntimeException | Error failure) {
+                            ticket.close();
+                            throw failure;
+                        }
+                    }
+                    StateAccessView view = null;
+                    try {
+                        view = state.begin();
+                        Object callback = eval(lambda, env);
+                        if (!(callback instanceof Invokable invocation)) {
+                            throw new IllegalStateException(
+                                    "sealed state callback was not lowered as callable");
+                        }
+                        Object result = invoke(invokableInvocation(invocation, List.of(view)));
+                        if (result instanceof StateAccessView
+                                || result instanceof Map<?, ?>
+                                || result instanceof OresObject) {
+                            throw new IllegalStateException(
+                                    "actor state callback cannot return an escaping reference");
+                        }
+                        return result;
+                    } finally {
+                        try {
+                            if (view != null) state.finish(view);
+                        } finally {
+                            if (ticket != null) ticket.close();
+                        }
+                    }
+                }, List.of());
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -5825,6 +5886,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
+                    if (receiver instanceof StateAccessView view) {
+                        return view.set(target.member(), value);
+                    }
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
@@ -6160,6 +6224,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof StateAccessView view) return view.get(name);
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
