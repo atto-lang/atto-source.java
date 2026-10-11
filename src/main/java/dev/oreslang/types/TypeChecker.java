@@ -4642,7 +4642,7 @@ public final class TypeChecker {
         if (!matchProvablyExhaustive(arms, subject, generics, self)) {
             throw new IllegalArgumentException(
                     "non-exhaustive match for " + subject
-                            + "; add an unguarded 'on _ -> { ... }' arm or cover every provable case");
+                            + "; add a 'default { ... }' arm or cover every provable case");
         }
     }
 
