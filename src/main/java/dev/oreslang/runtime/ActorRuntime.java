@@ -1257,6 +1257,11 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorContext<Object> context) throws Exception;
 
         /** Fail closed to root supervision until source hooks are lowered. */
+        /** Source compiler declares hooks or a policy before nested spawn. */
+        default boolean supportsChildSupervision(String actorTypeName) {
+            return false;
+        }
+
         default SupervisionDecision superviseChild(
                 String actorTypeName,
                 ActorOwnedGuestState state,
@@ -3527,6 +3532,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<?> parent = currentActor.get();
+        if (parent != null && parent.codeExecutor != null
+                && !parent.codeExecutor.supportsChildSupervision(parent.codeActorType)) {
+            throw new IllegalStateException(
+                    "source actor '" + parent.codeActorType
+                            + "' cannot supervise a child without exhaustive "
+                            + "on_throw/on_raise/on_panic hooks or supervision_policy()");
+        }
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
