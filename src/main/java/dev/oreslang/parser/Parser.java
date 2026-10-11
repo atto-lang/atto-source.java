@@ -501,8 +501,16 @@ public final class Parser {
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
             }
+            if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                validateClassFieldModifiers(mods);
+                advance();
+                fields.add(parseFinalField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
+            boolean explicitMethod = !explicitFnc && isContextualIdentifier("method") && checkNext(IDENT);
+            if (explicitMethod) advance();
             if (explicitFnc) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
@@ -511,12 +519,13 @@ public final class Parser {
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
+                if (explicitMethod) {
+                    throw error(previous(), "static class functions must use 'static fnc', not 'static method'");
+                }
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-            } else if (explicitFnc) {
-                throw error(previous(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -691,12 +700,23 @@ public final class Parser {
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
+            if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                validateActorFieldModifiers(mods);
+                advance();
+                fields.add(parseFinalField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
+            boolean explicitMethod = !explicitFnc && isContextualIdentifier("method") && checkNext(IDENT);
+            if (explicitMethod) advance();
             if (explicitFnc) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            if (mods.isStatic && explicitMethod) {
+                throw error(previous(), "static actor functions must use 'static fnc', not 'static method'");
+            }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
@@ -840,6 +860,13 @@ public final class Parser {
         consumeExpressionStatementTerminator(initializer, "field declaration should end with ';'");
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+    }
+
+    /** Contextual 'final name: Type' creates a nonmutable, single-assignment field. */
+    private Ast.FieldDecl parseFinalField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        Ast.FieldDecl field = parseColonField(annotations, visibility);
+        return new Ast.FieldDecl(field.name(), field.visibility(), Ast.BindingKind.LET,
+                field.type(), field.annotations(), field.initializer(), false);
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
