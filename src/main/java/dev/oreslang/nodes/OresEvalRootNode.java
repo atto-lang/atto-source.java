@@ -440,31 +440,45 @@ public final class OresEvalRootNode extends RootNode {
                                 + " does not match declaration kind " + expectedKind);
             }
 
-            // The compiler currently stores a source-level state schema
-            // as a synthetic AST field. It MUST NOT become a normal mutable
-            // OresObject field: doing so would bypass the critical state
-            // capability and generation-fenced actor memory contract.
-            // Until the sealed source-level state-runtime bridge is lowered,
-            // reject before allocating or publishing actor state / READY.
-            if (dev.oreslang.types.ActorStateContract.stateField(klass) != null) {
-                throw new UnsupportedOperationException(
-                        "sealed actor state requires runtime-owned critical handle_state "
-                        + "lowering; refusing ordinary field-backed state initialization");
-            }
-
             List<Ast.FieldDecl> classFields =
                     effectiveFields(klass, new LinkedHashSet<>());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
-                fields.put(field.name(), UNINITIALIZED_FIELD);
+                if (!dev.oreslang.types.ActorStateContract.isStateField(field)) {
+                    fields.put(field.name(), UNINITIALIZED_FIELD);
+                }
             }
             OresObject object = new OresObject(this, klass, fields);
+
+            // Actor-owned state lives outside OresObject.fields. No ordinary
+            // object member can expose or mutate the sealed state capability.
+            Ast.FieldDecl schemaField =
+                    dev.oreslang.types.ActorStateContract.stateField(klass);
+            if (schemaField != null) {
+                Ast.TypeRef schemaType =
+                        dev.oreslang.types.ActorStateContract.keySchema(schemaField);
+                LinkedHashMap<String, String> typedKeys = new LinkedHashMap<>();
+                schemaType.recordMembers().forEach(
+                        (name, type) -> typedKeys.put(name, type.name()));
+                LinkedHashMap<String, Object> initial = new LinkedHashMap<>();
+                if (schemaField.initializer() instanceof Ast.ObjectExpr defaults) {
+                    Env stateInit = new Env(null, false, klass, object);
+                    stateInit.define("self", object, Ast.BindingKind.VAL);
+                    for (Ast.ObjectField entry : defaults.fields()) {
+                        initial.put(entry.name(), eval(entry.value(), stateInit));
+                    }
+                }
+                object.actorState =
+                        new dev.oreslang.runtime.SealedActorState(
+                                actorContext.self().id(), typedKeys, initial);
+            }
 
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
             // context and before ready is allowed to settle.
             for (Ast.FieldDecl field : classFields) {
-                if (field.initializer() == null) continue;
+                if (dev.oreslang.types.ActorStateContract.isStateField(field)
+                        || field.initializer() == null) continue;
                 OwnedField owned =
                         findField(klass, field.name(), new LinkedHashSet<>());
                 Ast.ClassDecl fieldOwner =
@@ -3828,6 +3842,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.member().equals("handle_state")) {
+                continuation.accept(task, null, new UnsupportedOperationException(
+                        "critical handle_state on a suspendable task requires "
+                        + "generation-fenced continuation lowering"));
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -4155,6 +4176,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target instanceof Ast.MemberExpr member) {
                 Object receiver = eval(member.receiver(), env);
+                if (receiver instanceof dev.oreslang.runtime.SealedActorState.Access stateAccess) {
+                    stateAccess.write(member.member(), value);
+                    return value;
+                }
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
                             object.owner.findField(
@@ -5290,7 +5315,56 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        private Invocation criticalStateInvocation(
+                Ast.CallExpr call, Ast.MemberExpr callee, Env env) {
+            if (!(callee.receiver() instanceof Ast.NameExpr selfName)
+                    || !selfName.name().equals("self")
+                    || !(env.lookup("self") instanceof OresObject actor)
+                    || actor.actorState == null) {
+                throw new SecurityException(
+                        "sealed critical handle_state requires current actor self");
+            }
+            if (call.typeArgumentsPresent()
+                    || call.arguments().size() != 1
+                    || !(call.arguments().getFirst() instanceof Ast.LambdaExpr callback)
+                    || !callback.critical() || callback.nonLexical()
+                    || callback.parameters().size() != 1) {
+                throw new IllegalArgumentException(
+                        "critical handle_state expects exactly one inline lexical critical callback");
+            }
+            Set<Object> seen = java.util.Collections.newSetFromMap(
+                    new IdentityHashMap<>());
+            if (callback.expressionBody() != null
+                    && expressionContainsPotentialSuspension(callback.expressionBody(), seen)
+                    || callback.blockBody() != null
+                    && callback.blockBody().stream()
+                            .anyMatch(stmt -> statementContainsPotentialSuspension(stmt, seen))) {
+                throw new UnsupportedOperationException(
+                        "critical handle_state await/select requires resumable state-loan lowering");
+            }
+            return invokableInvocation(ignored -> actor.actorState.critical(access -> {
+                Env local = new Env(env);
+                local.define(callback.parameters().getFirst().name(), access, Ast.BindingKind.VAL);
+                try {
+                    if (callback.expressionBody() != null) {
+                        return eval(callback.expressionBody(), local);
+                    }
+                    executeBlock(callback.blockBody(), local);
+                    return null;
+                } catch (ReturnSignal returned) {
+                    return returned.value;
+                } catch (TailCallSignal tail) {
+                    // Remain in the critical region until nested sync call returns.
+                    return invoke(tail.invocation);
+                }
+            }), List.of());
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.MemberExpr stateCall
+                    && stateCall.member().equals("handle_state")) {
+                return criticalStateInvocation(call, stateCall, env);
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -5982,6 +6056,10 @@ public final class OresEvalRootNode extends RootNode {
                 return new ReadonlyRecordValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
+                if (lambda.critical()) {
+                    throw new SecurityException(
+                            "critical lambda may only execute inline within sealed handle_state");
+                }
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
@@ -6014,6 +6092,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof dev.oreslang.runtime.SealedActorState.Access stateAccess) {
+                return stateAccess.read(name);
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8665,6 +8746,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        private dev.oreslang.runtime.SealedActorState actorState;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
