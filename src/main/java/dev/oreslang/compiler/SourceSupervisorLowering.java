@@ -37,19 +37,23 @@ public final class SourceSupervisorLowering {
     public static final class StopOnlySupervisor {
         private final String sourceName;
         private final boolean explicitlyBoundFailure;
+        private final boolean targetsLogicalChild;
         private final boolean awaitsStopAcknowledgment;
 
         private StopOnlySupervisor(
                 String sourceName, boolean explicitlyBoundFailure,
-                boolean awaitsStopAcknowledgment) {
+                boolean targetsLogicalChild, boolean awaitsStopAcknowledgment) {
             this.sourceName = sourceName;
             this.explicitlyBoundFailure = explicitlyBoundFailure;
+            this.targetsLogicalChild = targetsLogicalChild;
             this.awaitsStopAcknowledgment = awaitsStopAcknowledgment;
         }
 
         public String sourceName() { return sourceName; }
         /** True only when the guest named its own typed Failure parameter. */
         public boolean explicitlyBoundFailure() { return explicitlyBoundFailure; }
+        /** True only for the restricted checked `self.stop(f.child)` form. */
+        public boolean targetsLogicalChild() { return targetsLogicalChild; }
         /** Whether `await self.stop(f)` waits for an authoritative host acknowledgment. */
         public boolean awaitsStopAcknowledgment() { return awaitsStopAcknowledgment; }
 
@@ -78,6 +82,10 @@ public final class SourceSupervisorLowering {
                 if (notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
                     throw new IllegalStateException(
                             "STOP-only on_panic cannot handle cancellation");
+                }
+                if (targetsLogicalChild && notice.logicalChild().isEmpty()) {
+                    throw new IllegalStateException(
+                            "STOP target requires verified logical child identity");
                 }
                 // This instruction was emitted from the checked guest AST.
                 // No guest callback runs on the failed child carrier.
@@ -212,16 +220,29 @@ public final class SourceSupervisorLowering {
             throw unsupported("await self.stop(...) requires async on_panic; synchronous hooks cannot await");
         }
         boolean explicitlyBoundFailure = !call.arguments().isEmpty();
-        if (explicitlyBoundFailure
-                && (!(call.arguments().getFirst() instanceof Ast.NameExpr failure)
-                    || !failure.name().equals(hook.parameters().getFirst().name()))) {
-            // The compiler never accepts arbitrary ActorRef objects, host IDs,
-            // nested Failure fields or a forged name as a lifecycle target.
-            throw unsupported("STOP target must be the exact typed Failure parameter");
+        boolean targetsLogicalChild = false;
+        if (explicitlyBoundFailure) {
+            Ast.Expr targetExpression = call.arguments().getFirst();
+            String parameter = hook.parameters().getFirst().name();
+            if (targetExpression instanceof Ast.NameExpr failure) {
+                if (!failure.name().equals(parameter)) {
+                    throw unsupported("STOP target must be the exact typed Failure parameter");
+                }
+            } else if (targetExpression instanceof Ast.MemberExpr field
+                    && field.receiver() instanceof Ast.NameExpr failure
+                    && failure.name().equals(parameter)
+                    && field.member().equals("child")) {
+                // One checked field projection only: no general guest getter,
+                // reflection or ActorRef expression is evaluated here.
+                targetsLogicalChild = true;
+            } else {
+                throw unsupported("STOP target must be the typed Failure or its exact child field");
+            }
         }
         // No dynamic interpretation, reflection, heap capture or ambient host
-        // authority. Both forms resolve to the *current* delivered failure.
-        return new StopOnlySupervisor(target.name(), explicitlyBoundFailure, awaitsAcknowledgment);
+        // authority. These closed plans name the current delivered failure.
+        return new StopOnlySupervisor(target.name(), explicitlyBoundFailure,
+                targetsLogicalChild, awaitsAcknowledgment);
     }
 
     private static void verifyStopResolution(
