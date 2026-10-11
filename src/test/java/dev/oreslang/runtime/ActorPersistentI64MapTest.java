@@ -32,12 +32,12 @@ final class ActorPersistentI64MapTest {
                             assertEquals(messages, view.getOrDefault(42L, -1L));
                             assertEquals(2, view.size());
                             assertThrows(IllegalStateException.class, escaped.get()::size);
-                            assertEquals(2, current.critical(nested -> {
+                            assertEquals(2, current.<Integer>critical(nested -> {
                                 assertThrows(IllegalStateException.class, view::size,
                                         "outer access must be fenced during nested callback");
                                 assertEquals(2, nested.size());
                                 return nested.size();
-                            }));
+                            }).intValue());
                             assertEquals(2, view.size(),
                                     "outer access restored after nested callback");
                             assertThrows(IllegalArgumentException.class, () ->
