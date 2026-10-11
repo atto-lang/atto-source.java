@@ -2,6 +2,8 @@ package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.OwnershipChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
@@ -218,6 +220,22 @@ final class TrapExpressionSemanticsTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void trapCannotLaunderRestrictedActorCapabilities() {
+        String source = """
+                pub untrusted actor fnc worker(): void {
+                  val hidden = trap process.context_id;
+                  return;
+                }
+                """;
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(
+                        Parser.parse(source),
+                        IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("PROCESS_INFO"), denied.getMessage());
     }
 
     private static String run(String program) throws Exception {
