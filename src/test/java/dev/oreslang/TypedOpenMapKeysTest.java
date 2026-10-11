@@ -98,6 +98,27 @@ final class TypedOpenMapKeysTest {
     }
 
     @Test
+    void unknownReadRequiresExplicitNarrowing() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(MAP + """
+                fnc invalid(): void {
+                  val m = new MyMap();
+                  val string surprise = m.get("something").unwrap();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void rejectsHooksWithWrongSignature() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Bad extends Map<string, unknown> as
+                  key fieldX: Option<string>;
+                  on_put(string key): void { return; }
+                end
+                """)));
+    }
+
+    @Test
     void bracketAndMethodAccessRunHooksAndReturnOptions() throws Exception {
         String actual = execute(MAP + """
                 pub routine main(): void {
