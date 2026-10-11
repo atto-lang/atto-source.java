@@ -92,6 +92,11 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (matchContextualIdentifier("serial")) {
+                    consume(ACTOR, "serial must modify an actor declaration");
+                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, true));
+                    continue;
+                }
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -270,6 +275,10 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (matchContextualIdentifier("serial")) {
+                consume(ACTOR, "serial must modify an actor declaration");
+                return parseDefinedActorClass(previous(), modifiers, annotations, true);
+            }
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
@@ -619,10 +628,20 @@ public final class Parser {
      * the runtime before source programs may instantiate actor classes.
      */
     private Ast.ClassDecl parseDefinedActorClass(
+            Token actorToken, Modifiers modifiers, List<Ast.Annotation> annotations) {
+        return parseDefinedActorClass(actorToken, modifiers, annotations, false);
+    }
+
+    private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
-            List<Ast.Annotation> annotations) {
+            List<Ast.Annotation> annotations,
+            boolean declaredSerial) {
         modifiers = mergeModifiers(modifiers, parseModifiers());
+        if (declaredSerial && (actorToken.type() != ACTOR
+                || modifiers.untrusted || modifiers.shared)) {
+            throw error(actorToken, "serial actor requires a shared actor declaration");
+        }
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
         if (modifiers.async || modifiers.generator || modifiers.structural
@@ -632,7 +651,7 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        return parseActorClass(kind, modifiers.visibility, declaredSerial);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -658,11 +677,30 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+        return parseActorClass(actorKind, visibility, false);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, boolean declaredSerial) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL, FROM) || matchContextualIdentifier("from")
-                ? parseTypeRefList() : List.of();
+        boolean serial = declaredSerial;
+        List<Ast.TypeRef> interfaces = List.of();
+        if (match(IMPLEMENTS, IMPL)) {
+            interfaces = parseTypeRefList();
+        } else if (match(FROM) || matchContextualIdentifier("from")) {
+            if (matchContextualIdentifier("serial")) {
+                consume(ACTOR, "builtin serial superclass must be 'from serial actor'");
+                if (serial) throw error(previous(), "duplicate serial actor base");
+                serial = true;
+            } else {
+                interfaces = parseTypeRefList();
+            }
+        }
+        if (serial && (actorKind != Ast.ActorKind.SHARED || !parents.isEmpty())) {
+            throw error(previous(), "builtin serial actor requires SHARED kind and no ordinary actor superclass");
+        }
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -728,7 +766,7 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods, serial);
     }
 
     /**
