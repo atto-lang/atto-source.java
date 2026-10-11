@@ -108,3 +108,38 @@ not before `defer`, `finally`, `recover`, critical guards or response
 finalization complete. Double completion and stale continuation tickets
 remain forbidden. No HTTP/message production wiring or full native-image
 verification is claimed by these targeted admission tests.
+
+## Runtime integration milestone (2026-10-11)
+
+The linked Java/Graal source evaluator now reports serial declarations through
+the trusted `ActorCodeExecutor.isSerialActor(type)` contract, derived from the
+immutable class AST. A persistent source-actor `ActorCell` creates its own
+`SerialActorAdmission` instance; user-mail handling acquires one MESSAGE
+lease and keeps it logically reserved while the source receive suspends.
+Cooperative continuation segments resume under that same lifetime and
+re-suspend until the originating source task completes. The lease is only
+released **after** the actor envelope checks that native scratch scopes
+have closed. Actor finalization revokes the gate after active carrier turns
+quiesce, before reclaiming its state.
+
+**Important limitation:** continuation ownership is currently established by
+the existing single-writer actor mailbox scheduler, not an independent
+scheduler-issued per-continuation serial ticket. Third-party/unrelated
+continuation provenance still requires end-to-end execution-context and
+generation fencing before certifying the full async security contract.
+
+**HTTP is deliberately fail-closed.** `NativeHttp.Handler.dispatch` currently
+spawns one actor per request. Registering a serial source actor via
+`http.handler("Counter")` now rejects registration instead of silently
+creating different actors with different states. Proper serial HTTP needs
+one persistent actor identity per route/instance, routing each request and
+mailbox message through the same gate, with independent per-request timeout,
+response/cancellation and supervisor restart handling.
+
+Exact same-source fixtures
+`tests/fixtures/serial-counter-cooperate.ores` and
+`tests/fixtures/serial-http-must-not-spawn-per-request.ores` are mirrored
+in the funded test org. A focused JDK25 parser + state/effect verifier run
+proves these fixture admission rules; it is **not** a full GraalVM guest
+execution test or actual HTTP transport verification. Guest JUnit tests in
+`SerialActorImplicitCriticalTest` still require allocated Maven/JVM CI.
