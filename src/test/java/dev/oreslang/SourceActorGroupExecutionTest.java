@@ -134,4 +134,23 @@ final class SourceActorGroupExecutionTest {
                 """;
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(program));
     }
+
+    @Test
+    void requiresActorSpawnCapabilityAtIsolateAdmission() {
+        String program = """
+                pub routine main(): void {
+                  val room = ActorGroup.new();
+                  room.close();
+                  return;
+                }
+                """;
+        dev.oreslang.runtime.IsolatePolicy withoutSpawn =
+                dev.oreslang.runtime.IsolatePolicy.developer()
+                        .withoutCapabilities(
+                                dev.oreslang.runtime.IsolatePolicy.Capability.ACTOR_SPAWN);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> OresCompiler.validateForIsolate(program, withoutSpawn));
+        assertTrue(denied.getMessage().contains("ACTOR_SPAWN"),
+                denied.getMessage());
+    }
 }
