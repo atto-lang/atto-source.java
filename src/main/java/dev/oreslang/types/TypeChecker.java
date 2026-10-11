@@ -92,6 +92,9 @@ public final class TypeChecker {
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
+        // Reject invalid tag assignments, unknown nominal cases and pattern
+        // dependencies before creating any executable actor/schema bindings.
+        TaggedMessageContracts.verify(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
