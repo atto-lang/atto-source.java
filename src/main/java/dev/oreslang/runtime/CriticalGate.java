@@ -209,6 +209,22 @@ public final class CriticalGate {
         return false;
     }
 
+    /**
+     * Only a currently executing logical invocation may reuse its own ticket.
+     * This deliberately uses the scheduler's stable task domain rather than
+     * the carrier thread; an actor id is used only for non-scheduler actor
+     * turns. It never hands a ticket to another queued continuation.
+     */
+    public boolean heldByCurrentLogicalDomain() {
+        Object domain = OresScheduler.currentTaskDomain();
+        if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
+        if (domain == null) domain = Thread.currentThread();
+        synchronized (COORDINATOR) {
+            return owner != null && !owner.closed && owner.granted
+                    && owner.logicalOwner == domain;
+        }
+    }
+
     public Ticket newTicket() { return new Ticket(); }
 
     public int queuedCount() {
