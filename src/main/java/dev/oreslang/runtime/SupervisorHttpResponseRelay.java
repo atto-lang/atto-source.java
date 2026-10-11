@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -110,7 +109,7 @@ public final class SupervisorHttpResponseRelay {
                 }
                 Map<String, String> headers = validateHeaders(raw.get("headers"));
                 sink.headers(status, headers);
-                bodyAllowed = status != 204 && status != 304;
+                bodyAllowed = status != 204 && status != 205 && status != 304;
                 state = State.BODY;
             }
             case "chunk", "bytes" -> {
