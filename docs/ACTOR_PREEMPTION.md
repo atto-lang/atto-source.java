@@ -142,6 +142,51 @@ suitable OS, and WCET plus end-to-end latency proof. Non-cooperating trusted
 code cannot be safely suspended by `Thread.yield()`, Java interruption, or
 a timer; forceful revocation requires a dedicated isolated execution boundary.
 
+## Independent 4 ms turn watchdog
+
+`ActorTurnWatchdog` is a daemon monitor separate from ordinary actor and
+scheduler carriers. Its 2 ms polling cadence detects a physical dispatch turn
+whose monotonic wall time has reached **4 ms** without releasing the carrier.
+The threshold is an observation policy, **not a hard timing guarantee**:
+OS scheduling, GC, JIT and host execution may delay the monitor itself.
+
+For each dispatch, the runtime registers an identity-unique lease and retires
+it when the carrier exits. The monitor synchronizes retirement and inspection
+to avoid reporting a previous actor turn against a reused carrier. Its only
+authority is to set an advisory preemption bit and publish nonblocking
+accounting. It never invokes guest callbacks, interrupts a carrier, performs
+signal-based stack rewrites, or forces a VM suspension.
+
+- `OresScheduler.preemptionRequested()` observes the logical source task's
+  current dispatch; `OresScheduler.watchdogOverruns()` counts flagged turns.
+- `ActorRuntime.watchdogPreemptionRequested()` observes the current actor
+  dispatch. `pollWatchdogNotice()` supplies a bounded host-only notice
+  containing actor id/kind and wall/checkpoint ages; `watchdogOverruns()`
+  counts all detections, including notices dropped by a full notice queue.
+  `watchdogNoticesDropped()` counts bounded-queue drops. These methods and
+  `watchdogObserverFailures()` require host/supervisor authority: ordinary
+  actors and Mailman callbacks cannot drain another actor's diagnostics.
+  When an internal observer fails, the watchdog counts the failure, skips
+  only that observer and continues inspecting peers and future dispatches.
+- `OresContext.watchdogPreemptionRequested()` combines the two sources.
+  The source-loop trampoline honors that advisory bit **only** where it
+  already owns a continuation and no lexical `MutexGuard` is held.
+- Safepoints record checkpoint progress, but checkpoint polling alone **does
+  not** count as releasing the physical carrier.
+
+An idle-carrier heartbeat is optional diagnostic optimization, not a reliable
+watchdog: no carrier is idle when all carriers are trapped in greedy loops.
+The monitor is independent of the guest dispatch pools.
+
+**Current limits:** A synchronous Java/FFI call or non-continuation-backed
+method cannot be transparently preempted. UNTRUSTED source-loop cooperation
+remains disabled until fuel, CPU, and wall budgets are bound to the persistent
+logical task across await/resume and carrier migration. The watchdog reports
+and requests cooperation, but does not itself revoke an untrusted execution
+domain. Supervisors may poll notices and apply an explicit structured or
+isolate-backed cancellation policy; only a proven isolated revoker may force
+termination.
+
 ## Required invariants
 
 1. **No source-line semantics.** Preemption occurs only at VM-defined resumable
