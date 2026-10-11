@@ -35,6 +35,41 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
+
+    /**
+     * Compiler-only accelerator declarations. These are deliberately NOT Decl
+     * nodes in an executable Program: all existing guest evaluation, imports
+     * and generic type checking continue to reject GPU/QPU declarations
+     * until a device-aware effect checker and ownership lowering are wired.
+     */
+    public sealed interface AcceleratorDecl permits GpuF32Decl, QuantumCircuitDecl {
+        String name();
+    }
+    public enum GpuF32Op { SCALE, BIAS, SCALE_BIAS }
+    public record GpuF32Decl(
+            String name, String scalarParameter, GpuF32Op operation,
+            float scale, float bias) implements AcceleratorDecl {
+        public GpuF32Decl {
+            if (name == null || name.isBlank() || scalarParameter == null || scalarParameter.isBlank())
+                throw new IllegalArgumentException("accelerator function and parameter names required");
+            java.util.Objects.requireNonNull(operation);
+            if (!Float.isFinite(scale) || !Float.isFinite(bias))
+                throw new IllegalArgumentException("nonfinite accelerator scalar coefficient");
+        }
+    }
+    public enum QuantumGateKind { X, H, CX, MEASURE }
+    public record QuantumGate(QuantumGateKind operation, int target, int control, int classicalBit) {
+        public QuantumGate { java.util.Objects.requireNonNull(operation); }
+    }
+    public record QuantumCircuitDecl(
+            String name, int qubits, int classicalBits,
+            List<QuantumGate> gates) implements AcceleratorDecl {
+        public QuantumCircuitDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("circuit name required");
+            gates = List.copyOf(gates);
+        }
+    }
+
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
