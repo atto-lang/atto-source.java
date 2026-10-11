@@ -282,6 +282,14 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
+            if (isContextualIdentifier("supervisor")) {
+                validateOnlyVisibilityModifiers(modifiers, "supervisor declarations");
+                if (!annotations.isEmpty()) {
+                    throw error(peek(), "supervisor type annotations require explicit compiler lowering");
+                }
+                advance();
+                return parseSupervisor(modifiers.visibility);
+            }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
