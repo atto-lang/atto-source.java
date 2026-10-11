@@ -236,9 +236,13 @@ final class SourceLoopSoftPreemptionTest {
                       for (let i = 0; i < 16384; i = i + 1) {
                         count = count + 1;
                       }
+                    } catch (err) {
+                      stdio.stdout.write("unexpected-inner");
                     } finally {
                       stdio.stdout.write("I");
                     }
+                  } catch (err) {
+                    stdio.stdout.write("unexpected-outer");
                   } finally {
                     stdio.stdout.write("O");
                   }
