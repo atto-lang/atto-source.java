@@ -316,6 +316,8 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.STOPPING,
                     group.childSnapshot(failedChild).phase(),
                     "ambiguous host STOP must quarantine the child, not allow RESTART");
+            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.StopReceiptStatus.UNCERTAIN,
+                    group.stopReceipt(failedChild).status());
             group.close();
             process.close();
         }
