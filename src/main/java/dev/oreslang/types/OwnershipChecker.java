@@ -1188,6 +1188,14 @@ public final class OwnershipChecker {
             if (memberReceiverType != null) {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
+                Ast.ClassDecl mapReceiverClass = findClass(concreteCollection.name());
+                if (mapReceiverClass != null
+                        && mapReceiverClass.parents().stream()
+                                .anyMatch(parent -> parent.name().equals("Map"))
+                        && (member.member().equals("put") || member.member().equals("remove"))) {
+                    ensureMutableReceiver(member.receiver(), scope,
+                            "Map method '" + member.member() + "'");
+                }
                 if ((concreteCollection.name().equals("Array")
                         || concreteCollection.name().equals("List"))
                         && (member.member().equals("add") || member.member().equals("set"))) {
