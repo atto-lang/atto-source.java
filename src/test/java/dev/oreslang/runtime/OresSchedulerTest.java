@@ -432,6 +432,46 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void closeFromTerminalFutureCallbackOnOwnCarrierFailsPromptlyWithoutClosing()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> source = new OresFuture<>();
+        CountDownLatch notified = new CountDownLatch(1);
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (resume.initial()) return OresScheduler.await(source);
+                return OresScheduler.done(42);
+            });
+            result.whenCompleteRuntime((value, failure) -> {
+                try {
+                    assertNull(failure);
+                    assertEquals(42, value);
+                    assertNull(OresScheduler.current(),
+                            "guest task binding should already be restored");
+                    IllegalStateException rejected = assertThrows(
+                            IllegalStateException.class, scheduler::close);
+                    assertTrue(rejected.getMessage().contains("terminal Future callback"),
+                            rejected.getMessage());
+                    assertFalse(scheduler.isClosed(),
+                            "a rejected self-close must not poison host shutdown");
+                } catch (Throwable problem) {
+                    callbackFailure.set(problem);
+                } finally {
+                    notified.countDown();
+                }
+            });
+            assertTrue(source.completeFromRuntime(1));
+            assertTrue(notified.await(3, TimeUnit.SECONDS),
+                    "terminal callback must not block on its own carrier");
+            assertNull(callbackFailure.get());
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
     void cancellingUnclaimedQueuedTaskNeverEntersVmAndSettlesWithoutCarrier() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         CountDownLatch entered = new CountDownLatch(1);
