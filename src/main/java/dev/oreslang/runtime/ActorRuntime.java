@@ -2140,6 +2140,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (!worker.ownedBy(ActorRuntime.this)) {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
+            ActorCell<?> transferCell = actors.get(worker.id());
+            if (transferCell == null) {
+                throw new IllegalStateException("cannot transfer an unknown worker");
+            }
+            // Serialize with child spawns and finalization. Lock ordering is
+            // lifecycleLock -> authorityLock throughout the runtime.
+            synchronized (transferCell.lifecycleLock) {
             synchronized (authorityLock) {
                 requireOpen();
                 if (stoppingWorkers.contains(worker.id())) {
@@ -2161,6 +2168,7 @@ public final class ActorRuntime implements AutoCloseable {
                 cell.supervision.compareAndSet(supervisorControl, null);
                 managedWorkers.remove(worker.id(), worker);
                 return true;
+            }
             }
         }
 
