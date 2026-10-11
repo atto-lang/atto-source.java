@@ -4804,6 +4804,14 @@ public final class ActorRuntime implements AutoCloseable {
                 logicalQuota.chargeSafepoint();
                 return;
             }
+            // Once a logical cohort exists, an unrelated synchronous mailbox
+            // turn cannot consume a fresh physical quota in parallel. The
+            // compiler must run its continuation within the owning task or
+            // wait until that cohort is fully retired.
+            if (cell.activeUntrustedSourceQuota != null) {
+                throw new SecurityException(
+                        "untrusted actor safepoint outside active logical source-task quota");
+            }
             cell.untrustedSafepoints++;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
