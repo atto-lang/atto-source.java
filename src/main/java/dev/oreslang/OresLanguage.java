@@ -41,13 +41,6 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      * threads do not gain runtime scheduling authority by this check.
      */
     private volatile Thread initialContextHostThread;
-    // Truffle may check an EXCLUSIVE language instance before createContext()
-    // has run on that same instance (for example during Value host interop).
-    // At this point there is no guest context state, and only the exact
-    // language-instantiating thread has provisional admission. The permit
-    // expires permanently when createContext establishes the sandbox policy.
-    private final Thread languageConstructionThread = Thread.currentThread();
-    private volatile boolean contextInitialized;
 
     @Override
     protected OresContext createContext(Env env) {
@@ -57,9 +50,6 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // this trusted-host concurrent admission exception.
         initialContextHostThread = context.isolatePolicy().adversarial()
                 ? null : Thread.currentThread();
-        // Volatile publication revokes the provisional constructor-thread
-        // exception even when the context is adversarial and trustedHost=null.
-        contextInitialized = true;
         return context;
     }
 
@@ -77,8 +67,6 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 thread,
                 Thread.currentThread(),
                 initialContextHostThread,
-                languageConstructionThread,
-                contextInitialized,
                 singleThreaded,
                 ActorRuntime.isActorCarrierThread(),
                 AsyncRuntime.isAsyncCarrierThread(),
@@ -94,8 +82,6 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             Thread requested,
             Thread caller,
             Thread trustedHost,
-            Thread constructorThread,
-            boolean contextInitialized,
             boolean singleThreaded,
             boolean actorCarrier,
             boolean asyncCarrier,
@@ -103,7 +89,6 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         return requested != null
                 && (singleThreaded
                     || requested == trustedHost
-                    || (!contextInitialized && requested == constructorThread)
                     || (requested == caller
                         && (actorCarrier || asyncCarrier || schedulerCarrier)));
     }
