@@ -7617,6 +7617,13 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ArmReturnStmt result) return result.value() != null;
             if (stmt instanceof Ast.BlockStmt nested && definitelyYieldsValue(nested.body())) return true;
+            if (stmt instanceof Ast.TryStmt attempted) {
+                // A lexical arm result in try/catch must survive finally;
+                // finally can itself yield and override the pending result.
+                if (definitelyYieldsValue(attempted.finallyBody())) return true;
+                if (definitelyYieldsValue(attempted.body())
+                        && definitelyYieldsValue(attempted.catchBody())) return true;
+            }
             if (stmt instanceof Ast.IfStmt conditional) {
                 if (!conditional.branches().isEmpty()
                         && conditional.branches().stream().allMatch(
