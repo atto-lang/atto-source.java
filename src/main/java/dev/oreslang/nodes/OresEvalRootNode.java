@@ -446,6 +446,17 @@ public final class OresEvalRootNode extends RootNode {
                                 + " does not match declaration kind " + expectedKind);
             }
 
+            // The source parser models `state { ... }` as a synthetic field
+            // for static analysis. Until the sealed handle_state intrinsic is
+            // lowered into actor-owned persistent FFM storage, it is UNSAFE
+            // to initialize that field as an ordinary JVM Map or class field:
+            // doing so would bypass the promised lifetime/loan authority.
+            // Reject before any guest initializer/on_start code is run.
+            if (dev.oreslang.types.ActorStateContract.stateField(klass) != null) {
+                throw new IllegalStateException(
+                        "actor state schema requires arena-backed handle_state lowering; "
+                        + "ordinary source object field initialization is forbidden");
+            }
             List<Ast.FieldDecl> classFields =
                     effectiveFields(klass, new LinkedHashSet<>());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
