@@ -198,4 +198,29 @@ final class ActorGroupMultiMembershipTest {
             assertEquals(0, d.memberCount());
         }
     }
+
+    @Test
+    void creatorLeavingItsGroupStillClosesGroupOnActorTermination() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch created = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorGroup> ownerGroup = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> creator = runtime.spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        ActorRuntime.ActorGroup group = context.runtime().createActorGroup();
+                        // Structural ownership persists even after the creator
+                        // voluntarily drops cooperative membership.
+                        group.leaveCurrent();
+                        ownerGroup.set(group);
+                        created.countDown();
+                        context.self().stop();
+                    });
+            creator.send(1);
+            assertTrue(created.await(5, TimeUnit.SECONDS));
+            assertTrue(creator.awaitTermination(5, TimeUnit.SECONDS));
+            assertNotNull(ownerGroup.get());
+            assertTrue(ownerGroup.get().closed(),
+                    "creator retirement must close groups it created even after leave");
+            assertEquals(0, runtime.actorGroupCount());
+        }
+    }
 }
