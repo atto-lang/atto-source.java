@@ -1149,6 +1149,10 @@ public final class TypeChecker {
                     requireSerializableActorMessageType(
                             mail.arguments().getFirst(),
                             "mailbox payload of actor '" + klass.name() + ".receive'");
+                    requirePortableActorMailTypeSpellings(
+                            param.type(),
+                            new LinkedHashSet<>(),
+                            "mailbox payload of actor '" + klass.name() + ".receive'");
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -4504,6 +4508,46 @@ public final class TypeChecker {
      * derivation can add nominal types only after executable codecs and native
      * parity are available; never treat annotation presence as proof of a codec.
      */
+    /**
+     * The current type resolver intentionally normalizes integer and float
+     * widths, and collapses Vector/Slice and Array/List into ListType.
+     * The standalone wire codec supports only a signed i64 and finite f64,
+     * with no Vector/Slice identity; reject source spellings whose ABI cannot
+     * be reconstructed from resolved Primitive/ListType.
+     *
+     * This is a conservative admission fence while a shape-preserving typed
+     * IR is being designed. Future codecs can explicitly add wider integer
+     * types without changing their original source-level meaning.
+     */
+    private void requirePortableActorMailTypeSpellings(
+            Ast.TypeRef declared,
+            Set<Ast.TypeAliasDecl> aliases,
+            String where) {
+        if (Set.of("i8", "i16", "i32", "u8", "u16", "u32", "u64",
+                    "uint", "bigint", "f32", "complex64", "complex128",
+                    "Vector", "Slice").contains(declared.name())) {
+            throw new IllegalArgumentException(
+                    where + " requires a Serializable portable wire codec for type '"
+                    + declared.name() + "'; numeric width, signedness and collection kind "
+                    + "must not be erased at the actor boundary");
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
+        if (alias != null) {
+            if (!aliases.add(alias)) {
+                throw new IllegalArgumentException(where + " recursive mailbox type alias '"
+                        + alias.name() + "'");
+            }
+            try {
+                requirePortableActorMailTypeSpellings(alias.target(), aliases, where);
+            } finally {
+                aliases.remove(alias);
+            }
+        }
+        for (Ast.TypeRef argument : declared.arguments()) {
+            requirePortableActorMailTypeSpellings(argument, aliases, where);
+        }
+    }
+
     private void requireSerializableActorMessageType(Type type, String where) {
         if (type instanceof Primitive primitive) {
             if (primitive != Primitive.INT && primitive != Primitive.FLOAT
