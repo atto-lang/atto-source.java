@@ -303,6 +303,7 @@ final class SourceSupervisorAwaitStopTest {
             assertTrue(seen.await(10, TimeUnit.SECONDS));
             var permit = group.reservedStopFor(observed.get());
             process.close();
+            group.close();
             assertEquals(1, group.unresolvedSupervisorStops().size());
             assertThrows(IllegalStateException.class, () ->
                     group.reconcileConfirmedStop(permit, () -> false));
@@ -316,7 +317,6 @@ final class SourceSupervisorAwaitStopTest {
                     group.reconcileConfirmedStop(permit, () -> true).phase());
             neverAck.complete(null);
             assertEquals(0, process.resolved());
-            group.close();
         }
     }
 
