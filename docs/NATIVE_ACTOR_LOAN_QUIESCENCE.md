@@ -52,3 +52,23 @@ The funded GraalVM JDK 25 exact-blob CI validates actor shutdown with a
 pending loan, foreign actor confinement, multiple-loan completion, aggregate
 native reservation persistence and release, alongside previous actor GC
 boundary and isolate admission tests.
+
+
+## Shared JVM/LLVM source-field logical descriptor (v1)
+
+`NativeActorFieldLayoutV1` implements the versioned i64 logical
+actor-field contract in `contracts/v1/ACTOR_FIELD_LAYOUT_V1.md`:
+source-ordered fields, zero-based indexes, `let` mutability versus
+`const`/`val` readonly status, bounded field counts, identifier
+validation and a deterministic FNV64 fingerprint. Java's `Counter`
+and `Readonly` reference hashes are checked against the corresponding
+LLVM-generated layout hashes. A standalone executable validates this
+same code on a funded JDK runner.
+
+This is a **descriptor and admission contract**, not a claim that the
+Java compiler now routes all source actor fields into
+`ExplicitNativeI64Region`, nor that JVM host control objects avoid
+tracing GC. Java's existing FFM loan/physical-close/quota retention
+checks remain separate, necessary lifecycle primitives. Further work
+must attach this descriptor to actual source class/struct allocation,
+ActorGroup exclusive turns, and end-to-end await/FFI cancellation.
