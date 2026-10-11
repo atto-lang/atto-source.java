@@ -103,6 +103,24 @@ final class SourceActorGroupExecutionTest {
     }
 
     @Test
+    void rejectsSourceDeclarationsThatShadowOpaqueGroupBuiltins() {
+        for (String collision : java.util.List.of(
+                "ActorGroup", "ActorGroupJoinCapability")) {
+            String source = """
+                    define class %s as
+                      pub let int value = 0;
+                    end
+                    pub routine main(): void { return; }
+                    """.formatted(collision);
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(denied.getMessage().contains(
+                    "reserved ActorGroup capability name cannot be redeclared"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
     void staticallyRejectsJoiningWithoutActorTurn() {
         String source = """
                 pub routine main(): void {
