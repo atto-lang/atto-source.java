@@ -108,7 +108,7 @@ public final class SupervisorHttpResponseRelay {
                     throw new IllegalArgumentException("unsupported HTTP final response status");
                 }
                 Map<String, String> headers = validateHeaders(raw.get("headers"));
-                sink.headers(status, headers);
+                forward(() -> sink.headers(status, headers));
                 bodyAllowed = status != 204 && status != 205 && status != 304;
                 state = State.BODY;
             }
@@ -135,14 +135,14 @@ public final class SupervisorHttpResponseRelay {
                         || bytes.length > maxResponseBytes - totalBytes) {
                     throw new IllegalStateException("HTTP actor response exceeded write credit/quota");
                 }
-                sink.chunk(bytes);
+                forward(() -> sink.chunk(bytes));
                 remainingCredit -= bytes.length;
                 totalBytes += bytes.length;
             }
             case "end" -> {
                 requireKeys(raw, Set.of("request_id", "kind"));
                 if (state != State.BODY) throw new IllegalStateException("response ended before headers");
-                sink.end();
+                forward(sink::end);
                 state = State.ENDED;
             }
             case "abort" -> {
@@ -152,8 +152,8 @@ public final class SupervisorHttpResponseRelay {
                         || reason.indexOf('\r') >= 0) {
                     throw new IllegalArgumentException("invalid response abort reason");
                 }
-                sink.abort(reason);
                 state = State.ABORTED;
+                sink.abort(reason);
             }
             default -> throw new IllegalArgumentException("unsupported HTTP response frame: " + kind);
         }
@@ -163,8 +163,27 @@ public final class SupervisorHttpResponseRelay {
     /** Trusted parent path for actor exit, timeout or cancellation. */
     public synchronized void abortFromSupervisor(String reason) {
         if (state == State.ENDED || state == State.ABORTED) return;
-        sink.abort(reason == null ? "request aborted" : reason);
         state = State.ABORTED;
+        sink.abort(reason == null ? "request aborted" : reason);
+    }
+
+    /**
+     * A failing downstream writer may have partially committed bytes. Make
+     * the stream terminal rather than allowing retries to duplicate headers
+     * or corrupt an HTTP response. This does not run on the guest actor lane.
+     */
+    private void forward(Runnable emission) {
+        try {
+            emission.run();
+        } catch (RuntimeException downstream) {
+            state = State.ABORTED;
+            try {
+                sink.abort("downstream write failed");
+            } catch (RuntimeException secondary) {
+                downstream.addSuppressed(secondary);
+            }
+            throw downstream;
+        }
     }
 
     public synchronized State state() { return state; }
