@@ -39,6 +39,7 @@ import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -67,6 +68,9 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    /** Current actor-owned source task's logical quota, never a carrier's quota. */
+    private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
+            new ThreadLocal<>();
     private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
             new ThreadLocal<>();
     /**
@@ -1474,7 +1478,44 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        // Nested tasks share the calling source task's budget. A top-level
+        // source task inherits fuel, wall and CPU already spent by its first
+        // physical mailbox dispatch. Neither await nor cooperate reinitializes it.
+        UntrustedLogicalQuota quota = CURRENT_UNTRUSTED_QUOTA.get();
+        if (quota == null) {
+            long nowCpu = currentThreadCpuNanos();
+            long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
+                    ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
+            quota = new UntrustedLogicalQuota(
+                    cell.policy.maxWallTime().toNanos(),
+                    cell.untrustedFuelRemaining,
+                    cell.turnStartedWallNanos,
+                    alreadyCpu,
+                    System::nanoTime,
+                    ActorRuntime::currentThreadCpuNanos);
+        }
+        UntrustedLogicalQuota inheritedQuota = quota;
+        return cell.sourceScheduler().start(resume -> {
+            UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
+            CURRENT_UNTRUSTED_QUOTA.set(inheritedQuota);
+            boolean entered = false;
+            try {
+                inheritedQuota.enter();
+                entered = true;
+                inheritedQuota.check();
+                OresScheduler.Step<T> result = task.resume(resume);
+                inheritedQuota.check();
+                return result;
+            } finally {
+                try {
+                    if (entered) inheritedQuota.leave();
+                } finally {
+                    if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
+                    else CURRENT_UNTRUSTED_QUOTA.set(previous);
+                }
+            }
+        });
     }
 
     private boolean ownFuture(
@@ -4706,6 +4747,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
+            UntrustedLogicalQuota logicalQuota = CURRENT_UNTRUSTED_QUOTA.get();
+            if (logicalQuota != null) {
+                logicalQuota.chargeSafepoint();
+                return;
+            }
             cell.untrustedSafepoints++;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
@@ -4740,6 +4786,110 @@ public final class ActorRuntime implements AutoCloseable {
             return -1L;
         }
         return THREAD_MX_BEAN.getCurrentThreadCpuTime();
+    }
+
+    /**
+     * Resource debt belongs to one logical UNTRUSTED source task tree.
+     * No physical carrier identity, await, or cooperate may reinitialize it.
+     *
+     * <p>All segments run under the owning actor's single-writer mailbox lease.
+     * A second simultaneous segment is rejected rather than racing accounting.
+     * CPU use is accumulated per carrier segment; comparing CPU readings from
+     * two different carrier threads directly is invalid.</p>
+     */
+    static final class UntrustedLogicalQuota {
+        private final long wallBudgetNanos;
+        private final long startedNanos;
+        private final LongSupplier wallClock;
+        private final LongSupplier cpuClock;
+        private long fuelRemaining;
+        private long cpuUsedNanos;
+        private long segmentCpuStarted = -1L;
+        private boolean segmentActive;
+
+        UntrustedLogicalQuota(
+                long wallBudgetNanos,
+                long fuelRemaining,
+                long startedNanos,
+                long initialCpuNanos,
+                LongSupplier wallClock,
+                LongSupplier cpuClock) {
+            if (wallBudgetNanos <= 0 || fuelRemaining < 0 || initialCpuNanos < 0) {
+                throw new IllegalArgumentException("invalid untrusted logical quota");
+            }
+            this.wallBudgetNanos = wallBudgetNanos;
+            this.fuelRemaining = fuelRemaining;
+            this.startedNanos = startedNanos;
+            this.cpuUsedNanos = initialCpuNanos;
+            this.wallClock = Objects.requireNonNull(wallClock, "wallClock");
+            this.cpuClock = Objects.requireNonNull(cpuClock, "cpuClock");
+        }
+
+        void enter() {
+            if (segmentActive) {
+                throw new IllegalStateException(
+                        "untrusted task tried overlapping carrier segments");
+            }
+            segmentCpuStarted = cpuClock.getAsLong();
+            segmentActive = true;
+        }
+
+        void chargeSafepoint() {
+            requireActive();
+            if (fuelRemaining-- <= 0L) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.FUEL,
+                        "untrusted logical task exhausted execution fuel");
+            }
+            check();
+        }
+
+        void check() {
+            requireActive();
+            long elapsed = wallClock.getAsLong() - startedNanos;
+            // Fail closed on a monotonic clock overflow instead of treating
+            // overflow as a new unspent deadline.
+            if (elapsed < 0 || elapsed > wallBudgetNanos) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                        "untrusted logical task exceeded wall-time budget");
+            }
+            long cpu = accruedCpu();
+            if (cpu > wallBudgetNanos) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                        "untrusted logical task exceeded CPU-time budget");
+            }
+        }
+
+        void leave() {
+            requireActive();
+            long now = cpuClock.getAsLong();
+            if (segmentCpuStarted >= 0 && now >= segmentCpuStarted) {
+                cpuUsedNanos = saturatingSum(cpuUsedNanos, now - segmentCpuStarted);
+            }
+            segmentCpuStarted = -1L;
+            segmentActive = false;
+        }
+
+        private long accruedCpu() {
+            long current = cpuClock.getAsLong();
+            if (segmentCpuStarted < 0 || current < segmentCpuStarted) {
+                return cpuUsedNanos; // CPU clock unavailable: fuel/wall still enforced.
+            }
+            return saturatingSum(cpuUsedNanos, current - segmentCpuStarted);
+        }
+
+        private void requireActive() {
+            if (!segmentActive) {
+                throw new IllegalStateException(
+                        "untrusted logical quota used outside carrier segment");
+            }
+        }
+
+        private static long saturatingSum(long a, long b) {
+            return a > Long.MAX_VALUE - b ? Long.MAX_VALUE : a + b;
+        }
     }
 
     private static long untrustedFuelBudget(IsolatePolicy policy) {
