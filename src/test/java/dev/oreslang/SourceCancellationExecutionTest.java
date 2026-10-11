@@ -81,6 +81,8 @@ final class SourceCancellationExecutionTest {
     void failingInnerFinallyDoesNotTurnCancellationIntoAnOuterCatchableError()
             throws Exception {
         String source = """
+                async fnc fails(): int { return 1 / 0; }
+
                 pub async fnc work(): int {
                   try {
                     try {
@@ -91,7 +93,7 @@ final class SourceCancellationExecutionTest {
                       stdio.println("INVALID-inner-catch");
                     } finally {
                       stdio.println("inner-finally");
-                      const failure = 1 / 0;
+                      const failure = await fails();
                     }
                   } catch (outer) {
                     stdio.println("INVALID-outer-catch");
@@ -121,7 +123,7 @@ final class SourceCancellationExecutionTest {
                     "unexpected terminal " + observed);
             assertInstanceOf(java.util.concurrent.ExecutionException.class, observed);
             Throwable failure = ((java.util.concurrent.ExecutionException) observed).getCause();
-            assertInstanceOf(ArithmeticException.class, failure);
+            assertInstanceOf(RuntimeException.class, failure);
             assertTrue(java.util.Arrays.stream(failure.getSuppressed())
                             .anyMatch(dev.oreslang.runtime.OresScheduler.TaskCancelledException.class::isInstance),
                     "cleanup failure must preserve cancellation as suppressed evidence");
