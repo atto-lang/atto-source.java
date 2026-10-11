@@ -39,6 +39,25 @@ final class SerialContinuationAuthorityTest {
         admission.close();
     }
 
+    @Test void foreignActorLeaseCannotMintContinuationAuthority() {
+        SerialActorAdmission firstActor = new SerialActorAdmission(2);
+        SerialActorAdmission secondActor = new SerialActorAdmission(2);
+        var first = firstActor.submit(SerialActorAdmission.Kind.MESSAGE).join();
+        var second = secondActor.submit(SerialActorAdmission.Kind.MESSAGE).join();
+        assertEquals(first.generation(), second.generation(),
+                "same generation must not imply same actor authority");
+        assertThrows(IllegalArgumentException.class,
+                () -> new SerialContinuationAuthority(secondActor, first));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SerialContinuationAuthority(firstActor, second));
+        var legitimate = new SerialContinuationAuthority(firstActor, first);
+        legitimate.requireRunnable();
+        first.close();
+        second.close();
+        firstActor.close();
+        secondActor.close();
+    }
+
     @Test void nullAdmissionIsAllowedOnlyForNonSerialOrigins() {
         var nonSerial = new SerialContinuationAuthority(null, null);
         assertTrue(nonSerial.mayQueue());
