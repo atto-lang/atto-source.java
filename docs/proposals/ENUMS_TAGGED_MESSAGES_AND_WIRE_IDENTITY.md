@@ -143,19 +143,23 @@ end
 
 `Serializable` is **transitive**: `List<Serializable>` is not a magical dynamic back door; a concrete `List<T>` qualifies only when `T` does. An `Option<T>`/`Result<T,E>`, tuple, finite array, map, inferred struct, or pattern domain qualifies only if *all* component types have codecs. The result type of `match<R>` is unrelated to this constraint, and a named pattern remains type-only, never a runtime constructor/tag. A class explicitly annotated `@Serializable` requires generated field codecs and a safe construction path; simply having the annotation is not enough.
 
-**Format:** use a portable length-delimited tagged encoding with a versioned schema identity and stable variant labels. The precise binary format and canonical scalar encodings require separate cross-implementation vectors; neither JVM identity, `ObjectOutputStream`, `Symbol` interning, nor PostgreSQL-local OIDs are wire contracts. Text/JSON may be a diagnostic/debug encoding. Unknown/malformed or oversized messages fail closed, and no decoder dynamically interns attacker-controlled symbols.
+**Format:** use a portable length-delimited tagged encoding with a versioned schema identity and stable variant labels. The scalar/sequence reference subset now specifies canonical MessagePack v2 vectors; additional types still require new cross-implementation fixtures; neither JVM identity, `ObjectOutputStream`, `Symbol` interning, nor PostgreSQL-local OIDs are wire contracts. Text/JSON may be a diagnostic/debug encoding. Unknown/malformed or oversized messages fail closed, and no decoder dynamically interns attacker-controlled symbols.
 
-**Current implementation gap (as of this RFC):** Java source currently has `ActorMail<T>` typing and frozen/isolated-copy runtime transport, and formerly uses a broader `sendable` check that can admit explicitly scoped capabilities; the parser does **not** yet generate `@Serializable` codecs or named enums/patterns. This PR adds a *first strict source-level admission pass* for primitive and structural built-in types and rejects `@Serializable` until derivation exists; it **does not yet certify a portable binary codec or change every host-privileged transport path**. LLVM still lacks full source-level actor/send/receive lowering. Migrating previously permitted host capability mail must use a separate audited control path or a genuinely serializable capability type; do not silently weaken the new public `send` contract.
+**Current implementation gap (audit status):** Java source currently has `ActorMail<T>` typing and frozen/isolated-copy runtime transport, and formerly uses a broader `sendable` check that can admit explicitly scoped capabilities; the parser does **not** yet generate `@Serializable` codecs or named enums/patterns. This PR adds a *first strict source-level admission pass* for primitive and structural built-in types and rejects `@Serializable` until derivation exists; it **does not yet certify a portable binary codec or change every host-privileged transport path**. LLVM still lacks full source-level actor/send/receive lowering. Migrating previously permitted host capability mail must use a separate audited control path or a genuinely serializable capability type; do not silently weaken the new public `send` contract.
 
-## Binary wire v1: MessagePack by default, copying only as a proven fast path
+## Binary wire v2: canonical MessagePack with bound recursive type identity
 
 **Decision:** use standard **MessagePack** for actor message payloads, in a schema-guided Oreslang envelope. Avoid JSON/text in the hot path. ProtoBuf/FlatBuffers can be revisited for extremely large or specialized workloads without changing language semantics; CBOR is a valid alternative but would not remove the need for Oreslang type schemas. MessagePack's binary format is simple to implement across Java/Graal and native C++ and provides native compact arrays, strings, scalar numbers, booleans, maps and extension types. Do not confuse built-in MessagePack arrays with the five distinct Oreslang collection types.
 
 Initial frame for the isolated scalar/sequence codec:
 
 ```text
-MessagePack array(3):
-  [1, "fully.qualified.Schema.v1", payload]
+MessagePack array(4):
+  [2, "fully.qualified.Schema.v1", SHA256("oreslang.actor.shape.v2/" + canonical_shape) as bin32, payload]
+  canonical_shape:
+    B = bool; I = signed i64; F = finite f64; S = UTF-8 string
+    T[B,S] = Tuple[bool,string]; FA[I,I] = FixedArray[int64,int64]
+    FL[B,S] = FixedList[bool,string]; A[S] = Array[string]; L[S] = List[string]
 payload:
   Tuple[T1,...Tn]         -> MessagePack array(n) [element_1,...element_n]
   FixedArray[T1,...Tn]    -> MessagePack array(n), enforce exact length
@@ -163,6 +167,10 @@ payload:
   Array[T] / List[T]      -> MessagePack array(n), all items recursively T
   string / bool / i64 / f64 -> native MessagePack scalars
 ```
+
+**Audit hardening (wire v2):** The previous [1, schemaId, payload] envelope was insufficient: two different collection shapes with the same schema ID could be incorrectly decoded. Version 2 commits to a deterministic recursive shape using a full SHA-256 digest in a canonical MessagePack `bin8(32)` field. This is **type-binding, not cryptographic sender authentication**. Decoder rejects mismatched shape digests, unsupported old versions, nonminimal integer/string/array encodings, stale schemas, and array counts exceeding the remaining message bytes or remaining node quota **before allocation**. Canonical collection shape is recursively encoded in the digest (T, FA, FL, A, L and scalar kinds) and never inferred from payload bytes. Six v2 hex fixtures are generated independently with Python MessagePack and SHA-256 in `contracts/v1/design/messagepack_collection_vectors.json`; shared exact blob identity is mandatory across Java and LLVM.
+
+**Release-blocking gaps revealed by the audit:** The current Java source type system represents both `Array<T>` and `List<T>` as `Types.ListType(T)`; this erases their intended binary distinction until compiler lowering preserves source collection-kind metadata. Numeric aliases including `bigint` and unsigned widths currently also collapse into the generic `Primitive.INT`, while this codec is signed 64-bit only. The compiler must carry exact integer width/signedness and collection kind into immutable compiler-owned schema descriptors, reject out-of-range values, and define schema-major/migration rules before wiring this into `send`/ `receive`. The current public `shapeDigest(Shape)` utility and raw `encode(schemaId,shape,value)` API are a test/reference implementation, not a security capability nor a trusted schema registry.
 
 The **compiler-owned schema descriptor** determines whether an array payload is a tuple, fixed array, fixed list, dynamic Array or dynamic List. These kinds are *not* inferred from MessagePack bytes and must not be silently interconverted by a mismatched shape; the decoder checks the expected schema ID/version and correct type/arity. A future variant/pattern union must carry a stable resolved alternative tag for ambiguous overlapping types; do not decode it by guessing. Source-level `byte[]` versus `List[int]` and UTF-8 `str` versus binary `bin` remain distinct. Do not serialize a JVM `OresObject` or a native struct by reflecting or copying its physical memory layout.
 
