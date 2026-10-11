@@ -47,7 +47,8 @@ final class SourceActorGroupExecutionTest {
                   receive(ActorMail<String> mail): void {
                     val roomA = ActorGroup.new();
                     val roomB = ActorGroup.new();
-                    val permit = roomA.join_capability();
+                    val stale = roomA.join_capability();
+                    val permit = roomA.rotate_join_capability();
                     permit.join();
                     self.send(roomA.member_count());
                     self.send(roomB.member_count());
@@ -90,6 +91,7 @@ final class SourceActorGroupExecutionTest {
         for (String bad : java.util.List.of(
                 "room.leave(123);",
                 "room.join_capability(123);",
+                "room.rotate_join_capability(123);",
                 "room.member_count;",
                 "room.not_a_method();",
                 "ActorGroup.new(1);",
@@ -153,4 +155,22 @@ final class SourceActorGroupExecutionTest {
         assertTrue(denied.getMessage().contains("ACTOR_SPAWN"),
                 denied.getMessage());
     }
+    @Test
+    void untrustedSourceActorCannotCreateGroupAuthorities() {
+        String source = """
+                define untrusted actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val room = ActorGroup.new();
+                    self.end();
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(denied.getMessage().contains("untrusted actors cannot create ActorGroup"),
+                denied.getMessage());
+    }
+
 }
