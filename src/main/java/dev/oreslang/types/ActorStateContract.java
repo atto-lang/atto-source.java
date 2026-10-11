@@ -102,6 +102,28 @@ public final class ActorStateContract {
             visit(lambda.blockBody(), actor, keys, variable, false);
             return;
         }
+        // A live actor-state capability is a non-suspending, lexical borrow.
+        // Until the compiler can segment/revalidate loans on resume, admitting
+        // any suspension point would let another continuation mutate the same
+        // memory while this callback retains its old view.
+        if (activeAccess != null) {
+            if (node instanceof Ast.AwaitExpr
+                    || node instanceof Ast.SelectStmt
+                    || node instanceof Ast.DynamicSelectExpr
+                    || node instanceof Ast.ChannelOpExpr
+                    || node instanceof Ast.RuntimeCallExpr) {
+                throw new IllegalArgumentException(
+                        "actor state access cannot cross await, select, rt operations or other suspension boundaries");
+            }
+            if (node instanceof Ast.CallExpr) {
+                // The sealed self.handle_state nested call is handled above.
+                // Calls with no transitive, verified no-suspend summary are
+                // unsafe: even a syntactically synchronous callee may yield.
+                throw new IllegalArgumentException(
+                        "actor state callback cannot call an unverified callee; "
+                        + "continuation-safe effect and borrow checking are required");
+            }
+        }
         if (node instanceof Ast.MemberExpr member
                 && isSelf(member.receiver()) && member.member().equals("state")) {
             throw new IllegalArgumentException(
