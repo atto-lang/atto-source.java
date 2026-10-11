@@ -414,10 +414,10 @@ public final class OresContext implements AutoCloseable {
                 "actor_carrier_backend", actors.carrierBackend().name().toLowerCase(java.util.Locale.ROOT),
                 "root_scheduler", vm.rootScheduler().name(),
                 "scheduler_started", vm.started(),
-                "master_scheduler_threads", vm.masterSchedulerThreadCount(),
-                "actor_pool_scheduler_threads", actors.activatedActorPoolSchedulers(),
                 "control_carriers_started", vm.controlCarrierCount(),
                 "scheduler_safepoints", schedulerSafepoints.get()));
+        descriptor.put("master_scheduler_threads", vm.masterSchedulerThreadCount());
+        descriptor.put("actor_pool_scheduler_threads", actors.activatedActorPoolSchedulers());
         descriptor.put("source_loop_cooperates", sourceLoopCooperates.get());
         // All actors in this OresContext share its managed guest heap, even
         // when the context itself runs inside a Graal polyglot isolate.
