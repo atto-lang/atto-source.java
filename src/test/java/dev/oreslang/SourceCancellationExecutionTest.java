@@ -222,4 +222,50 @@ final class SourceCancellationExecutionTest {
             try { context.close(); } catch (RuntimeException expected) { }
         }
     }
+
+    @Test
+    void failingAwaitedFutureInsideFinallyPreservesOriginalCancellation()
+            throws Exception {
+        String source = """
+                async fnc fail_cleanup(): int {
+                  return 1 % 0;
+                }
+                pub async fnc work(): int {
+                  try {
+                    val Channel<int> gate = Channel.new<int>(0);
+                    stdio.println("armed");
+                    const ignored = await (nb readch gate);
+                  } catch (err) {
+                    stdio.println("INVALID-catch");
+                  } finally {
+                    stdio.println("cleanup-armed");
+                    const ignored = await fail_cleanup();
+                    stdio.println("INVALID-cleanup-success");
+                  }
+                  return 1;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            OresFuture<?> task = start(context, source);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!output.toString(StandardCharsets.UTF_8).contains("armed")
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("armed"));
+            assertTrue(task.cancel(false));
+            java.util.concurrent.ExecutionException reported = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            Throwable failure = reported.getCause();
+            assertInstanceOf(ArithmeticException.class, failure);
+            assertTrue(java.util.Arrays.stream(failure.getSuppressed())
+                            .anyMatch(dev.oreslang.runtime.OresScheduler.TaskCancelledException.class::isInstance),
+                    "async cleanup failure must preserve the original cancellation");
+            assertFalse(task.isCancelled(),
+                    "failed asynchronous cleanup must not publish clean cancellation");
+            assertEquals("armed\ncleanup-armed\n",
+                    output.toString(StandardCharsets.UTF_8));
+        }
+    }
 }
