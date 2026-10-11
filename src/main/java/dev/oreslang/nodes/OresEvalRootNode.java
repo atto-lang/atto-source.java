@@ -13,6 +13,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresSymbol;
+import dev.oreslang.runtime.HostInteropNull;
 import dev.oreslang.runtime.PatternMatchError;
 import dev.oreslang.runtime.ProcessGlobalRegistry;
 import dev.oreslang.runtime.ProcessSingletonRegistry;
@@ -1265,7 +1266,7 @@ public final class OresEvalRootNode extends RootNode {
                         "raw Oreslang null cannot cross into host code; use None for an optional host argument");
             }
             if (value instanceof OptionValue option) {
-                return option.present() ? unwrapHostArgument(option.value()) : null;
+                return option.present() ? unwrapHostArgument(option.value()) : HostInteropNull.INSTANCE;
             }
             return value instanceof HostObjectFacade host ? host.value() : value;
         }
