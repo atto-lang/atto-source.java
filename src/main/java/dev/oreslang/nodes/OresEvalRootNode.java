@@ -6308,7 +6308,10 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "isolated" -> handler.isolated();
                     case "serial" -> handler.serial();
-                    case "actor" -> handler.actor();
+                    case "send" -> (Invokable) args -> {
+                        handler.send(requireStringArg(args, "http.handler.send"));
+                        return null;
+                    };
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
                             throw new IllegalArgumentException("dispatch requires HTTP exchange");
