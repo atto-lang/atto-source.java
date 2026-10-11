@@ -84,7 +84,7 @@ final class SerialExecutionTicketTest {
         canceledTask.retire();
         canceledTask.retire(); // terminal notification/cancellation may race
         assertFalse(canceledTask.mayEnqueue());
-        assertThrows(IllegalStateException.class,
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
                 () -> canceledTask.requireAdmissible("actor", incarnation, handler));
         assertThrows(IllegalStateException.class,
                 () -> canceledTask.requireRunnable("actor", incarnation, handler));
