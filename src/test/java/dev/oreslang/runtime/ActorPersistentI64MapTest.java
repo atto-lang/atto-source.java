@@ -41,6 +41,21 @@ final class ActorPersistentI64MapTest {
                             assertEquals(2, view.size(),
                                     "outer access restored after nested callback");
                             assertThrows(IllegalArgumentException.class, () ->
+                                    current.critical(nested -> nested),
+                                    "critical callback must not return its live Access");
+                            assertThrows(IllegalArgumentException.class, () ->
+                                    current.critical(nested -> java.util.List.of(nested)),
+                                    "nested list must not tunnel a live Access");
+                            assertThrows(IllegalArgumentException.class, () ->
+                                    current.critical(nested -> java.util.Map.of("loan", nested)),
+                                    "nested map must not tunnel a live Access");
+                            assertThrows(IllegalArgumentException.class, () ->
+                                    current.critical(nested -> (Runnable) nested::size),
+                                    "deferred callback can capture a live Access");
+                            assertEquals(2, view.size(),
+                                    "rejected escapes must restore the outer critical access");
+
+                            assertThrows(IllegalArgumentException.class, () ->
                                     current.critical(nested -> {
                                         assertThrows(IllegalStateException.class, view::size);
                                         throw new IllegalArgumentException("nested callback failed");
