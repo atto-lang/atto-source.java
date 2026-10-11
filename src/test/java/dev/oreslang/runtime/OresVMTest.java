@@ -22,7 +22,8 @@ final class OresVMTest {
                 if (pc.getAndIncrement() == 0) return OresScheduler.await(source);
                 return OresScheduler.done((Integer) resume.value() + 1);
             });
-            assertTrue(vm.controlCarrierCount() > 0);
+            assertEquals(0, vm.controlCarrierCount(),
+                    "caller-thread admission must not start CONTROL workers");
             assertEquals(1, vm.rootScheduler().parallelism());
             turns.poll(5, TimeUnit.SECONDS).run();
             assertTrue(!task.isDone());
@@ -35,14 +36,16 @@ final class OresVMTest {
     }
 
     @Test
-    void controlCarriersAreLiveBeforeFirstRootTaskTurn() throws Exception {
+    void controlCarriersStartOnFirstRunnableRootTurn() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
             assertTrue(vm.started());
-            assertEquals(
-                    vm.rootScheduler().parallelism(),
-                    vm.controlCarrierCount(),
-                    "all CONTROL carriers must be resident before root execution");
+            assertEquals(0, vm.controlCarrierCount(),
+                    "logical CONTROL scheduling must not prestart OS workers");
+            assertEquals(OresVM.Pool.CONTROL,
+                    vm.poolScheduler(OresVM.Pool.CONTROL).domain());
+            assertEquals(vm.rootScheduler().parallelism(),
+                    vm.poolScheduler(OresVM.Pool.CONTROL).maximumCarriers());
 
             OresFuture<String> first =
                     vm.rootScheduler().start(resume -> {
@@ -56,6 +59,9 @@ final class OresVMTest {
 
             String threadName = first.get(5, TimeUnit.SECONDS);
             assertTrue(threadName.startsWith("ores-control-plane-"));
+            assertTrue(vm.controlCarrierCount() >= 1);
+            assertTrue(vm.controlCarrierCount() <=
+                    vm.poolScheduler(OresVM.Pool.CONTROL).maximumCarriers());
         } finally {
             vm.close();
         }
@@ -84,7 +90,8 @@ final class OresVMTest {
             assertTrue(dispatch > 0L);
             vm.startup();
             vm.startup();
-            assertEquals(vm.rootScheduler().parallelism(), vm.controlCarrierCount());
+            assertTrue(vm.controlCarrierCount() >= 1);
+            assertTrue(vm.controlCarrierCount() <= vm.rootScheduler().parallelism());
         } finally {
             vm.close();
         }
@@ -98,6 +105,11 @@ final class OresVMTest {
                 new ActorRuntime.DispatcherConfig(2, 3, 64, 128),
                 ActorRuntime.TurnExecutor.direct());
         try {
+            assertEquals(0, vm.poolScheduler(OresVM.Pool.SHARED).createdCarriers());
+            assertEquals(0, vm.poolScheduler(OresVM.Pool.TRUSTED_PRIVATE).createdCarriers());
+            assertEquals(0, vm.poolScheduler(OresVM.Pool.UNTRUSTED).createdCarriers());
+            assertEquals(3, vm.poolScheduler(OresVM.Pool.SHARED).maximumCarriers());
+            assertEquals(2, vm.poolScheduler(OresVM.Pool.TRUSTED_PRIVATE).maximumCarriers());
             assertEquals(2, actors.carrierParallelism(ActorRuntime.ActorKind.PRIVATE));
             assertEquals(3, actors.carrierParallelism(ActorRuntime.ActorKind.SHARED));
             assertEquals(
@@ -133,6 +145,11 @@ final class OresVMTest {
             assertEquals(
                     Integer.getInteger("ores.runtime.control.parallelism", 5),
                     vm.rootScheduler().parallelism());
+            assertEquals(0, vm.controlCarrierCount());
+            for (OresVM.Pool pool : OresVM.Pool.values()) {
+                assertTrue(vm.poolScheduler(pool).maximumCarriers() > 0);
+                assertEquals(0, vm.poolScheduler(pool).createdCarriers());
+            }
         }
     }
 }
