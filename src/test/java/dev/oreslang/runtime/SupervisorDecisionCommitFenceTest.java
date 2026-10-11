@@ -69,6 +69,29 @@ final class SupervisorDecisionCommitFenceTest {
         }
     }
 
+
+    @Test
+    void processAdmissionFailsWhenControlDispatcherRunsInline() {
+        var supervisor = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        AtomicInteger guestPolicies = new AtomicInteger();
+        SupervisorProcess process = new SupervisorProcess(
+                supervisor, group, Runnable::run, 2,
+                n -> {
+                    guestPolicies.incrementAndGet();
+                    return CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP);
+                },
+                r -> fail("inline CONTROL dispatcher must not commit lifecycle effects"));
+        assertThrows(IllegalStateException.class,
+                () -> process.accept(notice(supervisor, group)));
+        assertEquals(0, guestPolicies.get());
+        assertEquals(1, process.admitted(), "the enqueued notice was counted");
+        assertEquals(1, process.undelivered(), "failed dispatch lost accounting");
+        assertEquals(0, process.queued(), "failed dispatch retained notice metadata");
+        assertFalse(process.callbackActive());
+        assertFalse(process.healthy());
+    }
+
     @Test
     void closeWaitsForAdmittedLifecycleDecisionToComplete() throws Exception {
         try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
