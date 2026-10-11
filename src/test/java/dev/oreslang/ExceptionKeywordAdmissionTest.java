@@ -21,6 +21,20 @@ final class ExceptionKeywordAdmissionTest {
     }
 
     @Test
+    void actorSupervisorMethodNamesCannotMasqueradeAsCheckedHandlers() {
+        // Until source-level typed supervision + scheduler CONTROL dispatch is
+        // implemented, these names must not compile as inert actor methods.
+        for (String name : new String[]{
+                "on_throw", "on_throws", "on_raise", "on_panic", "on_recover"}) {
+            var error = assertThrows(IllegalArgumentException.class, () ->
+                    Parser.parse("define actor Supervisor as "
+                            + name + "(): void { return; } end"), name);
+            assertTrue(error.getMessage().contains("compiler-enforced exhaustiveness"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void unsupportedEffectStatementsFailClosedRatherThanCompileAsCalls() {
         for (String keyword : new String[]{"throw", "raise", "panic", "recover"}) {
             var error = assertThrows(IllegalArgumentException.class, () ->
