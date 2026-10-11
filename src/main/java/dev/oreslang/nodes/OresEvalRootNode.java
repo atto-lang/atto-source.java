@@ -46,6 +46,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
+    public static final String INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND =
+            "__ores_internal_invoke_public_future_bridge__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
     private final Ast.Program program;
@@ -98,11 +100,26 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
         if (arguments.length >= 2
-                && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
+                && (INVOKE_PUBLIC_COMMAND.equals(arguments[0])
+                    || INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]))
                 && arguments[1] instanceof String functionName) {
             current.link();
             Object result = current.invokePublic(
                     functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            if (INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0])) {
+                if (!(result instanceof OresFuture<?> future)) {
+                    throw new IllegalArgumentException(
+                            "host Future handoff requires an async public function: " + functionName);
+                }
+                if (!OresHostFutureBridge.publish(functionName, future)) {
+                    throw new SecurityException(
+                            "host Future handoff requires an active scoped invocation");
+                }
+                // Return a plain scalar acknowledgment. The embedder already
+                // has the real Future in its thread-local host-only scope and
+                // must not call Value.asHostObject() while guest work runs.
+                return 0;
+            }
             // Runtime Future/Channel handles are not valid raw Truffle interop
             // results. Adapt only the explicit public embedder boundary:
             // guest dispatch retains native Oreslang handles, and no arbitrary
