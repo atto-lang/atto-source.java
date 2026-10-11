@@ -19,6 +19,10 @@ import java.util.function.Consumer;
  * Other statements, effects, hooks and suspension
  * fail at compile time; this is NOT the general Oreslang evaluator.
  *
+ * The optional typed Failure argument is bound to the current delivered
+ * notice. A stable logical child reference and general guest expression
+ * evaluation are not implied by this restricted source slice.
+ *
  * The compiler produces a closed, immutable decision plan. ActorGroup owns
  * CONTROL scheduling, single-flight continuation identity, and delivery
  * after actor cleanup. The trusted host sink must acknowledge the lifecycle
