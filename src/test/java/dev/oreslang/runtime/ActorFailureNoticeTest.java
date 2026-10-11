@@ -126,6 +126,26 @@ final class ActorFailureNoticeTest {
     }
 
     @Test
+    void genericFutureCancellationDoesNotMasqueradeAsActorThrow() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw new java.util.concurrent.CancellationException("cancelled");
+                    });
+            actor.send("cancel");
+            try {
+                actor.done().get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException
+                    | java.util.concurrent.CancellationException expected) {
+                // The actor terminates, but no unhandled THROW notice is emitted.
+            }
+            assertTrue(actor.done().isDone());
+            assertFalse(actor.failureNotice().isDone(),
+                    "a cancellation control effect is not an ordinary throw");
+        }
+    }
+
+    @Test
     void ordinaryStopDoesNotFabricateASupervisorPanic() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnShared(
