@@ -25,12 +25,14 @@ not these lexical completion tokens; a panic bypasses ordinary guest `catch`
 unless a future explicitly defined recover handler authorizes otherwise.
 
 `ARM_RESULT` must **not** share the `FUNCTION_RETURN` discriminant. The
-current synchronous evaluator has separate `ArmResultSignal` and
-`ReturnSignal`; the current suspendable `SourceFlowKind` has only
-`NORMAL/RETURN/BREAK/CONTINUE/THROW`. There is no `ARM_RESULT` lowering in
-`SourceTask` yet. The compiler is expected to keep it fail-closed for
-suspending/async/generator callables until ownership and cleanup equivalence
-are implemented, not translate arm completion into function return.
+synchronous evaluator uses distinct `ArmResultSignal`/`ReturnSignal`, while
+the new SourceTask implementation carries `SourceFlowKind.ARM_RESULT` with a
+monotonic, task-local `matchFrameId`. An arm return is consumed only at its
+matching lexical boundary, after that frame's defers/finally settle.
+The first admission is deliberately narrow: scalar result/subject, explicitly
+awaited zero-argument local named callables, and the previously verified pure
+scalar/stdio arm statements. Generator arms, general calls, owned payloads,
+arbitrary suspending cleanup and recover remain unsupported.
 
 ## Completion algebra for cleanup
 
@@ -108,8 +110,8 @@ synchronous value-match path.
 
 ## Remaining release gates
 
-1. Add a typed, frame-identified `ARM_RESULT` to the real continuation IR,
-   not a Java exception crossing a suspended task.
+1. Prove a formal refinement from the new frame-identified `ARM_RESULT`
+   SourceFlow to the bounded model, including nested asynchronous matches.
 2. Ensure cleanup and user failure outcomes are represented independently
    enough to preserve the original error through callback races.
 3. Bind resume to runtime-issued actor/task/incarnation tickets and a one-way
@@ -121,3 +123,27 @@ synchronous value-match path.
    the full verification matrix.
 
 No green abstract model check can waive any of these release gates.
+
+## Awaited typed value-match milestone (October 11, 2026)
+
+The actual SourceTask evaluator now uses `SourceFlowKind.ARM_RESULT`, not a
+Java exception, to represent an arm-local result. A fresh task-local frame id
+is assigned once an arm is selected; it survives suspension on the source
+continuation and is inherited by nested lexical Env frames. Nested value
+matches get distinct frame ids, and completion at the wrong boundary is an
+internal error. `runBlock` unwinds defers and mutex guards before the result
+reaches the owning match evaluator. Cleanup failure replaces a pending result
+but cannot mask a pre-existing guest exception.
+
+`SuspendableTypedValueMatchExecutionTest` exercises subject-await, arm-result
+await, nested frames, ordered LIFO defers and failure-before-publication.
+The new admission permits direct explicit `await namedLocal()` with no
+arguments as a scalar expression in an async/suspends callable; implicit
+suspending calls or other unverified effects are still rejected.
+
+**Important boundary:** this implementation establishes a narrow real
+continuation path, not general language-wide suspendable typed match support
+and not JVM/LLVM compiler refinement. Source-level async task cancellation
+fencing, untrusted isolation, recover, and concurrent actor lifetime
+verification require their own tests. Until all concrete backends pass exact
+source CI, the implementation is an unverified draft.
