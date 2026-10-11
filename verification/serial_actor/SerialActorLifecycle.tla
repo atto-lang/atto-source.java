@@ -92,6 +92,8 @@ Complete ==
     /\ owner' = NoOwner
     /\ UNCHANGED <<pending, generation, incarnation, tickets, executions>>
 
+Queued == {pending[i] : i \in 1..Len(pending)}
+
 CancelQueued(h) ==
     /\ h \in outstanding
     /\ h # owner
@@ -147,8 +149,6 @@ SingleHandlerLifetime ==
     /\ (phase \in {"RUNNING", "SUSPENDED"} <=> owner # NoOwner)
     /\ (owner # NoOwner => owner \in outstanding)
     /\ (phase = "STOPPED" => owner = NoOwner /\ pending = <<>>)
-
-Queued == {pending[i] : i \in 1..Len(pending)}
 
 FifoAndOwnership ==
     /\ \A i, j \in 1..Len(pending) : i # j => pending[i] # pending[j]
