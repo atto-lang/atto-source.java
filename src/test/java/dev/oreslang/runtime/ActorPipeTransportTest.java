@@ -103,6 +103,26 @@ final class ActorPipeTransportTest {
     }
 
     @Test
+    void rejectsMutableObjectsAndOversizeScalarsAtHostBoundary() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            String listType = java.util.ArrayList.class.getName();
+            var mutable = List.of(
+                    new ActorPipelineContract.Stage("Source", ActorPipelineContract.Role.READABLE, null, listType),
+                    new ActorPipelineContract.Stage("Sink", ActorPipelineContract.Role.WRITABLE, listType, null));
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorPipeTransport.open(runtime, runtime.rootSupervisor(),
+                            mutable, List.of(java.util.ArrayList.class), 1),
+                    "mutable Java collections must not cross actor isolation domains");
+            try (var pipe = ActorPipeTransport.open(runtime, runtime.rootSupervisor(),
+                    stages(), List.of(String.class, String.class), 1)) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> pipe.writer(0, String.class).writeAsync("x".repeat(1_048_577)),
+                        "oversized string cannot allocate unbounded cross-actor payload storage");
+            }
+        }
+    }
+
+    @Test
     void keepsForwardAndReverseAuthorityDistinct() {
         try (ActorRuntime runtime = new ActorRuntime();
              var pipe = ActorPipeTransport.open(runtime, runtime.rootSupervisor(),
