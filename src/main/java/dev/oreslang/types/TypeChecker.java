@@ -2041,8 +2041,16 @@ public final class TypeChecker {
                         || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda))
                     throw new IllegalArgumentException("self.handle_state requires one callback lambda");
                 Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
+                // A state-update callback with no value-return path has
+                // unit result, not an inferred non-void result. Otherwise
+                // TypeChecker requires an unnecessary dummy return from every
+                // mutation-only handle_state block. Value-returning callbacks
+                // retain the normal definite-return requirement.
+                Type callbackReturn = lambda.expressionBody() != null
+                        || definitelyReturns(lambda.blockBody())
+                        ? Unknown.INSTANCE : Primitive.VOID;
                 validateLambdaAgainstExpected(lambda,
-                        new Function(List.of(schemaType), Unknown.INSTANCE), env, generics, self);
+                        new Function(List.of(schemaType), callbackReturn), env, generics, self);
                 // Source runtime must still lower the sealed capability.
                 return Unknown.INSTANCE;
             }
