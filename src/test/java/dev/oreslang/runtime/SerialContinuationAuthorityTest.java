@@ -30,6 +30,7 @@ final class SerialContinuationAuthorityTest {
         var unowned = new SerialContinuationAuthority(admission, null);
         unowned.requireRunnable();
         var receive = admission.submit(SerialActorAdmission.Kind.MESSAGE).join();
+        assertFalse(unowned.mayQueue(), "busy serial actor rejects unbound callback");
         assertThrows(IllegalStateException.class, unowned::requireRunnable);
         receive.suspend();
         assertThrows(IllegalStateException.class, unowned::requireRunnable);
