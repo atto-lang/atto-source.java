@@ -72,3 +72,26 @@ tracing GC. Java's existing FFM loan/physical-close/quota retention
 checks remain separate, necessary lifecycle primitives. Further work
 must attach this descriptor to actual source class/struct allocation,
 ActorGroup exclusive turns, and end-to-end await/FFI cancellation.
+
+
+## Idiomatic source lifecycle observers
+
+The runtime's `ActorRef.get_ready()` and `ActorRef.get_done()` are
+zero-argument methods returning the **same runtime-owned**
+`OresFuture<Void>` tickets as the compatibility `ready()` and
+`done()` host observer APIs. They do not create stop or cancellation
+authority; `get_done()` still resolves only after the actor runtime
+completes physical finalization.
+
+The guest-source member dispatcher in `OresEvalRootNode` explicitly
+resolves `worker.get_ready()` and `worker.get_done()` as zero-arity
+invocations. Legacy `await worker.ready` and `await worker.done`
+continue to be recognized for existing source fixtures.
+
+The companion tests are
+`ActorReadinessLifecycleTest` (host observer identity, cancellation
+denial, readiness and physical done ordering) and
+`SourceActorSpawnExecutionTest` (two independent source workers
+awaiting lifecycle methods). This is lifecycle spelling/semantics
+parity, **not** a claim that Java/Graal native FFM fields have been
+connected to the LLVM typed memory-layout descriptor in every actor.
