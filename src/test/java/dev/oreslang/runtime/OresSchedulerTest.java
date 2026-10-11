@@ -472,6 +472,79 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void terminalCallbackSelfCloseCannotBlockBehindConcurrentHostClose()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> upstream = new OresFuture<>();
+        CountDownLatch callbackFinished = new CountDownLatch(1);
+        CountDownLatch hostCloseFinished = new CountDownLatch(1);
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        AtomicReference<Throwable> hostCloseFailure = new AtomicReference<>();
+        AtomicInteger cleanupTurns = new AtomicInteger();
+
+        OresFuture<Integer> task = scheduler.start(
+                new OresScheduler.CancellationAwareTask<>() {
+                    @Override public boolean cleanupInProgress() { return false; }
+                    @Override public void cancellationRequested(
+                            OresScheduler.TaskCancelledException reason) { }
+                    @Override public OresScheduler.Step<Integer> resume(
+                            OresScheduler.Resume input) {
+                        if (input.initial()) return OresScheduler.await(upstream);
+                        assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                                input.failure());
+                        cleanupTurns.incrementAndGet();
+                        return OresScheduler.done(41);
+                    }
+                });
+        task.whenCompleteRuntime((value, failure) -> {
+            try {
+                assertInstanceOf(OresScheduler.TaskCancelledException.class, failure);
+                assertTrue(scheduler.isClosed(),
+                        "host shutdown owns the scheduler before terminal callback");
+                assertNull(OresScheduler.current(),
+                        "terminal callback runs after guest turn was unbound");
+                var rejected = assertThrows(IllegalStateException.class,
+                        scheduler::close);
+                assertTrue(rejected.getMessage().contains("terminal Future callback"));
+            } catch (Throwable problem) {
+                callbackFailure.set(problem);
+            } finally {
+                callbackFinished.countDown();
+            }
+        });
+
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (upstream.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, upstream.pendingRuntimeWaiterCount());
+
+            Thread closer = Thread.ofPlatform().daemon(true).start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable problem) {
+                    hostCloseFailure.set(problem);
+                } finally {
+                    hostCloseFinished.countDown();
+                }
+            });
+
+            assertTrue(callbackFinished.await(4, TimeUnit.SECONDS),
+                    "scheduler callback must reject self-close before acquiring the close lock");
+            assertTrue(hostCloseFinished.await(4, TimeUnit.SECONDS),
+                    "host close must drain without deadlocking terminal callback");
+            closer.join(1000);
+            assertNull(callbackFailure.get());
+            assertNull(hostCloseFailure.get());
+            assertTrue(task.isCancelled());
+            assertEquals(1, cleanupTurns.get());
+            assertFalse(upstream.isDone(), "cancellation does not cancel shared producer");
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
     void cancellingUnclaimedQueuedTaskNeverEntersVmAndSettlesWithoutCarrier() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         CountDownLatch entered = new CountDownLatch(1);
