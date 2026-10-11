@@ -5,6 +5,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.ActorStateContract;
 import dev.oreslang.types.DeclaredEffectVerifier;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import java.util.Set;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
@@ -120,8 +123,12 @@ final class SerialActorImplicitCriticalTest {
                     return;
                 }
                 """;
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).build()) {
+        // Grant only the capability needed to reach HTTP registration.
+        // Otherwise NETWORK denial masks whether serial spawn-per-request
+        // routing itself fails closed.
+        try (Context context = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of()).build()) {
             Source compiled = Source.newBuilder(
                     OresLanguage.ID, source, "serial-http-must-be-persistent.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build();
