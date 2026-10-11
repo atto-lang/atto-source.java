@@ -1374,6 +1374,23 @@ public final class OwnershipChecker {
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (target != null) {
                 Ast.MethodDecl method = target.method();
+                if (method.critical() && (method.suspends() || method.async())
+                        && isBorrowValue(receiverValue)) {
+                    // Receiver evaluation happens before the ordinary lexical
+                    // suspension check. A temporary `(&obj).critical()` or
+                    // `(rt borrow obj).critical()` has no stored VarState and
+                    // would otherwise be captured across mandatory entry yield.
+                    // An actor's original `self` is a separately verified
+                    // incarnation-owned implicit lease, not a guest loan.
+                    boolean pinnedActorSelf = member.receiver() instanceof Ast.NameExpr name
+                            && name.name().equals("self")
+                            && scope.lookup("self") != null
+                            && isActorConfinedBorrow(scope.lookup("self"));
+                    if (!pinnedActorSelf) {
+                        throw error("suspend critical method '" + method.name()
+                                + "' cannot capture a borrowed receiver across mandatory entry yield");
+                    }
+                }
                 if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
                     ensureMutableReceiver(
                             member.receiver(),
