@@ -1686,6 +1686,31 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
 
+        /**
+         * A failed finally/defer/guard-release supersedes a pending exit,
+         * including a pending return. Preserve an earlier exceptional exit as
+         * suppressed evidence without illegally converting lexical returns to
+         * catchable guest exceptions.
+         */
+        private SourceFlow mergeCleanupFlow(SourceFlow pending, SourceFlow cleanup) {
+            if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
+            if (cleanup.kind() == SourceFlowKind.THROW
+                    && pending.kind() == SourceFlowKind.THROW) {
+                Throwable later = cleanup.failure();
+                Throwable earlier = pending.failure();
+                if (later != earlier
+                        && java.util.Arrays.stream(later.getSuppressed())
+                                .noneMatch(suppressed -> suppressed == earlier)) {
+                    later.addSuppressed(earlier);
+                }
+            }
+            return cleanup;
+        }
+
+        private SourceFlow cleanupFailure(SourceFlow pending, Throwable failure) {
+            return mergeCleanupFlow(pending, SourceFlow.throwing(failure));
+        }
+
         private void finishBlock(
                 SourceTask task,
                 Env env,
@@ -1698,7 +1723,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = cleanupFailure(initialFlow, failure);
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1726,7 +1751,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = cleanupFailure(currentFlow, failure);
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1738,14 +1763,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    cleanupFailure(currentFlow, failure),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -2008,10 +2030,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            mergeCleanupFlow(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2020,10 +2039,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            mergeCleanupFlow(flow, finallyFlow)));
                                 }
                             });
                     return;
