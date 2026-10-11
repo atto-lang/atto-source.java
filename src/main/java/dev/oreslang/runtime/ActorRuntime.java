@@ -3903,10 +3903,23 @@ public final class ActorRuntime implements AutoCloseable {
                 if (notifyMaster != null) notifyMaster.accept(kind);
                 return ref;
             } catch (RuntimeException | Error failure) {
-                if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (linkedToParent && cell != null) {
+                    synchronized (parent.lifecycleLock) {
+                        parent.children.remove(cell);
+                    }
+                }
                 actors.remove(id);
                 poolSchedulerFor(kind).unregisterActor(id);
                 actorCount.decrementAndGet();
+                // Actor identity was never published. Reclaim its owned slice
+                // and output-channel reservation on first-actor thread-start
+                // failure, supervisor races, or any later admission failure.
+                if (cell != null) {
+                    try { cell.outputStream.closeAndDrainFromRuntime(); }
+                    catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                    try { cell.memorySlice.close(); }
+                    catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                }
                 throw failure;
             }
         }
@@ -6261,9 +6274,11 @@ public final class ActorRuntime implements AutoCloseable {
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
                     ref.id(), outputChannel);
+            this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
+            // Publish only after every constructor allocation succeeds. A
+            // failed spawn must not leak an unregistered output stream.
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
