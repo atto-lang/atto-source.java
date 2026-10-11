@@ -412,6 +412,62 @@ public final class OresEvalRootNode extends RootNode {
             return image;
         }
 
+        /**
+         * Bind the compiled receive(ActorMail<T>) contract to a canonical
+         * binary descriptor at source-actor construction, not at send time.
+         * Both parties use this one trusted source-code-image descriptor;
+         * neither the guest nor wire bytes can redefine it.
+         */
+        @Override
+        public java.util.Optional<dev.oreslang.runtime.MessagePackCollectionCodec.MailboxSchema>
+                mailboxSchema(String actorTypeName) {
+            Ast.ClassDecl actor = requireLocalActorClass(actorTypeName);
+            Ast.MethodDecl receive = findMethod(
+                    actor,
+                    CallableSelector.instance("receive", 1),
+                    new LinkedHashSet<>());
+            if (receive == null) {
+                // Existing source actors without receive remain on the legacy
+                // runtime path pending the actor API's complete migration.
+                return java.util.Optional.empty();
+            }
+            if (receive.parameters().size() != 1) {
+                throw new IllegalArgumentException(
+                        "source actor receive requires exactly one ActorMail<T> parameter");
+            }
+            Ast.TypeRef declaredMail = receive.parameters().getFirst().type();
+            if (!declaredMail.name().equals("ActorMail")
+                    || declaredMail.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "source actor receive parameter must be ActorMail<T>");
+            }
+            java.util.Map<String, Ast.TypeRef> aliases = new java.util.HashMap<>();
+            for (Ast.TypeAliasDecl alias : typeAliases.values()) {
+                if (alias.genericParameters().isEmpty()) {
+                    aliases.put(alias.name(), alias.target());
+                }
+            }
+            var shape = dev.oreslang.types.ActorWireSchema.fromSource(
+                    declaredMail.arguments().getFirst(), aliases);
+
+            // Stable code-unit-qualified domain, independent of native host
+            // object identity or JVM hashCode. Evolve schema major explicitly.
+            byte[] schemaInput = (codeUnitId + "#" + actorTypeName)
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            final byte[] identity;
+            try {
+                identity = java.security.MessageDigest
+                        .getInstance("SHA-256").digest(schemaInput);
+            } catch (java.security.NoSuchAlgorithmException unavailable) {
+                throw new IllegalStateException("SHA-256 provider unavailable", unavailable);
+            }
+            String schemaId = "oreslang.actor."
+                    + java.util.HexFormat.of().formatHex(identity) + ".v1";
+            return java.util.Optional.of(
+                    new dev.oreslang.runtime.MessagePackCollectionCodec.MailboxSchema(
+                            schemaId, shape));
+        }
+
         @Override
         public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String actorTypeName,
