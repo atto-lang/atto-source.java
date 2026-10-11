@@ -37,6 +37,25 @@ final class SourceSupervisorStopLoweringTest {
                 () -> OresCompiler.parseAndTypeCheck(SOURCE));
     }
 
+
+    @Test
+    void implicitControlDoesNotRequireAnAnnotationOrAnExplicitLock() {
+        String source = """
+                define supervisor Root as
+                  pub on_panic(f: Failure): void {
+                    self.stop();
+                    return;
+                  }
+                end
+                """;
+        var lowered = OresCompiler.compileStopOnlySupervisor(source);
+        assertEquals("Root", lowered.sourceName());
+        // STOP-only is opt-in; the general source compiler must still reject
+        // lifecycle hooks without complete guest CONTROL lowering.
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
     @Test
     void foreignStatementsAndUnsupportedLifecycleEffectsFailClosed() {
         for (String body : new String[] {
