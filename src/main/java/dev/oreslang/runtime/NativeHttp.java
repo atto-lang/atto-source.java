@@ -106,6 +106,15 @@ public final class NativeHttp implements AutoCloseable {
             actor().send(message);
         }
 
+        /**
+         * Observe exactly this actor incarnation, not whichever process the
+         * handler may spawn for the next request. This is supervisor-only and
+         * returns the runtime's non-cancellable termination observer.
+         */
+        public OresFuture<Void> done() {
+            return actor().done();
+        }
+
         public void dispatch(Exchange exchange) {
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
