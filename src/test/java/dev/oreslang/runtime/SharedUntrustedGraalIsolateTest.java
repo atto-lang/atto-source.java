@@ -36,6 +36,29 @@ class SharedUntrustedGraalIsolateTest {
     }
 
     @Test
+    void hostLegacyUntrustedSpawnFailsClosedWhenPhysicalBoundaryRequired() {
+        String key = "ores.untrusted.require-physical-isolate";
+        String previous = System.getProperty(key);
+        try {
+            System.setProperty(key, "true");
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+                SecurityException rejected = assertThrows(SecurityException.class, () ->
+                        runtime.<String>spawnUntrusted(context -> (message, actor) -> {}));
+                assertTrue(rejected.getMessage().contains("physical shared Graal isolate"));
+            }
+            // An adversarial Java runtime *also* cannot fake isolate residency.
+            try (ActorRuntime runtime = new ActorRuntime(
+                    IsolatePolicy.sharedUntrustedDomain(256L * 1024 * 1024))) {
+                assertThrows(SecurityException.class, () ->
+                        runtime.<String>spawnUntrusted(context -> (message, actor) -> {}));
+            }
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
+    @Test
     void tooSmallIsolateCannotBeCreated() {
         assertThrows(IllegalArgumentException.class, () ->
                 SharedUntrustedGraalIsolate.open(1024));
