@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown, OpenValue { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -100,12 +100,18 @@ public final class Types {
 
     public record StringLiteral(String value) implements Type { }
 
+    /** User-visible top type: anything may be stored, but reads require explicit narrowing. */
+    public enum OpenValue implements Type { INSTANCE }
+
+    /** Internal inference placeholder, distinct from source-level unknown. */
     public enum Unknown implements Type { INSTANCE }
 
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
+        if (to == OpenValue.INSTANCE) return true;
+        if (from == OpenValue.INSTANCE) return false;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
         if (from instanceof SelfType source) {
