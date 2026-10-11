@@ -669,7 +669,9 @@ public final class Parser {
                 ? parseTypeRefList() : List.of();
 
         boolean braceStyle = match(LBRACE);
-        if (!braceStyle) match(AS);
+        // Accept both 'actor A { ... }' and 'actor A as { ... }' alongside
+        // canonical 'actor A as ... end'. Serial is an orthogonal modifier.
+        if (!braceStyle && match(AS)) braceStyle = match(LBRACE);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();

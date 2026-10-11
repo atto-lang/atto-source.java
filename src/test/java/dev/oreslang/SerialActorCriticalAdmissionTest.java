@@ -67,6 +67,18 @@ final class SerialActorCriticalAdmissionTest {
         assertDoesNotThrow(() -> ActorStateContract.verify(program));
     }
 
+    @Test void serialActorAlsoAcceptsAsBracedDeclaration() {
+        Ast.Program parsed = Parser.parse("""
+            define serial actor Empty as {
+                state { count: int = 0; }
+            }
+            """);
+        Ast.ClassDecl actor = (Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst();
+        assertTrue(actor.serial());
+        assertEquals(1, actor.fields().size());
+    }
+
     @Test void invalidSerialDeclarationsAndUsingBoundsFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define serial class Counter as end"));
