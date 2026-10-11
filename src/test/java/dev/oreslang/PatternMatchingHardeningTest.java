@@ -224,7 +224,7 @@ final class PatternMatchingHardeningTest {
                   end
                 }
                 """)));
-        assertTrue(error.getMessage().contains("non-exhaustive return match"));
+        assertTrue(error.getMessage().contains("non-exhaustive value match"));
     }
 
     @Test
@@ -238,11 +238,11 @@ final class PatternMatchingHardeningTest {
                 }
                 """)));
 
-        // The ordinary match form is intentionally partial and falls
+        // The explicit 'do match' statement is intentionally partial and falls
         // through to the statement after the entire match.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc maybe(string value): string {
-                  match value over
+                  do match value over
                     on "ok" { return "accepted"; }
                   end
                   return "fallback";
@@ -266,7 +266,7 @@ final class PatternMatchingHardeningTest {
                           end
                         }
                         """)));
-        assertTrue(noCoverage.getMessage().contains("non-exhaustive return match"),
+        assertTrue(noCoverage.getMessage().contains("non-exhaustive value match"),
                 noCoverage.getMessage());
 
         IllegalArgumentException noReturn = assertThrows(IllegalArgumentException.class,
@@ -279,7 +279,7 @@ final class PatternMatchingHardeningTest {
                           end
                         }
                         """)));
-        assertTrue(noReturn.getMessage().contains("return match arm must return"),
+        assertTrue(noReturn.getMessage().contains("value match arm does not return a value"),
                 noReturn.getMessage());
 
         IllegalArgumentException guarded = assertThrows(IllegalArgumentException.class,
@@ -290,7 +290,7 @@ final class PatternMatchingHardeningTest {
                           end
                         }
                         """)));
-        assertTrue(guarded.getMessage().contains("non-exhaustive return match"),
+        assertTrue(guarded.getMessage().contains("non-exhaustive value match"),
                 guarded.getMessage());
     }
 
@@ -331,7 +331,7 @@ final class PatternMatchingHardeningTest {
                           end
                         }
                         """)));
-        assertTrue(noDefault.getMessage().contains("non-exhaustive return switch"),
+        assertTrue(noDefault.getMessage().contains("non-exhaustive value switch"),
                 noDefault.getMessage());
 
         IllegalArgumentException noReturn = assertThrows(IllegalArgumentException.class,
@@ -345,7 +345,7 @@ final class PatternMatchingHardeningTest {
                           end
                         }
                         """)));
-        assertTrue(noReturn.getMessage().contains("return switch default must return"),
+        assertTrue(noReturn.getMessage().contains("value switch default does not return a value"),
                 noReturn.getMessage());
     }
 
