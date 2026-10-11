@@ -59,6 +59,26 @@ final class OresExceptionPolicyTest {
     }
 
     @Test
+    void hostErrorsStayAboveGuestPanicAndStructuredCancellation() {
+        OresPanic pending = new OresPanic("panic before finally");
+        AssertionError hostFailure = new AssertionError("host invariant");
+        Throwable dominant = OresExceptionPolicy.combine(pending, hostFailure);
+        assertSame(hostFailure, dominant,
+                "an uncaught Java Error cannot be downgraded into a guest panic");
+        assertArrayEquals(new Throwable[]{pending}, hostFailure.getSuppressed());
+
+        CancellationException cancelled = new CancellationException("cancelled");
+        AssertionError duringCleanup = new AssertionError("cleanup host failure");
+        assertSame(duringCleanup, OresExceptionPolicy.combine(cancelled, duringCleanup));
+        assertArrayEquals(new Throwable[]{cancelled}, duringCleanup.getSuppressed());
+
+        // A scheduler cancellation signal remains cancellation, not HostFatal,
+        // even though its JVM representation extends Error.
+        assertSame(cancelled,
+                OresExceptionPolicy.combine(cancelled, new OresPanic("later panic")));
+    }
+
+    @Test
     void selfSuppressionIsNotAttempted() {
         OresPanic same = new OresPanic("same");
         assertSame(same, OresExceptionPolicy.combine(same, same));
