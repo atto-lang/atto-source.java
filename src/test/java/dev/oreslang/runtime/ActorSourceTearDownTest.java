@@ -29,6 +29,7 @@ final class ActorSourceTearDownTest {
         private final SharedCodeImageStore.CodeImage image;
         private final AtomicInteger receives = new AtomicInteger();
         private final AtomicInteger teardowns = new AtomicInteger();
+        private final AtomicInteger finalCleanups = new AtomicInteger();
         private final boolean teardownFails;
 
         Executor(SharedCodeImageStore.CodeImage image, boolean teardownFails) {
@@ -58,6 +59,8 @@ final class ActorSourceTearDownTest {
             receives.incrementAndGet();
             if ("self".equals(mail.value())) {
                 context.self().stop();
+            } else if ("self-with-cleanup".equals(mail.value())) {
+                context.runtime().endCurrentActorWithCleanup(finalCleanups::incrementAndGet);
             } else if ("fail".equals(mail.value())) {
                 throw new IllegalStateException("receive failure");
             }
@@ -129,6 +132,21 @@ final class ActorSourceTearDownTest {
             assertThrows(CompletionException.class, () -> ref.done().join());
             assertEquals(0, executor.teardowns.get());
             assertEquals("receive failure", ref.failure().orElseThrow().getMessage());
+        }
+    }
+
+    @Test
+    void teardownFailureStillRunsRegisteredLastCleanup() {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), true);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().join();
+            ref.send("self-with-cleanup");
+            assertThrows(CompletionException.class, () -> ref.done().join());
+            assertEquals(1, executor.teardowns.get());
+            assertEquals(1, executor.finalCleanups.get());
         }
     }
 
