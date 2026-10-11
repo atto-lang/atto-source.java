@@ -5945,7 +5945,24 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static boolean usesNativeCarriers(ExecutorService executor) {
         return executor instanceof NativeCarrierExecutor
+                || executor instanceof LazyActorCarrierExecutor lazy && lazy.nativeCarriers()
                 || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
+    }
+
+    /** Host diagnostic: count physical actor carrier pools activated by work.
+     * Zero at bootstrap, even when group and scheduler descriptors exist.
+     * Does not count VM CONTROL or JVM-managed internal threads.
+     */
+    public int activatedActorCarrierPools() {
+        return activatedPoolCount(privateDispatcher)
+                + activatedPoolCount(sharedDispatcher)
+                + activatedPoolCount(untrustedDispatcher);
+    }
+
+    private static int activatedPoolCount(ExecutorService executor) {
+        if (executor instanceof LazyActorCarrierExecutor lazy) return lazy.activated() ? 1 : 0;
+        if (executor instanceof ActorAffinityDispatcher lanes) return lanes.activatedLaneCount();
+        return 0;
     }
 
     private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
@@ -5970,8 +5987,7 @@ public final class ActorRuntime implements AutoCloseable {
             int readyQueueCapacity,
             String threadPrefix) {
         String requested = System.getProperty(CARRIER_BACKEND_PROPERTY, "auto")
-                .trim()
-                .toLowerCase(java.util.Locale.ROOT);
+                .trim().toLowerCase(java.util.Locale.ROOT);
         if (!requested.equals("auto")
                 && !requested.equals("native")
                 && !requested.equals("java")) {
@@ -5979,6 +5995,23 @@ public final class ActorRuntime implements AutoCloseable {
                     CARRIER_BACKEND_PROPERTY + " must be one of auto, native, java");
         }
 
+        boolean unix = isNativeCarrierPlatform();
+        if (requested.equals("native") && !unix) {
+            throw new IllegalStateException(
+                    "native Oreslang carriers currently require Linux or macOS");
+        }
+        // Capture the backend policy at construction. Changes to system
+        // properties after bootstrap cannot change the first actor's pool.
+        // The native library and pthreads are NOT loaded/created here.
+        boolean preferredNative = !requested.equals("java") && unix;
+        return new LazyActorCarrierExecutor(
+                () -> createCarrierDispatcher(parallelism, readyQueueCapacity,
+                        threadPrefix, requested, unix), preferredNative);
+    }
+
+    private static ExecutorService createCarrierDispatcher(
+            int parallelism, int readyQueueCapacity, String threadPrefix,
+            String requested, boolean unix) {
         boolean unix = isNativeCarrierPlatform();
         if (!requested.equals("java") && (requested.equals("native") || unix)) {
             if (!unix) {
