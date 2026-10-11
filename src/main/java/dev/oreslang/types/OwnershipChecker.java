@@ -721,6 +721,23 @@ public final class OwnershipChecker {
             return new ValueInfo(state.type, state.kind, provenance, transferredBorrowLease);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
+            if (unary.operator().equals("trap")) {
+                // An Option is an owned sum value: wrapping a move-only operand
+                // transfers it exactly as Some(operand) would. A non-consuming
+                // check here would fabricate an alias of a moved actor/object.
+                ValueInfo payload = checkExpr(unary.operand(), scope, true);
+                if (payload.kind == ValueKind.IMM_BORROW
+                        || payload.kind == ValueKind.MUT_BORROW
+                        || (payload.type != null && payload.type.isBorrow())) {
+                    throw error("trap cannot store a borrow in an owned Option until explicit lifetime parameters are supported");
+                }
+                if (containsMutexGuardType(payload.type)) {
+                    throw error("trap cannot store a MutexGuard in an owned Option");
+                }
+                Ast.TypeRef wrapped = new Ast.TypeRef(
+                        "Option", List.of(payload.type), false);
+                return new ValueInfo(wrapped, kindOfType(wrapped), null);
+            }
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
                 boolean mutable = unary.operator().equals("&mut");
                 VarState owner = borrowOwner(unary.operand(), scope);
@@ -2399,6 +2416,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.NewExpr created) return created.type();
         if (expr instanceof Ast.UnaryExpr unary) {
             Ast.TypeRef operand = syntacticType(unary.operand(), scope);
+            if (unary.operator().equals("trap")) {
+                return new Ast.TypeRef("Option", List.of(operand), false);
+            }
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
                 return Ast.TypeRef.borrowed(operand, unary.operator().equals("&mut"));
             }
