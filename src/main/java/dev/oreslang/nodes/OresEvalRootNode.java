@@ -4038,6 +4038,21 @@ public final class OresEvalRootNode extends RootNode {
                             args);
                 }
 
+                if (object.mapEntries != null && java.util.Set.of("get", "put", "remove").contains(member.member())) {
+                    return object.owner.invokableInvocation(ignored -> {
+                        int expected = member.member().equals("put") ? 2 : 1;
+                        if (args.size() != expected || !(args.getFirst() instanceof String key)) {
+                            throw new IllegalArgumentException("Map." + member.member() + " expects " + expected + " argument(s), beginning with a string key");
+                        }
+                        return switch (member.member()) {
+                            case "get" -> object.owner.mapRead(object, key);
+                            case "put" -> { object.owner.mapWrite(object, key, args.get(1)); yield null; }
+                            case "remove" -> object.owner.mapRemove(object, key);
+                            default -> throw new IllegalStateException("unknown Map operation");
+                        };
+                    }, List.of());
+                }
+
                 OwnedField ownedField = object.owner.findField(
                         object.klass, member.member(), new LinkedHashSet<>());
                 if (ownedField != null) {
@@ -4098,7 +4113,42 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        private OptionValue mapRead(OresObject object, String key) {
+            mapHook(object, "on_get", key);
+            return new OptionValue(object.mapEntries.containsKey(key), object.mapEntries.get(key));
+        }
+
+        private void mapWrite(OresObject object, String key, Object value) {
+            for (Ast.MapKeyDecl declared : object.klass.mapKeys()) {
+                if (declared.name().equals(key)) {
+                    Ast.TypeRef target = declared.valueType().arguments().getFirst();
+                    if (!oresTypeMatches(value, target)) {
+                        throw new IllegalArgumentException("Map key '" + key + "' expects " + target.name());
+                    }
+                    break;
+                }
+            }
+            mapHook(object, "on_put", key, value);
+            object.mapEntries.put(key, value);
+        }
+
+        private OptionValue mapRemove(OresObject object, String key) {
+            mapHook(object, "on_remove", key);
+            boolean present = object.mapEntries.containsKey(key);
+            return new OptionValue(present, object.mapEntries.remove(key));
+        }
+
+        private void mapHook(OresObject object, String name, Object... args) {
+            Ast.MethodDecl hook = object.owner.findMethod(object.klass,
+                    CallableSelector.instance(name, args.length), new LinkedHashSet<>());
+            if (hook != null) object.owner.invoke(object.owner.methodInvocation(object, hook, java.util.Arrays.asList(args)));
+        }
+
         private Object indexValue(Object receiver, Object index) {
+            if (receiver instanceof OresObject object && object.mapEntries != null) {
+                if (!(index instanceof String key)) throw new IllegalArgumentException("Map key must be a string");
+                return object.owner.mapRead(object, key);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
@@ -4183,6 +4233,11 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
+                if (receiver instanceof OresObject object && object.mapEntries != null) {
+                    if (!(key instanceof String stringKey)) throw new IllegalArgumentException("Map key must be a string");
+                    object.owner.mapWrite(object, stringKey, value);
+                    return value;
+                }
                 if (receiver instanceof List<?> raw
                         && key instanceof Number number) {
                     @SuppressWarnings("unchecked")
@@ -5720,6 +5775,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
+                    if (receiver instanceof OresObject object && object.mapEntries != null) {
+                        if (!(index instanceof String stringKey)) throw new IllegalArgumentException("Map key must be a string");
+                        object.owner.mapWrite(object, stringKey, value);
+                        return value;
+                    }
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
@@ -5842,6 +5902,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
+                if (receiver instanceof OresObject object && object.mapEntries != null) return object.owner.indexValue(object, index);
                 if (receiver instanceof Map<?, ?> map) {
                     if (!(index instanceof String key)) {
                         throw new IllegalArgumentException("struct/map key must be a string");
@@ -8668,12 +8729,20 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        private final Map<String,Object> mapEntries;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
             this.fields = fields;
+            this.mapEntries = klass.parents().stream().anyMatch(parent -> parent.name().equals("Map"))
+                    ? new LinkedHashMap<>() : null;
         }
-        @Override public Iterable<?> sharedStateChildren(){return fields.values();}
+        @Override public Iterable<?> sharedStateChildren(){
+            if (mapEntries == null) return fields.values();
+            List<Object> children = new ArrayList<>(fields.values());
+            children.addAll(mapEntries.values());
+            return children;
+        }
         @Override public String toString(){
             LinkedHashMap<String,Object> display = new LinkedHashMap<>();
             fields.forEach((name, value) ->
