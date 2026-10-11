@@ -198,6 +198,7 @@ public final class Ast {
             CallableKind kind,
             Visibility visibility,
             boolean async,
+            boolean suspends,
             boolean generator,
             boolean structural,
             boolean nonLexical,
@@ -208,6 +209,21 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) implements Decl {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean structural, boolean nonLexical, boolean trapped,
+                            ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType,
+                            List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, false, generator, structural, nonLexical,
+                    trapped, actorKind, genericParameters, parameters, returnType, annotations, body);
+        }
+
+        /** Compile-time effect: file/code-unit critical lane, not JVM thread affinity. */
+        public boolean critical() {
+            return annotations.stream().anyMatch(a -> a.name().equals("$critical"));
+        }
+
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -400,6 +416,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            boolean suspends,
             boolean structural,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
@@ -407,6 +424,21 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean structural,
+                          TypeRef explicitReceiverType, List<String> genericParameters,
+                          List<Param> parameters, TypeRef returnType,
+                          List<Annotation> annotations, List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, false, structural,
+                    explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
+        }
+
+        /** Critical instance method shares a gate with all critical methods on self. */
+        public boolean critical() {
+            return annotations.stream().anyMatch(a -> a.name().equals("$critical"));
+        }
+
         public MethodDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
