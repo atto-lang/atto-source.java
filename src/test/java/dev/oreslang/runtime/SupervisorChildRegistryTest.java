@@ -15,9 +15,9 @@ final class SupervisorChildRegistryTest {
         assertEquals(1, first.incarnation());
         assertEquals(SupervisorChildRegistry.Phase.ACTIVE, first.phase());
 
-        assertThrows(IllegalStateException.class, () -> registry.replace(
-                first.child(), firstActor, 1, ActorRuntime.ActorId.create()),
-                "cannot replace before physical-finalization admission");
+        assertThrows(IllegalStateException.class, () ->
+                registry.beginRestart(first.child(), firstActor, 1),
+                "cannot reserve replacement before physical-finalization admission");
         registry.finalized(first.child(), firstActor, 1);
         var reservation = registry.beginRestart(first.child(), firstActor, 1);
         assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
