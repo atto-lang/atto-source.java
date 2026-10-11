@@ -119,6 +119,106 @@ final class TypedOpenMapKeysTest {
     }
 
     @Test
+    void rejectsUnverifiableSchemasAndGenericMapInheritance() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Bad extends Map<string, unknown> as
+                  key value: Option<Future<int>>;
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Bad<T> extends Map<string, unknown> as
+                  key value: Option<string>;
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Base extends Map<string, unknown> as
+                  key value: Option<string>;
+                end
+                define class Child extends Base as
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                  val m = new Map<string, unknown>();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void rejectsVoidPayloadsAndWrongNestedPayloads() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(MAP + """
+                fnc empty(): void { return; }
+                fnc invalid(): void {
+                  val m = new MyMap();
+                  m.put("extra", empty());
+                  return;
+                }
+                """)));
+        TypeChecker.check(Parser.parse("""
+                define class MyMap extends Map<string, unknown> as
+                  key items: Option<Array<string>>;
+                end
+                fnc valid(): void {
+                  val m = new MyMap();
+                  val items = new Array<string>();
+                  items.add("hello");
+                  m.put("items", items);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void dynamicWriteValidatesRecursivelyAndBlocksAliasedCorruption() throws Exception {
+        String program = """
+                define class MyMap extends Map<string, unknown> as
+                  key items: Option<Array<string>>;
+                end
+                pub routine main(): void {
+                  val m = new MyMap();
+                  val items = new Array<unknown>();
+                  items.add("hello");
+                  val string key = "items";
+                  m.put(key, items);
+                  items.set(0, 42);
+                  m.get("items");
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(program));
+        Source source = Source.newBuilder(OresLanguage.ID, program, "map-mutated-payload.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class, () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("no longer satisfies"));
+        }
+    }
+
+    @Test
+    void rejectedDynamicWriteDoesNotInvokePutHook() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        String program = MAP + """
+                pub routine main(): void {
+                  val m = new MyMap();
+                  val string key = "fieldY";
+                  m.put(key, 7);
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(program));
+        Source source = Source.newBuilder(OresLanguage.ID, program, "map-hook-reject.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertThrows(PolyglotException.class, () -> context.eval(source));
+        }
+        assertEquals("", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void bracketAndMethodAccessRunHooksAndReturnOptions() throws Exception {
         String actual = execute(MAP + """
                 pub routine main(): void {
