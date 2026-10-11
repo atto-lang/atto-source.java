@@ -281,4 +281,43 @@ final class SourceSupervisorAwaitStopTest {
         }
     }
 
+    @Test
+    void closedAwaitedStopCanOnlyReconcileWithIndependentHostProof() throws Exception {
+        var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var seen = new CountDownLatch(1);
+            var observed = new AtomicReference<SupervisorProcess.Resolution>();
+            var neverAck = new CompletableFuture<Void>();
+            var process = compiled.installAwaitingStop(group, 2, resolution -> {
+                observed.set(resolution);
+                seen.countDown();
+                return neverAck;
+            });
+            var actor = group.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        throw new IllegalStateException("pending-stop-on-close");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("panic");
+            assertTrue(seen.await(10, TimeUnit.SECONDS));
+            var permit = group.reservedStopFor(observed.get());
+            process.close();
+            assertEquals(1, group.unresolvedSupervisorStops().size());
+            assertThrows(IllegalStateException.class, () ->
+                    group.reconcileConfirmedStop(permit, () -> false));
+            assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                    group.childSnapshot(permit.child()).phase());
+            group.reconcileConfirmedStop(permit, () -> true);
+            assertEquals(SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
+                    group.stopReceipt(permit.child()).status());
+            assertEquals(0, group.unresolvedSupervisorStops().size());
+            assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                    group.reconcileConfirmedStop(permit, () -> true).phase());
+            neverAck.complete(null);
+            assertEquals(0, process.resolved());
+            group.close();
+        }
+    }
+
 }
