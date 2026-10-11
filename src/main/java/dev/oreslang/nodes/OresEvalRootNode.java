@@ -1797,7 +1797,18 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
-                SourceFlowCont continuation) {
+                SourceFlowCont downstream) {
+            // A completion callback may synchronously invoke downstream code
+            // that throws. That is NOT a second outcome for this statement.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceFlowCont continuation = (resumed, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "suspendable statement completed more than once");
+                }
+                downstream.accept(resumed, flow);
+            };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -2160,9 +2171,11 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
-                continuation.accept(
-                        task,
-                        SourceFlow.throwing(failure));
+                // If the consumer has already claimed the result, propagating
+                // its failure is safer than replaying it and running cleanup
+                // for a second time.
+                if (delivered.get()) throw failure;
+                continuation.accept(task, SourceFlow.throwing(failure));
             }
         }
 
@@ -3074,7 +3087,18 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // One expression has exactly one consumer, even when it suspends
+            // or its consumer fails while unwinding an outer block.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceValueCont continuation = (resumed, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "suspendable expression completed more than once");
+                }
+                downstream.accept(resumed, value, failure);
+            };
             try {
                 // A source-task expression can now preserve the selected value
                 // arm and cleanup obligations across a pending Await.
@@ -3580,6 +3604,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
