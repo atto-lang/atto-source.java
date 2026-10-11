@@ -167,6 +167,10 @@ final class ActorPoolControlScheduler {
                     }
                     pendingWakeups = 0;
                     handledWakeups++;
+                    // Dequeue is the scheduler's admission-order boundary.
+                    // A request selected here may complete its worker handoff
+                    // while shutdown proceeds. Queued requests not yet selected
+                    // are failed by shutdown; none is acknowledged twice.
                     request = dispatches.pollFirst();
                 }
                 if (request == null) continue;
@@ -207,6 +211,11 @@ final class ActorPoolControlScheduler {
 
     long handledWakeups() {
         synchronized (monitor) { return handledWakeups; }
+    }
+
+    /** Host test/diagnostic: accepted scheduler requests not yet handed to workers. */
+    int pendingDispatches() {
+        synchronized (monitor) { return dispatches.size(); }
     }
 
     void shutdown() {
