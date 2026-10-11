@@ -31,19 +31,19 @@ final class SealedActorStateTest {
                             return null;
                         });
                     } else {
-                        assertEquals(12L, current.critical(s -> s.read("count")));
-                        assertEquals(true, current.critical(s -> s.read("enabled")));
+                        assertEquals(12L, ((Number) current.critical(s -> s.read("count"))).longValue());
+                        assertTrue((Boolean) current.critical(s -> s.read("enabled")));
                         current.critical(outer -> {
-                            assertEquals(12L, outer.read("count"));
-                            assertEquals(12L, current.critical(inner -> {
+                            assertEquals(12L, ((Number) outer.read("count")).longValue());
+                            assertEquals(12L, ((Number) current.critical(inner -> {
                                 assertThrows(IllegalStateException.class, () -> outer.read("count"));
-                                assertEquals(12L, inner.read("count"));
+                                assertEquals(12L, ((Number) inner.read("count")).longValue());
                                 return inner.read("count");
-                            }));
-                            assertEquals(12L, outer.read("count"));
+                            })).longValue());
+                            assertEquals(12L, ((Number) outer.read("count")).longValue());
                             assertThrows(IllegalArgumentException.class,
                                     () -> current.critical(inner -> inner));
-                            assertEquals(12L, outer.read("count"));
+                            assertEquals(12L, ((Number) outer.read("count")).longValue());
                             return null;
                         });
                         assertThrows(IllegalStateException.class, () -> stale.get().read("count"));
