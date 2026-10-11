@@ -11,19 +11,26 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(15)
 final class ActorGroupCloseDrainTest {
+    // Source actor factories must not capture mutable host objects. The test
+    // coordinator is explicit trusted host fixture state, not actor payload.
+    private static volatile CountDownLatch signalEntered;
+    private static volatile CountDownLatch signalExit;
+
     @Test
     void closeDoesNotFalselyReportCompletionWhileWorkerTurnRuns() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch exit = new CountDownLatch(1);
+            signalEntered = entered;
+            signalExit = exit;
             ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
                     ActorRuntime.ActorKind.PRIVATE,
                     IsolatePolicy.developer(),
                     context -> (message, actorContext) -> {
-                        entered.countDown();
+                        ActorGroupCloseDrainTest.signalEntered.countDown();
                         try {
-                            exit.await(5, TimeUnit.SECONDS);
+                            ActorGroupCloseDrainTest.signalExit.await(5, TimeUnit.SECONDS);
                         } catch (InterruptedException interrupted) {
                             Thread.currentThread().interrupt();
                         }
