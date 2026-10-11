@@ -1068,6 +1068,11 @@ final class ActorRuntimeTest {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
             assertFalse(ref.isAlive());
+            // isAlive is an admission/stop flag, not the finalization
+            // barrier. The physical memory slice is released before the
+            // actor's termination Future is settled.
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS),
+                    "actor must finalize before memory-accounting inspection");
             assertTrue(ref.failure().isEmpty());
             assertEquals(0L, runtime.privateMemoryBytes(), "actor teardown must release its private direct-memory quota");
         }
