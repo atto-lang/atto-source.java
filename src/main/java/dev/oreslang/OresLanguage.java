@@ -29,8 +29,22 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     public static final String ID = "ores";
     public static final String MIME_TYPE = "application/x-oreslang";
 
+    /**
+     * ContextPolicy.EXCLUSIVE gives each language instance one context.
+     * Remember the host entry thread which created that context: when a guest
+     * async scheduler starts during a public host invocation, Truffle checks
+     * access on BOTH threads with singleThreaded=false. Denying the original
+     * host thread sporadically fails safe async invocation at that boundary.
+     *
+     * Do not grant blanket multithreading: a different/foreign host thread
+     * still needs exclusive single-threaded entry, and guest-created carrier
+     * threads do not gain runtime scheduling authority by this check.
+     */
+    private volatile Thread initialContextHostThread;
+
     @Override
     protected OresContext createContext(Env env) {
+        initialContextHostThread = Thread.currentThread();
         return new OresContext(this, env);
     }
 
@@ -45,6 +59,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
         return singleThreaded
+                || thread == initialContextHostThread
                 || ActorRuntime.isActorCarrierThread()
                 || AsyncRuntime.isAsyncCarrierThread()
                 || OresScheduler.isSchedulerCarrierThread();
