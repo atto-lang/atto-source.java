@@ -110,6 +110,50 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void nonblockingHttpStartupReleasesCarrierAndClosureCancelsTransport()
+            throws Exception {
+        Thread carrier = Thread.currentThread();
+        CountDownLatch beganStartup = new CountDownLatch(1);
+        CountDownLatch releaseStartup = new CountDownLatch(1);
+        CountDownLatch transportSettled = new CountDownLatch(1);
+        CompletableFuture<Integer> transport = new CompletableFuture<>();
+        transport.whenComplete((ignored, failure) -> transportSettled.countDown());
+
+        try (var io = new AsyncNativeIo(1)) {
+            OresFuture<Integer> pending = io.submitNonblocking("http", () -> {
+                assertNotSame(carrier, Thread.currentThread(),
+                        "async transport initialization must not park the carrier");
+                beganStartup.countDown();
+                try {
+                    releaseStartup.await();
+                } catch (InterruptedException ignored) {
+                    // A host operation may finish starting after shutdown.
+                    // It must not publish a live request or revive its future.
+                }
+                return transport;
+            });
+            assertTrue(beganStartup.await(2, TimeUnit.SECONDS));
+
+            // Startup counts toward the same hard admission capacity as
+            // transport responses and cannot start a second request.
+            OresFuture<Integer> rejected = io.submitNonblocking("overflow",
+                    () -> fail("must not start an unadmitted request"));
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> rejected.get(2, TimeUnit.SECONDS)).getCause());
+
+            io.close();
+            releaseStartup.countDown();
+            assertTrue(transportSettled.await(2, TimeUnit.SECONDS),
+                    "late startup transport must be cancelled on close");
+            assertTrue(transport.isCancelled());
+            ExecutionException failed = assertThrows(ExecutionException.class,
+                    () -> pending.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failed.getCause());
+            assertEquals("I/O context closed", failed.getCause().getMessage());
+        }
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
