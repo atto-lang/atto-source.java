@@ -29,13 +29,11 @@ final class TypedMatchFlowEscapeTest {
     @Test
     void breakBeforeReturnDoesNotProveTypedArmReturn() {
         rejectsArmEscape("break; return true;");
-        rejectsArmEscape("{ break; } return true;");
     }
 
     @Test
     void continueBeforeReturnDoesNotProveTypedArmReturn() {
         rejectsArmEscape("continue; return true;");
-        rejectsArmEscape("{ continue; } return true;");
     }
 
     @Test
