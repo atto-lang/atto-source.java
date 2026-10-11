@@ -29,24 +29,9 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     public static final String ID = "ores";
     public static final String MIME_TYPE = "application/x-oreslang";
 
-    // ContextPolicy.EXCLUSIVE creates a separate language instance per context.
-    // The Polyglot embedder's original owner thread must remain admissible to
-    // inspect a returned Future/Channel host handle while a CONTROL task is
-    // simultaneously entered. Never grant this to arbitrary outside threads.
-    private volatile Thread trustedEmbedderThread;
-
     @Override
     protected OresContext createContext(Env env) {
-        OresContext context = new OresContext(this, env);
-        // Adversarial/untrusted contexts keep their isolated single-thread
-        // admission and must not acquire concurrent host re-entry privileges.
-        trustedEmbedderThread = context.isolatePolicy().adversarial()
-                ? null : Thread.currentThread();
-        System.err.println("ORES_CREATE_CONTEXT lang=" + System.identityHashCode(this)
-                + " owner=" + trustedEmbedderThread
-                + " caller=" + Thread.currentThread()
-                + " adversarial=" + context.isolatePolicy().adversarial());
-        return context;
+        return new OresContext(this, env);
     }
 
     /**
@@ -55,29 +40,14 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      * IsolatePolicy and the Polyglot Context builder.
      *
      * Strict/adversarial contexts serialize actor guest turns in OresContext.
-     * In trusted contexts, one original embedder thread is also authorized for
-     * concurrent Future/Channel host-handle access, in addition to owned VM
-     * carrier threads. A random host thread is never made a trusted carrier.
+     * Non-adversarial contexts may execute independent actor turns concurrently.
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
-        if (singleThreaded) return true;
-        // The thread argument may differ from Thread.currentThread() during
-        // Truffle access checks. A carrier-local flag cannot authorize some
-        // *other* thread. Explicitly restrict those privileges to the caller.
-        boolean currentThread = thread == Thread.currentThread();
-        boolean allowed = thread == trustedEmbedderThread
-                || (currentThread && (ActorRuntime.isActorCarrierThread()
-                    || AsyncRuntime.isAsyncCarrierThread()
-                    || OresScheduler.isSchedulerCarrierThread()));
-        if (!allowed && "main".equals(thread.getName())) {
-            System.err.println("ORES_TRUFFLE_DENIED lang=" + System.identityHashCode(this)
-                    + " requested=" + thread
-                    + " trustedOwner=" + trustedEmbedderThread
-                    + " current=" + Thread.currentThread()
-                    + " sameCurrent=" + currentThread);
-        }
-        return allowed;
+        return singleThreaded
+                || ActorRuntime.isActorCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()
+                || OresScheduler.isSchedulerCarrierThread();
     }
 
     @Override
