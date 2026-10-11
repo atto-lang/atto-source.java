@@ -31,11 +31,17 @@ final class SharedHttpGuestHandlerSourceTest {
             Value target = context.parse(source);
             assertTrue(target.canExecute());
             assertEquals(43L, target.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "main").asLong());
+            StringBuilder observations = new StringBuilder("{");
             for (int i = 0; i < 128; ++i) {
-                assertEquals((long) (i + 1) * 43L,
-                        target.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
-                                "counter_response", (long) (i + 1)).asLong());
+                long observed = target.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                        "counter_response", (long) (i + 1)).asLong();
+                assertEquals((long) (i + 1) * 43L, observed);
+                if (i != 0) observations.append(",");
+                observations.append("\\"counter_response(").append(i + 1)
+                        .append(")\\":").append(observed);
             }
+            observations.append("}");
+            System.out.println("GRAAL_GUEST_SHARED_HANDLER_RESULTS " + observations);
         }
     }
 }
