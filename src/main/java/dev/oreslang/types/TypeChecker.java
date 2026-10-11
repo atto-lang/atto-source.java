@@ -1732,7 +1732,13 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "value match continuation lowering is not enabled in async/suspends/generator callables");
         }
-        Type result = deref(resolve(matched.returnContract(), generics, self));
+        Type result = resolve(matched.returnContract(), generics, self);
+        // Never erase a borrowed contract before scalar admission. A declared
+        // &int / &mut int is a lifetime-bearing value, not an owned int.
+        if (result instanceof Borrow) {
+            throw new IllegalArgumentException(
+                    "typed value match requires an owned scalar result; borrowed return contracts are not enabled");
+        }
         if (result != Primitive.INT && result != Primitive.BOOL
                 && result != Primitive.STRING && result != Primitive.FLOAT
                 && result != Primitive.DECIMAL) {
@@ -1767,22 +1773,73 @@ public final class TypeChecker {
         Ast.MatchStmt checked = new Ast.MatchStmt(
                 matched.subject(), matched.ordered(), matched.arms(), false, null, false);
         checkMatch(checked, subject, env, generics, result, self);
+        // checkMatch verifies pattern-local bindings and ordinary return
+        // types. Independently require every name read by this experimental
+        // pure-scalar lowering to be a resolved, *owned* scalar value. In
+        // particular Unknown imports and &mut/borrowed bindings cannot gain
+        // scalar semantics by flowing through an arithmetic expression.
+        requireValueMatchOwnedScalarNames(matched.subject(), env);
+        for (Ast.MatchArm arm : matched.arms()) {
+            Env armEnv = new Env(env);
+            checkPattern(arm.pattern(), subject, armEnv, generics, self);
+            if (arm.guard() != null)
+                requireValueMatchOwnedScalarNames(arm.guard(), armEnv);
+            Ast.ReturnStmt returned = (Ast.ReturnStmt) arm.body().getFirst();
+            requireValueMatchOwnedScalarNames(returned.value(), armEnv);
+        }
         return result;
+    }
+
+    private void requireValueMatchOwnedScalarNames(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            if (binding == null || !isOwnedScalarValueMatchType(binding.type())) {
+                throw new IllegalArgumentException(
+                        "typed value match requires a locally resolved owned scalar binding: " + name.name());
+            }
+        } else if (expr instanceof Ast.UnaryExpr unary) {
+            requireValueMatchOwnedScalarNames(unary.operand(), env);
+        } else if (expr instanceof Ast.BinaryExpr binary) {
+            requireValueMatchOwnedScalarNames(binary.left(), env);
+            requireValueMatchOwnedScalarNames(binary.right(), env);
+        } else if (expr instanceof Ast.ConditionalExpr conditional) {
+            requireValueMatchOwnedScalarNames(conditional.condition(), env);
+            requireValueMatchOwnedScalarNames(conditional.whenTrue(), env);
+            requireValueMatchOwnedScalarNames(conditional.whenFalse(), env);
+        }
+    }
+
+    private boolean isOwnedScalarValueMatchType(Type type) {
+        return type == Primitive.INT || type == Primitive.BOOL
+                || type == Primitive.STRING || type == Primitive.FLOAT
+                || type == Primitive.DECIMAL || type instanceof StringLiteral;
     }
 
     private boolean safeValueMatchScalarExpr(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return true;
         if (expr instanceof Ast.UnaryExpr unary)
-            return safeValueMatchScalarExpr(unary.operand());
+            return switch (unary.operator()) {
+                case "!", "~", "+", "-" -> safeValueMatchScalarExpr(unary.operand());
+                // & and &mut create borrows and must not be smuggled into
+                // this owned-scalar result path.
+                default -> false;
+            };
         if (expr instanceof Ast.BinaryExpr binary)
-            return safeValueMatchScalarExpr(binary.left())
-                    && safeValueMatchScalarExpr(binary.right());
+            return switch (binary.operator()) {
+                case "+", "-", "*", "/", "%", "==", "!=", "eq", "neq",
+                        "<", "<=", ">", ">=", "&&", "||", "^^",
+                        "&", "|", "^", "<<", ">>", ">>>" ->
+                    safeValueMatchScalarExpr(binary.left())
+                            && safeValueMatchScalarExpr(binary.right());
+                default -> false;
+            };
         if (expr instanceof Ast.ConditionalExpr conditional)
             return safeValueMatchScalarExpr(conditional.condition())
                     && safeValueMatchScalarExpr(conditional.whenTrue())
                     && safeValueMatchScalarExpr(conditional.whenFalse());
-        // No calls, await, assignment, channel I/O, macros or nested value
-        // dispatch until their ownership/effect/continuation IR is admitted.
+        // No borrowing, identity effects, calls, await, assignment, channel
+        // I/O, macros or nested value dispatch until their execution/ownership
+        // contracts are explicitly admitted.
         return false;
     }
 
