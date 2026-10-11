@@ -193,6 +193,21 @@ public final class SerialActorAdmission implements AutoCloseable {
         return lease != null && lease.issuer == this;
     }
 
+    /** Captured actor-scoped callbacks cannot outlive the issuing actor.
+     * Pair the closed and busy check under the same admission monitor. */
+    boolean acceptsActorScopedCallbacks() {
+        synchronized (lock) { return !closed; }
+    }
+
+    void requireIdleActorScopedCallback() {
+        synchronized (lock) {
+            if (closed || active != null) {
+                throw new IllegalStateException(
+                        "actor-scoped continuation is stopped or another serial handler is active");
+            }
+        }
+    }
+
     public boolean busy() {
         synchronized (lock) { return active != null; }
     }
