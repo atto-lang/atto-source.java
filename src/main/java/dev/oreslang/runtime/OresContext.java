@@ -106,11 +106,10 @@ public final class OresContext implements AutoCloseable {
         AsyncRuntime async = null;
         RuntimeGarbageCollector gc = null;
         try {
-            actors = new ActorRuntime(
+            actors = vm.createActorRuntime(
                     isolatePolicy,
                     ActorRuntime.DispatcherConfig.defaults(),
-                    this::executeActorTurn,
-                    vm::executeControl);
+                    this::executeActorTurn);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
@@ -123,9 +122,7 @@ public final class OresContext implements AutoCloseable {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
-            if (actors != null) {
-                try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
-            }
+            // vm.close() closes its owned ActorRuntime before CONTROL.
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
@@ -436,12 +433,7 @@ public final class OresContext implements AutoCloseable {
         } catch (RuntimeException asyncFailure) {
             failure = asyncFailure;
         }
-        try {
-            actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
-        }
+        // The VM owns actor dispatchers and shuts them down ahead of CONTROL.
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
