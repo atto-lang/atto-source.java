@@ -68,7 +68,10 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submitNonblocking(operation, start);
     }
 
-    private <T> OresFuture<T> submitNonblocking(String operation,
+    /** Package-private for deterministic admission and teardown tests.
+     * Only trusted runtime paths may use this unchecked internal entry point.
+     */
+    <T> OresFuture<T> submitNonblocking(String operation,
             Supplier<CompletableFuture<T>> start) {
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
         synchronized (this) {
@@ -77,11 +80,26 @@ public final class AsyncNativeIo implements AutoCloseable {
                         closed ? "I/O context closed" : "I/O admission capacity exhausted"));
                 return result;
             }
-            // Reserve admission first. Start the transport OUTSIDE this monitor:
-            // a JDK/library asynchronous API can still do synchronous setup.
             pending.add(result);
         }
 
+        // HttpClient.sendAsync does not block awaiting its response, but its
+        // request startup, proxy lookup or name resolution may do synchronous
+        // work. Never execute that setup on an actor scheduler carrier.
+        // This worker is held only until the async transport has been started.
+        try {
+            workers.execute(() -> startNonblockingTransport(operation, start, result));
+        } catch (RuntimeException failure) {
+            synchronized (this) {
+                pending.remove(result);
+                result.failFromRuntime(failure);
+            }
+        }
+        return result;
+    }
+
+    private <T> void startNonblockingTransport(String operation,
+            Supplier<CompletableFuture<T>> start, OresFuture<T> result) {
         CompletableFuture<T> transport;
         try {
             transport = Objects.requireNonNull(start.get(),
@@ -95,7 +113,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             if (failure instanceof VirtualMachineError fatal) throw fatal;
             if (failure instanceof ThreadDeath fatal) throw fatal;
             if (failure instanceof LinkageError fatal) throw fatal;
-            return result;
+            return;
         }
 
         boolean contextClosed;
@@ -104,11 +122,11 @@ public final class AsyncNativeIo implements AutoCloseable {
             if (!contextClosed) nonblocking.put(result, transport);
         }
         if (contextClosed) {
-            // Close may have won while the producer was starting the request.
-            // Never retain an untracked live transport or resume its guest task.
             transport.cancel(true);
+            // close() has already failed every admitted Future under the
+            // admission lock; this fallback is idempotent.
             result.failFromRuntime(new IllegalStateException("I/O context closed"));
-            return result;
+            return;
         }
         transport.whenComplete((value, failure) -> {
             Throwable cause = failure instanceof CompletionException completion
@@ -116,9 +134,6 @@ public final class AsyncNativeIo implements AutoCloseable {
             if (cause != null) {
                 SourceBoundaryTrace.record(cause, "native:io", operation, "I/O");
             }
-            // Closure and completion are serialized, including the Future
-            // settlement itself. Removing pending first would let close()
-            // miss an unsettled operation and permit success after teardown.
             synchronized (AsyncNativeIo.this) {
                 pending.remove(result);
                 nonblocking.remove(result);
@@ -131,7 +146,6 @@ public final class AsyncNativeIo implements AutoCloseable {
                 }
             }
         });
-        return result;
     }
 
     synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
