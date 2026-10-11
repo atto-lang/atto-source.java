@@ -14,10 +14,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * VM-owned asynchronous root runtime.
  *
- * <p>The CONTROL pool is deliberately prestarted during VM construction. Guest
- * execution is not admitted until this barrier is complete, so the first
- * {@code main} turn can safely use Futures, timers, channel/select wakeups and
- * root continuations without lazily creating runtime infrastructure.</p>
+ * <p>Exactly one logical pool scheduler exists per execution class. The VM
+ * establishes all admission queues and lifecycle state eagerly, but no
+ * CONTROL carrier needs to exist before the first runnable task. An actor or
+ * ActorGroup never owns an OS carrier, and a supervisor's control turns use
+ * the shared CONTROL scheduling domain.</p>
  */
 public final class OresVM implements AutoCloseable {
     private static final int DEFAULT_CONTROL_PARALLELISM = 5;
@@ -27,8 +28,51 @@ public final class OresVM implements AutoCloseable {
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    /** A pool scheduler is logical metadata, not an OS thread or a group scheduler. */
+    public enum Pool { CONTROL, SHARED, TRUSTED_PRIVATE, UNTRUSTED }
+
+    public final class PoolScheduler {
+        private final Pool pool;
+        private volatile int maximumCarriers;
+
+        private PoolScheduler(Pool pool, int maximumCarriers) {
+            this.pool = pool;
+            this.maximumCarriers = maximumCarriers;
+        }
+
+        public Pool domain() { return pool; }
+        public int maximumCarriers() { return maximumCarriers; }
+
+        /** Snapshot of currently created physical carriers, not actor count. */
+        public int createdCarriers() {
+            if (pool == Pool.CONTROL) return controlExecutor.getPoolSize();
+            ActorRuntime runtime = ownedActors;
+            if (runtime == null) return 0;
+            return runtime.startedCarrierCount(switch (pool) {
+                case SHARED -> ActorRuntime.ActorKind.SHARED;
+                case TRUSTED_PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
+                case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
+                default -> throw new AssertionError(pool);
+            });
+        }
+    }
+
+    private final PoolScheduler controlPool;
+    private final PoolScheduler sharedPool;
+    private final PoolScheduler privatePool;
+    private final PoolScheduler untrustedPool;
+
+    public PoolScheduler poolScheduler(Pool domain) {
+        return switch (Objects.requireNonNull(domain, "domain")) {
+            case CONTROL -> controlPool;
+            case SHARED -> sharedPool;
+            case TRUSTED_PRIVATE -> privatePool;
+            case UNTRUSTED -> untrustedPool;
+        };
+    }
+
     /** The VM owns the actor runtime and, transitively, its three carrier pools. */
-    private ActorRuntime ownedActors;
+    private volatile ActorRuntime ownedActors;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -46,11 +90,19 @@ public final class OresVM implements AutoCloseable {
         this.controlExecutor = new ThreadPoolExecutor(
                 controlParallelism,
                 controlParallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
+                60L,
+                TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
                 factory,
                 new ThreadPoolExecutor.AbortPolicy());
+
+        this.controlExecutor.allowCoreThreadTimeOut(true);
+        ActorRuntime.DispatcherConfig defaults = ActorRuntime.DispatcherConfig.defaults();
+        this.controlPool = new PoolScheduler(Pool.CONTROL, controlParallelism);
+        this.sharedPool = new PoolScheduler(Pool.SHARED, defaults.sharedParallelism());
+        this.privatePool = new PoolScheduler(Pool.TRUSTED_PRIVATE, defaults.privateParallelism());
+        this.untrustedPool = new PoolScheduler(
+                Pool.UNTRUSTED, Integer.getInteger("ores.runtime.actor.untrusted.parallelism", 5));
 
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
@@ -103,13 +155,16 @@ public final class OresVM implements AutoCloseable {
                 Objects.requireNonNull(config, "config"),
                 Objects.requireNonNull(guestTurn, "guestTurn"),
                 this::executeControl);
+        privatePool.maximumCarriers = runtime.carrierParallelism(ActorRuntime.ActorKind.PRIVATE);
+        sharedPool.maximumCarriers = runtime.carrierParallelism(ActorRuntime.ActorKind.SHARED);
+        untrustedPool.maximumCarriers = runtime.carrierParallelism(ActorRuntime.ActorKind.UNTRUSTED);
         ownedActors = runtime;
         return runtime;
     }
 
     /**
-     * VM bootstrap barrier. The STARTED state is visible only after every
-     * configured CONTROL core carrier has been successfully prestarted.
+     * VM bootstrap barrier: validates the logical scheduler without starting
+     * physical CONTROL workers. A first root/control task triggers lazy startup.
      */
     synchronized void startup() {
         if (startupState == StartupState.CLOSED) {
@@ -126,15 +181,8 @@ public final class OresVM implements AutoCloseable {
         }
 
         try {
-            controlExecutor.allowCoreThreadTimeOut(false);
-            int required = controlExecutor.getCorePoolSize();
-            int newlyStarted = controlExecutor.prestartAllCoreThreads();
-            int live = controlExecutor.getPoolSize();
-            if (live != required) {
-                throw new IllegalStateException(
-                        "CONTROL dispatcher bootstrap incomplete: required="
-                                + required + ", live=" + live
-                                + ", newlyStarted=" + newlyStarted);
+            if (controlExecutor.isShutdown()) {
+                throw new IllegalStateException("CONTROL pool shut down before startup");
             }
             startupState = StartupState.STARTED;
         } catch (RuntimeException | Error failure) {
