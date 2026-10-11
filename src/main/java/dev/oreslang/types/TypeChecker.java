@@ -2273,6 +2273,19 @@ public final class TypeChecker {
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
+                // Pipeline routing is not a normal user-defined actor method.
+                // Until a scheduler-issued PipelineContext and corresponding
+                // guest lowering exist, fail closed instead of accepting a
+                // user method with the same name and silently omitting routing.
+                if (actorSelf && (member.member().equals("forward")
+                        || member.member().equals("backward")
+                        || member.member().equals("respond")
+                        || member.member().equals("done"))) {
+                    throw new IllegalArgumentException(
+                            "self." + member.member()
+                                    + " requires compiler-bound pipeline/reply routing; "
+                                    + "this backend has no authorized lowering yet");
+                }
                 if (actorSelf && (member.member().equals("on_start")
                         || member.member().equals("receive"))) {
                     throw new IllegalArgumentException(
