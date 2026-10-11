@@ -506,6 +506,16 @@ public final class OresScheduler implements AutoCloseable {
         private void onCancellationRequested() {
             if (task instanceof CancellationAwareTask<?> aware) {
                 aware.cancellationRequested(cancellation);
+            } else {
+                // Compiler-independent fire-and-forget tasks have no saved
+                // lexical cleanup. Cancelling thousands of already-queued
+                // actor bookkeeping turns must not require dispatching them
+                // just to discover that they are cancelled.
+                int observed = phase.get();
+                if (observed == NEW || observed == QUEUED || observed == WAITING) {
+                    failTerminal(cancellation);
+                    return;
+                }
             }
             if (phase.get() == WAITING && !isCleaningUp()) {
                 detachActiveAwaitRegistration();
