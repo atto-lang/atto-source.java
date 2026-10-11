@@ -63,6 +63,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
+        if (thread == null) return false;
         return singleThreaded
                 || thread == initialContextHostThread
                 || (thread == Thread.currentThread()
