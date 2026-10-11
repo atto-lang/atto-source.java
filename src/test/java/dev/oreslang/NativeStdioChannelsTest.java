@@ -165,7 +165,7 @@ final class NativeStdioChannelsTest {
     void nativeFormattedLinesAndFlushBarriersPreserveOrdering() throws Exception {
         Output result = run("""
                                  // Stdio is a native global prelude module; no import required.
-                pub routine main(): void {
+                pub suspends routine main(): void {
                   Stdio.println_parts_blocking(["hello", "-", "world"]);
                   Stdio.println_blocking("next");
                   Stdio.flush_blocking();
