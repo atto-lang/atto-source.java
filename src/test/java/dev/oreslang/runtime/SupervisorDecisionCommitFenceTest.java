@@ -76,6 +76,49 @@ final class SupervisorDecisionCommitFenceTest {
 
 
     @Test
+    void replayedCompletionAfterFinalTurnDoesNotPoisonHealthySupervisor() {
+        var supervisor = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        java.util.ArrayDeque<Runnable> tasks = new java.util.ArrayDeque<>();
+        java.util.concurrent.Executor replaying = turn -> {
+            tasks.addLast(turn);
+            tasks.addLast(turn);
+        };
+        CompletableFuture<SupervisorProcess.Directive> first = new CompletableFuture<>();
+        CompletableFuture<SupervisorProcess.Directive> second = new CompletableFuture<>();
+        AtomicInteger policies = new AtomicInteger();
+        AtomicInteger committed = new AtomicInteger();
+        var process = new SupervisorProcess(
+                supervisor, group, replaying, 2,
+                notice -> policies.incrementAndGet() == 1 ? first : second,
+                result -> committed.incrementAndGet());
+        var identical = notice(supervisor, group);
+        process.accept(identical);
+        process.accept(identical);
+
+        tasks.removeFirst().run();
+        tasks.removeFirst().run(); // duplicate begin(1)
+        assertEquals(1, policies.get());
+        first.complete(SupervisorProcess.Directive.STOP);
+        tasks.removeFirst().run(); // finish(1), schedules begin(2)
+        tasks.removeFirst().run(); // stale finish(1)
+        tasks.removeFirst().run();
+        tasks.removeFirst().run(); // duplicate begin(2)
+        assertEquals(2, policies.get());
+        second.complete(SupervisorProcess.Directive.STOP);
+        tasks.removeFirst().run(); // finish(2)
+        tasks.removeFirst().run(); // same generation, but already committed
+
+        assertEquals(2, committed.get());
+        assertEquals(2, process.resolved());
+        assertEquals(0, process.undelivered());
+        assertEquals(0, process.queued());
+        assertFalse(process.callbackActive());
+        assertTrue(process.failure().isEmpty(), "stale final completion poisoned supervisor");
+        assertTrue(process.healthy(), "completed replay must not fail the CONTROL lane");
+    }
+
+    @Test
     void processAdmissionFailsWhenControlDispatcherRunsInline() {
         var supervisor = ActorRuntime.SupervisorId.create();
         var group = ActorRuntime.ActorGroupId.create();
