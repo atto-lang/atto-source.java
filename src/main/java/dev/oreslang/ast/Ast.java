@@ -568,7 +568,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, TuplePattern, TaggedTuplePattern, ConstructorPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -593,6 +593,9 @@ public final class Ast {
             }
         }
     }
+
+    /** A nominal type/tag guard with fixed tuple payload binding (Tag as (x, y)). */
+    public record TaggedTuplePattern(TypeRef tag, TuplePattern tuple) implements Pattern { }
 
     public record ConstructorPattern(String constructor, List<Pattern> arguments) implements Pattern {
         public ConstructorPattern { arguments = List.copyOf(arguments); }
