@@ -441,57 +441,57 @@ public final class OresScheduler implements AutoCloseable {
             return;
         }
         try {
-        Set<TaskRunner<?>> closingTasks;
-        synchronized (tasks) {
-            if (!closed.compareAndSet(false, true)) {
-                throw new IllegalStateException("scheduler close admission lost its owner");
+            Set<TaskRunner<?>> closingTasks;
+            synchronized (tasks) {
+                if (!closed.compareAndSet(false, true)) {
+                    throw new IllegalStateException("scheduler close admission lost its owner");
+                }
+                closingTasks = Set.copyOf(tasks);
             }
-            closingTasks = Set.copyOf(tasks);
-        }
 
-        for (TaskRunner<?> task : closingTasks) {
-            task.cancelFromSchedulerClose();
-        }
+            for (TaskRunner<?> task : closingTasks) {
+                task.cancelFromSchedulerClose();
+            }
 
-        // Host close waits for task-owned cleanup without occupying a carrier.
-        long deadline = System.nanoTime() + CLOSE_DRAIN_NANOS;
-        boolean drained;
-        synchronized (tasks) {
-            while (!tasks.isEmpty()) {
-                long remaining = deadline - System.nanoTime();
-                if (remaining <= 0) break;
+            // Host close waits for task-owned cleanup without occupying a carrier.
+            long deadline = System.nanoTime() + CLOSE_DRAIN_NANOS;
+            boolean drained;
+            synchronized (tasks) {
+                while (!tasks.isEmpty()) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) break;
+                    try {
+                        TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                drained = tasks.isEmpty();
+            }
+            if (!drained) {
+                for (TaskRunner<?> task : Set.copyOf(tasks)) {
+                    task.failTerminal(new IllegalStateException(
+                            "cancellation cleanup drain timed out in " + name));
+                }
+            }
+            if (ownedExecutor != null) {
+                ownedExecutor.shutdownNow();
                 try {
-                    TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
+                    if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "OresScheduler " + name + " carriers did not terminate");
+                    }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    break;
+                    throw new java.util.concurrent.CancellationException(
+                            "interrupted while closing OresScheduler " + name);
                 }
             }
-            drained = tasks.isEmpty();
-        }
-        if (!drained) {
-            for (TaskRunner<?> task : Set.copyOf(tasks)) {
-                task.failTerminal(new IllegalStateException(
-                        "cancellation cleanup drain timed out in " + name));
+            if (!drained) {
+                throw new IllegalStateException(
+                        "OresScheduler " + name + " closed with unfinished cancellation cleanup");
             }
-        }
-        if (ownedExecutor != null) {
-            ownedExecutor.shutdownNow();
-            try {
-                if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException(
-                            "OresScheduler " + name + " carriers did not terminate");
-                }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new java.util.concurrent.CancellationException(
-                        "interrupted while closing OresScheduler " + name);
-            }
-        }
-        if (!drained) {
-            throw new IllegalStateException(
-                    "OresScheduler " + name + " closed with unfinished cancellation cleanup");
-        }
         } catch (RuntimeException | Error failure) {
             closeFailure = failure;
             throw failure;
