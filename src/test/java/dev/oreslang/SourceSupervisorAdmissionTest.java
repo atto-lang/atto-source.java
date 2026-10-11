@@ -35,6 +35,24 @@ final class SourceSupervisorAdmissionTest {
     }
 
     @Test
+    void moduleScopedSupervisorRemainsTypedAndNonExecutable() {
+        String module = """
+                define module Services as
+                  define supervisor WorkerSupervisor as
+                    on_panic(f: Failure): void { return; }
+                  end
+                end
+                """;
+        Ast.Program parsed = Parser.parse(module);
+        Ast.SupervisorDecl supervisor = assertInstanceOf(
+                Ast.SupervisorDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        assertEquals("WorkerSupervisor", supervisor.name());
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(module));
+    }
+
+    @Test
     void compilerMustNotSilentlyExecuteUnloweredGuestHook() {
         IllegalArgumentException normal = assertThrows(
                 IllegalArgumentException.class,
