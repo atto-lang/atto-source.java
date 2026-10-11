@@ -334,6 +334,47 @@ final class TypedOpenMapKeysTest {
     }
 
     @Test
+    void overwriteRequiresExplicitTransferForOwnedValues() throws Exception {
+        String schema = """
+                define class OwnedMap extends Map<string, unknown> as
+                  key items: Option<Array<string>>;
+                  key label: Option<string>;
+                end
+                """;
+        String rejected = schema + """
+                pub routine main(): void {
+                  val m = new OwnedMap();
+                  val first = new Array<string>();
+                  first.add("first");
+                  m.put("items", first);
+                  val second = new Array<string>();
+                  second.add("second");
+                  m.put("items", second);
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(rejected));
+        Source source = Source.newBuilder(OresLanguage.ID, rejected, "map-owned-replace.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class, () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("cannot overwrite a non-Copy owned value"));
+        }
+
+        assertEquals("next", execute(schema + """
+                pub routine main(): void {
+                  val m = new OwnedMap();
+                  m.put("label", "first");
+                  m.put("label", "next");
+                  stdio.stdout.write(m.get("label").unwrap());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void openKeyCannotExposeMoveOnlyValueThroughDynamicGet() throws Exception {
         String program = """
                 define class OwnedMap extends Map<string, unknown> as
