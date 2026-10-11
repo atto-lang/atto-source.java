@@ -293,6 +293,12 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
     }
 
+    /** Runtime supervision identity, never a guest authority token. */
+    public record SupervisorId(UUID value) {
+        public SupervisorId { Objects.requireNonNull(value); }
+        public static SupervisorId create() { return new SupervisorId(UUID.randomUUID()); }
+    }
+
     public static final class ActorTerminatedException extends IllegalStateException {
         private final ActorId actorId;
         private final ActorKind actorKind;
@@ -1584,6 +1590,14 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
+        /** Read-only identity of this actor's current managed supervisor. */
+        public Optional<SupervisorId> supervisorId() {
+            ActorCell<?> cell = actors.get(id);
+            if (cell == null) return Optional.empty();
+            SupervisorFailureControl lane = cell.supervision.get();
+            return lane == null ? Optional.empty() : Optional.of(lane.supervisorId());
+        }
+
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
          * actor on its own dispatcher, even if no first message was sent.
@@ -1910,6 +1924,8 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
+        private final SupervisorId supervisorId = SupervisorId.create();
+        private final SupervisorFailureControl supervisorControl;
         private final ActorId creator;
         private final int memberLimit;
         private final int eventTopicLimit;
@@ -1948,10 +1964,42 @@ public final class ActorRuntime implements AutoCloseable {
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
+            this.supervisorControl = new SupervisorFailureControl(
+                    supervisorId, id, privateDispatcher,
+                    Math.max(8, Math.min(256, memberLimit)));
             if (creator != null) members.add(creator);
         }
 
         public ActorGroupId id() { return id; }
+
+        public SupervisorId supervisorId() {
+            requireObserver("inspect ActorGroup supervisor");
+            return supervisorId;
+        }
+
+        /** Host-only callback: delivered on shared CONTROL carriers, never inline. */
+        public void installSupervisorFailureHandler(
+                Consumer<SupervisorFailureControl.Notice> handler) {
+            requireSupervisorContext("install supervisor failure CONTROL callback");
+            requireOpen();
+            supervisorControl.install(handler);
+        }
+
+        /** Nonzero means this host CONTROL lane has failed closed. */
+        public long undeliveredSupervisorFailures() {
+            requireObserver("inspect undelivered supervisor notices");
+            return supervisorControl.undelivered();
+        }
+
+        public Optional<String> supervisorHandlerFailure() {
+            requireObserver("inspect supervisor handler failure");
+            return supervisorControl.failure();
+        }
+
+        public int queuedSupervisorFailures() {
+            requireObserver("inspect pending supervisor failures");
+            return supervisorControl.queued();
+        }
 
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
@@ -2011,6 +2059,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor is already managed by a different ActorGroup");
                 }
                 managedWorkers.putIfAbsent(worker.id(), worker);
+                cell.supervision.set(supervisorControl);
                 if (cell.stopped.get()) {
                     managedWorkers.remove(worker.id(), worker);
                     throw new IllegalStateException("worker stopped during group admission");
@@ -2073,9 +2122,14 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("cannot transfer a stopped worker");
                 }
+                if (!cell.children.isEmpty()) {
+                    throw new IllegalStateException(
+                            "cannot transfer worker with live structured descendants");
+                }
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
                 }
+                cell.supervision.compareAndSet(supervisorControl, null);
                 managedWorkers.remove(worker.id(), worker);
                 return true;
             }
@@ -3786,6 +3840,7 @@ public final class ActorRuntime implements AutoCloseable {
                                                     + inherited.memberLimit);
                                 }
                                 cell.managedByGroup.set(inheritedId);
+                                cell.supervision.set(inherited.supervisorControl);
                                 inherited.managedWorkers.put(id, ref);
                                 parent.children.add(cell);
                                 linkedToParent = true;
@@ -4094,6 +4149,27 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void unregisterActor(ActorCell<?> cell) {
+        // Enqueue immutable CONTROL after actor-owned final cleanup, never
+        // invoke the supervisor on this child actor's physical carrier.
+        // The control lane survives removal of a closed ActorGroup registry.
+        SupervisorFailureControl lane = cell.supervision.get();
+        Throwable failure = cell.ref.terminationCause.get();
+        if (lane != null && failure != null) {
+            SupervisorFailureControl.Kind failureKind =
+                    failure instanceof CancellationException
+                            ? SupervisorFailureControl.Kind.CANCELLED
+                            : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
+            ActorGroupId ownerGroup = cell.managedByGroup.get();
+            if (ownerGroup != null) {
+                lane.publish(new SupervisorFailureControl.Notice(
+                        lane.supervisorId(), ownerGroup, cell.ref.id(),
+                        cell.parent == null
+                                ? Optional.empty() : Optional.of(cell.parent.ref.id()),
+                        failureKind,
+                        failure.getClass().getName(),
+                        failure.getMessage() == null ? "" : failure.getMessage()));
+            }
+        }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
         // treats absence from this map as terminal, so removing the actor first
@@ -5976,6 +6052,9 @@ public final class ActorRuntime implements AutoCloseable {
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
+        /** Trusted, process-local supervisor lane. Not a guest capability. */
+        private final AtomicReference<SupervisorFailureControl> supervision =
+                new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
