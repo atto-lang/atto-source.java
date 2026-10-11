@@ -34,6 +34,71 @@ final class OresVMTest {
     }
 
     @Test
+    void vmCloseTimeoutRetainsPendingSourceCleanupAndAllowsRetirementRetry()
+            throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        OresFuture<Integer> ordinaryWork = new OresFuture<>();
+        OresFuture<Integer> cleanup = new OresFuture<>();
+        var cleanupEntered = new java.util.concurrent.CountDownLatch(1);
+        var cleanupRuns = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> task = vm.rootScheduler().start(
+                new OresScheduler.CancellationAwareTask<Integer>() {
+                    private volatile boolean inCleanup;
+                    @Override public boolean cleanupInProgress() { return inCleanup; }
+                    @Override public void cancellationRequested(
+                            OresScheduler.TaskCancelledException ignored) { }
+                    @Override public OresScheduler.Step<Integer> resume(
+                            OresScheduler.Resume resumed) {
+                        if (resumed.initial()) return OresScheduler.await(ordinaryWork);
+                        if (!inCleanup) {
+                            org.junit.jupiter.api.Assertions.assertInstanceOf(
+                                    OresScheduler.TaskCancelledException.class,
+                                    resumed.failure());
+                            inCleanup = true;
+                            cleanupRuns.incrementAndGet();
+                            cleanupEntered.countDown();
+                            return OresScheduler.await(cleanup);
+                        }
+                        assertEquals(99, resumed.value());
+                        org.junit.jupiter.api.Assertions.assertNull(resumed.failure());
+                        inCleanup = false;
+                        return OresScheduler.done(1);
+                    }
+                });
+        try {
+            long readyDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+            while (ordinaryWork.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < readyDeadline) Thread.sleep(1);
+            assertEquals(1, ordinaryWork.pendingRuntimeWaiterCount());
+
+            var failure = org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class, vm::close);
+            assertTrue(failure.getMessage().contains("unfinished cancellation cleanup"),
+                    failure.getMessage());
+            assertTrue(cleanupEntered.await(3, TimeUnit.SECONDS));
+            assertEquals(1, cleanupRuns.get());
+            assertTrue(!task.isDone(), "a failed VM close cannot publish cleanup completion");
+            assertEquals(0, ordinaryWork.pendingRuntimeWaiterCount());
+            assertEquals(1, cleanup.pendingRuntimeWaiterCount());
+            assertTrue(vm.controlCarrierCount() > 0,
+                    "failed VM close must retain the only carriers for suspended cleanup");
+
+            assertTrue(cleanup.completeFromRuntime(99));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertEquals(0, cleanup.pendingRuntimeWaiterCount());
+            assertEquals(1, cleanupRuns.get());
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(vm::close,
+                    "retry must retire CONTROL carriers after owned cleanup drains");
+            assertEquals(0, vm.controlCarrierCount());
+        } finally {
+            cleanup.completeFromRuntime(99);
+            vm.close();
+        }
+    }
+
+    @Test
     void controlCarriersAreLiveBeforeFirstRootTaskTurn() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
