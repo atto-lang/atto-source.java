@@ -193,10 +193,10 @@ public final class SerialActorAdmission implements AutoCloseable {
         return lease != null && lease.issuer == this;
     }
 
-    /** Captured actor-scoped callbacks cannot outlive the issuing actor.
-     * Pair the closed and busy check under the same admission monitor. */
-    boolean acceptsActorScopedCallbacks() {
-        synchronized (lock) { return !closed; }
+    /** Unowned callbacks may queue only while this incarnation is open
+     * and idle; observe both properties under the same admission monitor. */
+    boolean canQueueUnownedContinuation() {
+        synchronized (lock) { return !closed && active == null; }
     }
 
     void requireIdleActorScopedCallback() {
