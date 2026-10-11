@@ -53,6 +53,25 @@ on MessagePatterns.Tuple as (left, right) {
 }
 ```
 
+Use `default` as the canonical match catch-all, without the `on` prefix.
+`on _` and `on default` remain parser aliases. An optional
+`default as m` (or `on _ as m`) binds the entire unmatched subject.
+The binding has the subject's static type, **not** an implicit `Option<T>`.
+Future refinements may narrow to a provably remaining closed-union variant,
+but no unproved variant-member access is permitted.
+
+Like switch, a designated default is evaluated only after all explicit
+patterns, even if it occurs earlier in source. Explicit match patterns
+still use first-match **source order**. There must be at most one default;
+default cannot have a `when` guard (use a guarded named pattern instead).
+Bare `default { ... }` does not introduce a binding named `m`.
+
+The standalone `_` is reserved as a wildcard/discard and cannot name a
+type, class, actor, callable, ordinary variable, or struct declaration.
+The keyword `default` is reserved by the lexer. Prefix/suffix identifiers
+such as `_cache` and `defaultHandler` remain valid. Sequence
+destructuring continues to permit `_` in discard positions.
+
 Here the tuple is the variant **payload**, not arbitrary fields of a
 nominal object. Fixed tuple arity, recursive patterns, binding uniqueness,
 and ownership/copy semantics must be proved by the type checker.
@@ -64,10 +83,11 @@ variant representation and owned binary message lowering provide the correct
 payload accessor. Do not treat this syntax as support for serialized actor
 message variant envelopes yet.
 
-Unlike `switch`, canonical `match` is ordered: the first matching arm
-wins. A wildcard `on _` placed first would shadow later arms and should
-produce an unreachable-arm diagnostic. The current canonical type checker
-requires matches to be provably exhaustive.
+Unlike `switch`, explicit `match` patterns are evaluated in source
+order. A named binding pattern `on x { ... }` can shadow subsequent arms,
+but `on _` is a default alias and is normalized to a fallback-only arm
+regardless of its source position. The type checker requires matches
+to be provably exhaustive.
 
 ## Formatter
 
@@ -76,7 +96,8 @@ preserve the author's arm ordering, remove superfluous arm separators, and
 keep commas separating case constants or tuple-pattern components.
 Never reinterpret punctuation in strings, comments, or nested expressions.
 
-Future work: desugar optional `is` and implicit nominal binders to
+Future work: canonicalize optional `is` and implicit nominal binders to
 `on Type as value` in the formatter once parsing round trips are verified;
+rewrite fallback aliases in legacy `end`-delimited syntax;
 unify the typed variant payload representation between Java/GraalVM and LLVM;
 test catch-all placement, narrowing, arity, and exhaustive-return statements.
