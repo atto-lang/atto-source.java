@@ -78,7 +78,12 @@ public final class SourceSupervisorLowering {
                         || !expectedSupervisor.equals(resolution.notice().supervisorId())) {
                     throw new SecurityException("invalid compiled supervisor decision");
                 }
+                // The embedder first acknowledges the requested effect.
+                // Only then permanently retire the *same finalized*
+                // incarnation in the supervisor-owned logical-child registry.
+                // A throwing or ambiguous host callback does not record STOP.
                 hostDecision.accept(resolution);
+                group.acknowledgeFinalizedStop(resolution);
             });
         }
     }
