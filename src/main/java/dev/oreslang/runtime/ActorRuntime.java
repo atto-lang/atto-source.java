@@ -65,6 +65,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final Set<Thread> ACTIVE_ACTOR_CARRIERS = ConcurrentHashMap.newKeySet();
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
             new ThreadLocal<>();
@@ -116,6 +117,11 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
+    }
+
+    /** Truffle can validate access on behalf of another thread. */
+    public static boolean isActorCarrierThread(Thread thread) {
+        return thread != null && ACTIVE_ACTOR_CARRIERS.contains(thread);
     }
 
     public static boolean inActorExecution() {
@@ -6528,6 +6534,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
+            ACTIVE_ACTOR_CARRIERS.add(Thread.currentThread());
             boolean carrierEntered = false;
             boolean reschedule = false;
             try {
@@ -6577,6 +6584,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     // Finalization hooks and reservation checks are allowed to
                     // fail closed; neither may strand carrier-local VM identity.
+                    ACTIVE_ACTOR_CARRIERS.remove(Thread.currentThread());
                     ACTOR_CARRIER.remove();
                 }
                 if (reschedule) schedule();
