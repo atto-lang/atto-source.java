@@ -50,6 +50,7 @@ public final class TypeChecker {
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Ast.SwitchStmt> provenExhaustiveSwitches =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final java.util.ArrayDeque<List<Type>> armValueTypes = new java.util.ArrayDeque<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -1437,6 +1438,14 @@ public final class TypeChecker {
             if (loopDepth == 0) throw new IllegalArgumentException("'continue' may only appear inside loop or for");
             return;
         }
+        if (stmt instanceof Ast.ArmReturnStmt ret) {
+            if (armValueTypes.isEmpty()) throw new IllegalArgumentException(
+                    "match/switch arm return has no enclosing value expression");
+            if (ret.value() == null) throw new IllegalArgumentException(
+                    "value-producing match/switch arm must return a value");
+            armValueTypes.peek().add(typeOf(ret.value(), env, generics, self));
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
@@ -1701,6 +1710,47 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            final Type subject = deref(typeOf(matched.subject(), env, generics, self));
+            List<Type> values = new ArrayList<>();
+            armValueTypes.push(values);
+            try {
+                Ast.MatchStmt statement = new Ast.MatchStmt(
+                        matched.subject(), matched.ordered(), matched.arms(), false);
+                checkMatch(statement, subject, env, generics, Unknown.INSTANCE, self);
+                if (!matchProvablyExhaustive(matched.arms(), subject, generics, self))
+                    throw new IllegalArgumentException("non-exhaustive value match");
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (!definitelyYieldsValue(arm.body()))
+                        throw new IllegalArgumentException(
+                                "value match arm does not return a value on every path");
+                }
+            } finally { armValueTypes.pop(); }
+            return joinArmValues(values, "match");
+        }
+        if (expr instanceof Ast.ValueSwitchExpr switched) {
+            final Type subject = deref(typeOf(switched.subject(), env, generics, self));
+            List<Type> values = new ArrayList<>();
+            armValueTypes.push(values);
+            try {
+                Ast.SwitchStmt statement = new Ast.SwitchStmt(
+                        switched.subject(), switched.cases(), switched.defaultBody(), false);
+                checkStatement(statement, env, generics, Unknown.INSTANCE, self);
+                if (switched.defaultBody().isEmpty()
+                        && !switchCoversAllBooleanValues(statement, subject))
+                    throw new IllegalArgumentException(
+                            "non-exhaustive value switch: add default or cover every finite case");
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (!definitelyYieldsValue(arm.body()))
+                        throw new IllegalArgumentException(
+                                "value switch case does not return a value on every path");
+                }
+                if (!switched.defaultBody().isEmpty() && !definitelyYieldsValue(switched.defaultBody()))
+                    throw new IllegalArgumentException(
+                            "value switch default does not return a value on every path");
+            } finally { armValueTypes.pop(); }
+            return joinArmValues(values, "switch");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
@@ -7425,6 +7475,37 @@ public final class TypeChecker {
         if (expr instanceof Ast.ListExpr list) return list.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.ObjectExpr object) return object.fields().stream().allMatch(field -> constant(field.value()));
+        return false;
+    }
+
+    private Type joinArmValues(List<Type> types, String kind) {
+        if (types.isEmpty()) throw new IllegalArgumentException(
+                "value " + kind + " has no value-producing returns");
+        Type result = types.getFirst();
+        for (int i = 1; i < types.size(); ++i) {
+            Type next = types.get(i);
+            if (assignable(next, result)) continue;
+            if (assignable(result, next)) { result = next; continue; }
+            result = commonType(result, next);
+            if (result == Unknown.INSTANCE)
+                throw new IllegalArgumentException(
+                        "incompatible value " + kind + " arm result types");
+        }
+        return result;
+    }
+
+    private boolean definitelyYieldsValue(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ArmReturnStmt result) return result.value() != null;
+            if (stmt instanceof Ast.BlockStmt nested && definitelyYieldsValue(nested.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                if (!conditional.branches().isEmpty()
+                        && conditional.branches().stream().allMatch(
+                                branch -> definitelyYieldsValue(branch.body()))
+                        && !conditional.elseBody().isEmpty()
+                        && definitelyYieldsValue(conditional.elseBody())) return true;
+            }
+        }
         return false;
     }
 
