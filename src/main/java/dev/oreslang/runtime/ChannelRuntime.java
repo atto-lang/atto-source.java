@@ -32,6 +32,9 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class ChannelRuntime {
     private ChannelRuntime() { }
 
+    /** A finite default prevents an idle producer from retaining unbounded select waiters. */
+    public static final int DEFAULT_MAX_PENDING_REGISTRATIONS = 4096;
+
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     private static long nextTicket;
@@ -64,6 +67,13 @@ public final class ChannelRuntime {
         }
     }
 
+    /** Admission exhaustion is distinct from closure; no waiter is retained. */
+    public static final class ChannelBackpressureException extends IllegalStateException {
+        public ChannelBackpressureException(String message) {
+            super(message);
+        }
+    }
+
     public static final class ChannelClosedException extends IllegalStateException {
         public ChannelClosedException(String message) {
             super(message);
@@ -78,21 +88,49 @@ public final class ChannelRuntime {
      */
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
+        private final int maxPendingRegistrations;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
         private Throwable closeCause;
 
         public Channel(int capacity) {
+            this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS);
+        }
+
+        /**
+         * Pending operation quota counts registered select arms, not only
+         * buffered values. A multi-arm select counts once per referenced arm;
+         * it is admitted atomically across every participating channel.
+         */
+        public Channel(int capacity, int maxPendingRegistrations) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
             }
+            if (maxPendingRegistrations < 1) {
+                throw new IllegalArgumentException(
+                        "max pending channel registrations must be positive");
+            }
             this.capacity = capacity;
+            this.maxPendingRegistrations = maxPendingRegistrations;
         }
 
         public int capacity() {
             return capacity;
+        }
+
+        public int maxPendingRegistrations() {
+            return maxPendingRegistrations;
+        }
+
+        public int pendingRegistrations() {
+            COORDINATOR.lock();
+            try {
+                return registrations.size();
+            } finally {
+                COORDINATOR.unlock();
+            }
         }
 
         public int size() {
@@ -512,8 +550,14 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
-                registerLocked(this);
-                pumpLocked(completions);
+                if (registerLocked(this)) {
+                    pumpLocked(completions);
+                } else {
+                    decided = true;
+                    completions.add(() -> future.failFromRuntime(
+                            new ChannelBackpressureException(
+                                    "channel pending registration budget exhausted")));
+                }
 
                 if (!decided && defaultIndex >= 0) {
                     commitSingleLocked(
@@ -549,8 +593,26 @@ public final class ChannelRuntime {
         }
     }
 
-    private static void registerLocked(SelectRegistration selection) {
-        if (selection.decided || selection.registered) return;
+    private static boolean registerLocked(SelectRegistration selection) {
+        if (selection.decided || selection.registered) return false;
+
+        // Preflight every channel under the same coordinator lock, before
+        // mutating ACTIVE or any channel list. A rejected multi-channel select
+        // cannot leave phantom readers/writers on its earlier arms.
+        java.util.IdentityHashMap<Channel<?>, Integer> needed =
+                new java.util.IdentityHashMap<>();
+        for (int index : selection.order) {
+            SelectCase selectCase = selection.set.cases.get(index);
+            if (selectCase instanceof DefaultCase) continue;
+            Channel<?> channel = channelOf(selectCase);
+            int armCount = needed.getOrDefault(channel, 0) + 1;
+            needed.put(channel, armCount);
+            if (armCount > channel.maxPendingRegistrations
+                    - channel.registrations.size()) {
+                return false;
+            }
+        }
+
         selection.registered = true;
         ACTIVE.add(selection);
 
@@ -563,6 +625,7 @@ public final class ChannelRuntime {
             selection.registrations.add(registration);
             channelOf(selectCase).registrations.add(registration);
         }
+        return true;
     }
 
     private static void unregisterLocked(SelectRegistration selection) {
