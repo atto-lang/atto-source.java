@@ -37,6 +37,8 @@ final class SerialContinuationAuthorityTest {
         receive.close();
         unowned.requireRunnable();
         admission.close();
+        assertFalse(unowned.mayQueue(), "unbound callback cannot outlive actor stop");
+        assertThrows(IllegalStateException.class, unowned::requireRunnable);
     }
 
     @Test void foreignActorLeaseCannotMintContinuationAuthority() {
