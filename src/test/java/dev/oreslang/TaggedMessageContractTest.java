@@ -86,6 +86,9 @@ final class TaggedMessageContractTest {
         var codec = new TaggedMessageCodec(registry.requireDomain("Messages"));
         var original = new TaggedMessageCodec.TaggedValue("Status", "Message2", 2, "hello");
         byte[] encoded = codec.encode(original);
+        assertEquals("9402d98f6f7265736c616e672e656e756d2e363461373862626130343533393535323739306336633537666561306630353337346338373864623836313134393130356261366631373332633837326539342e34626264346332316663303037643839636136386637663061396136313438666162313266376539313361353931636633626131383033333061353931383634c420085917a950bf1470f59d654358e5da6f1744d6eadd4c4128f334ddbb6e032ddb93a653746174757302a568656c6c6f",
+                java.util.HexFormat.of().formatHex(encoded),
+                "Java and native must produce byte-identical tagged MessagePack v2");
         assertEquals(original, codec.decode(encoded));
         assertThrows(IllegalArgumentException.class, () -> codec.encode(
                 new TaggedMessageCodec.TaggedValue("Status", "Ready", 4, null)));
