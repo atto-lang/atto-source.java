@@ -404,4 +404,50 @@ final class TypedValueMatchIntegrationTest {
                 }
                 """, "synchronous stdio.print/println");
     }
+
+    @Test
+    void deferredFailureStillExecutesEveryRemainingDefer() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID, """
+                pub fnc main(): void {
+                  defer stdio.println("later-cleanup");
+                  defer 1 % 0;
+                }
+                """, "defer-all.ores").mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                    () -> context.eval(guest));
+        }
+        assertEquals("later-cleanup", out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
+    void failedDeferIsSuppressedUnderOriginalExecutionFailure() throws Exception {
+        Source guest = Source.newBuilder(OresLanguage.ID, """
+                pub fnc main(): void {
+                  defer 2 % 0;
+                  const value: int = 1 % 0;
+                  stdio.println(value);
+                }
+                """, "defer-suppressed.ores").mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            org.graalvm.polyglot.PolyglotException guestFailure =
+                    assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                            () -> context.eval(guest));
+            Throwable current = guestFailure.isHostException()
+                    ? guestFailure.asHostException() : guestFailure;
+            boolean foundSuppressed = false;
+            for (int depth = 0; current != null && depth < 12; depth++) {
+                if (current.getSuppressed().length > 0) {
+                    foundSuppressed = true;
+                    break;
+                }
+                current = current.getCause();
+            }
+            assertTrue(foundSuppressed,
+                    "original execution failure must retain deferred failure as suppressed");
+        }
+    }
 }
