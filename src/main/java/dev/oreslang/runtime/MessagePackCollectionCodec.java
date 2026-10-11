@@ -7,6 +7,9 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -15,7 +18,9 @@ import java.util.Objects;
 /**
  * First portable, schema-guided MessagePack collection codec.
  *
- * <p>Wire v1: [1, schema_id, payload], with sequences encoded as MessagePack
+ * <p>Wire v2: [2, schema_id, SHA-256(shape_descriptor), payload]. The
+ * full digest binds collection kind, arity, and recursively typed elements.
+ * Sequences are encoded as MessagePack
  * arrays. The schema, not the byte array header, distinguishes Tuple,
  * FixedArray, FixedList, Array and List. Scalars in this initial subset are
  * bool, signed i64, finite f64 and UTF-8 string. All other types fail closed.
@@ -25,7 +30,7 @@ import java.util.Objects;
  * untrusted actor messages once the runtime integration lands.
  */
 public final class MessagePackCollectionCodec {
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     public static final int MAX_BYTES = 1_048_576;
     public static final int MAX_NODES = 100_000;
     public static final int MAX_DEPTH = 64;
@@ -91,9 +96,11 @@ public final class MessagePackCollectionCodec {
         checkSchemaId(schemaId);
         Objects.requireNonNull(shape, "shape");
         Writer writer = new Writer();
-        writer.arrayHeader(3);
+        byte[] descriptorHash = shapeDigest(shape);
+        writer.arrayHeader(4);
         writer.signedInt(VERSION);
         writer.string(schemaId);
+        writer.binaryDigest(descriptorHash);
         writer.value(shape, value, 0);
         return writer.result();
     }
@@ -104,10 +111,14 @@ public final class MessagePackCollectionCodec {
         Objects.requireNonNull(bytes, "bytes");
         if (bytes.length > MAX_BYTES) throw new IllegalArgumentException("message exceeds maximum byte size");
         Reader reader = new Reader(bytes);
-        if (reader.arrayHeader() != 3) throw new IllegalArgumentException("invalid message envelope arity");
+        byte[] expectedDigest = shapeDigest(shape);
+        if (reader.arrayHeader() != 4) throw new IllegalArgumentException("invalid message envelope arity");
         if (reader.signedInt() != VERSION) throw new IllegalArgumentException("unsupported message format version");
         String actualSchema = reader.string();
         if (!schemaId.equals(actualSchema)) throw new IllegalArgumentException("message schema identity mismatch");
+        if (!MessageDigest.isEqual(expectedDigest, reader.binaryDigest())) {
+            throw new IllegalArgumentException("message shape descriptor mismatch");
+        }
         Object value = reader.value(shape, 0);
         if (!reader.exhausted()) throw new IllegalArgumentException("trailing MessagePack bytes");
         return value;
@@ -120,6 +131,61 @@ public final class MessagePackCollectionCodec {
                 || id.chars().anyMatch(c -> c < 33 || c > 126)) {
             throw new IllegalArgumentException("schema id must be printable ASCII (1-256 bytes)");
         }
+    }
+
+    /**
+     * Canonical grammar:
+     *   B | I | F | S
+     *   T[shape,...] | FA[shape,...] | FL[shape,...]
+     *   A[shape] | L[shape]
+     *
+     * Hash domain separation includes the wire-major version. This prevents
+     * different collections using the same caller schema ID from being decoded
+     * under incompatible type/arity assumptions. Hashing does NOT authenticate
+     * an untrusted sender: caller schemas must be compiler-owned.
+     */
+    public static byte[] shapeDigest(Shape shape) {
+        Objects.requireNonNull(shape, "shape");
+        StringBuilder descriptor = new StringBuilder("oreslang.actor.shape.v2/");
+        appendShape(descriptor, shape, 0, new int[]{0});
+        try {
+            return MessageDigest.getInstance("SHA-256")
+                    .digest(descriptor.toString().getBytes(StandardCharsets.US_ASCII));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 provider unavailable", impossible);
+        }
+    }
+
+    private static void appendShape(StringBuilder out, Shape shape, int depth, int[] nodes) {
+        if (depth > MAX_DEPTH || ++nodes[0] > MAX_NODES) {
+            throw new IllegalArgumentException("codec shape exceeds maximum depth/node budget");
+        }
+        if (shape instanceof Scalar scalar) {
+            out.append(switch (scalar.kind()) {
+                case BOOL -> 'B';
+                case INT64 -> 'I';
+                case FLOAT64 -> 'F';
+                case STRING -> 'S';
+            });
+            return;
+        }
+        Sequence seq = (Sequence) shape;
+        out.append(switch (seq.kind()) {
+            case TUPLE -> "T[";
+            case FIXED_ARRAY -> "FA[";
+            case FIXED_LIST -> "FL[";
+            case ARRAY -> "A[";
+            case LIST -> "L[";
+        });
+        if (isFixed(seq.kind())) {
+            for (int i = 0; i < seq.slots().size(); i++) {
+                if (i > 0) out.append(',');
+                appendShape(out, seq.slots().get(i), depth + 1, nodes);
+            }
+        } else {
+            appendShape(out, seq.element(), depth + 1, nodes);
+        }
+        out.append(']');
     }
 
     private static final class Writer {
@@ -148,6 +214,13 @@ public final class MessagePackCollectionCodec {
             if (n <= 15) add(0x90 | n);
             else if (n <= 65535) { add(0xdc); uint(2, n); }
             else { add(0xdd); uint(4, n); }
+        }
+
+        void binaryDigest(byte[] digest) {
+            if (digest.length != 32) throw new IllegalArgumentException("expected 32-byte schema digest");
+            add(0xc4); // MessagePack bin8
+            add(32);
+            bytes(digest);
         }
 
         void signedInt(long n) {
@@ -274,14 +347,29 @@ public final class MessagePackCollectionCodec {
             else if (tag == 0xdd) n = uint(4);
             else throw new IllegalArgumentException("expected MessagePack array");
             if (n > MAX_ELEMENTS) throw new IllegalArgumentException("sequence exceeds maximum elements");
+            if ((tag == 0xdc && n <= 15) || (tag == 0xdd && n <= 65535)) {
+                throw new IllegalArgumentException("noncanonical MessagePack array header");
+            }
             return (int) n;
+        }
+
+        byte[] binaryDigest() {
+            if (u8() != 0xc4 || u8() != 32) {
+                throw new IllegalArgumentException("expected MessagePack bin8 32-byte shape digest");
+            }
+            if (bytes.length - at < 32) {
+                throw new IllegalArgumentException("truncated shape digest");
+            }
+            byte[] digest = Arrays.copyOfRange(bytes, at, at + 32);
+            at += 32;
+            return digest;
         }
 
         long signedInt() {
             int tag = u8();
             if (tag <= 0x7f) return tag;
             if (tag >= 0xe0) return (byte) tag;
-            return switch (tag) {
+            long result = switch (tag) {
                 case 0xcc -> uint(1);
                 case 0xcd -> uint(2);
                 case 0xce -> uint(4);
@@ -296,6 +384,20 @@ public final class MessagePackCollectionCodec {
                 case 0xd3 -> uint(8);
                 default -> throw new IllegalArgumentException("expected signed i64 MessagePack value");
             };
+            // Accept exactly the minimal representation the local encoder emits.
+            boolean noncanonical = switch (tag) {
+                case 0xcc -> result <= 127;
+                case 0xcd -> result <= 255;
+                case 0xce -> result <= 65535;
+                case 0xcf -> result <= 0xffffffffL;
+                case 0xd0 -> result >= -32;
+                case 0xd1 -> result >= Byte.MIN_VALUE;
+                case 0xd2 -> result >= Short.MIN_VALUE;
+                case 0xd3 -> result >= Integer.MIN_VALUE;
+                default -> false;
+            };
+            if (noncanonical) throw new IllegalArgumentException("noncanonical MessagePack integer");
+            return result;
         }
 
         String string() {
@@ -306,6 +408,11 @@ public final class MessagePackCollectionCodec {
             else if (tag == 0xda) length = uint(2);
             else if (tag == 0xdb) length = uint(4);
             else throw new IllegalArgumentException("expected MessagePack UTF-8 string");
+            if ((tag == 0xd9 && length <= 31)
+                    || (tag == 0xda && length <= 255)
+                    || (tag == 0xdb && length <= 65535)) {
+                throw new IllegalArgumentException("noncanonical MessagePack string header");
+            }
             if (length > MAX_BYTES || length > bytes.length - at) {
                 throw new IllegalArgumentException("oversized or truncated MessagePack string");
             }
@@ -346,6 +453,13 @@ public final class MessagePackCollectionCodec {
             int n = arrayHeader();
             if (isFixed(seq.kind()) && n != seq.slots().size()) {
                 throw new IllegalArgumentException("wrong fixed sequence arity");
+            }
+            // One byte is the absolute minimum MessagePack footprint per
+            // value, including an empty nested array; never allocate based
+            // on an untrusted count without proving sufficient bytes and
+            // remaining global node quota first.
+            if (n > bytes.length - at || n > MAX_NODES - nodes) {
+                throw new IllegalArgumentException("sequence length exceeds remaining input/node budget");
             }
             ArrayList<Object> items = new ArrayList<>(n);
             for (int i = 0; i < n; i++) {
