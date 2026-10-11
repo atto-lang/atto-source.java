@@ -97,3 +97,31 @@ denial, readiness and physical done ordering) and
 awaiting lifecycle methods). This is lifecycle spelling/semantics
 parity, **not** a claim that Java/Graal native FFM fields have been
 connected to the LLVM typed memory-layout descriptor in every actor.
+
+
+## Typed actor mailbox contract
+
+Actors declare accepted message payload types in their actor-local
+`receive(ActorMail<T> mail): void` handler. For instance,
+`ActorMail<{delta: int} | {reset: int}>` declares two structurally typed
+message variants. The public ActorRef exposes **`send(message)`** for
+user mail delivery; the TypeChecker determines `T` from the target actor
+and statically requires the send payload to conform to that type.
+`send(infer struct{delta: 20})` and
+`send(infer struct{reset: 1})` are accepted; missing keys or mistyped
+required fields are rejected at compile time. Structural record
+subtyping allows additional fields when required fields match; this is
+a deliberate difference from exact-closed-message schema validation
+and must be revisited for wire-format/schema enforcement.
+
+The `receive` hook itself is reserved/actor-local and direct guest
+`worker.increment(...)` is not permitted. Native runtime may execute
+compiler-generated receive code only after admission to that actor's
+single-flight mailbox lane. Lifecycle methods `get_ready()` and
+`get_done()` are not message transports.
+
+The `ActorMailTypeContractTest` verifies positive and negative typed
+inferred-record delivery, union acceptance, direct-method-call
+rejection and mailbox hook access constraints. The LLVM companion
+currently supports only a single typed i64 field, not Java's union
+record message grammar.
