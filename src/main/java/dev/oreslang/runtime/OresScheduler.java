@@ -41,6 +41,10 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
+    // Truffle may ask about a DIFFERENT thread than Thread.currentThread().
+    // Track the exact authorized active carriers, not the caller's ThreadLocal.
+    private static final Set<Thread> ACTIVE_SCHEDULER_CARRIERS =
+            ConcurrentHashMap.newKeySet();
     // The physical carrier remains owned through post-guest terminal Future
     // publication, after CURRENT has already been restored to its caller.
     private static final ThreadLocal<OresScheduler> ACTIVE_CARRIER_OWNER =
@@ -158,9 +162,11 @@ public final class OresScheduler implements AutoCloseable {
                 .name(name + "-carrier-" + carrierId.getAndIncrement())
                 .unstarted(() -> {
                     SCHEDULER_CARRIER.set(Boolean.TRUE);
+                    ACTIVE_SCHEDULER_CARRIERS.add(Thread.currentThread());
                     try {
                         task.run();
                     } finally {
+                        ACTIVE_SCHEDULER_CARRIERS.remove(Thread.currentThread());
                         SCHEDULER_CARRIER.remove();
                     }
                 });
@@ -243,6 +249,11 @@ public final class OresScheduler implements AutoCloseable {
     /** True only on private carriers owned by user-created OresSchedulers. */
     public static boolean isSchedulerCarrierThread() {
         return Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
+    }
+
+    /** Admission for the actual requested Thread, never the checking caller. */
+    public static boolean isSchedulerCarrierThread(Thread thread) {
+        return thread != null && ACTIVE_SCHEDULER_CARRIERS.contains(thread);
     }
 
     public String name() {
@@ -407,6 +418,7 @@ public final class OresScheduler implements AutoCloseable {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             OresScheduler priorOwner = ACTIVE_CARRIER_OWNER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
+            if (!priorCarrier) ACTIVE_SCHEDULER_CARRIERS.add(Thread.currentThread());
             ACTIVE_CARRIER_OWNER.set(this);
             try {
                 // A queued cancellation may revoke its unclaimed carrier
@@ -427,6 +439,7 @@ public final class OresScheduler implements AutoCloseable {
                     SCHEDULER_CARRIER.set(Boolean.TRUE);
                 } else {
                     SCHEDULER_CARRIER.remove();
+                    ACTIVE_SCHEDULER_CARRIERS.remove(Thread.currentThread());
                 }
                 try {
                     afterTurn.run();
