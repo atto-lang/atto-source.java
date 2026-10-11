@@ -30,7 +30,19 @@ public final class SupervisorChildRegistry {
             Objects.requireNonNull(logicalId);
         }
     }
-    public enum Phase { ACTIVE, FINALIZED, RESTARTING, STOPPED }
+    public enum Phase { ACTIVE, FINALIZED, RESTARTING, STOPPING, STOPPED }
+
+    /** Host-only STOP claim; holds a logical generation across an await. */
+    public record StopReservation(ChildId child, ActorRuntime.ActorId failedActor,
+                                  long incarnation, long turnGeneration, UUID nonce) {
+        public StopReservation {
+            Objects.requireNonNull(child);
+            Objects.requireNonNull(failedActor);
+            Objects.requireNonNull(nonce);
+            if (incarnation < 1 || turnGeneration < 1)
+                throw new IllegalArgumentException("invalid STOP generation");
+        }
+    }
 
     /** A single-use host-side claim; the UUID is not a guest capability. */
     public record RestartReservation(ChildId child, ActorRuntime.ActorId failedActor,
@@ -60,6 +72,7 @@ public final class SupervisorChildRegistry {
     private final Map<UUID, Snapshot> children = new HashMap<>();
     private final Map<ActorRuntime.ActorId, UUID> activeActors = new HashMap<>();
     private final Map<UUID, RestartReservation> reservations = new HashMap<>();
+    private final Map<UUID, StopReservation> stopReservations = new HashMap<>();
     // ActorId must not be recycled (A -> B -> A is another form of ABA).
     // This is a host bookkeeping ledger, bounded by a per-supervisor ceiling.
     private static final int MAX_ACTOR_IDENTITIES = 1_000_000;
@@ -187,6 +200,38 @@ public final class SupervisorChildRegistry {
             throw new IllegalStateException("actor incarnation identity was already used");
         if (seenActors.size() >= MAX_ACTOR_IDENTITIES)
             throw new IllegalStateException("actor identity ledger capacity exhausted");
+    }
+
+    /**
+     * Reserve STOP before invoking any host effect. RESTART and competing
+     * STOP requests cannot claim this generation while the host is awaiting
+     * acknowledgment. On ambiguous host failure this remains STOPPING until
+     * a trusted lifecycle reconciler resolves it; never auto-retry/restart.
+     */
+    synchronized StopReservation beginStop(
+            ChildId child, ActorRuntime.ActorId actor,
+            long incarnation, long turnGeneration) {
+        requireExpected(child, actor, incarnation, Phase.FINALIZED);
+        StopReservation reservation = new StopReservation(
+                child, actor, incarnation, turnGeneration, UUID.randomUUID());
+        stopReservations.put(child.logicalId(), reservation);
+        children.put(child.logicalId(),
+                new Snapshot(child, actor, incarnation, Phase.STOPPING));
+        return reservation;
+    }
+
+    /** Mark authoritative host STOP acknowledgment for the reserved turn. */
+    synchronized Snapshot commitStop(StopReservation permit) {
+        Objects.requireNonNull(permit);
+        requireExpected(permit.child(), permit.failedActor(),
+                permit.incarnation(), Phase.STOPPING);
+        if (!permit.equals(stopReservations.get(permit.child().logicalId())))
+            throw new IllegalStateException("stale or foreign STOP reservation");
+        Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
+                permit.incarnation(), Phase.STOPPED);
+        children.put(permit.child().logicalId(), stopped);
+        stopReservations.remove(permit.child().logicalId());
+        return stopped;
     }
 
     /** A permanent STOP applies to the finalized incarnation only. */
