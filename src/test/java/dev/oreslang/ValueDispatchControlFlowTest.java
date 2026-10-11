@@ -395,6 +395,34 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void awaitedFailureDoesNotReplayDeferCatchOrFinallyCallbacks() throws Exception {
+        assertEquals("defer-on-error\ncaught-once\nfinally-once\n5\n",
+                execute("""
+                async fnc fails(): int {
+                  return 1 / 0;
+                }
+
+                async fnc recover(): int {
+                  try {
+                    defer stdio.println("defer-on-error");
+                    const ignored = await fails();
+                    return 9;
+                  } catch (error) {
+                    stdio.println("caught-once");
+                    return 5;
+                  } finally {
+                    stdio.println("finally-once");
+                  }
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await recover());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void lexicalArmReturnSurvivesTryFinallyAndRunsCleanupExactlyOnce() throws Exception {
         assertEquals("finally\narm-defer\narm\ndo-finally\ndo-defer\nearly\ncase\ndefault\n",
                 execute("""
