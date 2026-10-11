@@ -54,6 +54,19 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
+    /** Cancellation-aware compiler frames can suspend during lexical cleanup. */
+    public interface CancellationAwareTask<T> extends Task<T> {
+        boolean cleanupInProgress();
+    }
+
+    /** Internal cancellation control signal; never a guest catchable exception. */
+    public static final class TaskCancelledException
+            extends java.util.concurrent.CancellationException {
+        public TaskCancelledException() {
+            super("OresScheduler source task cancellation requested");
+        }
+    }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
@@ -97,6 +110,7 @@ public final class OresScheduler implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private static final long CLOSE_DRAIN_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     /**
      * Create a user-owned scheduler with exactly {@code parallelism} carrier
@@ -343,16 +357,32 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
+    /** Unlike public runBound(), admits only work belonging to an existing TaskRunner. */
+    private void runBoundAdmittedTask(Runnable turn) {
+        OresScheduler prior = CURRENT.get();
+        Long priorDispatch = CURRENT_DISPATCH_ID.get();
+        CURRENT.set(this);
+        CURRENT_DISPATCH_ID.set(NEXT_DISPATCH_ID.incrementAndGet());
+        try {
+            turn.run();
+        } finally {
+            if (priorDispatch == null) CURRENT_DISPATCH_ID.remove();
+            else CURRENT_DISPATCH_ID.set(priorDispatch);
+            if (prior == null) CURRENT.remove();
+            else CURRENT.set(prior);
+        }
+    }
+
     private void executeTurn(Runnable turn, Runnable afterTurn,
             java.util.function.Consumer<Throwable> admissionFailure) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
-        ensureOpen();
+        // Existing admitted tasks may resume cancellation cleanup after close().
         executor.execute(() -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             SCHEDULER_CARRIER.set(Boolean.TRUE);
             try {
-                turnExecutor.execute(() -> runBound(turn));
+                turnExecutor.execute(() -> runBoundAdmittedTask(turn));
             } catch (RuntimeException | Error failure) {
                 // Context admission can fail before runTurn starts. Settle the
                 // owning task instead of leaving the host waiting forever.
@@ -390,22 +420,45 @@ public final class OresScheduler implements AutoCloseable {
         for (TaskRunner<?> task : Set.copyOf(tasks)) {
             task.cancelFromSchedulerClose();
         }
-        tasks.clear();
 
-        if (ownedExecutor != null) {
-            ownedExecutor.shutdownNow();
-            if (CURRENT.get() != this) {
+        // Host close waits for task-owned cleanup without occupying a carrier.
+        long deadline = System.nanoTime() + CLOSE_DRAIN_NANOS;
+        boolean drained;
+        synchronized (tasks) {
+            while (!tasks.isEmpty()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) break;
                 try {
-                    if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
-                                "OresScheduler " + name + " carriers did not terminate");
-                    }
+                    TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new java.util.concurrent.CancellationException(
-                            "interrupted while closing OresScheduler " + name);
+                    break;
                 }
             }
+            drained = tasks.isEmpty();
+        }
+        if (!drained) {
+            for (TaskRunner<?> task : Set.copyOf(tasks)) {
+                task.failTerminal(new IllegalStateException(
+                        "cancellation cleanup drain timed out in " + name));
+            }
+        }
+        if (ownedExecutor != null) {
+            ownedExecutor.shutdownNow();
+            try {
+                if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                            "OresScheduler " + name + " carriers did not terminate");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException(
+                        "interrupted while closing OresScheduler " + name);
+            }
+        }
+        if (!drained) {
+            throw new IllegalStateException(
+                    "OresScheduler " + name + " closed with unfinished cancellation cleanup");
         }
     }
 
@@ -428,10 +481,31 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
+        private final AtomicBoolean cancelRequested = new AtomicBoolean();
+        private final TaskCancelledException cancellation = new TaskCancelledException();
 
         private TaskRunner(Task<T> task) {
             this.task = task;
-            this.completion = new OresFuture<>(this::cancelFromFuture);
+            this.completion = new OresFuture<>(
+                    this::admitCancellation, this::onCancellationRequested, true);
+        }
+
+        private boolean admitCancellation() {
+            return phase.get() != TERMINAL
+                    && cancelRequested.compareAndSet(false, true);
+        }
+
+        private boolean isCleaningUp() {
+            return task instanceof CancellationAwareTask<?> aware
+                    && aware.cleanupInProgress();
+        }
+
+        private void onCancellationRequested() {
+            if (phase.get() == WAITING && !isCleaningUp()) {
+                detachActiveAwaitRegistration();
+                pendingResume.set(Resume.completed(null, cancellation));
+                scheduleReadyResume();
+            }
         }
 
         private void scheduleInitial() {
@@ -471,6 +545,14 @@ public final class OresScheduler implements AutoCloseable {
                     failTerminal(new IllegalStateException(
                             "scheduler resumed a task without an await result"));
                     return;
+                }
+
+                if (cancelRequested.get() && !isCleaningUp()) {
+                    if (resume.initial() || !(task instanceof CancellationAwareTask<?>)) {
+                        failTerminal(cancellation);
+                        return;
+                    }
+                    resume = Resume.completed(null, cancellation);
                 }
 
                 final Step<T> step;
@@ -527,7 +609,9 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void armCooperate() {
-            Resume resume = Resume.completed(null, null);
+            Resume resume = cancelRequested.get() && !isCleaningUp()
+                    ? Resume.completed(null, cancellation)
+                    : Resume.completed(null, null);
             if (!pendingResume.compareAndSet(null, resume)) {
                 failTerminal(new IllegalStateException(
                         "cooperate attempted to publish more than one resume"));
@@ -542,6 +626,10 @@ public final class OresScheduler implements AutoCloseable {
 
         private void armAwait(OresFuture<?> awaited) {
             if (!phase.compareAndSet(RUNNING, WAITING)) {
+                return;
+            }
+            if (cancelRequested.get() && !isCleaningUp()) {
+                pendingResume.set(Resume.completed(null, cancellation));
                 return;
             }
 
@@ -592,7 +680,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) return;
+            if (phase.get() == TERMINAL || (cancelRequested.get() && !isCleaningUp())) return;
 
             Resume resume = Resume.completed(
                     value,
@@ -638,8 +726,10 @@ public final class OresScheduler implements AutoCloseable {
             if (!phase.compareAndSet(RUNNING, TERMINAL)) {
                 return;
             }
-            terminalOutcome.set(new TerminalSuccess<>(value));
-            tasks.remove(this);
+            terminalOutcome.set(cancelRequested.get()
+                    ? new TerminalCancelled<T>(cancellation)
+                    : new TerminalSuccess<>(value));
+            removeFromTasks();
             // afterCarrierTurn() publishes only after the carrier has fully
             // unwound runBound(...).
         }
@@ -653,8 +743,11 @@ public final class OresScheduler implements AutoCloseable {
                 if (observed == TERMINAL) return;
             } while (!phase.compareAndSet(observed, TERMINAL));
 
-            terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
-            tasks.remove(this);
+            terminalOutcome.compareAndSet(null,
+                    failure == cancellation
+                            ? new TerminalCancelled<T>(cancellation)
+                            : new TerminalFailure<T>(failure));
+            removeFromTasks();
             if (!executing.get()) {
                 publishTerminalIfReady();
             }
@@ -669,6 +762,8 @@ public final class OresScheduler implements AutoCloseable {
                 completion.completeFromRuntime(value);
             } else if (outcome instanceof TerminalFailure<?> failure) {
                 completion.failFromRuntime(failure.failure());
+            } else if (outcome instanceof TerminalCancelled<?> cancelled) {
+                completion.cancelFromRuntime(cancelled.reason());
             }
         }
 
@@ -676,26 +771,25 @@ public final class OresScheduler implements AutoCloseable {
             failTerminal(failure);
         }
 
-        private void cancelFromFuture() {
-            detachActiveAwaitRegistration();
-            int observed;
-            do {
-                observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
-            tasks.remove(this);
-            pendingResume.set(null);
+        private void removeFromTasks() {
+            synchronized (tasks) {
+                tasks.remove(this);
+                tasks.notifyAll();
+            }
         }
 
         private void cancelFromSchedulerClose() {
-            completion.cancel(false);
+            if (admitCancellation()) onCancellationRequested();
         }
     }
 
     private sealed interface TerminalOutcome<T>
-            permits TerminalSuccess, TerminalFailure { }
+            permits TerminalSuccess, TerminalFailure, TerminalCancelled { }
 
     private record TerminalSuccess<T>(T value) implements TerminalOutcome<T> { }
+
+    private record TerminalCancelled<T>(
+            TaskCancelledException reason) implements TerminalOutcome<T> { }
 
     private record TerminalFailure<T>(Throwable failure)
             implements TerminalOutcome<T> {
