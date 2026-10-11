@@ -180,6 +180,14 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        // A module field is process/code-unit static state, never a fresh
+        // initializer evaluation on each member read. Identity keys prevent
+        // accidental collisions between separate declaration origins.
+        // All access is serialized here so concurrent first reads cannot
+        // create competing channel, singleton, or resource instances.
+        private final IdentityHashMap<Ast.FieldDecl, Object> moduleFieldValues =
+                new IdentityHashMap<>();
+        private static final Object MODULE_FIELD_INITIALIZING = new Object();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -7710,12 +7718,47 @@ public final class OresEvalRootNode extends RootNode {
                     return new ClassFacade(this, klass);
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
-                    if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
+                    return moduleFieldValue(module, field);
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
         }
+
+        private Object moduleFieldValue(Ast.ModuleDecl module, Ast.FieldDecl field) {
+            synchronized (moduleFieldValues) {
+                if (moduleFieldValues.containsKey(field)) {
+                    Object existing = moduleFieldValues.get(field);
+                    if (existing == MODULE_FIELD_INITIALIZING) {
+                        throw new IllegalStateException("recursive module field initialization: "
+                                + module.name() + "." + field.name());
+                    }
+                    if (existing instanceof FailedModuleField failed) {
+                        Throwable failure = failed.failure();
+                        if (failure instanceof RuntimeException runtime) throw runtime;
+                        if (failure instanceof Error fatal) throw fatal;
+                        throw new IllegalStateException("module initializer failed", failure);
+                    }
+                    return existing;
+                }
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException("module field has no initializer: "
+                            + module.name() + "." + field.name());
+                }
+                moduleFieldValues.put(field, MODULE_FIELD_INITIALIZING);
+                try {
+                    Object value = eval(field.initializer(), new Env(null));
+                    moduleFieldValues.put(field, value);
+                    return value;
+                } catch (RuntimeException | Error failure) {
+                    // Retry is not automatic: a failed module initializer must
+                    // not be silently evaluated again with duplicate effects.
+                    moduleFieldValues.put(field, new FailedModuleField(failure));
+                    throw failure;
+                }
+            }
+        }
+
+        private record FailedModuleField(Throwable failure) { }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
             Ast.FunctionDecl match = null;
