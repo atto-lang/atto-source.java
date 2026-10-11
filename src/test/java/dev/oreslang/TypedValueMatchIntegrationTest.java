@@ -234,7 +234,7 @@ final class TypedValueMatchIntegrationTest {
                 }
                 """, "one direct return");
         rejects("""
-                fnc invalid(let mut int n): int {
+                fnc invalid(int n): int {
                   return match<ret=int> n over {
                     default { return &mut n; }
                   };
@@ -263,6 +263,25 @@ final class TypedValueMatchIntegrationTest {
                   };
                 }
                 pub fnc main(): void { stdio.println(value(9)); }
+                """));
+    }
+
+    @Test
+    void closureCaptureAnalysisTraversesMatchSubjectAndArmValues() throws Exception {
+        assertEquals("8\n11", execute("""
+                fnc classify(int n): int {
+                  const runner = || -> {
+                    return match<ret=int> n over {
+                      on 7 { return n + 1; }
+                      default as number { return number + 2; }
+                    };
+                  };
+                  return runner();
+                }
+                pub fnc main(): void {
+                  stdio.println(classify(7));
+                  stdio.println(classify(9));
+                }
                 """));
     }
 }
