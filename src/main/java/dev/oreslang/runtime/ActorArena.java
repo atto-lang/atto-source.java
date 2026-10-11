@@ -71,6 +71,23 @@ public final class ActorArena implements AutoCloseable {
         persistent.drop(slot);
     }
 
+    /**
+     * Allocate one bounded native-backed actor-state map. All accesses to its
+     * persistent entries require a lexical critical callback; no Slot leaks.
+     * The caller must provision at least 3 * capacity persistent i64 slots.
+     */
+    public ActorPersistentI64Map newPersistentI64Map(int capacity) {
+        requireOwnerForState();
+        return new ActorPersistentI64Map(this, capacity);
+    }
+
+    // Package-private admission shared with the guarded persistent map.
+    // A semantic ActorId, never the physical carrier thread, is the owner.
+    void requireOwnerForState() {
+        requireOwner();
+        if (closed()) throw new IllegalStateException("actor arena retired");
+    }
+
     /** A scope must be closed before returning/yielding from the actor turn. */
     public synchronized ScratchTurn beginTurn() {
         requireOwner();
