@@ -170,6 +170,7 @@ final class SupervisorChildRegistryTest {
                 registry.snapshot(first.child()).phase(),
                 "a forged acknowledgement must not release the reservation");
 
+        registry.markStopApplied(stop);
         registry.commitStop(stop);
         assertEquals(SupervisorChildRegistry.Phase.STOPPED,
                 registry.snapshot(first.child()).phase());
