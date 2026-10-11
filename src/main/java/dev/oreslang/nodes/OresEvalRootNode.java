@@ -9,6 +9,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.SupervisorFailureLane;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -550,6 +551,78 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "actor receive must complete with void");
             }
+        }
+
+        @Override
+        public boolean supportsChildSupervision(String actorTypeName) {
+            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            if (findMethod(klass, CallableSelector.instance("supervision_policy", 0),
+                    new LinkedHashSet<>()) != null) return true;
+            return findMethod(klass, CallableSelector.instance("on_throw", 1),
+                    new LinkedHashSet<>()) != null
+                    && findMethod(klass, CallableSelector.instance("on_raise", 1),
+                    new LinkedHashSet<>()) != null
+                    && findMethod(klass, CallableSelector.instance("on_panic", 1),
+                    new LinkedHashSet<>()) != null;
+        }
+
+        @Override
+        public ActorRuntime.SupervisionDecision superviseChild(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                SupervisorFailureLane.Failure failure,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            if (!(rawState instanceof SourceActorState state)
+                    || !state.ownerActorId().equals(actorContext.self().id())
+                    || !state.actorTypeName().equals(actorTypeName)) {
+                throw new SecurityException(
+                        "source supervisor invocation lost parent actor ownership");
+            }
+            Ast.ClassDecl klass = state.object().klass;
+            String hook = switch (failure.kind()) {
+                case THROW -> "on_throw";
+                case RAISE -> "on_raise";
+                case PANIC -> "on_panic";
+                case CANCEL -> "on_cancel";
+                case HOST_FAILURE -> "on_host_failure";
+            };
+            Ast.MethodDecl method = findMethod(
+                    klass, CallableSelector.instance(hook, 1),
+                    new LinkedHashSet<>());
+            if (method != null) {
+                if (methodContainsPotentialSuspension(method)) {
+                    throw new IllegalStateException(
+                            "actor supervisor hook cannot suspend: " + hook);
+                }
+                Object result = invoke(methodInvocation(
+                        state.object(), method, List.of(failure.summary())));
+                if (result != null) {
+                    throw new IllegalStateException(
+                            "actor supervisor hook must return void: " + hook);
+                }
+                return ActorRuntime.SupervisionDecision.ACKNOWLEDGE;
+            }
+            Ast.MethodDecl policy = findMethod(
+                    klass, CallableSelector.instance("supervision_policy", 0),
+                    new LinkedHashSet<>());
+            if (policy != null) {
+                if (methodContainsPotentialSuspension(policy)) {
+                    throw new IllegalStateException(
+                            "actor supervision policy cannot suspend");
+                }
+                Object result = invoke(methodInvocation(
+                        state.object(), policy, List.of()));
+                if ("escalate".equals(result)) {
+                    return ActorRuntime.SupervisionDecision.ESCALATE;
+                }
+                if ("acknowledge".equals(result)) {
+                    return ActorRuntime.SupervisionDecision.ACKNOWLEDGE;
+                }
+                throw new IllegalStateException(
+                        "actor supervision_policy must return 'escalate' "
+                                + "or 'acknowledge', not " + String.valueOf(result));
+            }
+            return ActorRuntime.SupervisionDecision.ESCALATE;
         }
 
         private Ast.ClassDecl requireLocalActorClass(String actorTypeName) {
