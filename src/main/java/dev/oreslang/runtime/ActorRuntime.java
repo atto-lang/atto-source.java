@@ -647,6 +647,10 @@ public final class ActorRuntime implements AutoCloseable {
             return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
         }
 
+        private MemoryReservation reserveSerializedMailbox(long frameAndDecodeBytes) {
+            return reserve(frameAndDecodeBytes, "private binary actor mailbox");
+        }
+
         private synchronized MemoryReservation reserve(long bytes, String purpose) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
@@ -4469,13 +4473,14 @@ public final class ActorRuntime implements AutoCloseable {
         boolean mailboxSlotTransferred = false;
         try {
         MessagePackCollectionCodec.MailboxSchema schema = cell.mailboxSchema;
+        byte[] binaryFrame = null;
         if (schema != null) {
-            // Binary snapshot and exact recipient-schema decode both finish
-            // before actor queue admission; never retain sender's data graph.
-            // The decoded graph is then checked by the ordinary mailbox
-            // ownership, memory quota, CONTROL and cancellation gates.
-            byte[] wire = schema.encode(message);
-            message = (M) schema.decode(wire);
+            // The mailbox stores immutable runtime-owned wire bytes, never a
+            // pointer into the sender's guest graph. Pre-decode for strict
+            // type/ownership/quota admission; decode again on the recipient's
+            // actor execution turn to establish the recipient-owned graph.
+            binaryFrame = schema.encode(message);
+            message = (M) schema.decode(binaryFrame);
         }
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
@@ -4516,9 +4521,32 @@ public final class ActorRuntime implements AutoCloseable {
 
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
-        Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        Object prepared = binaryFrame != null
+                ? binaryFrame
+                : isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
         Runnable release;
-        if (isPrivateKind(cell.kind)) {
+        if (binaryFrame != null) {
+            // Account for both the retained wire and the expected decoded
+            // guest graph. Decode is executed on the recipient's actor lane;
+            // this reservation lasts until the envelope is released.
+            long accountedBytes = Math.addExact(
+                    Math.addExact(24L, binaryFrame.length),
+                    estimateFrozenBytes(message));
+            if (isPrivateKind(cell.kind)) {
+                MemoryReservation reservation;
+                try {
+                    reservation = cell.memorySlice.reserveSerializedMailbox(accountedBytes);
+                } catch (IllegalStateException exceeded) {
+                    throw new IllegalStateException(
+                            "private binary actor mailbox limit exceeded for " + ref.id()
+                                    + ": " + exceeded.getMessage(), exceeded);
+                }
+                release = reservation::close;
+            } else {
+                cell.reserveSharedMailbox(accountedBytes);
+                release = () -> cell.releaseSharedMailbox(accountedBytes);
+            }
+        } else if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
             try {
                 reservation = cell.memorySlice.reserveMailbox(prepared);
@@ -4541,7 +4569,7 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (runtimeLifecycleLock) {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-                if (cell.kind == ActorKind.SHARED) {
+                if (cell.kind == ActorKind.SHARED && schema == null) {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
                 synchronized (cell.lifecycleLock) {
@@ -6613,11 +6641,20 @@ public final class ActorRuntime implements AutoCloseable {
                         if (activeEnvelope.isContinuation()) {
                             activeEnvelope.continuation().run();
                         } else {
+                            // A schema-bound mailbox physically queues the
+                            // immutable MessagePack frame. The recipient's
+                            // exclusive turn owns decoding; host CONTROL
+                            // envelopes and unschematized host actors retain
+                            // their existing distinct transport.
+                            @SuppressWarnings("unchecked")
+                            M received = mailboxSchema == null
+                                    ? (M) activeEnvelope.value()
+                                    : (M) mailboxSchema.decode((byte[]) activeEnvelope.value());
                             ActorInboxMail<M> mail = new ActorInboxMail<>(
                                     ref.id(),
                                     Optional.ofNullable(activeEnvelope.sender()),
                                     activeEnvelope.sequence(),
-                                    (M) activeEnvelope.value());
+                                    received);
                             activeMail = mail;
                             try {
                                 if (codeExecutor != null) {
