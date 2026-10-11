@@ -979,6 +979,10 @@ public final class Parser {
                 }
                 tag = (int) raw;
             } else tag = nextTag;
+            if (tag < nextTag) {
+                throw error(start, "enum wire tags must increase monotonically; "
+                        + "retired tags cannot be reused");
+            }
             if (!tags.add(tag)) throw error(start, "duplicate enum wire tag " + tag);
             if (tag == Integer.MAX_VALUE && !check(END)) {
                 throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
