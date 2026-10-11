@@ -41,6 +41,8 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
+    private static final ThreadLocal<ActorTurnWatchdog.Lease> CURRENT_WATCHDOG_LEASE =
+            new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
     @FunctionalInterface
@@ -97,6 +99,7 @@ public final class OresScheduler implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong watchdogOverruns = new AtomicLong();
 
     /**
      * Create a user-owned scheduler with exactly {@code parallelism} carrier
@@ -224,6 +227,23 @@ public final class OresScheduler implements AutoCloseable {
 
     public int parallelism() {
         return parallelism;
+    }
+
+    /** Number of physical dispatch turns flagged by the independent watchdog. */
+    public long watchdogOverruns() {
+        return watchdogOverruns.get();
+    }
+
+    /** Poll records forward progress without claiming a physical carrier handoff. */
+    static void checkpointCurrentTurn() {
+        ActorTurnWatchdog.Lease lease = CURRENT_WATCHDOG_LEASE.get();
+        if (lease != null) lease.checkpoint();
+    }
+
+    /** Advisory request; only a compiler-lowered continuation may actually yield. */
+    public static boolean preemptionRequested() {
+        ActorTurnWatchdog.Lease lease = CURRENT_WATCHDOG_LEASE.get();
+        return lease != null && lease.preemptionRequested();
     }
 
     public boolean isClosed() {
@@ -428,6 +448,7 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
+        private volatile ActorTurnWatchdog.Lease watchdogLease;
 
         private TaskRunner(Task<T> task) {
             this.task = task;
@@ -462,6 +483,11 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
 
+            ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(
+                    ignored -> watchdogOverruns.incrementAndGet());
+            watchdogLease = lease;
+            ActorTurnWatchdog.Lease previousWatchdog = CURRENT_WATCHDOG_LEASE.get();
+            CURRENT_WATCHDOG_LEASE.set(lease);
             Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
             CURRENT_TASK_DOMAIN.set(this);
             try {
@@ -506,6 +532,11 @@ public final class OresScheduler implements AutoCloseable {
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
+                if (previousWatchdog == null) {
+                    CURRENT_WATCHDOG_LEASE.remove();
+                } else {
+                    CURRENT_WATCHDOG_LEASE.set(previousWatchdog);
+                }
                 if (priorTaskDomain == null) {
                     CURRENT_TASK_DOMAIN.remove();
                 } else {
@@ -521,6 +552,9 @@ public final class OresScheduler implements AutoCloseable {
          * this carrier is still executing guest continuation code.
          */
         private void afterCarrierTurn() {
+            ActorTurnWatchdog.Lease lease = watchdogLease;
+            watchdogLease = null;
+            if (lease != null) lease.close();
             executing.set(false);
             publishTerminalIfReady();
             scheduleReadyResume();
