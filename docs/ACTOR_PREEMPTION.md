@@ -160,9 +160,14 @@ signal-based stack rewrites, or forces a VM suspension.
 - `OresScheduler.preemptionRequested()` observes the logical source task's
   current dispatch; `OresScheduler.watchdogOverruns()` counts flagged turns.
 - `ActorRuntime.watchdogPreemptionRequested()` observes the current actor
-  dispatch. `pollWatchdogNotice()` supplies a bounded, trusted-host notice
+  dispatch. `pollWatchdogNotice()` supplies a bounded host-only notice
   containing actor id/kind and wall/checkpoint ages; `watchdogOverruns()`
   counts all detections, including notices dropped by a full notice queue.
+  `watchdogNoticesDropped()` counts bounded-queue drops. These methods and
+  `watchdogObserverFailures()` require host/supervisor authority: ordinary
+  actors and Mailman callbacks cannot drain another actor's diagnostics.
+  When an internal observer fails, the watchdog counts the failure, skips
+  only that observer and continues inspecting peers and future dispatches.
 - `OresContext.watchdogPreemptionRequested()` combines the two sources.
   The source-loop trampoline honors that advisory bit **only** where it
   already owns a continuation and no lexical `MutexGuard` is held.
