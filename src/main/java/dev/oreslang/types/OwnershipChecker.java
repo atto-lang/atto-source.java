@@ -232,6 +232,13 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (stmt instanceof Ast.ArmReturnStmt result) {
+            // A scalar ARM_RESULT is a value transfer to its containing
+            // match, not a function exit, but has the same borrow-escape
+            // restrictions as a return from this lexical arm.
+            checkStatement(new Ast.ReturnStmt(result.value()), scope, returnType);
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -704,12 +711,9 @@ public final class OwnershipChecker {
                 try {
                     definePatternAliases(arm.pattern(), subject.type, source, armScope);
                     if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
-                    if (arm.body().size() != 1
-                            || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
-                            || returned.value() == null) {
-                        throw error("unlowered typed value match arm in ownership checker");
-                    }
-                    checkExpr(returned.value(), armScope, false);
+                    // Sequential statement traversal detects invalid moves,
+                    // borrows, and borrow escapes across nested arm scopes.
+                    checkBlock(arm.body(), armScope, matched.returnContract());
                 } finally {
                     armScope.close();
                 }
@@ -1895,6 +1899,8 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.ArmReturnStmt result) {
+                scanExpr(result.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
