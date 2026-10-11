@@ -156,9 +156,10 @@ public final class SourceSupervisorLowering {
         }, resolution -> {
             verifyStopResolution(resolution, expectedGroup, expectedSupervisor);
             // Runs on the resumed CONTROL carrier after authoritative ack.
-            var permit = group.reservedStopFor(resolution);
-            group.recordAppliedStop(permit);
-            group.commitReservedStop(permit);
+            // A trusted reconciler may already have confirmed this exact
+            // host effect while the original Future was completing.
+            // Acknowledge the matching ticket once without re-running STOP.
+            group.acknowledgeReservedStopEffect(resolution);
 
         }, resolution -> {
             // Invoked by SupervisorProcess on CONTROL, never on a Future's
