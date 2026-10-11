@@ -1,6 +1,6 @@
 # Source-task cancellation and cleanup: release gate
 
-Status: **BLOCKED / NOT YET IMPLEMENTED** (October 11, 2026)
+Status: **DRAFT IMPLEMENTATION / NOT YET RELEASE-VERIFIED** (October 11, 2026)
 
 This document is an executable admission checklist, not evidence that
 Oreslang already guarantees cancellation-safe `finally` / `defer`.
@@ -61,3 +61,53 @@ only, not cancellation, timed teardown, or context close.
 
 **Until all of these pass, keep the PR draft and do not advertise
 exactly-once cleanup for cancelled source tasks.**
+
+## October 11 experimental execution-context integration (stacked draft)
+
+The Java draft now has an **opt-in** scheduler protocol,
+`OresScheduler.UnwindingTask`, and the heap-owned `SourceTask` opts in.
+`OresFuture.cancel()` for these tasks is a single-shot *request*, not
+terminal publication. The scheduler detaches abandoned await registrations,
+places a cancellation resume on the original task domain, and permits
+future completion threads only to enqueue resumption. Existing task ownership
+is retained until after the final carrier turn leaves the context.
+
+The execution context is the existing heap-owned SourceTask, not a second
+Java interpreter stack. `cleanupDepth` marks live `defer`/lexical
+`finally` regions, and `SourceFlowKind.CANCEL` is a non-catchable control
+exit. A task already awaiting *inside* cleanup continues that await instead
+of receiving another cancellation throw. A pending cancellation is published
+after the cleanup chain and mutex guards finish, or a cleanup failure is
+reported with cancellation suppressed. Scheduler.close rejects new tasks,
+requests a drain, waits up to five seconds, and **reports a failure without
+forcibly shutting down carriers** if an owned cleanup task remains.
+
+**Defer/recover semantic separation:** `defer` owns lexical finalizers and
+must run in LIFO order. `recover` is currently implemented as
+`SharedMutex.recover(callback)`, an owner-controlled poison recovery
+operation, NOT a general-purpose cancellation handler. Future language
+`recover` control-flow syntax must never swallow a task CANCEL signal or
+fabricate successful cleanup. Panic/throw recovery is separate from
+cancellation and from force termination of an isolated actor.
+
+**Important caveats / next audit targets:**
+
+- This experimental change does not yet certify cancellation-safe guest
+  `defer`/try/`finally` execution on the actual Graal source evaluator.
+  Source integration, randomized interleavings, native-image AOT/hybrid and
+  complete merge-tree CI still need to run.
+- Busy CPU loops need cancellation control at existing compiler/runtime
+  safepoints; do not add wall-clock checks to every iteration. Logical task
+  cancellation still requires a source-loop continuation conformance matrix.
+- Cooperative timeout does not magically release stalled FFM loans or native
+  borrows. The runtime must report incomplete drain and retain ownership
+  rather than claiming resources have been reclaimed.
+- The cancellation-aware task Future intentionally remains pending between
+  acceptance of the request and terminal cleanup publication; user-visible
+  semantics and callbacks must be covered by compatibility tests.
+- `OresScheduler.UnwindingTask` is an internal host capability; guest source
+  cannot forge `CANCEL`, grant itself a cleanup lane, or bypass the actor
+  supervisor's ownership authority.
+
+**Keep the PR draft.** The mandatory executed tests listed above are still
+release gates, not evidence already obtained.
