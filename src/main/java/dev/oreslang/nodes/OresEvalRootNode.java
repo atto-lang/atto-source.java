@@ -872,6 +872,7 @@ public final class OresEvalRootNode extends RootNode {
                 implements OresScheduler.CancellationAwareTask<Object> {
             private final ArrayDeque<SourceCleanupScope> activeScopes = new ArrayDeque<>();
             private volatile boolean cancellationRequested;
+            private volatile OresScheduler.TaskCancelledException cancellationReason;
             private int cleanupDepth;
             private boolean awaitingCooperate;
 
@@ -881,13 +882,18 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             @Override
-            public void cancellationRequested() {
+            public void cancellationRequested(
+                    OresScheduler.TaskCancelledException reason) {
+                cancellationReason = Objects.requireNonNull(reason, "reason");
                 cancellationRequested = true;
             }
 
             private SourceFlow cancellationFlow() {
-                return SourceFlow.throwing(
-                        new OresScheduler.TaskCancelledException());
+                OresScheduler.TaskCancelledException reason = cancellationReason;
+                if (reason == null) {
+                    throw new IllegalStateException("source cancellation missing scheduler reason");
+                }
+                return SourceFlow.throwing(reason);
             }
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
