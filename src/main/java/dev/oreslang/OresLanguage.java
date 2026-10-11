@@ -42,6 +42,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // admission and must not acquire concurrent host re-entry privileges.
         trustedEmbedderThread = context.isolatePolicy().adversarial()
                 ? null : Thread.currentThread();
+        System.err.println("ORES_CREATE_CONTEXT lang=" + System.identityHashCode(this)
+                + " owner=" + trustedEmbedderThread
+                + " caller=" + Thread.currentThread()
+                + " adversarial=" + context.isolatePolicy().adversarial());
         return context;
     }
 
@@ -67,7 +71,8 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                     || AsyncRuntime.isAsyncCarrierThread()
                     || OresScheduler.isSchedulerCarrierThread()));
         if (!allowed && "main".equals(thread.getName())) {
-            System.err.println("ORES_TRUFFLE_DENIED requested=" + thread
+            System.err.println("ORES_TRUFFLE_DENIED lang=" + System.identityHashCode(this)
+                    + " requested=" + thread
                     + " trustedOwner=" + trustedEmbedderThread
                     + " current=" + Thread.currentThread()
                     + " sameCurrent=" + currentThread);
