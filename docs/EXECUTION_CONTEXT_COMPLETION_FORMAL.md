@@ -57,6 +57,10 @@ Current Java/GraalVM paths:
   `preserveCleanupFailure`.
 - Suspendable `SourceTask.runOneDefer`, `finishBlock`, and `try/finally` now
   also preserve the first failure through `sourceCleanup`/`sourceFinally`.
+- `runSuspendableStatement` carries a single-delivery fence (ported from PR
+  #567). An exception thrown by the downstream completion consumer cannot
+  be reclassified as a second producer outcome. Duplicate completion attempts
+  are rejected, including when a callback arrives on a later source turn.
 - Generalized cancellation cleanup semantics, structured recover, and
   suspendable `ARM_RESULT` remain unimplemented here.
 
