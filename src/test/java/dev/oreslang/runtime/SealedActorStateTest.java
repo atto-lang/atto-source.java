@@ -19,8 +19,8 @@ final class SealedActorStateTest {
                 try {
                     if (state.get() == null) {
                         state.set(new SealedActorState(ctx.self().id(),
-                                Map.of("count", "int", "enabled", "bool"),
-                                Map.of("count", 0L, "enabled", true)));
+                                Map.of("count", "int", "enabled", "bool", "name", "string"),
+                                Map.of("count", 0L, "enabled", true, "name", "counter")));
                     }
                     SealedActorState current = state.get();
                     if (mail > 0) {
@@ -51,6 +51,16 @@ final class SealedActorStateTest {
                                 () -> current.critical(s -> { s.write("count", "invalid"); return null; }));
                         assertThrows(IllegalArgumentException.class,
                                 () -> current.critical(s -> s.read("missing")));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> current.critical(s -> {
+                                    s.write("count", "not an integer");
+                                    return null;
+                                }));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> current.critical(s -> {
+                                    s.write("name", "x".repeat(64 * 1024 + 1));
+                                    return null;
+                                }));
                         current.retireFromRuntime(ctx.self().id());
                         assertThrows(IllegalStateException.class,
                                 () -> current.critical(s -> s.read("count")));
