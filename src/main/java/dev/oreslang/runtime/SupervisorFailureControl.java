@@ -133,6 +133,21 @@ public final class SupervisorFailureControl {
         scheduleLocked();
     }
 
+    /**
+     * A child failed but its physical retirement barrier did not complete.
+     * Do not forge a finalized Failure; account for the loss and stop
+     * presenting this supervisor CONTROL lane as healthy.
+     */
+    synchronized void rejectUnfinalizedFailure() {
+        undelivered.incrementAndGet();
+        if (handlerFailure == null) {
+            handlerFailure = new IllegalStateException(
+                    "actor failure could not cross physical finalization barrier");
+        }
+        undelivered.addAndGet(pending.size());
+        pending.clear();
+    }
+
     public synchronized int queued() { return pending.size(); }
     public long undelivered() { return undelivered.get(); }
     public synchronized Optional<String> failure() {
