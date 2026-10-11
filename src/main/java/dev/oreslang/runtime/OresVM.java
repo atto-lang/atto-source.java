@@ -14,10 +14,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * VM-owned asynchronous root runtime.
  *
- * <p>The CONTROL pool is deliberately prestarted during VM construction. Guest
- * execution is not admitted until this barrier is complete, so the first
- * {@code main} turn can safely use Futures, timers, channel/select wakeups and
- * root continuations without lazily creating runtime infrastructure.</p>
+ * <p>The master CONTROL scheduler thread starts eagerly, but root-turn
+ * carriers are configured with zero live threads. A root turn starts its
+ * carrier on demand and never executes on the master CONTROL thread.
+ * Isolated roots preserve their caller-owned admission executor.</p>
  */
 public final class OresVM implements AutoCloseable {
     private static final int DEFAULT_CONTROL_PARALLELISM =
@@ -58,8 +58,8 @@ public final class OresVM implements AutoCloseable {
                 rootAdmission == null ? controlExecutor : rootAdmission,
                 turnExecutor);
         try {
-            startup();
             masterScheduler.start();
+            startup();
         } catch (RuntimeException | Error failure) {
             masterScheduler.shutdown();
             rootScheduler.close();
@@ -82,8 +82,9 @@ public final class OresVM implements AutoCloseable {
     }
 
     /**
-     * VM bootstrap barrier. The STARTED state is visible only after every
-     * configured CONTROL core carrier has been successfully prestarted.
+     * VM bootstrap barrier. STARTED means the master CONTROL loop has
+     * started and the root-carrier executor is configured, not that any
+     * guest-capable carrier has already been created.
      */
     synchronized void startup() {
         if (startupState == StartupState.CLOSED) {
@@ -101,14 +102,12 @@ public final class OresVM implements AutoCloseable {
 
         try {
             controlExecutor.allowCoreThreadTimeOut(false);
-            int required = controlExecutor.getCorePoolSize();
-            int newlyStarted = controlExecutor.prestartAllCoreThreads();
-            int live = controlExecutor.getPoolSize();
-            if (live != required) {
+            // No control carrier is prestarted. ThreadPoolExecutor owns the
+            // admission/activation boundary: execute() starts the first core
+            // carrier without running root guest code on master CONTROL.
+            if (masterScheduler.startedThreads() != 1) {
                 throw new IllegalStateException(
-                        "CONTROL dispatcher bootstrap incomplete: required="
-                                + required + ", live=" + live
-                                + ", newlyStarted=" + newlyStarted);
+                        "OresVM master scheduler startup barrier incomplete");
             }
             startupState = StartupState.STARTED;
         } catch (RuntimeException | Error failure) {
@@ -143,12 +142,12 @@ public final class OresVM implements AutoCloseable {
     }
 
     /**
-     * Admit runtime CONTROL work through the already-owned root scheduler.
+     * Admit runtime CONTROL work through the owned root scheduler.
      *
-     * Mailmen and other control services share the VM root/CONTROL admission
-     * boundary. In a strict isolate this preserves the isolate's JNI/root-turn
-     * admission executor rather than hopping guest work onto an unadmitted
-     * native carrier.
+     * Mailmen and other control services share root CONTROL admission.
+     * First work lazily starts a root carrier. In strict isolates the
+     * caller-owned guest admission executor remains authoritative, rather
+     * than running guest callbacks on the master thread.
      */
     OresFuture<Void> executeControl(Runnable task) {
         Objects.requireNonNull(task, "task");
