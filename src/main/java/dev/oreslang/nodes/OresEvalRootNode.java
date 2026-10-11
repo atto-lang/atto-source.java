@@ -4472,7 +4472,12 @@ public final class OresEvalRootNode extends RootNode {
             Throwable actual = OresFuture.unwrap(failure);
             return actual instanceof RuntimeException
                     && !(actual instanceof OresPanic)
-                    && !(actual instanceof java.util.concurrent.CancellationException);
+                    && !(actual instanceof java.util.concurrent.CancellationException)
+                    // Capability denial and scheduler shutdown are runtime control
+                    // failures, not ordinary guest exceptions. Never launder
+                    // them into a silent Option.None at a trap boundary.
+                    && !(actual instanceof SecurityException)
+                    && !(actual instanceof java.util.concurrent.RejectedExecutionException);
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
@@ -4481,14 +4486,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresPanic panic) {
-                throw panic;
-            } catch (java.util.concurrent.CancellationException cancelled) {
-                throw cancelled;
-            } catch (RuntimeException ordinaryFailure) {
-                // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Panic and scheduler cancellation remain distinct
-                // non-trappable control channels.
+            } catch (RuntimeException failure) {
+                // Both callable and expression traps use the *same* fail-closed
+                // exception classifier. Neither may suppress supervision,
+                // capability denial, or scheduler shutdown.
+                if (!isTrappableFailure(failure)) throw failure;
                 return new OptionValue(false, null);
             }
         }
