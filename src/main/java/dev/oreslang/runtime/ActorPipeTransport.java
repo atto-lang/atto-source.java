@@ -108,6 +108,7 @@ public final class ActorPipeTransport implements AutoCloseable {
     public final class ForwardWriter<T> {
         private final ChannelRuntime.Channel<Object> channel;
         private final Class<T> type;
+        private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
 
         private ForwardWriter(ChannelRuntime.Channel<Object> channel, Class<T> type) {
             this.channel = channel;
@@ -126,7 +127,22 @@ public final class ActorPipeTransport implements AutoCloseable {
             T value = checked(message);
             if (closed()) return OresFuture.failed(
                     new ChannelRuntime.ChannelClosedException("actor pipe is closed"));
-            return channel.writeAsync(value);
+            // Waiting producers themselves hold message payloads. A bounded
+            // buffer alone does not bound that memory, so cap outstanding
+            // unresolved sends per minted stage port as well.
+            if (pending.incrementAndGet() > channel.capacity()) {
+                pending.decrementAndGet();
+                return OresFuture.failed(new IllegalStateException(
+                        "actor pipe pending-write budget exceeded"));
+            }
+            try {
+                OresFuture<Void> future = channel.writeAsync(value);
+                future.whenCompleteRuntime((ignored, failure) -> pending.decrementAndGet());
+                return future;
+            } catch (RuntimeException | Error failure) {
+                pending.decrementAndGet();
+                throw failure;
+            }
         }
 
         public boolean tryWrite(T message) {
@@ -138,6 +154,7 @@ public final class ActorPipeTransport implements AutoCloseable {
     public final class ForwardReader<T> {
         private final ChannelRuntime.Channel<Object> channel;
         private final Class<T> type;
+        private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
 
         private ForwardReader(ChannelRuntime.Channel<Object> channel, Class<T> type) {
             this.channel = channel;
@@ -145,11 +162,22 @@ public final class ActorPipeTransport implements AutoCloseable {
         }
 
         public OresFuture<T> readAsync() {
-            // Channel receipt is typed by the matching class token and
-            // guarded sender. No source-level reinterpretation is allowed.
-            @SuppressWarnings("unchecked")
-            OresFuture<T> result = (OresFuture<T>) (OresFuture<?>) channel.readAsync();
-            return result;
+            if (pending.incrementAndGet() > channel.capacity()) {
+                pending.decrementAndGet();
+                return OresFuture.failed(new IllegalStateException(
+                        "actor pipe pending-read budget exceeded"));
+            }
+            try {
+                // Channel receipt is typed by the matching class token and
+                // guarded sender. No source-level reinterpretation is allowed.
+                @SuppressWarnings("unchecked")
+                OresFuture<T> result = (OresFuture<T>) (OresFuture<?>) channel.readAsync();
+                result.whenCompleteRuntime((ignored, failure) -> pending.decrementAndGet());
+                return result;
+            } catch (RuntimeException | Error failure) {
+                pending.decrementAndGet();
+                throw failure;
+            }
         }
 
         public Optional<T> tryRead() {
