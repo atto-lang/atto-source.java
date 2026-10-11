@@ -5767,6 +5767,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
+                    // The synchronous interpreter must use the same sealed
+                    // actor-state write gate as suspended expression lowering.
+                    // Access.write checks the owning actor, callback lifetime,
+                    // schema and nested-loan fencing; never expose its backing map.
+                    if (receiver instanceof dev.oreslang.runtime.SealedActorState.Access stateAccess) {
+                        stateAccess.write(target.member(), value);
+                        return value;
+                    }
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
                             throw new IllegalArgumentException("unknown field " + target.member());
