@@ -154,6 +154,30 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void sourceStateSchemaCannotSilentlyFallBackToJvmMap() throws Exception {
+        String program = """
+                define actor Counter as
+                  state { count: int = 0; }
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val counter = spawn Counter();
+                  await counter.ready;
+                  return;
+                }
+                """;
+        PolyglotException failure =
+                assertThrows(PolyglotException.class,
+                        () -> run(program, "source-actor-state-fail-closed.ores"));
+        assertTrue(
+                failure.getMessage().contains("arena-backed handle_state lowering"),
+                failure.getMessage());
+    }
+
+    @Test
     void suspendingReceiveResumesBeforeLaterUserMail() throws Exception {
         String program = """
                 define actor Worker as
