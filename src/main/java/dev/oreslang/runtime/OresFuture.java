@@ -668,9 +668,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private static void requireBlockingAllowed() {
-        if (ActorRuntime.inActorExecution()) {
+        // An OresScheduler carrier cannot wait for an incomplete Future: the
+        // continuation that completes it may require this exact scheduler's
+        // sole available carrier. This includes post-turn callbacks, where
+        // current() is already null but the physical carrier is still busy.
+        if (ActorRuntime.inActorExecution()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "blocking Future wait on an actor/scheduler carrier is forbidden; "
+                            + "use a scheduler-owned await continuation");
         }
     }
 
