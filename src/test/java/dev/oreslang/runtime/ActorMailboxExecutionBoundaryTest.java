@@ -38,7 +38,12 @@ final class ActorMailboxExecutionBoundaryTest {
                  var runtime = new ActorRuntime(IsolatePolicy.developer(),
                          new ActorRuntime.DispatcherConfig(4, 4, 1, 128));
                  var producers = Executors.newFixedThreadPool(4)) {
-                var image = store.publish("execution-boundary.ores", Parser.parse("pub routine main(): void { return; }"));
+                var image = store.publish("execution-boundary.ores", Parser.parse("""
+                        define actor Worker as
+                            receive(ActorMail<String> mail): void { return; }
+                        end
+                        pub routine main(): void { return; }
+                        """));
                 var executor = new ActorRuntime.ActorCodeExecutor() {
                     @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
                     @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
