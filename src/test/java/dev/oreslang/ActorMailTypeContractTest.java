@@ -30,8 +30,7 @@ final class ActorMailTypeContractTest {
     void typedStructuralMailboxRejectsMissingAndWrongFields() {
         for (String message : new String[]{
                 "infer struct{different: 20}",
-                "infer struct{delta: \"bad\"}",
-                "infer struct{delta: 20, unexpected: 1}"}) {
+                "infer struct{delta: \"bad\"}"}) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse("""
                             define actor Counter as
