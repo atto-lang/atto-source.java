@@ -187,4 +187,49 @@ final class SourceSupervisorAwaitStopTest {
             group.close();
         }
     }
+
+    @Test
+    void reentrantSelfCloseCompletesAlreadyAuthorizedAwaitedStopExactlyOnce()
+            throws Exception {
+        var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var admitted = new CountDownLatch(1);
+            var requested = new AtomicReference<SupervisorProcess.Resolution>();
+            var processRef = new AtomicReference<SupervisorProcess>();
+            var count = new AtomicInteger();
+            var process = compiled.installAwaitingStop(group, 2, resolution -> {
+                requested.set(resolution);
+                count.incrementAndGet();
+                // Host STOP can close its own supervisor before returning
+                // the already-authoritative effect acknowledgment.
+                processRef.get().close();
+                admitted.countDown();
+                return CompletableFuture.completedFuture(null);
+            });
+            processRef.set(process);
+            var actor = group.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        throw new IllegalStateException("reentrant-stop");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("panic");
+            assertTrue(admitted.await(10, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (process.resolved() == 0 && System.nanoTime() < deadline)
+                Thread.sleep(1);
+            assertEquals(1, process.resolved(), "self-close erased an admitted decision");
+            assertEquals(1, count.get());
+            assertEquals(0, process.undelivered());
+            assertEquals(0, process.queued());
+            assertFalse(process.callbackActive());
+            assertFalse(process.healthy(), "closed process still reports healthy");
+            assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                    group.childSnapshot(requested.get().notice().logicalChild().orElseThrow())
+                            .phase());
+            process.close();
+            assertEquals(0, process.undelivered(), "second close duplicated loss");
+            group.close();
+        }
+    }
 }
