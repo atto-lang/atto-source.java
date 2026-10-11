@@ -642,4 +642,90 @@ final class PatternMatchingHardeningTest {
         assertEquals("42\n42", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
+
+    @Test
+    void typedMatchContractsParseInPositionalAndNamedForms() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc example(int n): bool {
+                  match<bool> n over {
+                    default as m { return false; }
+                    on 7 { return true; }
+                  }
+                  match<ret=bool> n over {
+                    on 7 { return true; }
+                    default { return false; }
+                  }
+                  do match<bool> n over {
+                    on 7 { return true; }
+                    default { return false; }
+                  }
+                  do match<ret=bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                """));
+        for (String header : new String[] {
+                "match<foo=bool>", "match<ret=int, extra=bool>",
+                "match<ret=>", "do match<ret=bool"
+        }) {
+            String source = "fnc f(int n): bool { " + header
+                    + " n over { default { return true; } } }";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void typedDoMatchUsesContainingReturnContractAndEnforcesAllBranches() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc f(int n): bool {
+                  do match<ret=bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc wrong(int n): bool {
+                  do match<ret=bool> n over {
+                    default { return 42; }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(wrong.getMessage().contains("return"));
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc missing(int n): bool {
+                  do match<ret=bool> n over {
+                    default { stdio.println(n); }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(missing.getMessage().contains("must return"));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc outer(int n): int {
+                  do match<ret=bool> n over {
+                    default { return false; }
+                  }
+                }
+                """)));
+    }
+
+    @Test
+    void valueMatchContractsFailClosedUntilArmLocalReturnLowering() {
+        IllegalArgumentException unsupported = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc f(int n): bool {
+                  match<bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(unsupported.getMessage().contains("arm-local return/result lowering"));
+    }
+
 }
