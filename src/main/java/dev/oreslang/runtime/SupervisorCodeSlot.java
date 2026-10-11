@@ -144,6 +144,8 @@ public final class SupervisorCodeSlot<P> implements AutoCloseable {
             if (closed) throw new IllegalStateException("supervisor code slot closed");
             if (current.revision != expectedRevision)
                 throw new IllegalStateException("stale supervisor code revision");
+            if (current.revision == Long.MAX_VALUE)
+                throw new IllegalStateException("supervisor code revision space exhausted");
             if (!current.abi.equals(abi))
                 throw new IllegalArgumentException(
                         "supervisor code ABI change requires checked state migration");
