@@ -39,9 +39,7 @@ final class SourcePendingCleanupExecutionTest {
             """;
 
     private static final String NESTED_PENDING_CLEANUP = """
-            pub async fnc work(Channel<int> startGate,
-                               Channel<int> finallyGate,
-                               Channel<int> deferGate): int {
+            pub async fnc work(): int {
               defer stdio.println(await (nb readch gates.deferGate));
               try {
                 stdio.println("armed");
