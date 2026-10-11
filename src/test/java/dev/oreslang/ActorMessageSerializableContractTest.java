@@ -103,6 +103,39 @@ final class ActorMessageSerializableContractTest {
     }
 
     @Test
+    void rejectsNumericWidthErasureAndOpaqueCollectionKindThroughAliases() {
+        String[] unsupported = {
+                "i32", "u64", "bigint", "f32", "Vector[string]",
+                "Slice[string]", "List[u16]", "Tuple[bool, uint]"
+        };
+        for (String type : unsupported) {
+            String source = """
+                    define actor Worker as
+                      receive(ActorMail<%s> mail): void { return; }
+                    end
+                    """.formatted(type);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), type);
+            assertTrue(failure.getMessage().contains("Serializable")
+                            || failure.getMessage().contains("actor-boundary"),
+                    failure.getMessage());
+        }
+
+        String aliasSource = """
+                type BigCount = bigint;
+                define actor Worker as
+                  receive(ActorMail<List<BigCount>> mail): void { return; }
+                end
+                """;
+        IllegalArgumentException aliasedFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(aliasSource)));
+        assertTrue(aliasedFailure.getMessage().contains("Serializable"),
+                aliasedFailure.getMessage());
+    }
+
+    @Test
     void rejectsRuntimeCapabilityPayloadEvenWhenFormerlySendable() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
