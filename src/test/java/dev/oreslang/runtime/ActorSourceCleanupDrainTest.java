@@ -144,4 +144,69 @@ final class ActorSourceCleanupDrainTest {
             assertEquals(1, gates.cleanupCompletes.get());
         }
     }
+    @Test
+    void globalRuntimeCloseDrainsOwnedActorCleanupBeforeDispatcherShutdown()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            Gates gates = new Gates();
+            ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
+            actor.send("run");
+            assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
+
+            AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+            Thread closer = Thread.ofPlatform().start(() -> {
+                try {
+                    runtime.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                }
+            });
+            assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS),
+                    "runtime close must keep actor scheduler CONTROL cleanup runnable");
+            assertFalse(actor.get_done().isDone(),
+                    "global close cannot publish done before awaited cleanup");
+            assertTrue(closer.isAlive(),
+                    "runtime close must drain, not destroy the pending cleanup carrier");
+
+            gates.cleanupAwait.completeFromRuntime(null);
+            closer.join(3000);
+            assertFalse(closer.isAlive(), "global close should finish after cleanup");
+            assertNull(closeFailure.get(), () -> String.valueOf(closeFailure.get()));
+            assertTrue(actor.get_done().isDone());
+            assertEquals(1, gates.cleanupStarts.get());
+            assertEquals(1, gates.cleanupCompletes.get());
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void globalCloseTimeoutRetainsOwnerUntilExplicitRetry() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            Gates gates = new Gates();
+            ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
+            actor.send("run");
+            assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
+
+            IllegalStateException timeout = assertThrows(
+                    IllegalStateException.class, runtime::close);
+            assertTrue(timeout.getMessage().contains("source cleanup drain incomplete"),
+                    () -> timeout.toString());
+            assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(actor.get_done().isDone(),
+                    "cleanup timeout cannot fake actor quiescence");
+            gates.cleanupAwait.completeFromRuntime(null);
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, gates.cleanupCompletes.get());
+
+            // A failed cleanup drain does not consume the right to a clean
+            // shutdown after the owner actually releases its obligations.
+            assertDoesNotThrow(runtime::close);
+        } finally {
+            runtime.close();
+        }
+    }
+
 }

@@ -1747,7 +1747,8 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(command, "source task continuation");
         final boolean cleanupOnly;
         synchronized (cell.lifecycleLock) {
-            if (cell.finalized || cell.forceKillFenced || closed.get()
+            if (cell.finalized || cell.forceKillFenced
+                    || (closed.get() && !cell.sourceCleanupDraining)
                     || (cell.stopped.get() && !cell.sourceCleanupDraining)) return false;
             cleanupOnly = cell.stopped.get() && cell.sourceCleanupDraining;
         }
@@ -1767,7 +1768,8 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.finalized || cell.forceKillFenced || closed.get()
+                if (cell.finalized || cell.forceKillFenced
+                        || (closed.get() && !cell.sourceCleanupDraining)
                         || (cell.stopped.get() && !cell.sourceCleanupDraining)) {
                     return false;
                 }
@@ -4622,8 +4624,10 @@ public final class ActorRuntime implements AutoCloseable {
      * this point; it must keep running until a real resumable boundary.</p>
      */
     public void schedulerSafepoint() {
-        if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
+        if (closed.get() && (cell == null || !cell.sourceCleanupTurn)) {
+            throw new ActorCancellationSignal("actor runtime is closing");
+        }
         if (cell != null && cell.stopped.get() && !cell.endRequested
                 && !cell.sourceCleanupTurn) {
             throw new ActorCancellationSignal("actor execution stopped");
@@ -5797,20 +5801,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
-        if (firstClose) {
-            // Stop executor carriers so queued work is rejected/removed and
-            // blocked host-side executor operations can wake. This interrupt is
-            // backend shutdown mechanics only; it is never an actor
-            // cancellation identity. Every ActorCell above was already marked
-            // stopped through the structured runtime lifecycle.
+        // Source execution-context tasks may have suspended defer/finally.
+        // During this phase only their owner CONTROL mailbox can still run.
+        // Closing the dispatchers now would strand that cleanup forever.
+        boolean needsSourceDrain = snapshot.stream()
+                .anyMatch(cell -> !cell.sourceTaskFutures.isEmpty());
+        if (firstClose && !needsSourceDrain) {
+            // Keep existing non-source host shutdown behavior. No source
+            // execution context remains to discharge lexical obligations.
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
             untrustedDispatcher.shutdownNow();
-
-            // shutdownNow() removes queued tasks without invoking runBatch().
-            // Clear those cells' scheduled bits only when no carrier actually
-            // entered the TurnExecutor boundary. Active carriers retain the bit
-            // until their executor finally exits.
             for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
         }
 
@@ -5828,6 +5829,27 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
+        }
+
+        if (needsSourceDrain) {
+            if (!stillRunning.isEmpty() || interrupted) {
+                if (interrupted) Thread.currentThread().interrupt();
+                // Never release shared storage or claim runtime quiescence if
+                // any source cleanup failed the deadline. Callers may retry
+                // close() after an explicit isolation escalation / completion.
+                throw new IllegalStateException(
+                        "ActorRuntime source cleanup drain incomplete; "
+                                + stillRunning.size() + " actor(s) retained");
+            }
+            privateDispatcher.shutdown();
+            sharedDispatcher.shutdown();
+            untrustedDispatcher.shutdown();
+        } else if (!firstClose) {
+            // Retry after a previous failed drain that intentionally kept the
+            // carriers alive. No source owners remain, so shutdown can proceed.
+            privateDispatcher.shutdown();
+            sharedDispatcher.shutdown();
+            untrustedDispatcher.shutdown();
         }
 
         boolean dispatchersTerminated = true;
@@ -6471,7 +6493,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void schedule() {
             if ((stopped.get() && !sourceCleanupDraining)
-                    || forceKillFenced || closed.get()) return;
+                    || forceKillFenced
+                    || (closed.get() && !sourceCleanupDraining)) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
@@ -6503,7 +6526,8 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!scheduled.get()) return;
 
                     if ((stopped.get() && !sourceCleanupDraining)
-                            || closed.get() || forceKillFenced) {
+                            || (closed.get() && !sourceCleanupDraining)
+                            || forceKillFenced) {
                         scheduled.set(false);
                         if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
                         lifecycleLock.notifyAll();
@@ -6530,7 +6554,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                         reschedule = (!stopped.get() || sourceCleanupDraining)
                                 && !forceKillFenced
-                                && !closed.get()
+                                && (!closed.get() || sourceCleanupDraining)
                                 && !finalized
                                 && hasQueuedWorkLocked();
                         lifecycleLock.notifyAll();
