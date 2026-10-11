@@ -7,19 +7,19 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class IntegerLiteralOverflowParityTest {
 
-    private static void rejectsOverflow(String source) {
+    private static void rejectsOverflow(String source, String offendingLexeme) {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class, () -> Parser.parse(source));
         assertTrue(failure.getMessage().contains("integer literal overflows signed 64-bit"),
                 "Overflow must have a stable Oreslang diagnostic: " + failure.getMessage());
-        assertTrue(failure.getMessage().contains("9223372036854775808"),
+        assertTrue(failure.getMessage().contains(offendingLexeme),
                 "Diagnostic must retain the offending lexeme: " + failure.getMessage());
     }
 
     @Test
     void expressionLiteralsRejectI64OverflowWithStableDiagnostic() {
-        rejectsOverflow("pub fnc main(): int { return 9223372036854775808; }");
-        rejectsOverflow("pub fnc main(): int { return 9_223_372_036_854_775_808; }");
+        rejectsOverflow("pub fnc main(): int { return 9223372036854775808; }", "9223372036854775808");
+        rejectsOverflow("pub fnc main(): int { return 9_223_372_036_854_775_808; }", "9_223_372_036_854_775_808");
     }
 
     @Test
@@ -31,7 +31,7 @@ final class IntegerLiteralOverflowParityTest {
                   end
                   return 0;
                 }
-                """);
+                """, "9223372036854775808");
     }
 
     @Test
