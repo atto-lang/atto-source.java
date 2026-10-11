@@ -143,3 +143,45 @@ in the funded test org. A focused JDK25 parser + state/effect verifier run
 proves these fixture admission rules; it is **not** a full GraalVM guest
 execution test or actual HTTP transport verification. Guest JUnit tests in
 `SerialActorImplicitCriticalTest` still require allocated Maven/JVM CI.
+
+## Audit: immutable authority and future-callback provenance (2026-10-11)
+
+**Authority from code images.** The runtime now resolves `serial` from
+the VM-published immutable `CodeImage.program()` using
+`SourceActorSchedulingPolicy`. At source actor spawn, any disagreement with
+`ActorCodeExecutor.isSerialActor` fails closed before creating the cell.
+`NativeHttp.handler` also validates this agreement *before* deciding whether
+the per-request adapter is safe. A guest-facing or host-adapter boolean
+alone never grants or removes serial admission. Unknown, duplicate and
+non-actor declarations are rejected.
+
+**Fencing captured future callbacks.** `ContinuationTarget` captures a
+`SerialContinuationAuthority` containing the originating
+`SerialActorAdmission.Lease`, rather than just actor ID. It refuses
+already-retired or unowned-while-busy callbacks before admission to the
+CONTROL queue, and checks runnable authority again on the actor carrier.
+A callback from one completed receive cannot borrow the following receive's
+lease even if both share the same persistent actor. The authority constructor
+also checks the issuing gate identity, so identical numeric generations
+from *different actors* never authenticate each other.
+
+**Boundary still unproven.** These checks apply to `ContinuationTarget`
+callbacks, not to every callback placed into the actor's internal
+`OresScheduler` queue. The scheduler's `TaskRunner` needs a runtime-minted
+per-receive identity captured when the task begins, persisted across
+`await`, and verified on *every* queued source-task continuation.
+Until then, detached or unrelated scheduler work is not certified to obey
+serial handler lifetime ownership. This cannot be addressed by simply
+checking an actor-wide boolean on reentry: it must be the *same receive*
+that originally owned the logical admission.
+
+The funded JDK25 test mirror compiles the exact
+`SourceActorSchedulingPolicy`, `SerialActorAdmission`, and
+`SerialContinuationAuthority` implementations and tests spoofed metadata,
+foreign leases, stale prior-handler callbacks, and unowned callbacks.
+These targeted runtime-substrate checks do not compile the 300KB
+`ActorRuntime`, `NativeHttp`, or GraalVM guest JUnit tests and therefore
+do not establish end-to-end runtime correctness.
+
+Both LLVM and GraalVM still need source-level HTTP/mailbox cross-ingress
+tests and full build/test verification before draft PRs may merge.
