@@ -1824,6 +1824,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
             String where;
+            boolean mapIndexAssignment = false;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
@@ -1838,6 +1839,7 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 Ast.ClassDecl mapClass = typedMapClass(receiver);
                 if (mapClass != null) {
+                    mapIndexAssignment = true;
                     requireAssignable(index, Primitive.STRING, "map key");
                     targetType = typedMapValue(mapClass, index, generics, self);
                 } else {
@@ -1850,10 +1852,9 @@ public final class TypeChecker {
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
-            if (assignment.target() instanceof Ast.IndexExpr indexed
-                    && typedMapClass(deref(typeOf(indexed.receiver(), env, generics, self))) != null
-                    && value == Primitive.VOID) {
-                throw new IllegalArgumentException("Map cannot store void values");
+            if (mapIndexAssignment) {
+                if (value == Primitive.VOID) throw new IllegalArgumentException("Map cannot store void values");
+                rejectEscapingMapValue(value, "Map indexed assignment");
             }
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
@@ -2302,6 +2303,7 @@ public final class TypeChecker {
                     if (member.member().equals("put")) {
                         Type actual = typeOf(call.arguments().get(1), env, generics, self);
                         if (actual == Primitive.VOID) throw new IllegalArgumentException("Map cannot store void values");
+                        rejectEscapingMapValue(actual, "Map.put value");
                         requireAssignable(actual, valueType, "Map.put value");
                         return Primitive.VOID;
                     }
@@ -6114,6 +6116,31 @@ public final class TypeChecker {
         effective.putAll(local);
         stack.remove(klass);
         return effective;
+    }
+
+    /**
+     * An open map is owned storage, not a lexical borrow sink. This check
+     * must run on both built-in put() calls and bracket assignments.
+     * Nested sum/container types cannot conceal borrowed references.
+     */
+    private void rejectEscapingMapValue(Type value, String where) {
+        if (value instanceof Borrow || value instanceof Function || value instanceof Generic) {
+            throw new IllegalArgumentException(where
+                    + " cannot store borrowed references, callable closures or unresolved generics");
+        }
+        if (value instanceof ListType list) {
+            rejectEscapingMapValue(list.element(), where);
+        } else if (value instanceof Named named) {
+            for (Type argument : named.arguments()) rejectEscapingMapValue(argument, where);
+        } else if (value instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) rejectEscapingMapValue(element, where);
+        } else if (value instanceof Record record) {
+            for (Type member : record.members().values()) rejectEscapingMapValue(member, where);
+        } else if (value instanceof Union union) {
+            for (Type option : union.options()) rejectEscapingMapValue(option, where);
+        } else if (value instanceof SelfType selfType) {
+            rejectEscapingMapValue(selfType.bound(), where);
+        }
     }
 
     private void requireReifiableMapValue(Ast.TypeRef type, String where) {
