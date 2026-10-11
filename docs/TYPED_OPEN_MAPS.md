@@ -35,6 +35,11 @@ fnc example(): void {
 - `Option<T>` describes the *presence* of a key; the stored value is `T` (not an Option wrapper).
 - Literal-key accesses and `get` / `put` / `remove` are statically typed. A nonliteral key returns `Option<unknown>` and accepts unknown values.
 - Dynamic writes are validated again at the storage boundary. Invalid writes do not invoke `on_put` and do not modify storage.
+- Reads and removes of known keys also validate their current values before returning a typed `Option<T>`; this detects mutable alias corruption rather than exposing a mismatched value.
+- `void`/null payloads, cyclic runtime values during recursive schema checking, and recursively nested values deeper than 64 levels are rejected. A finite nested `Option`/`Result`/`Array`/`List` value is validated recursively; `unknown` remains an open top type.
+- Typed key payloads must be runtime-reifiable. Bare Map construction, Map subclasses with type parameters, second-generation Map subclass inheritance, unsupported parameterized payload types and suspending/mutable-parameter hooks are rejected statically.
+- Open maps are mutable, identity-bearing objects. A map insertion moves non-Copy values according to ordinary Oreslang ownership rules. Mutable aliases must not be used after moves; implicit actor/async value transport of map objects is not a supported isolation boundary.
+- Hook calls apply to top-level map operations, **not** in-place mutations of nested values. The actor's critical/borrow guard remains a separate requirement before sharing actor state.
 - Bracket access uses the same read/write hooks as `get` and `put`. `remove` invokes `on_remove`.
 - Hooks execute synchronously in the calling actor/task, may raise an error to reject an operation, and must not suspend.
 - The underlying map retains arbitrary additional string keys.
