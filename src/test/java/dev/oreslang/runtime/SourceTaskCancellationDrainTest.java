@@ -27,6 +27,8 @@ final class SourceTaskCancellationDrainTest {
         final AtomicInteger requestCount = new AtomicInteger();
         final AtomicBoolean insideCleanup = new AtomicBoolean();
         final AtomicReference<Object> domain = new AtomicReference<>();
+        final AtomicReference<OresScheduler.TaskCancelledException> observedCancellation =
+                new AtomicReference<>();
         volatile Thread cleanupThread;
 
         @Override
@@ -53,8 +55,8 @@ final class SourceTaskCancellationDrainTest {
                 return OresScheduler.await(abandoned);
             }
             if (step == 1) {
-                assertInstanceOf(
-                        OresScheduler.TaskCancelledException.class, resume.failure());
+                observedCancellation.set(assertInstanceOf(
+                        OresScheduler.TaskCancelledException.class, resume.failure()));
                 insideCleanup.set(true);
                 cleanupThread = Thread.currentThread();
                 enteredCleanup.countDown();
@@ -84,7 +86,10 @@ final class SourceTaskCancellationDrainTest {
                     "detach must not cancel the upstream producer");
             Thread producer = Thread.ofPlatform().start(() -> body.cleanup.completeFromRuntime(null));
             producer.join();
-            assertThrows(CancellationException.class, () -> task.get(3, TimeUnit.SECONDS));
+            CancellationException observed = assertThrows(
+                    CancellationException.class, () -> task.get(3, TimeUnit.SECONDS));
+            assertSame(body.observedCancellation.get(), observed,
+                    "the terminal cancellation must preserve execution-context identity");
             assertTrue(task.isCancelled());
             assertEquals(3, body.turns.get());
             assertNotSame(producer, body.cleanupThread);

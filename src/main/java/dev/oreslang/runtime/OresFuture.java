@@ -439,9 +439,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     /** Settle an accepted task-cancellation request only AFTER its cleanup drain. */
-    boolean cancelAfterCleanupFromRuntime() {
-        return settle(new Cancelled(
-                new CancellationException("OresFuture task cancelled after cleanup")));
+    boolean cancelAfterCleanupFromRuntime(CancellationException signal) {
+        // Retain the single control-flow identity observed by the source task.
+        return settle(new Cancelled(Objects.requireNonNull(signal, "signal")));
     }
 
     @Override

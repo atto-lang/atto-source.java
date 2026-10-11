@@ -755,7 +755,8 @@ public final class OresScheduler implements AutoCloseable {
                 // Cleanup failure wins, but retain the cancellation request.
                 boolean present = false;
                 for (Throwable suppressed : failure.getSuppressed()) {
-                    if (suppressed == cancellationSignal) present = true;
+                    if (suppressed == cancellationSignal
+                            || suppressed instanceof TaskCancelledException) present = true;
                 }
                 if (!present && failure != cancellationSignal) {
                     failure.addSuppressed(cancellationSignal);
@@ -776,7 +777,8 @@ public final class OresScheduler implements AutoCloseable {
                 completion.completeFromRuntime(value);
             } else if (outcome instanceof TerminalFailure<?> failure) {
                 if (failure.failure() instanceof TaskCancelledException) {
-                    completion.cancelAfterCleanupFromRuntime();
+                    completion.cancelAfterCleanupFromRuntime(
+                            (TaskCancelledException) failure.failure());
                 } else {
                     completion.failFromRuntime(failure.failure());
                 }
