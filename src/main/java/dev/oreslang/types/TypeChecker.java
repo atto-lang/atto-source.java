@@ -1988,7 +1988,7 @@ public final class TypeChecker {
                 }
                 Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
                 validateLambdaAgainstExpected(lambda,
-                        new Function(List.of(schemaType), Unknown.INSTANCE), env, generics, self);
+                        new Function(List.of(schemaType), Unknown.INSTANCE), env, generics, self, true);
                 // Source runtime must still lower the sealed capability.
                 return Unknown.INSTANCE;
             }
@@ -3310,6 +3310,10 @@ public final class TypeChecker {
             return new Record(members, object.inferredStruct());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
+            if (lambda.critical()) {
+                throw new IllegalArgumentException(
+                        "critical callback cannot escape or be reified outside self.handle_state");
+            }
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
@@ -4055,6 +4059,16 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        validateLambdaAgainstExpected(lambda, expected, parent, generics, self, false);
+    }
+
+    private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected,
+                                               Env parent, Set<String> generics, Type self,
+                                               boolean allowCriticalStateCallback) {
+        if (lambda.critical() && !allowCriticalStateCallback) {
+            throw new IllegalArgumentException(
+                    "critical callback requires sealed self.handle_state admission");
+        }
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
