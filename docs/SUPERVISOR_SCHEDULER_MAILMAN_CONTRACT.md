@@ -83,3 +83,20 @@ then compiler admission tests proving source syntax is either fully supported
 or explicitly rejected until executable semantics exist. No nominal keyword may
 be represented as a simple class alias. Do not report full parity from these
 host-only changes.
+
+## Hierarchical supervisor actor direction (October 11 update)
+
+The canonical source form is `define supervisor actor Name as ... end`.
+`define supervisor Name as ... end` may be treated as shorthand once both
+compilers implement nominal supervisor-actor lowering. `define proxy actor`
+is a typed cross-process transport endpoint, not a supervisor by default.
+
+Java now models one immutable parent per registered supervisor (except root),
+direct child-supervisor enumeration, direct ActorGroup scope and transitive
+subtree ActorGroup observation. All registration and explicit group binding
+reject cross-runtime supervisor handles, including identities with identical
+human-readable or numeric labels.
+
+See [full architecture and hot-code upgrade protocol](OTP_SUPERVISION_TREE_HOT_RELOAD.md).
+Supervisor code hot replacement, CONTROL handlers and process proxies remain
+design gates, not completed runtime features.
