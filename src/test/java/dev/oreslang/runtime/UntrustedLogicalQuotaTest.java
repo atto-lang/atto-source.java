@@ -106,6 +106,49 @@ final class UntrustedLogicalQuotaTest {
     }
 
     @Test
+    void concurrentCarrierAdmissionsCannotBothEnterSameLogicalQuota() throws Exception {
+        AtomicLong clock = new AtomicLong();
+        ActorRuntime.UntrustedLogicalQuota quota = new ActorRuntime.UntrustedLogicalQuota(
+                1_000_000L, 20, 0, 0, clock::get, clock::get);
+        java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        AtomicReference<Throwable> overlapping = new AtomicReference<>();
+        Thread first = Thread.ofPlatform().start(() -> {
+            quota.enter();
+            entered.countDown();
+            try {
+                release.await(3, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                quota.leave();
+            }
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            Thread second = Thread.ofPlatform().start(() -> {
+                try {
+                    quota.enter();
+                } catch (Throwable failure) {
+                    overlapping.set(failure);
+                }
+            });
+            second.join(3_000);
+            assertTrue(!second.isAlive(), "second admission may not block forever");
+            assertTrue(overlapping.get() instanceof IllegalStateException,
+                    "a quota cannot be entered by two carrier threads simultaneously");
+        } finally {
+            release.countDown();
+            first.join(3_000);
+        }
+        quota.enter();
+        quota.chargeSafepoint();
+        quota.leave();
+    }
+
+    @Test
     void untrustedActorCannotMintSiblingRootQuotasWhileTaskIsSuspended()
             throws Exception {
         AtomicReference<OresFuture<Integer>> retained = new AtomicReference<>();
