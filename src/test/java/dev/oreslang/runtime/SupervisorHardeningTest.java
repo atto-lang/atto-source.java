@@ -70,7 +70,8 @@ final class SupervisorHardeningTest {
                     new AtomicReference<>();
             ActorRuntime.ActorRef<String> root = runtime.spawnPrivate(
                     ctx -> (message, actor) -> {
-                        var child = actor.runtime().spawnPrivate(
+                        ActorRuntime.ActorRef<String> child =
+                                actor.runtime().spawnPrivate(
                                 factory -> (body, childContext) -> { });
                         childRef.set(child);
                         created.countDown();
