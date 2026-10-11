@@ -31,6 +31,17 @@ pub critical fnc file_counter(): int {
   It is not a JVM-global lock crossing separate tenants or isolated VMs.
 - `critical static fnc` uses one gate per declaring class.
 - `suspend` and `suspends` are equivalent suspension-effect spellings.
+- `suspend critical` **always** yields one logical scheduler turn before
+  starting its body, even when its permit is immediately available. The
+  already-completed admission Future is still awaited; the scheduler requeues
+  the same continuation **after** its current guest turn has left the carrier.
+  This removes observable fast-path Zalgo at the declared suspension boundary.
+  No physical thread sleeps and no OS mutex spans the handoff.
+- A plain synchronous `critical` callable enters immediately when free.
+  When contended on an actor/scheduler carrier it fails fast (no invisible
+  promotion of a sync call into async); external host sync calls retain their
+  documented blocking embedder behavior. `critical` alone does not grant a
+  mutable-state alias: state still requires sealed borrow checking.
 - A critical ticket is **logical**, not tied to a carrier thread; actor
   continuation migration must never release or reacquire exclusion.
 - Queue is FIFO, bounded to 8192 waiting invocations. Overflow fails closed.
