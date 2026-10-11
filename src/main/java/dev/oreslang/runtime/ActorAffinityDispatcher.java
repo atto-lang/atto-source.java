@@ -16,6 +16,8 @@ import java.util.function.IntFunction;
 final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final List<ExecutorService> lanes;
     private final int[] cpus;
+    private final boolean[] cpuValidated;
+    private final Object affinityValidationLock = new Object();
     private final Semaphore queueSlots;
     private final AtomicInteger nextLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -24,7 +26,12 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
                             IntFunction<ExecutorService> factory) {
         if (parallelism < 1 || capacity < 1) throw new IllegalArgumentException("invalid lane limits");
         this.cpus = cpus.clone();
-        for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
+        for (int cpu : cpus) {
+            if (cpu < 0) throw new IllegalArgumentException("CPU affinity index cannot be negative");
+        }
+        // Validate kernel CPU availability at the first work admission, not
+        // during cold startup: requireAllowedCpu loads the native library.
+        this.cpuValidated = new boolean[parallelism];
         this.queueSlots = new Semaphore(capacity);
         var created = new ArrayList<ExecutorService>();
         try {
@@ -49,8 +56,21 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
                 || lane instanceof NativeCarrierExecutor).count();
     }
 
+    private void validateCpuAffinityOnFirstWork(int lane) {
+        if (cpus.length == 0) return;
+        synchronized (affinityValidationLock) {
+            if (!cpuValidated[lane]) {
+                NativeCarrierExecutor.requireAllowedCpu(cpuForLane(lane));
+                cpuValidated[lane] = true;
+            }
+        }
+    }
+
     void executeOnLane(int lane, Runnable command) {
         Objects.requireNonNull(command);
+        if (lane < 0 || lane >= lanes.size()) throw new IllegalArgumentException("invalid actor lane");
+        if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
+        validateCpuAffinityOnFirstWork(lane);
         if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
         QueuedTurn task = new QueuedTurn(command);
         try {
