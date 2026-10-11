@@ -77,4 +77,51 @@ final class ActorGroupSupervisorBindingTest {
                     runtime.rootSupervisor().advisedGroupIds());
         }
     }
+
+    @Test
+    void supervisorTreeContainsChildSupervisorsAndAdvisedGroups() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorSupervisor grandaddy = runtime.rootSupervisor();
+            ActorRuntime.ActorSupervisor daddy1 = runtime.createChildSupervisor(grandaddy);
+            ActorRuntime.ActorSupervisor daddy2 = runtime.createChildSupervisor(grandaddy);
+            ActorRuntime.ActorSupervisor subSupervisor = runtime.createChildSupervisor(daddy1);
+            ActorRuntime.ActorGroup one = runtime.createActorGroup(daddy1);
+            ActorRuntime.ActorGroup two = runtime.createActorGroup(subSupervisor);
+            ActorRuntime.ActorGroup three = runtime.createActorGroup(daddy2);
+
+            assertEquals(Set.of(daddy1.id(), daddy2.id()), grandaddy.childSupervisorIds());
+            assertEquals(Set.of(subSupervisor.id()), daddy1.childSupervisorIds());
+            assertEquals(Set.of(daddy1.id()), subSupervisor.parentId());
+            assertEquals(Set.of(grandaddy.id()), daddy2.parentId());
+            assertTrue(grandaddy.parentId().isEmpty());
+
+            assertEquals(Set.of(one.id()), daddy1.advisedGroupIds());
+            assertEquals(Set.of(one.id(), two.id()), daddy1.subtreeGroupIds());
+            assertEquals(Set.of(one.id(), two.id(), three.id()),
+                    grandaddy.subtreeGroupIds());
+            assertEquals(Set.of(), grandaddy.advisedGroupIds(),
+                    "transitive scope must not masquerade as direct authority");
+
+            one.close();
+            assertEquals(Set.of(two.id()), daddy1.subtreeGroupIds());
+            two.close();
+            three.close();
+            assertTrue(grandaddy.subtreeGroupIds().isEmpty());
+            assertEquals(Set.of(daddy1.id(), daddy2.id()), grandaddy.childSupervisorIds(),
+                    "group closure must not silently retire supervisor identity");
+        }
+    }
+
+    @Test
+    void foreignAndNullSupervisorParentsAreRejected() {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ActorRuntime other = new ActorRuntime()) {
+            ActorRuntime.ActorSupervisor foreign = other.createSupervisor();
+            assertThrows(NullPointerException.class,
+                    () -> runtime.createChildSupervisor(null));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.createChildSupervisor(foreign));
+            assertEquals(Set.of(), runtime.rootSupervisor().childSupervisorIds());
+        }
+    }
 }
