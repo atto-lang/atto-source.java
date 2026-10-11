@@ -432,6 +432,39 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void schedulerCarrierCannotBlockOnPendingFutureButCanReadCompletedFuture()
+            throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        OresFuture<Integer> completed = OresFuture.completed(23);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Boolean> result = scheduler.start(input -> {
+                assertSame(scheduler, OresScheduler.current());
+                assertTrue(OresScheduler.isSchedulerCarrierThread());
+
+                for (java.util.concurrent.Callable<?> blocking : java.util.List.of(
+                        (java.util.concurrent.Callable<Integer>) pending::join,
+                        (java.util.concurrent.Callable<Integer>) pending::get,
+                        (java.util.concurrent.Callable<Integer>) () ->
+                                pending.get(2, TimeUnit.SECONDS))) {
+                    IllegalStateException rejected =
+                            assertThrows(IllegalStateException.class, blocking::call);
+                    assertTrue(rejected.getMessage().contains("scheduler carrier"));
+                }
+
+                // A zero-duration poll does not park the carrier.
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> pending.get(0, TimeUnit.MILLISECONDS));
+                assertEquals(23, completed.join());
+                assertEquals(23, completed.get(1, TimeUnit.SECONDS));
+                return OresScheduler.done(true);
+            });
+            assertTrue(result.get(5, TimeUnit.SECONDS));
+            assertEquals(0, pending.pendingRuntimeWaiterCount());
+            assertFalse(pending.isDone());
+        }
+    }
+
+    @Test
     void closeFromTerminalFutureCallbackOnOwnCarrierFailsPromptlyWithoutClosing()
             throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
