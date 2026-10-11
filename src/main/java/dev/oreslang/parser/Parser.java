@@ -23,6 +23,7 @@ public final class Parser {
     private int current;
     private boolean suppressRefinementOperators;
     private int valueArmDepth;
+    private boolean lastDispatchUsedLegacyArrows;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1549,8 +1550,8 @@ public final class Parser {
         }
         if (match(RETURN)) {
             if (match(DO)) {
-                if (match(MATCH)) return parseMatch(true, false);
-                if (match(SWITCH)) return parseSwitch(true, false);
+                if (match(MATCH)) return parseMatch(true, false, false);
+                if (match(SWITCH)) return parseSwitch(true, false, false);
                 throw error(peek(), "'return do' requires match or switch");
             }
             // 'return match' / 'return switch' evaluate the expression's
@@ -1592,18 +1593,20 @@ public final class Parser {
         }
         if (match(IF)) return parseIf();
         if (match(DO)) {
-            if (match(MATCH)) return parseMatch(false, false);
-            if (match(SWITCH)) return parseSwitch(false, false);
+            if (match(MATCH)) return parseMatch(false, false, false);
+            if (match(SWITCH)) return parseSwitch(false, false, false);
             throw error(peek(), "'do' must introduce a statement such as 'do match' or 'do switch'");
         }
         // A bare match/switch is a result-producing expression whose value
         // may be discarded by the expression-statement context.
         if (match(MATCH)) {
-            Ast.MatchStmt body = parseMatch(false, true);
+            Ast.MatchStmt body = parseMatch(false, true, true);
+            if (lastDispatchUsedLegacyArrows) return body;
             return new Ast.ExprStmt(new Ast.ValueMatchExpr(body.subject(), body.ordered(), body.arms()));
         }
         if (match(SWITCH)) {
-            Ast.SwitchStmt body = parseSwitch(false, true);
+            Ast.SwitchStmt body = parseSwitch(false, true, true);
+            if (lastDispatchUsedLegacyArrows) return body;
             return new Ast.ExprStmt(new Ast.ValueSwitchExpr(body.subject(), body.cases(), body.defaultBody()));
         }
         if (match(TRY)) return parseTry();
@@ -2383,7 +2386,8 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch(boolean returnForm, boolean valueMode) {
+    private Ast.MatchStmt parseMatch(boolean returnForm, boolean valueMode,
+                                      boolean legacyStatementContext) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2407,6 +2411,7 @@ public final class Parser {
         if (!canonicalOver) match(SEMICOLON);
 
         List<Ast.MatchArm> arms = new ArrayList<>();
+        Boolean arrowSpelling = null;
         while (!check(END) && !check(EOF)) {
             if (canonicalOver) {
                 if (!matchContextualIdentifier("on")) {
@@ -2430,14 +2435,17 @@ public final class Parser {
             }
             // Canonical 'match expr over' uses 'on Pattern as binding { ... }'.
             // Keep the historical '-> {' spelling for existing sources.
-            if (!match(ARROW) && (!canonicalOver || !check(LBRACE))) {
-                throw error(peek(),
-                        canonicalOver
-                                ? "match arm requires '{ ... }' after its pattern (optional legacy '->')"
-                                : "legacy match arms use the slim arrow '->'");
-            }
+            final boolean arrow = match(ARROW);
+            if (!arrow && !canonicalOver)
+                throw error(peek(), "legacy match arms use the slim arrow '->'");
+            if (!arrow && !check(LBRACE))
+                throw error(peek(), "match arm requires a braced body");
+            if (legacyStatementContext && arrowSpelling != null && arrowSpelling != arrow)
+                throw error(peek(), "mixed arrow and arrowless match arms have ambiguous return semantics");
+            arrowSpelling = arrow;
             int savedArmDepth = valueArmDepth;
-            valueArmDepth = valueMode ? savedArmDepth + 1 : 0;
+            valueArmDepth = valueMode && !(legacyStatementContext && arrow)
+                    ? savedArmDepth + 1 : 0;
             List<Ast.Stmt> body;
             try { body = parseBlock(); }
             finally { valueArmDepth = savedArmDepth; }
@@ -2450,9 +2458,9 @@ public final class Parser {
                     : "match requires at least one arm");
         }
 
-        // Canonical match is source-ordered. Legacy bare match retains the
-        // old exclusivity/proof semantics unless explicitly written
-        // `match first ...`.
+        // Arrow-based direct statements keep the historical return behavior.
+        lastDispatchUsedLegacyArrows = legacyStatementContext
+                && Boolean.TRUE.equals(arrowSpelling);
         return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, returnForm);
     }
 
@@ -2546,12 +2554,14 @@ public final class Parser {
         throw error(peek(), "expected match pattern");
     }
 
-    private Ast.SwitchStmt parseSwitch(boolean returnForm, boolean valueMode) {
+    private Ast.SwitchStmt parseSwitch(boolean returnForm, boolean valueMode,
+                                        boolean legacyStatementContext) {
         Ast.Expr subject = parseExpression();
         match(SEMICOLON);
         List<Ast.SwitchCase> cases = new ArrayList<>();
         List<Ast.Stmt> defaultBody = List.of();
         boolean sawDefault = false;
+        Boolean arrowSpelling = null;
 
         while (!check(END) && !check(EOF)) {
             if (matchContextualKeyword("case")) {
@@ -2561,9 +2571,15 @@ public final class Parser {
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
-                consume(ARROW, "switch cases use the slim arrow '->'");
+                final boolean arrow = match(ARROW);
+                if (!arrow && !check(LBRACE))
+                    throw error(peek(), "switch case requires a braced body");
+                if (legacyStatementContext && arrowSpelling != null && arrowSpelling != arrow)
+                    throw error(peek(), "mixed arrow and arrowless switch arms have ambiguous return semantics");
+                arrowSpelling = arrow;
                 int savedArmDepth = valueArmDepth;
-                valueArmDepth = valueMode ? savedArmDepth + 1 : 0;
+                valueArmDepth = valueMode && !(legacyStatementContext && arrow)
+                        ? savedArmDepth + 1 : 0;
                 List<Ast.Stmt> body;
                 try { body = parseBlock(); }
                 finally { valueArmDepth = savedArmDepth; }
@@ -2576,9 +2592,15 @@ public final class Parser {
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
-                consume(ARROW, "switch default uses the slim arrow '->'");
+                final boolean arrow = match(ARROW);
+                if (!arrow && !check(LBRACE))
+                    throw error(peek(), "switch default requires a braced body");
+                if (legacyStatementContext && arrowSpelling != null && arrowSpelling != arrow)
+                    throw error(peek(), "mixed arrow and arrowless switch arms have ambiguous return semantics");
+                arrowSpelling = arrow;
                 int savedArmDepth = valueArmDepth;
-                valueArmDepth = valueMode ? savedArmDepth + 1 : 0;
+                valueArmDepth = valueMode && !(legacyStatementContext && arrow)
+                        ? savedArmDepth + 1 : 0;
                 try { defaultBody = parseBlock(); }
                 finally { valueArmDepth = savedArmDepth; }
                 continue;
@@ -2587,6 +2609,8 @@ public final class Parser {
         }
 
         consume(END, "expected 'end' to close switch");
+        lastDispatchUsedLegacyArrows = legacyStatementContext
+                && Boolean.TRUE.equals(arrowSpelling);
         return new Ast.SwitchStmt(subject, cases, defaultBody, returnForm);
     }
 
@@ -3017,11 +3041,11 @@ public final class Parser {
 
     private Ast.Expr parsePrimary() {
         if (match(MATCH)) {
-            Ast.MatchStmt body = parseMatch(false, true);
+            Ast.MatchStmt body = parseMatch(false, true, false);
             return new Ast.ValueMatchExpr(body.subject(), body.ordered(), body.arms());
         }
         if (match(SWITCH)) {
-            Ast.SwitchStmt body = parseSwitch(false, true);
+            Ast.SwitchStmt body = parseSwitch(false, true, false);
             return new Ast.ValueSwitchExpr(body.subject(), body.cases(), body.defaultBody());
         }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
