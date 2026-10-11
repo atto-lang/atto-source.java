@@ -188,7 +188,7 @@ class NativeHttpTest {
                 assertEquals("serial-ok", request(port, "GET", "/first", "").body());
                 assertEquals("serial-ok", request(port, "GET", "/second", "").body());
             });
-        assertTrue(output.contains("1\\n2\\n3\\n"), output);
+        assertTrue(output.contains("1\n2\n3\n"), output);
     }
 
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
