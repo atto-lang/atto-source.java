@@ -62,8 +62,12 @@ public final class OresCompiler {
         java.util.Objects.requireNonNull(source, "source");
         java.util.Objects.requireNonNull(layout, "layout");
         java.util.Objects.requireNonNull(deviceProfile, "deviceProfile");
-        return dev.oreslang.runtime.accel.AcceleratorSourceLowering
-                .compileGpu(source, layout).emitOpenCl(deviceProfile);
+        Ast.GpuF32Decl typed = Parser.parseTrustedGpuDeclaration(source, layout);
+        var op = dev.oreslang.runtime.accel.DopKernelIR.Op.valueOf(typed.operation().name());
+        var kernel = new dev.oreslang.runtime.accel.DopKernelIR.Kernel(
+                layout, dev.oreslang.runtime.accel.DopKernelIR.Element.F32,
+                op, typed.scale(), typed.bias());
+        return dev.oreslang.runtime.accel.DopKernelIR.lowerOpenCl(kernel, deviceProfile);
     }
 
     /**
@@ -74,8 +78,16 @@ public final class OresCompiler {
     public static dev.oreslang.runtime.accel.QuantumCircuitIR.Circuit compileQuantumSource(
             String source) {
         java.util.Objects.requireNonNull(source, "source");
-        return dev.oreslang.runtime.accel.AcceleratorSourceLowering
-                .compileQuantum(source).circuit();
+        Ast.QuantumCircuitDecl typed = Parser.parseTrustedQuantumDeclaration(source);
+        java.util.List<dev.oreslang.runtime.accel.QuantumCircuitIR.Gate> gates
+                = new java.util.ArrayList<>(typed.gates().size());
+        for (Ast.QuantumGate g : typed.gates()) {
+            gates.add(new dev.oreslang.runtime.accel.QuantumCircuitIR.Gate(
+                    dev.oreslang.runtime.accel.QuantumCircuitIR.Op.valueOf(g.operation().name()),
+                    g.target(), g.control(), g.classicalBit()));
+        }
+        return new dev.oreslang.runtime.accel.QuantumCircuitIR.Circuit(
+                typed.qubits(), typed.classicalBits(), gates);
     }
 
     /**
