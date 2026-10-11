@@ -259,4 +259,87 @@ final class ValueDispatchControlFlowTest {
                 }
                 """));
     }
+
+    @Test
+    void lexicalArmReturnSurvivesTryFinallyAndRunsCleanupExactlyOnce() throws Exception {
+        assertEquals("finally\\narm-defer\\narm\\ndo-finally\\ndo-defer\\nearly\\ncase\\ndefault\\n",
+                execute("""
+                fnc collected(): string {
+                  return match 1 over
+                    on _ {
+                      defer stdio.println("arm-defer");
+                      try {
+                        return "arm";
+                      } catch (error) {
+                        return "caught";
+                      } finally {
+                        stdio.println("finally");
+                      }
+                    }
+                  end
+                }
+
+                fnc early(): string {
+                  do switch 1
+                    default { return "wrong-default"; }
+                    case 1 {
+                      defer stdio.println("do-defer");
+                      try {
+                        return "early";
+                      } catch (error) {
+                        return "caught";
+                      } finally {
+                        stdio.println("do-finally");
+                      }
+                    }
+                  end
+                  return "continued";
+                }
+
+                fnc selected(int v): string {
+                  return switch v
+                    default { return "default"; }
+                    case 1 { return "case"; }
+                  end
+                }
+
+                pub fnc main(): void {
+                  stdio.println(collected());
+                  stdio.println(early());
+                  stdio.println(selected(1));
+                  stdio.println(selected(2));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void tryCatchMustYieldOnAllNormalBranchesAndSwitchDefaultIsUnique() {
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> admitted("""
+                        fnc broken(): string {
+                          return match 1 over
+                            on _ {
+                              try { stdio.println("no return"); }
+                              catch (failure) { return "caught"; }
+                              finally { stdio.println("finally"); }
+                            }
+                          end
+                        }
+                        """));
+        assertTrue(missing.getMessage().contains("does not return a value"), missing.getMessage());
+
+        IllegalArgumentException duplicateDefault = assertThrows(IllegalArgumentException.class,
+                () -> admitted("""
+                        fnc broken(int v): string {
+                          return switch v
+                            default { return "fallback"; }
+                            case 1 { return "one"; }
+                            default { return "again"; }
+                          end
+                        }
+                        """));
+        assertTrue(duplicateDefault.getMessage().contains("only one default"), duplicateDefault.getMessage());
+    }
+
 }
