@@ -306,10 +306,21 @@ public final class OresScheduler implements AutoCloseable {
      * scheduler does not move the waiter onto this scheduler.</p>
      */
     public <T> OresFuture<T> start(Task<T> task) {
+        return start(task, () -> { });
+    }
+
+    /**
+     * Trusted runtime lifecycle hook. A cancelled Future can settle before
+     * the current guest carrier has physically exited; this callback fires
+     * only after task execution is quiescent (or before it ever started).
+     * Never use Future settlement alone to reclaim guest-owned resources.
+     */
+    <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onQuiescent, "onQuiescent");
         ensureOpen();
 
-        TaskRunner<T> runner = new TaskRunner<>(task);
+        TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent);
         tasks.add(runner);
         try {
             runner.scheduleInitial();
@@ -437,6 +448,8 @@ public final class OresScheduler implements AutoCloseable {
         private static final int TERMINAL = 4;
 
         private final Task<T> task;
+        private final Runnable onQuiescent;
+        private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -450,8 +463,9 @@ public final class OresScheduler implements AutoCloseable {
         private final OresFuture<T> completion;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
 
-        private TaskRunner(Task<T> task) {
+        private TaskRunner(Task<T> task, Runnable onQuiescent) {
             this.task = task;
+            this.onQuiescent = onQuiescent;
             this.completion = new OresFuture<>(this::cancelFromFuture);
         }
 
@@ -557,6 +571,7 @@ public final class OresScheduler implements AutoCloseable {
             if (lease != null) lease.close();
             executing.set(false);
             publishTerminalIfReady();
+            retireWhenQuiescent();
             scheduleReadyResume();
         }
 
@@ -691,6 +706,14 @@ public final class OresScheduler implements AutoCloseable {
             tasks.remove(this);
             if (!executing.get()) {
                 publishTerminalIfReady();
+                retireWhenQuiescent();
+            }
+        }
+
+        private void retireWhenQuiescent() {
+            if (phase.get() == TERMINAL && !executing.get()
+                    && quiescenceNotified.compareAndSet(false, true)) {
+                onQuiescent.run();
             }
         }
 
@@ -719,6 +742,7 @@ public final class OresScheduler implements AutoCloseable {
             } while (!phase.compareAndSet(observed, TERMINAL));
             tasks.remove(this);
             pendingResume.set(null);
+            retireWhenQuiescent();
         }
 
         private void cancelFromSchedulerClose() {
