@@ -2061,10 +2061,14 @@ public final class ActorRuntime implements AutoCloseable {
                     resolution.turnGeneration());
         }
 
-        /** Introspect the current STOP ledger without granting lifecycle authority. */
+        /**
+         * Trusted-only receipt inspection. StopReceipt embeds the reservation
+         * nonce, so ordinary actor observers must not receive this object.
+         * Use childSnapshot for value-only observational lifecycle state.
+         */
         public SupervisorChildRegistry.StopReceipt stopReceipt(
                 SupervisorChildRegistry.ChildId child) {
-            requireObserver("inspect supervisor STOP receipt");
+            requireSupervisorContext("inspect supervisor STOP receipt reservation");
             return childRegistry.stopReceipt(Objects.requireNonNull(child));
         }
 
