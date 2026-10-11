@@ -156,8 +156,7 @@ public final class SealedActorState {
                 || value instanceof Float || value instanceof Double
                 || value instanceof java.math.BigInteger
                 || value instanceof java.math.BigDecimal
-                || value instanceof Boolean || value instanceof Character
-                || value instanceof Enum<?>) return true;
+                || value instanceof Boolean || value instanceof Character) return true;
         // Avoid arbitrary mutable guest/Java wrappers and every possible
         // deferred object; the source ownership checker must prove complex
         // returned values before this boundary can be broadened.
