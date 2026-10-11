@@ -1556,14 +1556,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ContinuationTarget {
         private final ActorId actorId;
-        /** Runtime-created identity of the originating serial receive.
-         * A callback cannot borrow authority from a later receive. */
-        private final SerialActorAdmission.Lease receiveLease;
+        /** Origin cannot be forged by guest code or rebound to a later mail. */
+        private final SerialContinuationAuthority authority;
 
         private ContinuationTarget(
-                ActorId actorId, SerialActorAdmission.Lease receiveLease) {
+                ActorId actorId, SerialContinuationAuthority authority) {
             this.actorId = Objects.requireNonNull(actorId, "actorId");
-            this.receiveLease = receiveLease;
+            this.authority = Objects.requireNonNull(authority, "authority");
         }
 
         public ActorId actorId() {
@@ -1571,14 +1570,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean enqueue(Runnable continuation) {
-            // Avoid even queueing a known stale callback. If the old receive
-            // terminates after enqueueing, check again on the actor carrier.
-            if (receiveLease != null
-                    && receiveLease.state() == SerialActorAdmission.State.FINISHED) {
-                return false;
-            }
+            // Skip already-retired origins before spending CONTROL capacity.
+            if (!authority.mayQueue()) return false;
             return enqueueContinuation(actorId, () -> {
-                if (receiveLease != null) receiveLease.requireActive();
+                // Origin may have retired since enqueue. Re-check on carrier.
+                authority.requireRunnable();
                 continuation.run();
             });
         }
@@ -1590,7 +1586,16 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
-        return new ContinuationTarget(cell.ref.id(), cell.serialReceiveLease);
+        if (cell.serialAdmission != null
+                && cell.serialAdmission.busy()
+                && cell.serialReceiveLease == null) {
+            throw new IllegalStateException(
+                    "cannot capture unowned continuation inside serial handler");
+        }
+        return new ContinuationTarget(
+                cell.ref.id(),
+                new SerialContinuationAuthority(
+                        cell.serialAdmission, cell.serialReceiveLease));
     }
 
     /**
