@@ -139,6 +139,25 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void rejectedResourceCleanupNeverRunsUnderAdmissionLock() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            io.close();
+            java.util.concurrent.atomic.AtomicBoolean resourceClosed =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicBoolean heldAdmissionMonitor =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> io.register(() -> {
+                        heldAdmissionMonitor.set(Thread.holdsLock(io));
+                        resourceClosed.set(true);
+                    }));
+            assertEquals("I/O context closed", failure.getMessage());
+            assertTrue(resourceClosed.get());
+            assertFalse(heldAdmissionMonitor.get(),
+                    "host resource.close must never run under I/O admission lock");
+        }
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
