@@ -2640,7 +2640,7 @@ public final class OresEvalRootNode extends RootNode {
                                 t, select,
                                 (ChannelRuntime.SelectResult) value,
                                 env, continuation);
-                    });
+                    }, true); // Own and revoke this inline blocking select on cancellation.
         }
 
         private void runForSuspendable(
@@ -3404,7 +3404,7 @@ public final class OresEvalRootNode extends RootNode {
                                                                             true,
                                                                             value)
                                                                     : null,
-                                                            failure2));
+                                                            failure2), true); // Own this dynamic select registration.
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(
                                             t,
@@ -4344,25 +4344,23 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation,
                 boolean declaredFuture,
                 SourceValueCont continuation) {
+            final Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // An invoked callee owns its Future: detach this consumer on
+                // cancellation; never cancel the callee/other consumers.
+                task.suspend(future,
+                        (t, value, failure) -> continuation.accept(t, value, failure));
+            } else {
+                // A lexical continuation may have applied side effects before
+                // throwing. Do not re-enter it as an invocation failure.
+                continuation.accept(task, result, null);
             }
         }
 
