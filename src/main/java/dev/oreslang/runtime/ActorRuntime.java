@@ -1180,6 +1180,16 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
+        /**
+         * Compiler-emitted mailbox schema bound before the actor is visible.
+         * A missing schema retains the legacy source-actor transport until
+         * all compiler backends emit descriptors; not yet release-ready.
+         */
+        default Optional<MessagePackCollectionCodec.MailboxSchema> mailboxSchema(
+                String actorTypeName) {
+            return Optional.empty();
+        }
+
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
@@ -4400,6 +4410,46 @@ public final class ActorRuntime implements AutoCloseable {
         return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
     }
 
+    /**
+     * Trusted host-only migration hook. Binds a typed binary mailbox before
+     * any user send; existing host actor control/capability paths continue
+     * to use the established transport unless explicitly opted in.
+     *
+     * Compiler-owned source actors instead bind through their whitelisted
+     * ActorCodeExecutor.mailboxSchema() at spawn time.
+     */
+    public void bindSerializableMailbox(
+            ActorRef<?> ref, MessagePackCollectionCodec.MailboxSchema schema) {
+        requireCallerRuntimeAffinity("bind actor mailbox schema");
+        requireSupervisorContext("bind actor mailbox schema");
+        Objects.requireNonNull(ref, "actor reference");
+        Objects.requireNonNull(schema, "actor mailbox schema");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null || cell.stopped.get()) throw terminated(ref);
+            synchronized (cell.lifecycleLock) {
+                synchronized (cell.mailboxAccountingLock) {
+                    if (cell.codeExecutor != null) {
+                        throw new IllegalStateException(
+                                "source actor mailbox schemas must come from the compiler executor");
+                    }
+                    if (cell.mailboxSchema != null
+                            || cell.queuedMessages != 0
+                            || cell.nextUserMessageSequence != 0
+                            || cell.activeMail != null) {
+                        throw new IllegalStateException(
+                                "actor mailbox schema must be bound once, before the first send");
+                    }
+                    cell.mailboxSchema = schema;
+                }
+            }
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         requireCallerRuntimeAffinity("send messages");
@@ -4418,6 +4468,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
         boolean mailboxSlotTransferred = false;
         try {
+        MessagePackCollectionCodec.MailboxSchema schema = cell.mailboxSchema;
+        if (schema != null) {
+            // Binary snapshot and exact recipient-schema decode both finish
+            // before actor queue admission; never retain sender's data graph.
+            // The decoded graph is then checked by the ordinary mailbox
+            // ownership, memory quota, CONTROL and cancellation gates.
+            byte[] wire = schema.encode(message);
+            message = (M) schema.decode(wire);
+        }
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
             rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
@@ -5907,6 +5966,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCodeExecutor codeExecutor;
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
+        /** Trusted binary schema; optional during incremental compiler migration. */
+        private volatile MessagePackCollectionCodec.MailboxSchema mailboxSchema;
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
@@ -5990,6 +6051,9 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeImage = codeImage;
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
+            this.mailboxSchema = codeExecutor == null ? null : Objects.requireNonNull(
+                    codeExecutor.mailboxSchema(codeActorType),
+                    "source actor mailboxSchema optional").orElse(null);
             this.parent = parent;
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
