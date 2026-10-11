@@ -704,7 +704,22 @@ public final class Parser {
             // silently treated as ordinary actor methods before runtime
             // teardown dispatch and typed exceptional-effect lowering exist.
             if (check(IDENT) && peek().lexeme().equals("tear_down")) {
+                int lifecycleStartToken = current;
                 Ast.MethodDecl teardown = parseMethod(annotations, mods);
+                // Fail closed at admission, not after state has already been
+                // mutated during shutdown. Nested lambda/defer awaits are also
+                // disallowed in this first synchronous lifecycle slice.
+                for (int i = lifecycleStartToken; i < current; i++) {
+                    Token token = tokens.get(i);
+                    if (token.type() == AWAIT
+                            || (token.type() == RT
+                                    && i + 1 < current
+                                    && tokens.get(i + 1).lexeme().equals("cooperate"))) {
+                        throw error(token,
+                                "actor tear_down cannot await or cooperate until "
+                                        + "scheduler-owned async teardown lowering exists");
+                    }
+                }
                 // tear_down is a runtime-only lifecycle entry point, not an
                 // ordinary user-invokable actor method. The first executable
                 // slice is synchronous; suspend/async awaits require a pinned
