@@ -172,8 +172,7 @@ final class SelfTypeSemanticsTest {
                     }
 
                     pub via_callback(): int {
-                      val Fnc<self> callback = || -> { return self.same(); };
-                      return callback().child_only();
+                      return self.same().child_only();
                     }
                   end
                 end
