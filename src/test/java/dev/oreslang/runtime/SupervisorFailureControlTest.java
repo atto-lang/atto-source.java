@@ -15,6 +15,51 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(20)
 final class SupervisorFailureControlTest {
     @Test
+    void failedFinalizationBarrierRetiresInFlightControlWithoutQueueUnderflow()
+            throws Exception {
+        try (ExecutorService pool = Executors.newSingleThreadExecutor()) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            var lane = new SupervisorFailureControl(supervisor, group, pool, 4);
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch returned = new CountDownLatch(1);
+            AtomicInteger callbacks = new AtomicInteger();
+            lane.install(notice -> {
+                callbacks.incrementAndGet();
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("CONTROL never released");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(error);
+                } finally {
+                    returned.countDown();
+                }
+            });
+            var notice = new SupervisorFailureControl.Notice(
+                    supervisor, group, ActorRuntime.ActorId.create(),
+                    java.util.Optional.empty(),
+                    SupervisorFailureControl.Kind.TERMINAL_FAILURE,
+                    "Panic", "failed child");
+            lane.publish(notice);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            lane.publish(notice);
+            lane.rejectUnfinalizedFailure();
+            release.countDown();
+            assertTrue(returned.await(5, TimeUnit.SECONDS));
+            pool.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            assertEquals(1, callbacks.get(), "retired CONTROL invoked next callback");
+            assertEquals(0, lane.queued(), "terminal CONTROL retained notices");
+            assertEquals(3, lane.undelivered(),
+                    "active, queued and failed-finalization notices must all be accounted");
+            assertFalse(lane.healthy());
+            assertTrue(lane.failure().orElse("").contains("physical finalization"));
+        }
+    }
+
+    @Test
     void nestedGrandchildFailureIsOneSupervisorControlNotice() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
