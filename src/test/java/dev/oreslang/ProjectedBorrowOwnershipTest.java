@@ -47,7 +47,7 @@ final class ProjectedBorrowOwnershipTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(BOX + """
                         fnc bad(): void {
-                          val view = rt borrow (new Outer()).child;
+                          val view = rt borrow (new Outer());
                           stdio.println(view.value);
                           return;
                         }
