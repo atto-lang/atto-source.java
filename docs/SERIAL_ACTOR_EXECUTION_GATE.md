@@ -272,3 +272,33 @@ source-level continuation ticket parity. The mirror's unrelated
 `secrets-audit` environment job still fails due to missing `ores-sops`.
 Keep both backend PRs in draft. Do not confuse focused upstream-source
 scheduler execution with full Oreslang guest continuation execution.
+
+## Enum lifecycle and bounded formal model — Oct 11, 2026
+
+- `SerialActorAdmission.Lifecycle` is an enum with `IDLE`,
+  `RUNNING`, `SUSPENDED`, and `STOPPED`; it is **derived under the
+  gate's existing monitor**, so there is no second mutable state that can
+  disagree with the actual active lease. `STOPPED` fences future admission.
+- `OresScheduler.TaskRunner.Phase` uses a typed enum rather than integer
+  constants, with NEW → QUEUED → RUNNING → WAITING → QUEUED transitions
+  and terminal cancellation from every nonterminal state. This preserves
+  the previous atomic compare-and-set scheduling implementation.
+- `verification/serial_actor/SerialActorLifecycle.tla` and its TLC
+  config model bounded serial handler submission, FIFO admission, ownership,
+  task-ticket capture, suspension/resumption, stop/restart, and cancellation.
+  TLC checks **TypeOK**, **SingleHandlerLifetime**, **FifoAndOwnership**,
+  **NoForgedExecution** and **NoDuplicateTaskExecution**.
+- Funded TLC run [38180159775](https://github.com/akrion-sim/akrion-sim-e2e/actions/runs/38180159775)
+  explored **19,616 distinct states**, depth 26, zero invariant
+  violations, using verified stable TLC 1.7.4. The same runner executed
+  5,000 enum-lifecycle transitions and checked the actual Java scheduler
+  source AST syntax; LLVM native focused tests passed.
+
+**Verification is bounded, not an unbounded theorem:** two modeled
+handlers, two task identities, three admission generations, one restart.
+`TaskRunner` type-linking and full GraalVM guest execution were **not**
+part of these focused tests. The full source HTTP adapter still rejects
+serial handler registration until one persistent actor per route shares
+HTTP and mailbox admission. Additional proof obligations include liveness
+under fair scheduling, nested async child ownership, physical quiescence
+during cleanup, and the complete Java/LLVM runtime refinements.
