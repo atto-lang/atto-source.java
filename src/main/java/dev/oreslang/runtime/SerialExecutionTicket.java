@@ -14,6 +14,11 @@ import java.util.function.BooleanSupplier;
  * remain the responsibility of ActorRuntime and OresScheduler.
  */
 final class SerialExecutionTicket {
+    /** A benign canceled task may already have a queued mailbox segment. */
+    static final class RetiredTaskException extends IllegalStateException {
+        RetiredTaskException() { super("source task execution ticket retired"); }
+    }
+
     private final Object actorId;
     private final Object incarnation;
     private final long taskId;
@@ -67,7 +72,8 @@ final class SerialExecutionTicket {
             Object executingActorId,
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
-        if (retired.get() || !actorAlive.getAsBoolean()
+        if (retired.get()) throw new RetiredTaskException();
+        if (!actorAlive.getAsBoolean()
                 || !actorId.equals(executingActorId)
                 || incarnation != executingIncarnation) {
             throw new IllegalStateException("stale or foreign actor continuation ticket");
