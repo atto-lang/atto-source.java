@@ -107,7 +107,7 @@ final class SerialActorImplicitCriticalTest {
                     .mimeType(OresLanguage.MIME_TYPE).build();
             assertDoesNotThrow(() -> context.eval(compiled));
         }
-        assertEquals("3\\n", output.toString(StandardCharsets.UTF_8));
+        assertEquals("3\n", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test void serialHttpRegistrationFailsClosedWhileAdapterSpawnsPerRequest() throws Exception {
