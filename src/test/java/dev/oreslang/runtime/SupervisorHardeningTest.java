@@ -65,21 +65,17 @@ final class SupervisorHardeningTest {
     void unmanagedParentWithLiveChildCannotBeAdoptedWithoutAdoptingChild() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            CountDownLatch created = new CountDownLatch(1);
-            AtomicReference<ActorRuntime.ActorRef<String>> childRef =
-                    new AtomicReference<>();
             ActorRuntime.ActorRef<String> root = runtime.spawnPrivate(
-                    ctx -> (message, actor) -> {
-                        ActorRuntime.ActorRef<String> child =
-                                actor.runtime().spawnPrivate(
-                                factory -> (body, childContext) -> { });
-                        childRef.set(child);
-                        created.countDown();
-                    });
+                    factory -> (message, actor) ->
+                            actor.runtime().spawnPrivate(
+                                    childFactory -> (body, childContext) -> { }));
             root.getReady().get(5, TimeUnit.SECONDS);
             root.send("spawn");
-            assertTrue(created.await(5, TimeUnit.SECONDS));
-            assertNotNull(childRef.get());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (root.childIds().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertFalse(root.childIds().isEmpty());
             assertThrows(IllegalStateException.class, () -> group.manageWorker(root),
                     "admitting only the parent would strand its descendants");
             assertEquals(0, group.workerCount());
@@ -94,17 +90,19 @@ final class SupervisorHardeningTest {
     void managedParentWithLiveChildCannotTransferOutOfSupervision() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            CountDownLatch created = new CountDownLatch(1);
             ActorRuntime.ActorRef<String> root = group.spawnWorker(
                     ActorRuntime.ActorKind.PRIVATE,
                     IsolatePolicy.developer(),
-                    ctx -> (message, actor) -> {
-                        actor.runtime().spawnPrivate(factory -> (body, ignored) -> { });
-                        created.countDown();
-                    });
+                    factory -> (message, actor) ->
+                            actor.runtime().spawnPrivate(
+                                    childFactory -> (body, childContext) -> { }));
             root.getReady().get(5, TimeUnit.SECONDS);
             root.send("spawn");
-            assertTrue(created.await(5, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (root.childIds().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertFalse(root.childIds().isEmpty());
             assertThrows(IllegalStateException.class, () -> group.releaseWorker(root),
                     "release must synchronize with and reject a live child");
             assertEquals(2, group.workerCount());
