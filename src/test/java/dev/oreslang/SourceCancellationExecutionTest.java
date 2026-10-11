@@ -171,4 +171,55 @@ final class SourceCancellationExecutionTest {
                     """, output.toString(StandardCharsets.UTF_8));
         }
     }
+
+    @Test
+    void contextCloseWhileGuestFinallyAwaitsPendingFutureMustFailClosed() throws Exception {
+        String source = """
+                pub async fnc work(): int {
+                  try {
+                    val Channel<int> gate = Channel.new<int>(0);
+                    stdio.println("armed");
+                    const ignored = await (nb readch gate);
+                    stdio.println("INVALID-work");
+                  } catch (reason) {
+                    stdio.println("INVALID-catch");
+                  } finally {
+                    val Channel<int> cleanup = Channel.new<int>(0);
+                    stdio.println("cleanup-armed");
+                    const result = await (nb readch cleanup);
+                    stdio.println("INVALID-cleanup-completed");
+                  }
+                  return 42;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build();
+        try {
+            OresFuture<?> task = start(context, source);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!output.toString(StandardCharsets.UTF_8).contains("armed")
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("armed"));
+            assertTrue(task.cancel(false));
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!output.toString(StandardCharsets.UTF_8).contains("cleanup-armed")
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("cleanup-armed"),
+                    "guest finally must actually suspend before shutdown");
+            assertFalse(task.isDone());
+            RuntimeException failure = assertThrows(RuntimeException.class, context::close,
+                    "context close cannot claim successful teardown with a pending finally");
+            assertTrue(failure.toString().contains("unfinished cancellation cleanup"),
+                    "incomplete cleanup must remain an explicit shutdown error: " + failure);
+            assertFalse(task.isDone(),
+                    "context shutdown failure must not fabricate terminal guest cleanup");
+            assertEquals("armed\\ncleanup-armed\\n",
+                    output.toString(StandardCharsets.UTF_8));
+        } finally {
+            // Intentionally unresolved source cleanup: do not treat a second
+            // close failure as success or override the test's primary error.
+            try { context.close(); } catch (RuntimeException expected) { }
+        }
+    }
 }
