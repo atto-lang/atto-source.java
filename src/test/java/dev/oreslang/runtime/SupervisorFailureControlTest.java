@@ -174,6 +174,26 @@ final class SupervisorFailureControlTest {
         }
     }
 
+
+    @Test
+    void inlineDispatcherRejectsControlWithoutRetainingNotice() {
+        var supervisor = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        var actor = ActorRuntime.ActorId.create();
+        var lane = new SupervisorFailureControl(supervisor, group,
+                Runnable::run, 1);
+        var calls = new AtomicInteger();
+        lane.install(n -> calls.incrementAndGet());
+        lane.publish(new SupervisorFailureControl.Notice(
+                supervisor, group, actor, java.util.Optional.empty(),
+                SupervisorFailureControl.Kind.TERMINAL_FAILURE, "Panic", "inline"));
+        assertEquals(0, calls.get(), "CONTROL must never execute under admission lock");
+        assertEquals(1, lane.undelivered());
+        assertEquals(0, lane.queued(), "failed dispatch retained a doomed notice");
+        assertTrue(lane.failure().isPresent());
+        assertFalse(lane.healthy());
+    }
+
     @Test
     void failureHandlerMayNotBeInstalledFromActorCode() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
