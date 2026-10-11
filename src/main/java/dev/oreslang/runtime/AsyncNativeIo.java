@@ -19,6 +19,11 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final Set<AutoCloseable> resources = new HashSet<>();
     private final int capacity;
     private boolean closed;
+    // Closing admission does not prove native operations have left their
+    // workers; defer resource revocation until physical exit is observed.
+    private final Object retirementLock = new Object();
+    private boolean retired;
+    private Thread retiringThread;
 
     public AsyncNativeIo() { this(128); }
     AsyncNativeIo(int capacity) {
@@ -97,23 +102,57 @@ public final class AsyncNativeIo implements AutoCloseable {
     synchronized void unregister(AutoCloseable resource) { resources.remove(resource); }
 
     @Override public void close() {
-        Set<AutoCloseable> closing;
-        Set<OresFuture<?>> failing;
-        synchronized (this) {
-            if (closed) return;
-            closed = true;
-            closing = new HashSet<>(resources);
-            resources.clear();
-            failing = new HashSet<>(pending);
-            failing.addAll(controls);
-            controls.clear();
-            pending.clear();
+        synchronized (retirementLock) {
+            if (retired) return;
+            if (retiringThread == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "native I/O retirement cannot be re-entered by a completion callback");
+            }
+            retiringThread = Thread.currentThread();
+            try {
+                boolean firstClose;
+                synchronized (this) {
+                    firstClose = !closed;
+                    closed = true;
+                }
+                if (firstClose) workers.shutdownNow();
+                // An I/O Future is not physical ownership evidence: workers can
+                // ignore an interrupt and remain inside OS/FFM code. Retain
+                // registered resources and pending handles on timeout, then
+                // permit an outside caller to retry after the worker exits.
+                try {
+                    if (!workers.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "native I/O workers still own pending operations after close timeout");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "interrupted before native I/O physical worker exit", interrupted);
+                }
+
+                Set<AutoCloseable> closing;
+                Set<OresFuture<?>> failing;
+                synchronized (this) {
+                    closing = new HashSet<>(resources);
+                    resources.clear();
+                    failing = new HashSet<>(pending);
+                    failing.addAll(controls);
+                    controls.clear();
+                    pending.clear();
+                }
+                for (AutoCloseable resource : closing) {
+                    try { resource.close(); } catch (Exception ignored) {
+                        // Best effort socket/file closure is only safe after
+                        // the physical I/O worker-exit barrier above.
+                    }
+                }
+                for (OresFuture<?> future : failing)
+                    future.failFromRuntime(new IllegalStateException("I/O context closed"));
+                retired = true;
+            } finally {
+                retiringThread = null;
+            }
         }
-        workers.shutdownNow();
-        for (AutoCloseable resource : closing) {
-            try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
-        }
-        for (OresFuture<?> future : failing)
-            future.failFromRuntime(new IllegalStateException("I/O context closed"));
     }
 }
