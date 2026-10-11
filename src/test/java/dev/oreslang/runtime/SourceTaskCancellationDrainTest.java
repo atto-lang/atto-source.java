@@ -32,7 +32,7 @@ final class SourceTaskCancellationDrainTest {
         volatile Thread cleanupThread;
 
         @Override
-        public void cancellationRequested() {
+        public void cancellationRequested(OresScheduler.TaskCancelledException reason) {
             requestCount.incrementAndGet();
         }
 
@@ -138,7 +138,7 @@ final class SourceTaskCancellationDrainTest {
             OresFuture<Void> input = new OresFuture<>();
             CountDownLatch enteredFirstAwait = new CountDownLatch(1);
             OresFuture<Integer> task = scheduler.start(new OresScheduler.CancellationAwareTask<>() {
-                @Override public void cancellationRequested() { }
+                @Override public void cancellationRequested(OresScheduler.TaskCancelledException reason) { }
                 @Override public boolean cleanupInProgress() { return cleanupActive.get(); }
                 @Override public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
                     if (pc.getAndIncrement() == 0) {

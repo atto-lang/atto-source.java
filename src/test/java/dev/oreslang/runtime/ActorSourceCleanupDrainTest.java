@@ -37,7 +37,7 @@ final class ActorSourceCleanupDrainTest {
                         private int pc;
 
                         @Override
-                        public void cancellationRequested() {
+                        public void cancellationRequested(OresScheduler.TaskCancelledException reason) {
                             cancellationRequested = true;
                         }
 
