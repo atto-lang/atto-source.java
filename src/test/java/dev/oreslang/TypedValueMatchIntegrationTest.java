@@ -113,7 +113,7 @@ final class TypedValueMatchIntegrationTest {
                     default { return 9; }
                   };
                 }
-                """, "return value");
+                """, "value match arm result");
     }
 
     @Test
@@ -121,11 +121,11 @@ final class TypedValueMatchIntegrationTest {
         rejects("""
                 fnc invalid(int n): int {
                   return match<ret=int> n over {
-                    on 7 { const x: int = 42; return x; }
+                    on 7 { const x: int = 42; return compute(x); }
                     default { return 9; }
                   };
                 }
-                """, "one direct return");
+                """, "typed value match arm result must be a pure scalar expression");
         rejects("""
                 fnc compute(): int { return 42; }
                 fnc invalid(int n): int {
@@ -134,7 +134,7 @@ final class TypedValueMatchIntegrationTest {
                     default { return 9; }
                   };
                 }
-                """, "one direct return");
+                """, "typed value match arm result must be a pure scalar expression");
     }
 
     @Test
@@ -232,14 +232,14 @@ final class TypedValueMatchIntegrationTest {
                     default { return &n; }
                   };
                 }
-                """, "one direct return");
+                """, "typed value match arm result must be a pure scalar expression");
         rejects("""
                 fnc invalid(int n): int {
                   return match<ret=int> n over {
                     default { return &mut n; }
                   };
                 }
-                """, "one direct return");
+                """, "typed value match arm result must be a pure scalar expression");
     }
 
     @Test
@@ -283,5 +283,124 @@ final class TypedValueMatchIntegrationTest {
                   stdio.println(classify(9));
                 }
                 """));
+    }
+
+    @Test
+    void multiStatementArmsReturnLocallyWithDeferredCleanup() throws Exception {
+        assertEquals("cleanup-seven\n42\ncleanup-other\n9", execute("""
+                fnc classify(int n): int {
+                  const result: int = match<ret=int> n over {
+                    on 7 {
+                      const value: int = 41;
+                      defer stdio.println("cleanup-seven");
+                      return value + 1;
+                    }
+                    default {
+                      const value: int = 9;
+                      defer stdio.println("cleanup-other");
+                      return value;
+                    }
+                  };
+                  return result;
+                }
+                pub fnc main(): void {
+                  stdio.println(classify(7));
+                  stdio.println(classify(9));
+                }
+                """));
+    }
+
+    @Test
+    void branchwiseArmResultsMustBeExhaustive() throws Exception {
+        assertEquals("10\n20", execute("""
+                fnc classify(bool b): int {
+                  const result: int = match<ret=int> b over {
+                    default {
+                      if b { return 10; }
+                      else { return 20; } fi
+                    }
+                  };
+                  return result;
+                }
+                pub fnc main(): void {
+                  stdio.println(classify(true));
+                  stdio.println(classify(false));
+                }
+                """));
+    }
+
+    @Test
+    void nonReturningConditionalArmIsRejected() {
+        rejects("""
+                fnc invalid(bool b): int {
+                  return match<ret=int> b over {
+                    default { if b { return 10; } fi }
+                  };
+                }
+                """, "must produce a local result on every reachable path");
+    }
+
+    @Test
+    void armTryFinallyRunsBeforeCompletionWithoutCatchInterception() throws Exception {
+        assertEquals("finally-arm\n42", execute("""
+                fnc classify(int n): int {
+                  return match<ret=int> n over {
+                    default {
+                      try { const value: int = n + 1; return value; }
+                      catch (e) { return 0; }
+                      finally { stdio.println("finally-arm"); }
+                    }
+                  };
+                }
+                pub fnc main(): void { stdio.println(classify(41)); }
+                """));
+    }
+
+    @Test
+    void nestedTypedMatchesResolveNearestLexicalArm() throws Exception {
+        assertEquals("44", execute("""
+                fnc classify(int n): int {
+                  return match<ret=int> n over {
+                    default {
+                      const inner: int = match<ret=int> n over {
+                        on 41 { return 42; }
+                        default { return 0; }
+                      };
+                      return inner + 2;
+                    }
+                  };
+                }
+                pub fnc main(): void { stdio.println(classify(41)); }
+                """));
+    }
+
+    @Test
+    void armFinallyReturnIsForbidden() {
+        rejects("""
+                fnc invalid(int n): int {
+                  return match<ret=int> n over {
+                    default {
+                      try { return n; }
+                      catch (e) { return 0; }
+                      finally { return 1; }
+                    }
+                  };
+                }
+                """, "finally");
+    }
+
+    @Test
+    void arbitraryArmDeferEffectsRemainRejected() {
+        rejects("""
+                fnc effect(): void { stdio.println("called"); }
+                fnc invalid(int n): int {
+                  return match<ret=int> n over {
+                    default {
+                      defer effect();
+                      return n;
+                    }
+                  };
+                }
+                """, "synchronous stdio.print/println");
     }
 }
