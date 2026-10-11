@@ -2,8 +2,8 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 import java.lang.reflect.RecordComponent;
-import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -31,7 +31,11 @@ public final class ActorStateContract {
 
     public static Ast.TypeRef keySchema(Ast.FieldDecl field) {
         Ast.TypeRef type = field.type();
-        return type.name().equals("$actor_state_map$") ? type.arguments().get(1) : type;
+        if (type.name().equals("$actor_state_map$")) return type.arguments().get(1);
+        // A completely dynamic homogeneous Map has no statically named keys.
+        // It remains sealed; its dynamic get/set operations need separate lowering.
+        if (type.name().equals("Map")) return Ast.TypeRef.recordType(Map.of());
+        return type;
     }
 
     public static void verify(Ast.Program program) {
@@ -82,6 +86,10 @@ public final class ActorStateContract {
                     || lambda.parameters().size() != 1) {
                 throw new IllegalArgumentException("self.handle_state expects exactly one single-argument lambda");
             }
+            if (activeAccess != null && referencesAccess(call.arguments(), activeAccess)) {
+                throw new IllegalArgumentException(
+                        "outer actor state loan cannot be captured by nested handle_state");
+            }
             String variable = lambda.parameters().getFirst().name();
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
@@ -119,7 +127,8 @@ public final class ActorStateContract {
             return;
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
-                && (op.operation().equals("borrow") || op.operation().equals("borrow_mut"))
+                && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
+                    || op.operation().equals("borrowMut"))
                 && referencesAccess(op.arguments(), activeAccess)) {
             throw new IllegalArgumentException(
                     "actor state-backed borrow requires continuation-aware loan lowering");
