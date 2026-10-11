@@ -479,6 +479,18 @@ public final class ActorRuntime implements AutoCloseable {
 
     boolean isClosed() { return closed.get(); }
 
+    /** Pool-level carrier snapshot. ActorGroups and actor mailboxes do not own workers. */
+    int startedCarrierCount(ActorKind kind) {
+        ExecutorService dispatcher = dispatcherFor(Objects.requireNonNull(kind, "kind"));
+        if (dispatcher instanceof ActorAffinityDispatcher lanes)
+            return lanes.startedCarrierCount();
+        if (dispatcher instanceof NativeCarrierExecutor nativePool)
+            return nativePool.getStartedCarrierCount();
+        if (dispatcher instanceof ThreadPoolExecutor javaPool)
+            return javaPool.getPoolSize();
+        throw new IllegalStateException("unknown actor carrier dispatcher");
+    }
+
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() { return watchdogOverruns.get(); }
 
