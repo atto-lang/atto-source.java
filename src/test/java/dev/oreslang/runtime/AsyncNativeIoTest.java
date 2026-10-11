@@ -220,6 +220,39 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void registeredResourcesCloseOnceWithoutHoldingAdmissionMonitor() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            var closes = new java.util.concurrent.atomic.AtomicInteger();
+            var closedUnderLock = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var admittedAfterClose = new java.util.concurrent.atomic.AtomicBoolean(true);
+            io.register(() -> {
+                closedUnderLock.set(Thread.holdsLock(io));
+                // Cleanup is permitted to reenter runtime admission. No guest
+                // or host operation may be admitted after close() has sealed it.
+                admittedAfterClose.set(!io.submit("after-close", () -> 42).isDone());
+                closes.incrementAndGet();
+            });
+            io.close();
+            io.close();
+            assertEquals(1, closes.get(), "registered resource must close exactly once");
+            assertFalse(closedUnderLock.get(),
+                    "resource teardown must not hold the I/O admission monitor");
+            assertFalse(admittedAfterClose.get(),
+                    "teardown must not revive a closed I/O context");
+        }
+    }
+
+    @Test void completedNonblockingTransportsReleaseAdmissionForReuse() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            for (int i = 0; i < 64; i++) {
+                int expected = i;
+                OresFuture<Integer> result = io.submitNonblocking("completed-transport",
+                        () -> CompletableFuture.completedFuture(expected));
+                assertEquals(expected, result.get(2, TimeUnit.SECONDS));
+            }
+        }
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
