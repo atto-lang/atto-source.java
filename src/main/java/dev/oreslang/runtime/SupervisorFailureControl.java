@@ -40,9 +40,42 @@ public final class SupervisorFailureControl {
         }
     }
 
+    /**
+     * Match native bounded_control_diagnostic: 1,024 UTF-8 bytes, not UTF-16
+     * code units. Never split a Unicode scalar at the boundary. Java strings
+     * may contain lone surrogate code units, so replace those with '?' rather
+     * than leaking malformed UTF-8 into a cross-runtime Failure envelope.
+     */
     private static String bounded(String text) {
-        if (text.length() <= 1024) return text;
-        return text.substring(0, 1024);
+        final int maxBytes = 1024;
+        int used = 0;
+        StringBuilder result = new StringBuilder(Math.min(text.length(), maxBytes));
+        for (int i = 0; i < text.length();) {
+            char first = text.charAt(i);
+            int codePoint;
+            int consumed = 1;
+            if (Character.isHighSurrogate(first)) {
+                if (i + 1 < text.length()
+                        && Character.isLowSurrogate(text.charAt(i + 1))) {
+                    codePoint = Character.toCodePoint(first, text.charAt(i + 1));
+                    consumed = 2;
+                } else {
+                    codePoint = '?';
+                }
+            } else if (Character.isLowSurrogate(first)) {
+                codePoint = '?';
+            } else {
+                codePoint = first;
+            }
+            final int width = codePoint <= 0x7F ? 1
+                    : codePoint <= 0x7FF ? 2
+                    : codePoint <= 0xFFFF ? 3 : 4;
+            if (width > maxBytes - used) break;
+            result.appendCodePoint(codePoint);
+            used += width;
+            i += consumed;
+        }
+        return result.toString();
     }
 
     private final ActorRuntime.SupervisorId supervisorId;
