@@ -45,6 +45,27 @@ public final class OresScheduler implements AutoCloseable {
     // Track the exact authorized active carriers, not the caller's ThreadLocal.
     private static final Set<Thread> ACTIVE_SCHEDULER_CARRIERS =
             ConcurrentHashMap.newKeySet();
+    // Unlike worker identity, Truffle admission lasts only for a live
+    // scheduler execution turn. Depth supports nested inline executors.
+    private static final ThreadLocal<Integer> ACTIVE_ADMISSION_DEPTH =
+            ThreadLocal.withInitial(() -> 0);
+
+    private static void enterCarrierAdmission() {
+        int depth = ACTIVE_ADMISSION_DEPTH.get();
+        if (depth == 0) ACTIVE_SCHEDULER_CARRIERS.add(Thread.currentThread());
+        ACTIVE_ADMISSION_DEPTH.set(depth + 1);
+    }
+
+    private static void exitCarrierAdmission() {
+        int depth = ACTIVE_ADMISSION_DEPTH.get();
+        if (depth <= 0) throw new IllegalStateException("unpaired scheduler carrier admission");
+        if (depth == 1) {
+            ACTIVE_ADMISSION_DEPTH.remove();
+            ACTIVE_SCHEDULER_CARRIERS.remove(Thread.currentThread());
+        } else {
+            ACTIVE_ADMISSION_DEPTH.set(depth - 1);
+        }
+    }
     // The physical carrier remains owned through post-guest terminal Future
     // publication, after CURRENT has already been restored to its caller.
     private static final ThreadLocal<OresScheduler> ACTIVE_CARRIER_OWNER =
@@ -162,11 +183,9 @@ public final class OresScheduler implements AutoCloseable {
                 .name(name + "-carrier-" + carrierId.getAndIncrement())
                 .unstarted(() -> {
                     SCHEDULER_CARRIER.set(Boolean.TRUE);
-                    ACTIVE_SCHEDULER_CARRIERS.add(Thread.currentThread());
                     try {
                         task.run();
                     } finally {
-                        ACTIVE_SCHEDULER_CARRIERS.remove(Thread.currentThread());
                         SCHEDULER_CARRIER.remove();
                     }
                 });
@@ -418,7 +437,7 @@ public final class OresScheduler implements AutoCloseable {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             OresScheduler priorOwner = ACTIVE_CARRIER_OWNER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
-            if (!priorCarrier) ACTIVE_SCHEDULER_CARRIERS.add(Thread.currentThread());
+            enterCarrierAdmission();
             ACTIVE_CARRIER_OWNER.set(this);
             try {
                 // A queued cancellation may revoke its unclaimed carrier
@@ -439,13 +458,16 @@ public final class OresScheduler implements AutoCloseable {
                     SCHEDULER_CARRIER.set(Boolean.TRUE);
                 } else {
                     SCHEDULER_CARRIER.remove();
-                    ACTIVE_SCHEDULER_CARRIERS.remove(Thread.currentThread());
                 }
                 try {
                     afterTurn.run();
                 } finally {
-                    if (priorOwner == null) ACTIVE_CARRIER_OWNER.remove();
-                    else ACTIVE_CARRIER_OWNER.set(priorOwner);
+                    try {
+                        exitCarrierAdmission();
+                    } finally {
+                        if (priorOwner == null) ACTIVE_CARRIER_OWNER.remove();
+                        else ACTIVE_CARRIER_OWNER.set(priorOwner);
+                    }
                 }
             }
         });
