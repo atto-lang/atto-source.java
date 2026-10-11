@@ -32,12 +32,20 @@ final class SharedHttpGuestHandlerSourceTest {
             assertTrue(target.canExecute());
             assertEquals(43L, target.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "main").asLong());
             StringBuilder observations = new StringBuilder("{");
+            observations.append((char) 34).append("main()").append((char) 34).append(":43");
+            for (long count : new long[] {-1L, 0L}) {
+                long observed = target.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                        "counter_response", count).asLong();
+                assertEquals(count * 43L, observed);
+                observations.append(",").append((char) 34).append("counter_response(")
+                        .append(count).append(")").append((char) 34)
+                        .append(":").append(observed);
+            }
             for (int i = 0; i < 128; ++i) {
                 long observed = target.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
                         "counter_response", (long) (i + 1)).asLong();
                 assertEquals((long) (i + 1) * 43L, observed);
-                if (i != 0) observations.append(",");
-                observations.append((char) 34).append("counter_response(").append(i + 1)
+                observations.append(",").append((char) 34).append("counter_response(").append(i + 1)
                         .append(")").append((char) 34).append(":").append(observed);
             }
             observations.append("}");
