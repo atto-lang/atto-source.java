@@ -90,6 +90,14 @@ public final class ActorStateContract {
                     || lambda.parameters().size() != 1) {
                 throw new IllegalArgumentException("self.handle_state expects exactly one single-argument lambda");
             }
+            if (!lambda.critical()) {
+                throw new IllegalArgumentException(
+                        "self.handle_state is intrinsically critical and requires a critical callback");
+            }
+            if (lambda.nonLexical()) {
+                throw new IllegalArgumentException(
+                        "critical handle_state callback must keep its lexical actor scope");
+            }
             if (activeAccess != null && referencesAccess(call.arguments(), activeAccess)) {
                 throw new IllegalArgumentException(
                         "outer actor state loan cannot be captured by nested handle_state");
