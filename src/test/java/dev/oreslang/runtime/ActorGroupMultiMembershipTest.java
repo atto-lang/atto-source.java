@@ -29,8 +29,8 @@ final class ActorGroupMultiMembershipTest {
 
             CountDownLatch completed = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
-            ActorRuntime.ActorRef<Integer> connection = connectionOwner.spawnWorker(
-                    ActorRuntime.ActorKind.SHARED,
+            ActorRuntime.ActorRef<Integer> connection = connectionOwner.manageWorker(
+                    runtime.spawnSharedTrusted(
                     IsolatePolicy.developer(),
                     factoryContext -> (message, actorContext) -> {
                         try {
@@ -52,7 +52,8 @@ final class ActorGroupMultiMembershipTest {
                             roomA.leaveCurrent();
                             assertTrue(subA.closed(), "leaving A must close only A's subscription");
                             assertFalse(subB.closed(), "leaving A must not close B's subscription");
-                            assertFalse(roomA.contains(actorContext.self()));
+                            assertThrows(SecurityException.class,
+                                    () -> roomA.contains(actorContext.self()));
                             assertTrue(roomB.contains(actorContext.self()));
                             assertThrows(SecurityException.class, () ->
                                     roomA.events().publish("chat", "unauthorized"));
@@ -65,7 +66,7 @@ final class ActorGroupMultiMembershipTest {
                         } finally {
                             completed.countDown();
                         }
-                    });
+                    }));
             connection.send(1);
             assertTrue(completed.await(5, TimeUnit.SECONDS));
             assertNull(failure.get(), "both room subscriptions must stay isolated");
@@ -100,7 +101,7 @@ final class ActorGroupMultiMembershipTest {
 
             CountDownLatch completed = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
-            ActorRuntime.ActorRef<Integer> connection = runtime.spawnPrivate(
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnPrivateTrusted(
                     factoryContext -> (message, actorContext) -> {
                         try {
                             joinA.join();
@@ -165,14 +166,16 @@ final class ActorGroupMultiMembershipTest {
                                 cc.join();
                                 assertTrue(b.contains(ctx.self()));
                                 assertTrue(c.contains(ctx.self()));
-                                assertFalse(a.contains(ctx.self()));
+                                assertThrows(SecurityException.class,
+                                        () -> a.contains(ctx.self()));
                             } else if (step == 2) {
                                 // Closing B from the host must free a room
                                 // slot without terminating this actor or C.
                                 cd.join();
                                 assertTrue(c.contains(ctx.self()));
                                 assertTrue(d.contains(ctx.self()));
-                                assertFalse(b.contains(ctx.self()));
+                                assertThrows(SecurityException.class,
+                                        () -> b.contains(ctx.self()));
                             }
                         } catch (Throwable failure) {
                             error.compareAndSet(null, failure);
