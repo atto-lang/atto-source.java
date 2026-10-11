@@ -546,6 +546,11 @@ public final class OresEvalRootNode extends RootNode {
             // share this actor's mailbox with ordinary actor messages.
             // Capture the exchange completion before guest receive can claim
             // and invalidate the transport transfer token.
+            if (state.object().klass.serial()
+                    && context.http().consumeAbortedSerialRequest(
+                            actorContext.self().id(), mail.value())) {
+                return; // expired HTTP mail consumes no actor state or lane
+            }
             OresFuture<?> httpCompletion = state.object().klass.serial()
                     ? context.http().serialRequestCompletion(
                             actorContext.self().id(), mail.value())
