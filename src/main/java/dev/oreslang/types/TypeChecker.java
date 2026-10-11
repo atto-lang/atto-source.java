@@ -143,10 +143,34 @@ public final class TypeChecker {
         }
     }
 
+    private static boolean reservedActorGroupTypeName(String name) {
+        return name.equals("ActorGroup") || name.equals("ActorGroupJoinCapability");
+    }
+
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (reservedActorGroupTypeName(module.name())) {
+                throw new IllegalArgumentException(
+                        "reserved ActorGroup capability name cannot be redeclared: " + module.name());
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                // A nominal declaration with this name would be shadowed by
+                // the compiler intrinsic while guest evaluation selected the
+                // runtime factory. Reject the collision, don't guess which
+                // capability authority the source author intended.
+                String declarationName =
+                        decl instanceof Ast.ClassDecl klass ? klass.name()
+                        : decl instanceof Ast.InterfaceDecl iface ? iface.name()
+                        : decl instanceof Ast.TypeAliasDecl alias ? alias.name()
+                        : decl instanceof Ast.FunctionDecl fn ? fn.name()
+                        : decl instanceof Ast.FieldDecl field ? field.name()
+                        : null;
+                if (declarationName != null && reservedActorGroupTypeName(declarationName)) {
+                    throw new IllegalArgumentException(
+                            "reserved ActorGroup capability name cannot be redeclared: "
+                                    + declarationName);
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
