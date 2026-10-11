@@ -381,6 +381,38 @@ final class SourceActorSpawnExecutionTest {
                 run(source, "source-actor-msgpack-v2-collections.ores"));
     }
 
+    @Test
+    void taggedEnumPatternMessagesCrossActorBoundaryInBinary() throws Exception {
+        String source = """
+                define enum Status as
+                  Message1: Tuple[bool, string] = 1
+                  Message2: string = 2
+                  Ready = 3
+                end
+
+                define pattern Messages as
+                  Status.Message1
+                  Status.Message2
+                end
+
+                define isoactor Worker as
+                  receive(ActorMail<Messages> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("hello" as Status.Message2);
+                  await worker.get_done();
+                  stdio.stdout.write("tagged-done");
+                  return;
+                }
+                """;
+        assertEquals("tagged-done", run(source, "source-actor-nominal-tags.ores"));
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =

@@ -45,6 +45,7 @@ public final class TypeChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    private TaggedMessageContracts.Registry taggedMessages;
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -94,8 +95,9 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         // Reject invalid tag assignments, unknown nominal cases and pattern
         // dependencies before creating any executable actor/schema bindings.
-        TaggedMessageContracts.verify(program);
+        TaggedMessageContracts.Registry tagged = TaggedMessageContracts.verify(program);
         TypeChecker checker = new TypeChecker();
+        checker.taggedMessages = tagged;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -1838,6 +1840,19 @@ public final class TypeChecker {
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.CastExpr cast) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(cast.targetType().name());
+            if (variant != null) {
+                if (cast.mode() != Ast.CastMode.CHECKED) {
+                    throw new IllegalArgumentException("enum variant construction uses 'as', not 'as?'");
+                }
+                if (variant.sourcePayload() == null) {
+                    throw new IllegalArgumentException("payloadless enum variant cannot be constructed from a value");
+                }
+                Type actual = deref(typeOf(cast.value(), env, generics, self));
+                requireAssignable(actual, resolve(variant.sourcePayload(), generics, self),
+                        "payload for " + variant.qualifiedName());
+                return new Named(variant.qualifiedName(), List.of());
+            }
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
@@ -1985,6 +2000,25 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr variantMember
+                    && variantMember.receiver() instanceof Ast.NameExpr variantEnum) {
+                TaggedMessageContracts.Case enumCase = taggedCaseOrNull(
+                        variantEnum.name() + "." + variantMember.member());
+                if (enumCase != null) {
+                    if (call.typeArgumentsPresent()) throw new IllegalArgumentException(
+                            "enum constructors cannot take type arguments");
+                    int expected = enumCase.sourcePayload() == null ? 0 : 1;
+                    if (call.arguments().size() != expected) throw new IllegalArgumentException(
+                            "enum constructor " + enumCase.qualifiedName()
+                                    + " expects " + expected + " argument(s)");
+                    if (expected == 1) {
+                        Type actual = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                        requireAssignable(actual, resolve(enumCase.sourcePayload(), generics, self),
+                                "payload for " + enumCase.qualifiedName());
+                    }
+                    return new Named(enumCase.qualifiedName(), List.of());
+                }
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2325,10 +2359,12 @@ public final class TypeChecker {
                                     false,
                                     "ActorRef.send mailbox value");
                             Type expectedPayload = actorMailboxPayloadType(actorRef);
-                            requireAssignable(
-                                    payload,
-                                    expectedPayload,
-                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
+                            if (!isTaggedVariantAssignable(payload, expectedPayload)) {
+                                requireAssignable(
+                                        payload,
+                                        expectedPayload,
+                                        "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
+                            }
                             requireSerializableActorMessageType(
                                     payload,
                                     "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
@@ -4551,7 +4587,43 @@ public final class TypeChecker {
         }
     }
 
+    private TaggedMessageContracts.Case taggedCaseOrNull(String qualified) {
+        if (taggedMessages == null) return null;
+        int dot = qualified.indexOf('.');
+        if (dot < 1 || dot == qualified.length() - 1) return null;
+        var owner = taggedMessages.enums().get(qualified.substring(0, dot));
+        if (owner == null) return null;
+        for (var c : owner.cases()) {
+            if (c.name().equals(qualified.substring(dot + 1))) return c;
+        }
+        return null;
+    }
+
+    private boolean isTaggedVariantAssignable(Type actual, Type expected) {
+        if (!(actual instanceof Named variant) || !(expected instanceof Named domain)
+                || !variant.arguments().isEmpty() || !domain.arguments().isEmpty()
+                || taggedMessages == null) return false;
+        var declared = taggedMessages.patterns().get(domain.name());
+        if (declared == null && taggedMessages.enums().containsKey(domain.name())) {
+            var all = taggedMessages.enums().get(domain.name());
+            declared = new TaggedMessageContracts.Domain(domain.name(), all.cases());
+        }
+        if (declared == null) return false;
+        for (var member : declared.cases()) {
+            if (member.qualifiedName().equals(variant.name())) return true;
+        }
+        throw new IllegalArgumentException("enum variant '" + variant.name()
+                + "' is not allowed by actor message domain '" + domain.name() + "'");
+    }
+
     private void requireSerializableActorMessageType(Type type, String where) {
+        if (type instanceof Named named && named.arguments().isEmpty()
+                && taggedMessages != null) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(named.name());
+            if (variant != null) return; // registry already verified recursive payload codec.
+            if (taggedMessages.enums().containsKey(named.name())
+                    || taggedMessages.patterns().containsKey(named.name())) return;
+        }
         if (type instanceof Primitive primitive) {
             if (primitive != Primitive.INT && primitive != Primitive.FLOAT
                     && primitive != Primitive.BOOL && primitive != Primitive.STRING) {

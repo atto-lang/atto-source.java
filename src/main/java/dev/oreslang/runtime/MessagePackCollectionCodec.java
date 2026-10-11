@@ -46,7 +46,14 @@ public final class MessagePackCollectionCodec {
      * compiler lowering (or by explicitly trusted host integration tests).
      * The sender supplies values, NEVER this descriptor from wire bytes.
      */
-    public record MailboxSchema(String schemaId, Shape shape) {
+    /** Compiler-trusted, runtime-bound binary mailbox. Implementations cannot
+     * be chosen by untrusted wire bytes; the actor binds one before admission. */
+    public interface MailboxWireCodec {
+        byte[] encode(Object value);
+        Object decode(byte[] bytes);
+    }
+
+    public record MailboxSchema(String schemaId, Shape shape) implements MailboxWireCodec {
         public MailboxSchema {
             checkSchemaId(schemaId);
             Objects.requireNonNull(shape, "mailbox shape");
