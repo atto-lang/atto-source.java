@@ -85,8 +85,10 @@ completes physical finalization.
 
 The guest-source member dispatcher in `OresEvalRootNode` explicitly
 resolves `worker.get_ready()` and `worker.get_done()` as zero-arity
-invocations. Legacy `await worker.ready` and `await worker.done`
-continue to be recognized for existing source fixtures.
+invocations. The compiler's existing TypeChecker already rejects legacy property-style
+`await worker.ready` and `await worker.done`; source fixtures have now
+been migrated to canonical method-call syntax. The Java host's
+`ready()` and `done()` APIs remain supported for native host callers.
 
 The companion tests are
 `ActorReadinessLifecycleTest` (host observer identity, cancellation
