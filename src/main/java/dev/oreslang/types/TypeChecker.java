@@ -2051,8 +2051,33 @@ public final class TypeChecker {
                         ? Unknown.INSTANCE : Primitive.VOID;
                 validateLambdaAgainstExpected(lambda,
                         new Function(List.of(schemaType), callbackReturn), env, generics, self);
-                // Source runtime must still lower the sealed capability.
-                return Unknown.INSTANCE;
+                // Derive a *Copy scalar* result from the callback's final
+                // return expression. Without this, a safe returned i64/bool
+                // becomes Unknown and cannot even cross a mailbox boundary.
+                // Never manufacture a return type for a StateAccess object,
+                // raw class, borrowed reference or projected mutable Map.
+                if (callbackReturn == Primitive.VOID) return Primitive.VOID;
+                Env scoped = new Env(env);
+                scoped.define(lambda.parameters().getFirst().name(), schemaType, Ast.BindingKind.LET);
+                Ast.Expr resultExpr = lambda.expressionBody();
+                if (resultExpr == null && lambda.blockBody() != null) {
+                    for (Ast.Stmt statement : lambda.blockBody()) {
+                        if (statement instanceof Ast.ReturnStmt returned) {
+                            resultExpr = returned.value();
+                        }
+                    }
+                }
+                if (resultExpr == null) {
+                    throw new IllegalArgumentException(
+                            "value-returning handle_state callback needs an explicit return");
+                }
+                Type result = typeOf(resultExpr, scoped, generics, self);
+                if (result != Primitive.INT && result != Primitive.BOOL) {
+                    throw new IllegalArgumentException(
+                            "native handle_state may return only a copied int or bool; "
+                            + "borrowed/reference state cannot escape callback");
+                }
+                return result;
             }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
