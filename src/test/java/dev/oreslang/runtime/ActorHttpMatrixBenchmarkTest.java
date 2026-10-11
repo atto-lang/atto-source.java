@@ -37,6 +37,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class ActorHttpMatrixBenchmarkTest {
     private static final int ACTORS = 5;
     private static final int REQUESTS = 1000;
+    private static final int ROUNDS = 4;
+    private static final int WARMUP_PER_ACTOR = 25;
     private static final int[] CONCURRENCY = {1, 10, 100, 1000};
     private static final int BODY_LIMIT = 200;
     private record Reply(int status, String body, long nanos) { }
@@ -79,7 +81,7 @@ final class ActorHttpMatrixBenchmarkTest {
         if (values.length == 0) throw new IllegalArgumentException("no samples");
         return millis(values[Math.min(values.length - 1, (int) Math.ceil(q * values.length) - 1)]);
     }
-    private static void executeMode(String mode) throws Exception {
+    private static void executeMode(String mode, int round) throws Exception {
         AtomicReference<Throwable> actorFailure = new AtomicReference<>();
         ConcurrentHashMap<Long, CompletableFuture<Long>> pending = new ConcurrentHashMap<>();
         AtomicLong ticket = new AtomicLong();
@@ -163,6 +165,12 @@ final class ActorHttpMatrixBenchmarkTest {
                 assertEquals(200, client.send(HttpRequest.newBuilder(
                     URI.create("http://127.0.0.1:" + port + "/health")).GET().build(),
                     HttpResponse.BodyHandlers.discarding()).statusCode());
+                // Warm up actual HTTP connections, scheduler and FFM before
+                // starting any timed measurements in this mode.
+                for (int n = 0; n < ACTORS * WARMUP_PER_ACTOR; ++n) {
+                    Reply warm = request(client, port, n % ACTORS);
+                    assertEquals(200, warm.status(), "warmup request failed");
+                }
                 for (int c : CONCURRENCY) {
                     long[] latencies = new long[REQUESTS];
                     long[][] counts = new long[ACTORS][REQUESTS / ACTORS];
@@ -199,7 +207,7 @@ final class ActorHttpMatrixBenchmarkTest {
                     for (int a = 0; a < ACTORS; ++a) {
                         assertEquals(REQUESTS / ACTORS, perActor[a]);
                         Arrays.sort(counts[a]);
-                        long offset = (long) (Arrays.stream(CONCURRENCY)
+                        long offset = WARMUP_PER_ACTOR + (long) (Arrays.stream(CONCURRENCY)
                                 .takeWhile(n -> n != c).count()) * (REQUESTS / ACTORS);
                         for (int j = 0; j < REQUESTS / ACTORS; j++) {
                             assertEquals(offset + j + 1, counts[a][j],
@@ -210,10 +218,10 @@ final class ActorHttpMatrixBenchmarkTest {
                     assertTrue(pending.isEmpty(), "orphan requests");
                     assertNull(actorFailure.get(), () -> "actor failed " + actorFailure.get());
                     System.out.printf(Locale.ROOT,
-                            "MATRIX backend=graal mode=%s isolation=%s actors=5 requests=%d concurrency=%d " +
+                            "MATRIX backend=graal round=%d mode=%s isolation=%s actors=5 warmup_per_actor=%d requests=%d concurrency=%d " +
                             "p50_ms=%s p99_ms=%s rps=%s gc_count=%d gc_pause_ms=%d rss_delta_kb=%d errors=0%n",
-                            mode, mode.equals("private") ? "actor-private-logical-memory" : "actor-shared-kind",
-                            REQUESTS, c, metric(quantile(latencies, .5)),
+                            round, mode, mode.equals("private") ? "actor-private-logical-memory" : "actor-shared-kind",
+                            WARMUP_PER_ACTOR, REQUESTS, c, metric(quantile(latencies, .5)),
                             metric(quantile(latencies, .99)), metric(REQUESTS / seconds),
                             gcAfter.count - gcBefore.count, gcAfter.millis - gcBefore.millis,
                             (rssBefore < 0 || rssAfter < 0) ? -1 : rssAfter - rssBefore);
@@ -223,18 +231,27 @@ final class ActorHttpMatrixBenchmarkTest {
             }
             assertTrue(pending.isEmpty());
             teardownStarted = System.nanoTime();
-            System.out.printf("MATRIX backend=graal mode=%s shutdown_begin=true%n", mode);
+            System.out.printf("MATRIX backend=graal round=%d mode=%s shutdown_begin=true%n", round, mode);
         }
         for (ActorArena arena : owned) assertTrue(arena.physicallyClosed());
         assertEquals(ACTORS, owned.size());
         long finished = System.nanoTime();
-        System.out.printf(Locale.ROOT, "MATRIX backend=graal mode=%s shutdown_ms=%.3f mode_total_ms=%.3f physical_reclaim=true%n",
-                          mode, millis(finished - teardownStarted), millis(finished - started));
+        System.out.printf(Locale.ROOT, "MATRIX backend=graal round=%d mode=%s shutdown_ms=%.3f mode_total_ms=%.3f physical_reclaim=true%n",
+                          round, mode, millis(finished - teardownStarted), millis(finished - started));
     }
 
     @Test void fourConcurrencyLevelsAcrossFiveSharedAndFivePrivateActors() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable());
-        executeMode("shared");
-        executeMode("private");
+        for (int round = 0; round < ROUNDS; round++) {
+            // Balanced ordering AB/BA/BA/AB; independent fresh actor runtimes,
+            // identical request workload and deterministic five-way routing.
+            if (round == 0 || round == 3) {
+                executeMode("shared", round);
+                executeMode("private", round);
+            } else {
+                executeMode("private", round);
+                executeMode("shared", round);
+            }
+        }
     }
 }
