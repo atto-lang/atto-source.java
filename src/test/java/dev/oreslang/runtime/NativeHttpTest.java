@@ -167,6 +167,53 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    void contextCloseDrainsAnUnansweredHttpExchangeBeforeRetirement() throws Exception {
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int len) {
+                super.write(bytes, off, len);
+                String printed = toString(StandardCharsets.UTF_8);
+                int newline = printed.indexOf('\\n');
+                if (newline >= 0 && !port.isDone()) {
+                    port.complete(Integer.parseInt(printed.substring(0, newline).trim()));
+                }
+            }
+        };
+        try (Context context = IsolatePolicy.developer()
+                    .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                    .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
+                    .out(output).build();
+             ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> request = workers.submit(() -> {
+                try {
+                    var response = request(port.get(5, TimeUnit.SECONDS), "GET", "/", "");
+                    // An exchange with no guest response must be aborted rather
+                    // than remaining owned after context close.
+                    assertEquals(503, response.statusCode());
+                } catch (java.io.IOException expectedDisconnect) {
+                    // JDK HttpServer.stop(0) can close an uncommitted connection
+                    // before a 503 header can be sent.
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, """
+                    pub async routine main(): void {
+                      val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                      stdio.println(server.port);
+                      val request = await server.accept();
+                      stdio.println("accepted");
+                      return;
+                    }
+                    """, "shutdown-unanswered-http.ores").build());
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("accepted"));
+            assertDoesNotThrow(context::close,
+                    "context retirement must physically drain an unanswered exchange");
+            request.get(8, TimeUnit.SECONDS);
+        }
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
