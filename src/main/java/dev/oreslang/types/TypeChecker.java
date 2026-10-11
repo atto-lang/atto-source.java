@@ -1987,10 +1987,11 @@ public final class TypeChecker {
                             "sealed critical handle_state requires a critical lexical callback");
                 }
                 Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
+                Type callbackResult =
+                        inferCriticalStateCallbackResult(lambda, schemaType, env, generics, self);
                 validateLambdaAgainstExpected(lambda,
-                        new Function(List.of(schemaType), Unknown.INSTANCE), env, generics, self, true);
-                // Source runtime must still lower the sealed capability.
-                return Unknown.INSTANCE;
+                        new Function(List.of(schemaType), callbackResult), env, generics, self, true);
+                return callbackResult;
             }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -4056,6 +4057,55 @@ public final class TypeChecker {
         if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
         }
+    }
+
+    /**
+     * The sealed callback returns its own result, not an unchecked dynamic
+     * value. Infer the result from an expression body or an explicit final
+     * return statement. Complex path-dependent returns need a future
+     * whole-CFG join; never silently give those calls Unknown type.
+     */
+    private Type inferCriticalStateCallbackResult(Ast.LambdaExpr lambda,
+                                                  Type schemaType,
+                                                  Env parent,
+                                                  Set<String> generics,
+                                                  Type self) {
+        if (!lambda.critical() || lambda.parameters().size() != 1
+                || lambda.nonLexical()) {
+            throw new IllegalArgumentException(
+                    "sealed actor state requires one lexical critical state parameter");
+        }
+        Ast.Param parameter = lambda.parameters().getFirst();
+        Type declared = parameter.type().name().equals("$infer$")
+                ? schemaType : resolveParam(parameter, generics, self);
+        requireAssignable(schemaType, declared, "critical state callback parameter");
+        requireAssignable(declared, schemaType, "critical state callback parameter");
+        Env callbackEnv = new Env(parent, false, true);
+        callbackEnv.define(parameter.name(), declared,
+                parameter.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        defineImplicitArguments(callbackEnv, List.of(declared));
+        if (lambda.expressionBody() != null) {
+            Type result = typeOf(lambda.expressionBody(), callbackEnv, generics, self);
+            if (result == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "critical state callback result type must be statically known");
+            }
+            return result;
+        }
+        if (lambda.blockBody() == null || lambda.blockBody().isEmpty()) {
+            return Primitive.VOID;
+        }
+        Ast.Stmt last = lambda.blockBody().getLast();
+        if (!(last instanceof Ast.ReturnStmt returned)) {
+            return Primitive.VOID;
+        }
+        if (returned.value() == null) return Primitive.VOID;
+        Type result = typeOf(returned.value(), callbackEnv, generics, self);
+        if (result == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(
+                    "critical state callback return type must be statically known");
+        }
+        return result;
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
