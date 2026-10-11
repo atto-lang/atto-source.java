@@ -9,6 +9,10 @@ import java.util.Objects;
 /** Compiler declaration bridge. The actual wire format is owned solely
  * by TaggedMessageCodec; do not introduce a second variant envelope here. */
 public final class TaggedActorMessageBinding {
+    /** LLVM source actor runtime's current closed-domain ceiling. This is a
+     * portable actor binding limit, not the generic Java tagged codec limit. */
+    public static final int MAX_PORTABLE_VARIANTS = 64;
+
     private final String domain;
     private final TaggedMessageCodec wire;
     private final Map<String, TaggedMessageContracts.Case> names;
@@ -26,6 +30,11 @@ public final class TaggedActorMessageBinding {
             TaggedMessageContracts.Registry registry, String name) {
         Objects.requireNonNull(registry);
         TaggedMessageContracts.Domain d = registry.requireDomain(name);
+        if (d.cases().isEmpty() || d.cases().size() > MAX_PORTABLE_VARIANTS) {
+            throw new IllegalArgumentException(
+                    "portable actor message domain requires 1..64 alternatives; "
+                            + "LLVM source actor runtime cannot admit more");
+        }
         var names = new java.util.LinkedHashMap<String, TaggedMessageContracts.Case>();
         for (var c : d.cases()) {
             if (names.putIfAbsent(c.qualifiedName(), c) != null)
