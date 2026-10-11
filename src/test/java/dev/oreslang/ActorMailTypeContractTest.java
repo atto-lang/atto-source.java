@@ -9,6 +9,38 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorMailTypeContractTest {
 
     @Test
+    void unionMailboxDeclaresExactlyTheAcceptedMessageVariants() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Counter as
+                  receive(ActorMail<{delta: int} | {reset: int}> mail): void {
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  const counter = spawn Counter();
+                  counter.send(infer struct{delta: 20});
+                  counter.send(infer struct{reset: 1});
+                  return;
+                }
+                """)));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Counter as
+                          receive(ActorMail<{delta: int} | {reset: int}> mail): void {
+                            return;
+                          }
+                        end
+                        pub routine main(): void {
+                          const counter = spawn Counter();
+                          counter.send(infer struct{unknown: 5});
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().contains("ActorRef.send mailbox value"),
+                rejected.getMessage());
+    }
+
+    @Test
     void typedStructuralMailboxAcceptsMatchingInferredRecord() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Counter as
