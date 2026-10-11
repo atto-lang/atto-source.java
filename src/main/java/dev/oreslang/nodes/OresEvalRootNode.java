@@ -3004,6 +3004,21 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.UnaryExpr unary) {
+                    if (unary.operator().equals("trap")) {
+                        // This continuation remains the trap boundary even if the
+                        // operand suspends, resumes, and throws on a later turn.
+                        evalSuspendableExpr(task, unary.operand(), env,
+                                (t, value, failure) -> {
+                                    if (failure == null) {
+                                        continuation.accept(t, new OptionValue(true, value), null);
+                                    } else if (isTrappableFailure(failure)) {
+                                        continuation.accept(t, new OptionValue(false, null), null);
+                                    } else {
+                                        continuation.accept(t, null, failure);
+                                    }
+                                });
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             unary.operand(),
@@ -4452,6 +4467,14 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /** Only ordinary recoverable runtime failures belong to Option.None. */
+        private boolean isTrappableFailure(Throwable failure) {
+            Throwable actual = OresFuture.unwrap(failure);
+            return actual instanceof RuntimeException
+                    && !(actual instanceof OresPanic)
+                    && !(actual instanceof java.util.concurrent.CancellationException);
+        }
+
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
             if (!fn.trapped()) {
                 return callFunctionBodyUnchecked(fn, args);
@@ -5738,6 +5761,14 @@ public final class OresEvalRootNode extends RootNode {
                         : eval(conditional.whenFalse(), env);
             }
             if (expr instanceof Ast.UnaryExpr unary) {
+                if (unary.operator().equals("trap")) {
+                    try {
+                        return new OptionValue(true, eval(unary.operand(), env));
+                    } catch (RuntimeException failure) {
+                        if (!isTrappableFailure(failure)) throw failure;
+                        return new OptionValue(false, null);
+                    }
+                }
                 Object value = eval(unary.operand(), env);
                 return switch (unary.operator()) {
                     case "&", "&mut" -> value;
