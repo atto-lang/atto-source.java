@@ -54,6 +54,8 @@ final class ActorPersistentI64MapTest {
                         done.countDown();
                     } else {
                         current.critical(view -> {
+                            assertTrue(memory.get().criticalGate().heldByCurrentLogicalDomain(),
+                                    "native state must share its arena's logical critical gate");
                             long next = view.getOrDefault(0L, 0L) + 1;
                             view.put(0L, next);
                             view.put(42L, next);
