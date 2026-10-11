@@ -1747,8 +1747,9 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(command, "source task continuation");
         final boolean cleanupOnly;
         synchronized (cell.lifecycleLock) {
-            if (cell.finalized || cell.forceKillFenced || closed.get()
-                    || (cell.stopped.get() && !cell.sourceCleanupDraining)) return false;
+            if (cell.finalized || cell.forceKillFenced
+                    || (cell.stopped.get() && !cell.sourceCleanupDraining)
+                    || (closed.get() && !cell.sourceCleanupDraining)) return false;
             cleanupOnly = cell.stopped.get() && cell.sourceCleanupDraining;
         }
 
@@ -5789,30 +5790,20 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
 
-        final boolean firstClose;
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
-            firstClose = closed.compareAndSet(false, true);
+            // Seal external admissions first. Already-owned source cancellation
+            // CONTROL continuations retain their narrowly scoped permission to
+            // run until lexical cleanup completes.
+            closed.set(true);
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
-        if (firstClose) {
-            // Stop executor carriers so queued work is rejected/removed and
-            // blocked host-side executor operations can wake. This interrupt is
-            // backend shutdown mechanics only; it is never an actor
-            // cancellation identity. Every ActorCell above was already marked
-            // stopped through the structured runtime lifecycle.
-            privateDispatcher.shutdownNow();
-            sharedDispatcher.shutdownNow();
-            untrustedDispatcher.shutdownNow();
-
-            // shutdownNow() removes queued tasks without invoking runBatch().
-            // Clear those cells' scheduled bits only when no carrier actually
-            // entered the TurnExecutor boundary. Active carriers retain the bit
-            // until their executor finally exits.
-            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
-        }
+        // Do not shutdownNow() or interrupt the actor carriers here. Finalizers
+        // can suspend on Futures and require these dispatchers to re-enter the
+        // actor's cleanup-only CONTROL lane. Timed-out cleanup must remain owned
+        // and reported, not falsely published as a completed actor.
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
         boolean interrupted = false;
@@ -5830,37 +5821,37 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
-        boolean dispatchersTerminated = true;
-        for (ExecutorService dispatcher : List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) {
-                dispatchersTerminated = false;
-                break;
+        boolean dispatchersTerminated = stillRunning.isEmpty() && !interrupted;
+        if (dispatchersTerminated) {
+            // Quiescence is proven. Graceful shutdown does not discard queued
+            // tasks or interrupt the final carrier-exit boundary.
+            for (ExecutorService dispatcher :
+                    List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
+                dispatcher.shutdown();
             }
-            try {
-                if (!dispatcher.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+            for (ExecutorService dispatcher :
+                    List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
                     dispatchersTerminated = false;
                     break;
                 }
-            } catch (InterruptedException waitInterrupted) {
-                interrupted = true;
-                dispatchersTerminated = false;
-                break;
+                try {
+                    if (!dispatcher.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                        dispatchersTerminated = false;
+                        break;
+                    }
+                } catch (InterruptedException waitInterrupted) {
+                    interrupted = true;
+                    dispatchersTerminated = false;
+                    break;
+                }
             }
         }
 
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
-
+        // Do not reclaim runtime-shared objects while an actor owns suspended
+        // finalizers or while carrier quiescence is unproven. A failed close is
+        // retryable and retains owned resources for later cleanup.
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -5875,6 +5866,19 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
+
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
+        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+            stream.closeAndDrainFromRuntime();
+        }
+        actorOutputStreams.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
+        sharedMemoryBytes.set(0L);
+
         actors.clear();
         actorCount.set(0);
     }
@@ -6471,7 +6475,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void schedule() {
             if ((stopped.get() && !sourceCleanupDraining)
-                    || forceKillFenced || closed.get()) return;
+                    || forceKillFenced || (closed.get() && !sourceCleanupDraining)) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
@@ -6503,7 +6507,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!scheduled.get()) return;
 
                     if ((stopped.get() && !sourceCleanupDraining)
-                            || closed.get() || forceKillFenced) {
+                            || (closed.get() && !sourceCleanupDraining) || forceKillFenced) {
                         scheduled.set(false);
                         if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
                         lifecycleLock.notifyAll();
@@ -6530,7 +6534,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                         reschedule = (!stopped.get() || sourceCleanupDraining)
                                 && !forceKillFenced
-                                && !closed.get()
+                                && (!closed.get() || sourceCleanupDraining)
                                 && !finalized
                                 && hasQueuedWorkLocked();
                         lifecycleLock.notifyAll();
