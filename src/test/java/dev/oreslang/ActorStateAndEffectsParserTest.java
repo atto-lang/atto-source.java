@@ -224,6 +224,20 @@ final class ActorStateAndEffectsParserTest {
                 () -> Parser.parse(valid.replace("critical |s|", "critical 123")));
     }
 
+    @Test void rejectsReifiedCriticalCallbackOutsideSealedIntrinsic() {
+        String escaped = """
+            define actor Counter as
+                state { count: int = 0; }
+                pub invalid(): void {
+                    stdio.println(critical |s| -> 42);
+                    return;
+                }
+            end
+            """;
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(Parser.parse(escaped)));
+    }
+
     @Test void writingStateDoesNotImplicitlyReadIt() {
         Ast.Program writeOnly = Parser.parse("""
             define actor Counter as
