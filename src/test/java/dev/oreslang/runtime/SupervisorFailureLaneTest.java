@@ -90,6 +90,72 @@ final class SupervisorFailureLaneTest {
         assertEquals(List.of(kinds), handled);
     }
 
+    @Test
+    void concurrentProducersCannotLoseReservedTerminalEvents() throws Exception {
+        int total = 256;
+        SupervisorFailureLane lane = new SupervisorFailureLane(total);
+        for (int i = 0; i < total; i++) lane.reserve(id(i));
+
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            var producers = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int worker = 0; worker < 4; worker++) {
+                final int segment = worker;
+                producers.add(pool.submit(() -> {
+                    start.await();
+                    for (int i = segment; i < total; i += 4) {
+                        if (!lane.publish(new SupervisorFailureLane.Failure(
+                                id(i), SupervisorFailureLane.Kind.PANIC, "panic"))) {
+                            throw new IllegalStateException("lost first publication");
+                        }
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            java.util.Set<SupervisorFailureLane.ActorKey> handled = new java.util.HashSet<>();
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (handled.size() < total && System.nanoTime() < deadline) {
+                var next = lane.poll();
+                if (next.isEmpty()) {
+                    Thread.yield();
+                    continue;
+                }
+                var event = next.orElseThrow();
+                assertTrue(handled.add(event.actor()), "duplicate terminal event");
+                lane.ack(event.actor());
+            }
+            for (var producer : producers) producer.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(total, handled.size());
+            assertEquals(0, lane.pendingCount());
+            assertEquals(0, lane.reservedCount());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void fifoRetryMovesOnlyTheInFlightEventToTail() {
+        SupervisorFailureLane lane = new SupervisorFailureLane(3);
+        lane.reserve(id(1));
+        lane.reserve(id(2));
+        lane.reserve(id(3));
+        for (int i = 1; i <= 3; i++) {
+            lane.publish(new SupervisorFailureLane.Failure(
+                    id(i), SupervisorFailureLane.Kind.RAISE, "raised"));
+        }
+        assertEquals(id(1), lane.poll().orElseThrow().actor());
+        lane.retry(id(1));
+        assertEquals(id(2), lane.poll().orElseThrow().actor());
+        lane.ack(id(2));
+        assertEquals(id(3), lane.poll().orElseThrow().actor());
+        lane.ack(id(3));
+        assertEquals(id(1), lane.poll().orElseThrow().actor());
+        lane.ack(id(1));
+        assertEquals(0, lane.reservedCount());
+    }
+
     private static class RecordingHandler implements SupervisorFailureLane.Handler {
         private final List<SupervisorFailureLane.Kind> handled;
         RecordingHandler(List<SupervisorFailureLane.Kind> handled) { this.handled = handled; }
