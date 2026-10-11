@@ -4117,7 +4117,11 @@ public final class OresEvalRootNode extends RootNode {
             rejectReentrantMapAccess(object);
             // Invalid stored data must not trigger observable hook side effects.
             if (object.mapEntries.containsKey(key)) {
-                validateMapReadValue(object, key, object.mapEntries.get(key));
+                Object stored = object.mapEntries.get(key);
+                validateMapReadValue(object, key, stored);
+                // Dynamic-key reads can reach move-only values that the type
+                // checker cannot rule out. Reject before any observable hook.
+                mapCopyForRead(stored, new IdentityHashMap<>(), 0);
             }
             mapHook(object, "on_get", key);
             if (!object.mapEntries.containsKey(key)) return new OptionValue(false, null);
