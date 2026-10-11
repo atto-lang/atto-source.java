@@ -78,6 +78,39 @@ final class SupervisorDecisionCommitFenceTest {
     }
 
     @Test
+    void lifecycleDecisionCanCloseItsOwnSupervisorWithoutLosingCommit() throws Exception {
+        try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            java.util.concurrent.atomic.AtomicReference<SupervisorProcess> ref =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            CountDownLatch closedInSink = new CountDownLatch(1);
+            AtomicInteger applied = new AtomicInteger();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, carrier, 2,
+                    n -> CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP),
+                    result -> {
+                        applied.incrementAndGet();
+                        ref.get().close();
+                        closedInSink.countDown();
+                    });
+            ref.set(process);
+            process.accept(notice(supervisor, group));
+            assertTrue(closedInSink.await(5, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.resolved() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, applied.get());
+            assertEquals(1, process.resolved(),
+                    "self-close lost an already-applied lifecycle effect");
+            assertEquals(0, process.undelivered(),
+                    "self-close incorrectly counted the applied decision as lost");
+            assertFalse(process.healthy(), "closed supervisor must reject further events");
+        }
+    }
+
+    @Test
     void closedSupervisorRejectsLateFutureCompletionWithoutDecision() throws Exception {
         try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
             var supervisor = ActorRuntime.SupervisorId.create();
