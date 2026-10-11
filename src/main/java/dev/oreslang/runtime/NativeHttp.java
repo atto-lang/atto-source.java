@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class NativeHttp implements AutoCloseable {
     private final OresContext context;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
+    /** Persistent serial handler processes; lifetime is owned by this HTTP runtime. */
+    private final Set<Handler> handlers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
@@ -66,7 +68,9 @@ public final class NativeHttp implements AutoCloseable {
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
-        return new Handler(code, type, kind);
+        Handler handler = new Handler(code, type, kind);
+        if (handler.serial) handlers.add(handler);
+        return handler;
     }
 
     /** Immutable code registration; no captured guest objects enter the actor heap. */
@@ -74,8 +78,13 @@ public final class NativeHttp implements AutoCloseable {
         private final ActorRuntime.ActorCodeExecutor code;
         private final String type;
         private final ActorRuntime.ActorKind kind;
+        private final boolean serial;
+        private ActorRuntime.ActorRef<Object> persistentActor;
         private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
-            this.code = code; this.type = type; this.kind = kind;
+            this.code = Objects.requireNonNull(code, "immutable actor code");
+            this.type = Objects.requireNonNull(type, "actor declaration");
+            this.kind = Objects.requireNonNull(kind, "actor kind");
+            this.serial = code.serialActorDeclaration(type);
         }
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
         public void dispatch(Exchange exchange) {
@@ -85,7 +94,17 @@ public final class NativeHttp implements AutoCloseable {
             ActorRuntime.ActorRef<Object> actor = null;
             try {
                 long spawnPerf = CorePerf.start();
-                actor = context.actors().spawnCodeActor(kind, code, type);
+                if (serial) {
+                    synchronized (this) {
+                        if (closed) throw new IllegalStateException("HTTP runtime closed");
+                        if (persistentActor == null || !persistentActor.isAlive()) {
+                            persistentActor = context.actors().spawnCodeActor(kind, code, type);
+                        }
+                        actor = persistentActor;
+                    }
+                } else {
+                    actor = context.actors().spawnCodeActor(kind, code, type);
+                }
                 CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
                 actor.ready().whenCompleteRuntime((ignored, failure) -> {
                     long spawn;
@@ -97,13 +116,35 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
-                actor.send(exchange.moveTo(actor));
+                actor.send(exchange.moveTo(actor, !serial));
             } catch (RuntimeException failure) {
-                if (actor != null) actor.cancel();
+                if (actor != null && !serial) actor.cancel();
                 exchange.state.abort(500);
             } finally {
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
             }
+        }
+    }
+
+    /**
+     * Trusted bridge used on an admitted serial actor turn before guest code
+     * claims its moved HTTP transfer. No guest method can fabricate authority:
+     * transfer ticket, actor identity, and persistent-actor flag must agree.
+     */
+    public OresFuture<?> serialRequestCompletion(
+            ActorRuntime.ActorId actorId, Object message) {
+        if (!(message instanceof String token)) return null;
+        Exchange exchange = transfers.get(token);
+        if (exchange == null) return null;
+        synchronized (exchange.state) {
+            State state = exchange.state;
+            if (!state.persistentActor || state.actor == null
+                    || !state.actor.id().equals(actorId)
+                    || !actorId.equals(state.owner)
+                    || state.terminal || !Objects.equals(state.ticket, token)) {
+                return null;
+            }
+            return state.completion;
         }
     }
 
@@ -277,19 +318,24 @@ public final class NativeHttp implements AutoCloseable {
         final Map<String, List<String>> params = new LinkedHashMap<>();
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
+        /** A persistent serial handler cannot be cancelled by one HTTP deadline. */
+        boolean persistentActor;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
         void abort(int status) {
             boolean send, alreadyClosed;
+            ActorRuntime.ActorRef<?> cancelActor;
             synchronized (this) {
                 alreadyClosed = terminal;
                 send = !terminal && !committed && !busy;
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
+                cancelActor = !alreadyClosed && !persistentActor ? actor : null;
             }
-            // Never perform socket I/O or actor cancellation while holding the ownership monitor.
-            if (actor != null) actor.cancel();
+            // An HTTP deadline cancels a per-request actor, never a persistent
+            // serial actor processing other HTTP requests and actor messages.
+            if (cancelActor != null) cancelActor.cancel();
             if (alreadyClosed) { release(); return; }
             try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
             catch (RejectedExecutionException closed) { release(); }
@@ -302,7 +348,9 @@ public final class NativeHttp implements AutoCloseable {
             // Admission includes the actor lifetime, even after the response ends.
             // A handler that forgets self.end cannot accumulate unbounded actors.
             synchronized (this) {
-                if (!transportClosed || (actor != null && !actor.done().isDone())) return;
+                if (!transportClosed
+                        || (actor != null && !persistentActor
+                                && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
@@ -331,6 +379,13 @@ public final class NativeHttp implements AutoCloseable {
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
+            return moveTo(destination, true);
+        }
+
+        // Trusted transport-only option: the long-lived serial actor cannot
+        // be terminated by an individual exchange timeout or response failure.
+        private String moveTo(ActorRuntime.ActorRef<?> destination,
+                              boolean cancelActorOnAbort) {
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
@@ -338,7 +393,9 @@ public final class NativeHttp implements AutoCloseable {
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
                 state.movedNanos = System.nanoTime();
-                state.generation++; state.owner = destination.id(); state.actor = destination;
+                state.generation++; state.owner = destination.id();
+                state.actor = destination;
+                state.persistentActor = !cancelActorOnAbort;
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
@@ -576,6 +633,12 @@ public final class NativeHttp implements AutoCloseable {
     @Override public synchronized void close() {
         closed = true;
         for (Server server : List.copyOf(servers)) server.close();
+        for (Handler handler : List.copyOf(handlers)) {
+            synchronized (handler) {
+                if (handler.persistentActor != null) handler.persistentActor.cancel();
+            }
+        }
+        handlers.clear();
         timers.shutdownNow(); io.shutdownNow(); transfers.clear();
     }
 }
