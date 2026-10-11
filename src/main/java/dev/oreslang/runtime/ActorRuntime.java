@@ -1490,6 +1490,11 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
+        /** Trusted, compiler-derived serial scheduling contract. */
+        default boolean serialActorDeclaration(String actorTypeName) {
+            return false;
+        }
+
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
@@ -1823,23 +1828,28 @@ public final class ActorRuntime implements AutoCloseable {
 
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(cell.ref);
-            if (cell.sourceReceiveSuspended) {
-                throw new IllegalStateException(
-                        "actor " + cell.ref.id()
-                                + " already has a suspended source receive");
-            }
             if (cell.activeMail == null) {
                 throw new IllegalStateException(
                         "only an active user-mail receive may suspend the actor mailbox");
             }
             cell.sourceReceiveSuspended = true;
+            cell.pendingSourceReceiveBarriers++;
         }
+        ActorInboxMail<?> admittedMail = cell.activeMail;
 
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
                 synchronized (cell.lifecycleLock) {
-                    cell.sourceReceiveSuspended = false;
-                    cell.activeMail = null;
+                    if (cell.activeMail != admittedMail || cell.finalized
+                            || cell.stopped.get()) return;
+                    if (cell.pendingSourceReceiveBarriers <= 0) {
+                        throw new IllegalStateException(
+                                "source receive completion barrier underflow");
+                    }
+                    if (--cell.pendingSourceReceiveBarriers == 0) {
+                        cell.sourceReceiveSuspended = false;
+                        cell.activeMail = null;
+                    }
                     cell.lifecycleLock.notifyAll();
                 }
                 if (failure != null) {
@@ -1854,9 +1864,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             })) {
                 synchronized (cell.lifecycleLock) {
-                    if (!cell.stopped.get() && !cell.finalized) {
-                        cell.sourceReceiveSuspended = false;
-                        cell.activeMail = null;
+                    if (!cell.stopped.get() && !cell.finalized
+                            && cell.activeMail == admittedMail) {
                         cell.fail(new IllegalStateException(
                                 "actor source receive completion could not re-enter its continuation lane"));
                     }
@@ -5979,6 +5988,8 @@ public final class ActorRuntime implements AutoCloseable {
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
+        /** Multiple awaited operations may jointly own one user-mail turn. */
+        private int pendingSourceReceiveBarriers;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -6710,6 +6721,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Drain all committed user-message envelopes, including after close.
             }
             sourceReceiveSuspended = false;
+            pendingSourceReceiveBarriers = 0;
             activeMail = null;
         }
 
