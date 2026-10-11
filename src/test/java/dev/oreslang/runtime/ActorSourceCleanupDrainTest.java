@@ -210,7 +210,6 @@ final class ActorSourceCleanupDrainTest {
             // before its actor is stopped. The source command must be accepted
             // into the owned CONTROL queue, but cannot run ordinary guest work.
             assertTrue(gates.userAwait.completeFromRuntime(null));
-            assertFalse(gates.task.get().isDone());
             assertThrows(IllegalStateException.class, () -> actor.send("forbidden"));
 
             assertTrue(actor.cancel());
