@@ -6368,7 +6368,7 @@ public final class ActorRuntime implements AutoCloseable {
         private long untrustedFuelRemaining;
         private long untrustedSafepoints;
         /** One live logical quota cohort per untrusted actor. Guarded by lifecycleLock. */
-        private UntrustedLogicalQuota activeUntrustedSourceQuota;
+        private volatile UntrustedLogicalQuota activeUntrustedSourceQuota;
         private int activeUntrustedSourceTaskCount;
         private Behavior<M> behavior;
 
