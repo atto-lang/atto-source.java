@@ -4139,9 +4139,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void mapHook(OresObject object, String name, Object... args) {
+            if (object.mapHookActive) throw new IllegalStateException("reentrant map hook access is not permitted");
             Ast.MethodDecl hook = object.owner.findMethod(object.klass,
                     CallableSelector.instance(name, args.length), new LinkedHashSet<>());
-            if (hook != null) object.owner.invoke(object.owner.methodInvocation(object, hook, java.util.Arrays.asList(args)));
+            if (hook == null) return;
+            object.mapHookActive = true;
+            try {
+                object.owner.invoke(object.owner.methodInvocation(object, hook, java.util.Arrays.asList(args)));
+            } finally {
+                object.mapHookActive = false;
+            }
         }
 
         private Object indexValue(Object receiver, Object index) {
@@ -8734,6 +8741,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
         private final Map<String,Object> mapEntries;
+        private boolean mapHookActive;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
