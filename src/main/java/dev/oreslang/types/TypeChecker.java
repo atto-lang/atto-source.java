@@ -4614,6 +4614,25 @@ public final class TypeChecker {
             Set<String> generics,
             Type expectedReturn,
             Type self) {
+        Type armExpectedReturn = expectedReturn;
+        if (matched.returnContract() != null) {
+            if (!matched.procedural()) {
+                // Value-producing match<ret=T> must lower arm-local returns
+                // into a match result. Do not silently let them escape their
+                // enclosing function as ordinary source-level returns.
+                throw new IllegalArgumentException(
+                        "value-producing match<ret=T> requires arm-local return/result lowering; "
+                                + "not yet enabled on this backend");
+            }
+            armExpectedReturn = deref(resolve(matched.returnContract(), generics, self));
+            requireAssignable(armExpectedReturn, expectedReturn,
+                    "do match return contract vs containing callable return type");
+            if (matched.shorthandReturnContract()) {
+                warnings.add("W-MATCH-RET-SHORTHAND: prefer 'do match<ret=Type>' to 'do match<Type>' "
+                        + "because procedural match returns from the containing callable");
+            }
+        }
+
         List<Ast.MatchArm> arms = matched.arms();
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
@@ -4623,7 +4642,13 @@ public final class TypeChecker {
             if (arm.guard() != null) {
                 requireAssignable(typeOfCondition(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
             }
-            checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+            checkBlock(arm.body(), armEnv, generics, armExpectedReturn, self);
+            if (matched.returnContract() != null && !definitelyReturns(arm.body())) {
+                throw new IllegalArgumentException(
+                        "do match<ret=T> arm " + (i + 1)
+                                + " must return the declared type on every path; "
+                                + "fallthrough is not permitted");
+            }
 
             // Match is ordered. Overlap is valid, but an earlier unguarded arm
             // that completely contains a later pattern makes that arm dead.
