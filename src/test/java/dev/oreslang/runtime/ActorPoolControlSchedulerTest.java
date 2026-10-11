@@ -263,4 +263,37 @@ final class ActorPoolControlSchedulerTest {
             assertTrue(scheduler.awaitTermination(3, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void explicitLegacyParallelismStillUsesAtMostFivePhysicalWorkerLanes() throws Exception {
+        String backend = System.getProperty("ores.runtime.carriers");
+        String affinity = System.getProperty("ores.actor.affinity");
+        System.setProperty("ores.runtime.carriers", "java");
+        System.setProperty("ores.actor.affinity", "lane");
+        try {
+            try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(12, 12, 8, 64))) {
+                assertEquals(5, runtime.workerCarrierLimit(ActorRuntime.ActorKind.PRIVATE));
+                assertEquals(5, runtime.workerCarrierLimit(ActorRuntime.ActorKind.SHARED));
+                assertEquals(5, runtime.workerCarrierLimit(ActorRuntime.ActorKind.UNTRUSTED));
+                var refs = new java.util.ArrayList<ActorRuntime.ActorRef<String>>();
+                for (int i = 0; i < 15; i++) {
+                    var ref = runtime.<String>spawnShared(() -> (message, context) -> {});
+                    refs.add(ref);
+                    var placement = runtime.placementFor(ref).orElseThrow();
+                    assertTrue(placement.lane() >= 0 && placement.lane() < 5,
+                            "actual affinity dispatch has at most five physical lanes");
+                }
+                assertEquals(1, runtime.activatedActorPoolSchedulers());
+                assertEquals(0, runtime.activatedActorCarrierPools());
+                for (var ref : refs) {
+                    runtime.stop(ref);
+                    assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+                }
+            }
+        } finally {
+            restore("ores.runtime.carriers", backend);
+            restore("ores.actor.affinity", affinity);
+        }
+    }
 }
