@@ -162,6 +162,13 @@ public final class ActorRuntime implements AutoCloseable {
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
+    /** Host-visible notice; it does not grant permission to interrupt a carrier. */
+    public record WatchdogNotice(
+            ActorId actorId,
+            ActorKind kind,
+            long elapsedNanos,
+            long sinceCheckpointNanos) { }
+
     public static final class UntrustedActorQuotaExceededException extends SecurityException {
         public enum Resource { FUEL, WALL_TIME, CPU_TIME }
         private final Resource resource;
@@ -373,6 +380,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    private final AtomicLong watchdogOverruns = new AtomicLong();
+    private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
+            new ArrayBlockingQueue<>(1024);
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -451,6 +461,29 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /** Total overrun detections, including notices dropped from the bounded queue. */
+    public long watchdogOverruns() { return watchdogOverruns.get(); }
+
+    /** Nonblocking observer API for a trusted supervisor/control plane. */
+    public Optional<WatchdogNotice> pollWatchdogNotice() {
+        return Optional.ofNullable(watchdogNotices.poll());
+    }
+
+    /** Indicates a request, not a safe or completed suspension. */
+    public boolean watchdogPreemptionRequested() {
+        ActorCell<?> cell = currentActor.get();
+        ActorTurnWatchdog.Lease lease = cell == null ? null : cell.watchdogLease;
+        return lease != null && lease.preemptionRequested();
+    }
+
+    private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
+        long now = System.nanoTime();
+        watchdogOverruns.incrementAndGet();
+        watchdogNotices.offer(new WatchdogNotice(
+                cell.ref.id(), cell.kind,
+                lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)));
+    }
 
     /**
      * Physical carrier implementation currently backing actor turns.
@@ -4545,6 +4578,9 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
+        if (cell != null && cell.watchdogLease != null) {
+            cell.watchdogLease.checkpoint();
+        }
         if (cell != null && cell.stopped.get() && !cell.endRequested) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
@@ -5964,6 +6000,7 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         private boolean finalized;
+        private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
         private long untrustedFuelRemaining;
@@ -6452,6 +6489,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
                 if (!turnActive) return;
+                watchdogLease = ActorTurnWatchdog.enter(
+                        lease -> recordWatchdogOverrun(this, lease));
 
                 if (kind == ActorKind.UNTRUSTED) {
                     turnStartedWallNanos = System.nanoTime();
@@ -6625,6 +6664,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 try {
+                    ActorTurnWatchdog.Lease lease = watchdogLease;
+                    watchdogLease = null;
+                    if (lease != null) lease.close();
                     if (turnActive) endTurn();
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may
