@@ -105,10 +105,11 @@ final class CriticalKeywordTest {
         String code = """
                 pub critical fnc synchronous(): int { return 6; }
                 suspend critical fnc guaranteed_handoff(): int { return 7; }
+                async fnc outer(): int { return guaranteed_handoff(); }
                 pub fnc main(): void {
                     stdio.stdout.write(synchronous());
                     stdio.stdout.write("|");
-                    stdio.stdout.write(await guaranteed_handoff());
+                    stdio.stdout.write(await outer());
                     return;
                 }
                 """;
