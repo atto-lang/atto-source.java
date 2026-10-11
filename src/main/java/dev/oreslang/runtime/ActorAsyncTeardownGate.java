@@ -41,7 +41,9 @@ final class ActorAsyncTeardownGate {
     // retain the actor's CONTROL closure and its guest state indefinitely.
     private final AtomicReference<ControlEnqueue> controlEnqueue = new AtomicReference<>();
     private final AtomicReference<Throwable> notificationFailure = new AtomicReference<>();
-    private final ScheduledFuture<?> deadline;
+    // A one-nanosecond deadline can fire *inside* schedule(), before it
+    // returns the ScheduledFuture. Never dereference an unassigned deadline.
+    private final AtomicReference<ScheduledFuture<?>> deadline = new AtomicReference<>();
 
     ActorAsyncTeardownGate(CompletionStage<?> operation,
                            Duration timeout,
@@ -62,15 +64,17 @@ final class ActorAsyncTeardownGate {
         }
         // If scheduling is rejected, construction fails closed. Never arm a
         // Future without a timeout watcher.
-        deadline = timer.schedule(
+        ScheduledFuture<?> scheduled = timer.schedule(
                 () -> publish(new Outcome(State.TIMED_OUT, null)),
                 nanos, TimeUnit.NANOSECONDS);
+        deadline.set(scheduled);
+        if (terminal.get() != null) cancelDeadline();
         try {
             operation.whenComplete((unused, error) -> publish(error == null
                     ? new Outcome(State.SUCCESS, null)
                     : new Outcome(State.FAILURE, unwrap(error))));
         } catch (Throwable registrationFailure) {
-            deadline.cancel(false);
+            cancelDeadline();
             throw registrationFailure;
         }
     }
@@ -88,7 +92,7 @@ final class ActorAsyncTeardownGate {
 
     private void publish(Outcome result) {
         if (!terminal.compareAndSet(null, result)) return;
-        deadline.cancel(false);
+        cancelDeadline();
         // This is intentionally just a trusted CONTROL enqueue, not an actor
         // callback. A failed enqueue must be handled by the caller's existing
         // fail-closed supervisor/host watchdog; outcome remains observable.
@@ -100,6 +104,11 @@ final class ActorAsyncTeardownGate {
                 notificationFailure.compareAndSet(null, rejection);
             }
         }
+    }
+
+    private void cancelDeadline() {
+        ScheduledFuture<?> pending = deadline.getAndSet(null);
+        if (pending != null) pending.cancel(false);
     }
 
     private static Throwable unwrap(Throwable failure) {
