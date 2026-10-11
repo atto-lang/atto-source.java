@@ -138,6 +138,49 @@ final class CleanupReturnFinalityTest {
     }
 
     @Test
+    void deferredLambdaIsInvokedAndMayMutateReturnedReferent() {
+        String code = BOX + """
+                fnc make(): Box {
+                  val Box result = new Box();
+                  defer || -> { result.value = 8; };
+                  return result;
+                }
+                pub fnc main(): int {
+                  val Box result = make();
+                  return result.value;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            assertEquals(8L, context.eval(Source.newBuilder("ores", code, "deferred-lambda.ores").build()).asLong());
+        }
+    }
+
+    @Test
+    void deferCannotRegisterLambdaRequiringArguments() {
+        rejected("""
+                fnc invalid(): Box {
+                  let mut Box result = new Box();
+                  defer |int value| -> { result.value = value; };
+                  return result;
+                }
+                """, "defer cleanup lambda must accept zero parameters");
+    }
+
+    @Test
+    void lambdaReturnInsideFinallyDoesNotOverrideOuterReturn() {
+        admitted("""
+                fnc value(): int {
+                  try { return 1; }
+                  catch (err) { return 2; }
+                  finally {
+                    const cleanup = || -> { return 7; };
+                  }
+                }
+                """);
+    }
+
+    @Test
     void mutableReturnedObjectIsModifiedByDefer() {
         String code = BOX + """
                 fnc bump(borrow mut Box box): void {
