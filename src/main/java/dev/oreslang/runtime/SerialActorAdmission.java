@@ -18,6 +18,23 @@ public final class SerialActorAdmission implements AutoCloseable {
     public enum Kind { HTTP, MESSAGE }
     public enum State { RUNNING, SUSPENDED, FINISHED }
 
+    /** Actor-wide state derived atomically from the admission owner, not
+     * a second mutable flag which could drift from the active lease. */
+    public enum Lifecycle { IDLE, RUNNING, SUSPENDED, STOPPED }
+
+    public Lifecycle lifecycle() {
+        synchronized (lock) {
+            if (closed) return Lifecycle.STOPPED;
+            if (active == null) return Lifecycle.IDLE;
+            return switch (active.state) {
+                case RUNNING -> Lifecycle.RUNNING;
+                case SUSPENDED -> Lifecycle.SUSPENDED;
+                case FINISHED -> throw new IllegalStateException(
+                        "finished lease must not remain the active handler");
+            };
+        }
+    }
+
     private final Object lock = new Object();
     private final ArrayDeque<Waiter> pending = new ArrayDeque<>();
     private final int capacity;
