@@ -145,7 +145,7 @@ control-flow exits, and no alias/loan escapes past the protected lifetime.
 | Enter plain `critical` | Scoped borrowed parameters may be used synchronously | Admitted; no implicit async conversion |
 | Body of plain `critical` | No explicit await/cooperate/channel/select suspension | OwnershipChecker rejects suspension; compiler loop cooperation remains disabled while ticket held |
 | Return from any `critical` | Never return `&T`, `&mut T`, or typed aggregates that embed them | Recursive declared return signature check rejects |
-| Enter `suspend critical` | No live borrowed caller locals; captured parameters cannot be borrowed or structural | Declaration + callsite checks reject; existing lexical liveness checker also checks the invoking scope |
+| Enter `suspend critical` | No live borrowed caller locals; captured parameters or a temporary receiver cannot be borrowed or structural | Declaration + callsite checks reject; only the verified actor-incarnation `self` lease is exempt from the ordinary borrowed-receiver prohibition |
 | Body of `suspend critical` | A new local borrow may exist **between** suspension points only | Existing `checkSuspensionBorrows` rejects live loans at explicit await/select/cooperate; implicit preemption must obey the same contract |
 | Exit, throw, cancellation, panic | Invalidate scoped access before releasing ticket, then revoke/reclaim actor-owned storage once quiescent | Ticket release in Java task completion exists; Graal `StateAccess` compiler/runtime linkage still pending #633 |
 
