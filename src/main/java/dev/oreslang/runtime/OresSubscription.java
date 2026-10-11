@@ -193,23 +193,27 @@ public abstract class OresSubscription<T> {
                 }
             }
 
+            // Retire the pull under the ownership gate, then publish outside.
+            // OresFuture runtime waiters may run synchronously: settling under
+            // this gate would let arbitrary producer-completion callbacks
+            // reenter subscription/source methods while holding the lock.
+            // The source has already completed; clearing pulling here admits
+            // the next *logical* pull without overlapping producer operations.
             synchronized (gate) {
                 if (cancelled) {
                     if (active == exposed) active = null;
                     pulling = false;
                     return;
                 }
-                // Settle before releasing the gate so a waking consumer
-                // cannot observe a completed Future and an occupied slot.
                 active = null;
                 pulling = false;
-                if (source.isCancelled()) {
-                    exposed.cancel(false);
-                } else if (effectiveFailure == null) {
-                    exposed.completeFromRuntime(notification);
-                } else {
-                    exposed.failFromRuntime(OresFuture.unwrap(effectiveFailure));
-                }
+            }
+            if (source.isCancelled()) {
+                exposed.cancel(false);
+            } else if (effectiveFailure == null) {
+                exposed.completeFromRuntime(notification);
+            } else {
+                exposed.failFromRuntime(OresFuture.unwrap(effectiveFailure));
             }
         });
 
