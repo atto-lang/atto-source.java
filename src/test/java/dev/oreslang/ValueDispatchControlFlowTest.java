@@ -268,7 +268,7 @@ final class ValueDispatchControlFlowTest {
 
     @Test
     void proceduralReturnInsideAwaitedValueArmTargetsContainingFunction() throws Exception {
-        assertEquals("cleanup-early\n99\n", execute("""
+        assertEquals("finally-early\ncleanup-early\n99\n", execute("""
                 async fnc answer(): int { return 41; }
 
                 async fnc early(): int {
@@ -294,7 +294,7 @@ final class ValueDispatchControlFlowTest {
                   stdio.println(await early());
                   return;
                 }
-                """).replace("finally-early\n", ""));
+                """));
     }
 
     @Test
