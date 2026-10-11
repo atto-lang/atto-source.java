@@ -31,15 +31,15 @@ final class SealedActorStateTest {
                             return null;
                         });
                     } else {
-                        assertEquals(12L, current.critical(s -> s.read("count")));
+                        assertEquals(12L, ((Number) current.critical(s -> s.read("count"))).longValue());
                         assertEquals(true, current.critical(s -> s.read("enabled")));
                         current.critical(outer -> {
                             assertEquals(12L, outer.read("count"));
-                            assertEquals(12L, current.critical(inner -> {
+                            assertEquals(12L, ((Number) current.critical(inner -> {
                                 assertThrows(IllegalStateException.class, () -> outer.read("count"));
                                 assertEquals(12L, inner.read("count"));
                                 return inner.read("count");
-                            }));
+                            })).longValue());
                             assertEquals(12L, outer.read("count"));
                             assertThrows(IllegalArgumentException.class,
                                     () -> current.critical(inner -> inner));
