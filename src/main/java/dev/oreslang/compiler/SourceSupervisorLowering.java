@@ -150,9 +150,7 @@ public final class SourceSupervisorLowering {
             // Acquire STOP ownership before the asynchronous host operation.
             // The reservation survives suspension without pinning a worker.
             // If the host result is ambiguous, leave STOPPING quarantined.
-            var permit = group.reserveFinalizedStop(resolution);
-            if (pendingStops.putIfAbsent(resolution.turnGeneration(), permit) != null)
-                throw new IllegalStateException("duplicate STOP turn reservation");
+            group.reserveFinalizedStop(resolution);
             return Objects.requireNonNull(hostAcknowledgment.apply(resolution),
                     "host STOP acknowledgment stage");
         }, resolution -> {
