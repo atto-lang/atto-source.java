@@ -381,6 +381,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
+    private final AtomicLong watchdogNoticesDropped = new AtomicLong();
     private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
             new ArrayBlockingQueue<>(1024);
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
@@ -463,10 +464,26 @@ public final class ActorRuntime implements AutoCloseable {
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
-    public long watchdogOverruns() { return watchdogOverruns.get(); }
+    public long watchdogOverruns() {
+        requireSupervisorContext("inspect actor watchdog overruns");
+        return watchdogOverruns.get();
+    }
 
-    /** Nonblocking observer API for a trusted supervisor/control plane. */
+    /** Number of watchdog notices dropped when the bounded host queue was full. */
+    public long watchdogNoticesDropped() {
+        requireSupervisorContext("inspect dropped actor watchdog notices");
+        return watchdogNoticesDropped.get();
+    }
+
+    /** Number of recoverable watchdog monitor/observer failures in this JVM. */
+    public long watchdogObserverFailures() {
+        requireSupervisorContext("inspect watchdog observer failures");
+        return ActorTurnWatchdog.observerFailures();
+    }
+
+    /** Host-only nonblocking drain: actor code cannot steal another actor's diagnostics. */
     public Optional<WatchdogNotice> pollWatchdogNotice() {
+        requireSupervisorContext("drain actor watchdog notices");
         return Optional.ofNullable(watchdogNotices.poll());
     }
 
@@ -480,9 +497,11 @@ public final class ActorRuntime implements AutoCloseable {
     private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
         long now = System.nanoTime();
         watchdogOverruns.incrementAndGet();
-        watchdogNotices.offer(new WatchdogNotice(
+        if (!watchdogNotices.offer(new WatchdogNotice(
                 cell.ref.id(), cell.kind,
-                lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)));
+                lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)))) {
+            watchdogNoticesDropped.incrementAndGet();
+        }
     }
 
     /**

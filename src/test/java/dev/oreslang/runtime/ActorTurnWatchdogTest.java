@@ -73,6 +73,71 @@ final class ActorTurnWatchdogTest {
     }
 
     @Test
+    void brokenObserverCannotStarveIndependentWatchdogLeases() throws Exception {
+        long priorErrors = ActorTurnWatchdog.observerFailures();
+        AtomicInteger survivingNotices = new AtomicInteger();
+        try (ActorTurnWatchdog.Lease broken = ActorTurnWatchdog.enter(
+                     ignored -> { throw new IllegalStateException("observer failed"); });
+             ActorTurnWatchdog.Lease healthy = ActorTurnWatchdog.enter(
+                     ignored -> survivingNotices.incrementAndGet())) {
+            // Independent scanner may race this deterministic explicit scan.
+            ActorTurnWatchdog.scanAt(System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(8));
+            assertTrue(broken.preemptionRequested());
+            assertTrue(healthy.preemptionRequested(),
+                    "failure in one callback must not suppress peer lease");
+            assertEquals(1, survivingNotices.get(),
+                    "each lease must be observed at most once");
+            assertTrue(ActorTurnWatchdog.observerFailures() >= priorErrors + 1);
+            ActorTurnWatchdog.scanAt(System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(12));
+            assertEquals(1, survivingNotices.get(),
+                    "failed/retired callback must not replay");
+        }
+    }
+
+    @Test
+    void actorCannotDrainHostWatchdogNoticesOrReadGlobalMetrics() throws Exception {
+        CountDownLatch completed = new CountDownLatch(1);
+        AtomicInteger denied = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    context.runtime().pollWatchdogNotice();
+                } catch (SecurityException expected) {
+                    denied.incrementAndGet();
+                }
+                try {
+                    context.runtime().watchdogOverruns();
+                } catch (SecurityException expected) {
+                    denied.incrementAndGet();
+                }
+                try {
+                    context.runtime().watchdogNoticesDropped();
+                } catch (SecurityException expected) {
+                    denied.incrementAndGet();
+                }
+                try {
+                    context.runtime().watchdogObserverFailures();
+                } catch (SecurityException expected) {
+                    denied.incrementAndGet();
+                }
+                completed.countDown();
+                context.self().stop();
+            });
+            actor.send("probe");
+            assertTrue(completed.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(4, denied.get(), "all global diagnostics are host-only");
+            // Host/supervisor access remains available.
+            assertTrue(runtime.watchdogOverruns() >= 0);
+            assertTrue(runtime.watchdogNoticesDropped() >= 0);
+            assertTrue(runtime.watchdogObserverFailures() >= 0);
+            runtime.pollWatchdogNotice();
+        }
+    }
+
+    @Test
     void logicalSchedulerTaskReceivesRequestAndReleasesLease() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             var result = scheduler.start(resume -> {
