@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * This class does not spawn actors or implement source-level PipelineExpr.
  */
 public final class ActorPipeTransport implements AutoCloseable {
+    private static final int MAX_PAYLOAD_BYTES = 1024 * 1024;
     private final ActorRuntime.ActorGroup group;
     private final List<ActorPipelineContract.Connection> schema;
     private final List<Class<?>> payloadClasses;
@@ -40,10 +41,10 @@ public final class ActorPipeTransport implements AutoCloseable {
             throw new IllegalArgumentException("actor pipe capacity exceeds isolate mailbox budget");
         for (int i = 0; i < schema.size(); i++) {
             Class<?> type = Objects.requireNonNull(payloadClasses.get(i), "edge payload type");
-            if (type.isPrimitive() || type.isArray() || type == Object.class
+            if (!safeHostPayloadClass(type)
                     || !schema.get(i).payloadType().equals(type.getName()))
                 throw new IllegalArgumentException("actor pipe edge " + i
-                        + " must use the exact declared non-Object payload class");
+                        + " requires an exactly matching, immutable scalar host payload type");
         }
         ArrayList<ChannelRuntime.Channel<Object>> reserved = new ArrayList<>(schema.size());
         for (int i = 0; i < schema.size(); i++)
@@ -78,6 +79,18 @@ public final class ActorPipeTransport implements AutoCloseable {
             List<Class<?>> payloadClasses,
             int capacity) {
         return new ActorPipeTransport(runtime, supervisor, stages, payloadClasses, capacity);
+    }
+
+    private static boolean safeHostPayloadClass(Class<?> type) {
+        // Until source Sendable serialization is wired in, shared mutable
+        // Java host objects are forbidden even with an exact type match.
+        return type == String.class || type == Boolean.class
+                || type == Byte.class || type == Short.class
+                || type == Integer.class || type == Long.class
+                || type == Float.class || type == Double.class
+                || type == Character.class || type == java.util.UUID.class
+                || type == java.math.BigInteger.class
+                || type == java.math.BigDecimal.class;
     }
 
     public ActorRuntime.ActorGroupId groupId() { return group.id(); }
@@ -131,6 +144,16 @@ public final class ActorPipeTransport implements AutoCloseable {
             Objects.requireNonNull(message, "pipe message");
             if (!type.isInstance(message))
                 throw new IllegalArgumentException("pipe message has wrong runtime type");
+            if (message instanceof String value
+                    && (value.length() > MAX_PAYLOAD_BYTES
+                        || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_PAYLOAD_BYTES))
+                throw new IllegalArgumentException("actor pipe payload exceeds byte budget");
+            if (message instanceof java.math.BigInteger value
+                    && value.bitLength() > MAX_PAYLOAD_BYTES * 8L)
+                throw new IllegalArgumentException("actor pipe payload exceeds byte budget");
+            if (message instanceof java.math.BigDecimal value
+                    && value.unscaledValue().bitLength() > MAX_PAYLOAD_BYTES * 8L)
+                throw new IllegalArgumentException("actor pipe payload exceeds byte budget");
             return message;
         }
 
