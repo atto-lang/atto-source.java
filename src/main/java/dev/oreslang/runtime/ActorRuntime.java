@@ -6723,11 +6723,12 @@ public final class ActorRuntime implements AutoCloseable {
                                 // that turn; do not resume its suspended handler
                                 // and do not treat normal cancellation as panic.
                             } else {
-                                if (ticket != null) {
-                                    ticket.requireAdmissible(
-                                            ref.id(), executionDomain, serialReceiveLease);
-                                }
-                                SerialActorAdmission.Lease held = serialReceiveLease;
+                                try {
+                                    if (ticket != null) {
+                                        ticket.requireAdmissible(
+                                                ref.id(), executionDomain, serialReceiveLease);
+                                    }
+                                    SerialActorAdmission.Lease held = serialReceiveLease;
                                 if (held != null) {
                                     if (held.state() == SerialActorAdmission.State.SUSPENDED) held.resume();
                                     held.requireActive();
@@ -6737,7 +6738,13 @@ public final class ActorRuntime implements AutoCloseable {
                                         ticket.requireRunnable(
                                                 ref.id(), executionDomain, serialReceiveLease);
                                     }
-                                    activeEnvelope.continuation().run();
+                                    // Task cancellation can arrive between
+                                    // authority validation and guest dispatch.
+                                    // The scheduler's own terminal CAS also
+                                    // fences any cancellation after this check.
+                                    if (ticket == null || !ticket.isRetired()) {
+                                        activeEnvelope.continuation().run();
+                                    }
                                 } finally {
                                     held = serialReceiveLease;
                                     if (held != null) {
@@ -6749,6 +6756,11 @@ public final class ActorRuntime implements AutoCloseable {
                                         // state loans would permit premature re-entry.
                                         // Release only after the envelope boundary.
                                     }
+                                }
+                                } catch (SerialExecutionTicket.RetiredTaskException canceled) {
+                                    // Cancellation raced the authority check:
+                                    // discard this segment after its envelope
+                                    // retires, without fail-stopping the actor.
                                 }
                             }
                         } else {
