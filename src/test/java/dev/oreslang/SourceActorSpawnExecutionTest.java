@@ -13,6 +13,42 @@ import static org.junit.jupiter.api.Assertions.*;
 final class SourceActorSpawnExecutionTest {
 
     @Test
+    void inferredStructTypedMessagesAreDeliveredThroughTwoActorMailboxes() throws Exception {
+        String program = """
+                define actor DeltaWorker as
+                  receive(ActorMail<{delta: int}> mail): void {
+                    self.send(mail.value.delta);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  const a = spawn DeltaWorker();
+                  const b = spawn DeltaWorker();
+                  await a.get_ready();
+                  await b.get_ready();
+
+                  a.send(infer struct{delta: 20});
+                  b.send(infer struct{delta: 30});
+
+                  const outA = (await a.outputs.next()).value.unwrap();
+                  const outB = (await b.outputs.next()).value.unwrap();
+                  stdio.stdout.write(outA.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(outB.value);
+
+                  await a.get_done();
+                  await b.get_done();
+                  return;
+                }
+                """;
+        assertEquals("20|30",
+                run(program, "source-actor-inferred-typed-message.ores"),
+                "declared ActorMail<T> messages must be delivered, isolated and finalized");
+    }
+
+    @Test
     void idiomaticLifecycleMethodsAwaitReadyAndPhysicalDoneInGuestSource() throws Exception {
         String program = """
                 define actor Worker as
