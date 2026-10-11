@@ -6627,6 +6627,11 @@ public final class ActorRuntime implements AutoCloseable {
                     // queues above, so it is not effectively final. Bind the
                     // selected envelope to a final resource for deterministic
                     // close/permit release across every dispatch path.
+                    // Release only after the try-with-resources envelope has
+                    // closed and its release callback has retired transport
+                    // accounting. Never promote the next serial handler inside
+                    // the previous envelope's resource scope.
+                    SerialActorAdmission.Lease settledSerialLease = null;
                     try (MessageEnvelope activeEnvelope = envelope) {
                         /*
                          * Linearize queued-work start against stop/cancel.
@@ -6715,13 +6720,6 @@ public final class ActorRuntime implements AutoCloseable {
                         // Both synchronous messages and cooperative continuation
                         // segments must leave ephemeral native memory before yield.
                         memorySlice.assertScratchTurnsClosed();
-                        if (serialReceiveLease != null && !sourceReceiveSuspended) {
-                            // The logical lease cannot be released before
-                            // native scratch scopes and per-turn loans close.
-                            SerialActorAdmission.Lease completed = serialReceiveLease;
-                            serialReceiveLease = null;
-                            if (!stopped.get()) completed.close();
-                        }
                         if (codeExecutor == null
                                 && isPrivateKind(kind)
                                 && !trustedFactory) {
@@ -6732,6 +6730,15 @@ public final class ActorRuntime implements AutoCloseable {
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
+                        if (serialReceiveLease != null && !sourceReceiveSuspended) {
+                            // The guest handler and scratch checks have
+                            // completed; retire the envelope before admission.
+                            settledSerialLease = serialReceiveLease;
+                            serialReceiveLease = null;
+                        }
+                    }
+                    if (settledSerialLease != null && !stopped.get()) {
+                        settledSerialLease.close();
                     }
                     processed++;
 
