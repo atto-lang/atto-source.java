@@ -292,6 +292,48 @@ public final class SupervisorChildRegistry {
         return stopped;
     }
 
+    /**
+     * Read-only inventory for a trusted supervisor reconciler. Snapshot copies
+     * never mutate STOP ownership and include APPLIED-but-uncommitted turns.
+     * No automatic retry is authorized by observing this list.
+     */
+    synchronized java.util.List<StopReceipt> unresolvedStops() {
+        return java.util.List.copyOf(stopReceipts.values().stream()
+                .filter(receipt -> receipt.status() != StopReceiptStatus.ACKNOWLEDGED)
+                .toList());
+    }
+
+    /**
+     * Trusted reconciler confirmed the *existing* host effect by independent
+     * evidence. This operation neither invokes nor retries the host effect.
+     * Atomic with STOPPING/STOPPED and receipt state, and idempotent only for
+     * the exact authorized reservation already ACKNOWLEDGED.
+     */
+    synchronized Snapshot reconcileVerifiedStop(StopReservation permit) {
+        Objects.requireNonNull(permit);
+        Snapshot current = requireCurrent(permit.child());
+        StopReceipt receipt = stopReceipts.get(permit.child().logicalId());
+        if (receipt == null || !permit.equals(receipt.reservation())
+                || !current.actor().equals(permit.failedActor())
+                || current.incarnation() != permit.incarnation()) {
+            throw new IllegalStateException("foreign or stale STOP reconciliation");
+        }
+        if (receipt.status() == StopReceiptStatus.ACKNOWLEDGED) {
+            if (current.phase() != Phase.STOPPED
+                    || stopReservations.containsKey(permit.child().logicalId()))
+                throw new IllegalStateException("inconsistent acknowledged STOP");
+            return current;
+        }
+        requireStopReceipt(permit);
+        Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
+                permit.incarnation(), Phase.STOPPED);
+        children.put(permit.child().logicalId(), stopped);
+        stopReceipts.put(permit.child().logicalId(),
+                new StopReceipt(permit, StopReceiptStatus.ACKNOWLEDGED));
+        stopReservations.remove(permit.child().logicalId());
+        return stopped;
+    }
+
     /** A permanent STOP applies to the finalized incarnation only. */
     synchronized Snapshot stop(
             ChildId child, ActorRuntime.ActorId failedActor, long incarnation) {
