@@ -6717,31 +6717,38 @@ public final class ActorRuntime implements AutoCloseable {
                             // suspended handler's runnable state. A queued task
                             // from another receive or actor must not wake it.
                             SerialExecutionTicket ticket = activeEnvelope.taskTicket();
-                            if (ticket != null) {
-                                ticket.requireAdmissible(
-                                        ref.id(), executionDomain, serialReceiveLease);
-                            }
-                            SerialActorAdmission.Lease held = serialReceiveLease;
-                            if (held != null) {
-                                if (held.state() == SerialActorAdmission.State.SUSPENDED) held.resume();
-                                held.requireActive();
-                            }
-                            try {
+                            if (ticket != null && ticket.isRetired()) {
+                                // Cancellation may retire a queued scheduler turn
+                                // before the actor carrier consumes it. Discard
+                                // that turn; do not resume its suspended handler
+                                // and do not treat normal cancellation as panic.
+                            } else {
                                 if (ticket != null) {
-                                    ticket.requireRunnable(
+                                    ticket.requireAdmissible(
                                             ref.id(), executionDomain, serialReceiveLease);
                                 }
-                                activeEnvelope.continuation().run();
-                            } finally {
-                                held = serialReceiveLease;
+                                SerialActorAdmission.Lease held = serialReceiveLease;
                                 if (held != null) {
-                                    if (sourceReceiveSuspended) {
-                                        if (held.state() == SerialActorAdmission.State.RUNNING) held.suspend();
+                                    if (held.state() == SerialActorAdmission.State.SUSPENDED) held.resume();
+                                    held.requireActive();
+                                }
+                                try {
+                                    if (ticket != null) {
+                                        ticket.requireRunnable(
+                                                ref.id(), executionDomain, serialReceiveLease);
                                     }
-                                    // Closing the lifetime before the entire
-                                    // actor envelope has retired its scratch and
-                                    // state loans would permit premature re-entry.
-                                    // Release only after the envelope boundary.
+                                    activeEnvelope.continuation().run();
+                                } finally {
+                                    held = serialReceiveLease;
+                                    if (held != null) {
+                                        if (sourceReceiveSuspended) {
+                                            if (held.state() == SerialActorAdmission.State.RUNNING) held.suspend();
+                                        }
+                                        // Closing the lifetime before the entire
+                                        // actor envelope has retired its scratch and
+                                        // state loans would permit premature re-entry.
+                                        // Release only after the envelope boundary.
+                                    }
                                 }
                             }
                         } else {
