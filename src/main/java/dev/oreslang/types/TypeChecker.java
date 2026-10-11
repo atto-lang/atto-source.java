@@ -4339,7 +4339,10 @@ public final class TypeChecker {
                 default -> null;
             };
             case "HttpHandler" -> switch (name) {
-                case "isolated" -> Primitive.BOOL;
+                case "isolated", "serial" -> Primitive.BOOL;
+                // A handler may only send to its own persistent serial actor;
+                // it does not export an untyped actor reference to guest code.
+                case "send" -> new Function(List.of(Primitive.STRING), Primitive.VOID);
                 case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
