@@ -1140,16 +1140,18 @@ public final class Parser {
                 consume(COLON, "expected ':' after compatibility parameter name");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
+                if (name.equals("_")) throw error(previous(), "'_' cannot bind a parameter");
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
             }
 
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
-            String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
+            String name = consumeDeclaredName("lambda-style callable declaration parameters require canonical 'Type name'");
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
+            if (name.equals("_")) throw error(previous(), "'_' cannot bind a parameter");
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         return List.copyOf(params);
@@ -1187,10 +1189,11 @@ public final class Parser {
             if (structural) {
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                String name = consume(IDENT, "expected parameter name").lexeme();
+                String name = consumeDeclaredName("expected parameter name");
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
+                if (name.equals("_")) throw error(previous(), "'_' cannot bind a parameter");
                 params.add(new Ast.Param(type, name, true, false));
                 continue;
             }
@@ -1205,6 +1208,7 @@ public final class Parser {
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
+                if (name.equals("_")) throw error(previous(), "'_' cannot bind a parameter");
                 params.add(new Ast.Param(type, name, true, false));
                 continue;
             }
@@ -1217,6 +1221,7 @@ public final class Parser {
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
+                if (name.equals("_")) throw error(previous(), "'_' cannot bind a parameter");
                 params.add(new Ast.Param(type, name, true, false));
                 continue;
             }
@@ -1235,16 +1240,18 @@ public final class Parser {
                 consume(COLON, "expected ':' after compatibility parameter name");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
+                if (name.equals("_")) throw error(previous(), "'_' cannot bind a parameter");
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
             }
 
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
-            String name = consume(IDENT, "expected parameter name after type").lexeme();
+            String name = consumeDeclaredName("expected parameter name after type");
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
+            if (name.equals("_")) throw error(previous(), "'_' cannot bind a parameter");
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         return params;
