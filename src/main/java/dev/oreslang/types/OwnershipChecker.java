@@ -70,19 +70,34 @@ public final class OwnershipChecker {
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
+                if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
             }
         }
     }
 
-    private void checkFunction(Ast.FunctionDecl fn) {
-        Scope scope = new Scope(null, fn.nonLexical());
+    private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
+        // Module members are lexical owner bindings, not undefined locals.
+        // Global and singleton modules must never let move-only fields escape
+        // their process authority by value.
+        Scope moduleScope = new Scope(null, fn.nonLexical());
+        for (Ast.Decl decl : module.declarations()) {
+            if (!(decl instanceof Ast.FieldDecl field)) continue;
+            Ast.TypeRef fieldType = field.type() == null
+                    ? Ast.TypeRef.inferred() : field.type();
+            moduleScope.define(field.name(), new VarState(
+                    fieldType,
+                    field.bindingKind() == Ast.BindingKind.LET,
+                    kindOfType(fieldType),
+                    Origin.MODULE));
+        }
+        Scope scope = new Scope(moduleScope, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
         }
         checkBlock(fn.body(), scope, fn.returnType());
         scope.close();
+        moduleScope.close();
     }
 
     private void checkClass(Ast.ClassDecl klass) {
@@ -401,6 +416,10 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            if (consuming && state.origin == Origin.MODULE && state.kind != ValueKind.COPY) {
+                throw error("cannot move module-owned field '" + name.name()
+                        + "' out of its owning authority; return an immutable snapshot");
+            }
             if (consuming && isActorConfinedBorrow(state)) {
                 throw error("actor self is a non-escapable mailbox capability; access its fields/methods inside the actor turn");
             }
@@ -1631,7 +1650,7 @@ public final class OwnershipChecker {
     }
 
     private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW }
-    private enum Origin { PARAM, LOCAL, CAPTURE }
+    private enum Origin { PARAM, LOCAL, CAPTURE, MODULE }
 
     private static final class ValueInfo {
         private final Ast.TypeRef type;
