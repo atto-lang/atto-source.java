@@ -1941,6 +1941,10 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+        /** True while the actor still accepts work. This becomes false as
+         * soon as stop is requested, which may precede finalizers, memory
+         * release, and physical carrier exit. Use awaitTermination() or
+         * get_done() when resource teardown must have completed. */
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
