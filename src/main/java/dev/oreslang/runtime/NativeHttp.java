@@ -69,7 +69,13 @@ public final class NativeHttp implements AutoCloseable {
         // This adapter creates one actor per HTTP request. A serial actor must
         // instead retain one actor identity and state across ALL requests/mail.
         // Fail closed until persistent per-route actor dispatch is implemented.
-        if (code.isSerialActor(type)) {
+        boolean serial = SourceActorSchedulingPolicy.isSerialActor(
+                code.codeImage().program(), type);
+        if (code.isSerialActor(type) != serial) {
+            throw new SecurityException(
+                    "HTTP source executor scheduling metadata disagrees with linked code image");
+        }
+        if (serial) {
             throw new UnsupportedOperationException(
                     "serial HTTP handler requires persistent actor-wide HTTP/mail admission; "
                             + "spawn-per-request routing is not serial actor execution");
