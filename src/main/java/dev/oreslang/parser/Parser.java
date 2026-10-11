@@ -661,7 +661,7 @@ public final class Parser {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) || matchContextualIdentifier("from")
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL, FROM) || matchContextualIdentifier("from")
                 ? parseTypeRefList() : List.of();
 
         boolean braceStyle = match(LBRACE);
