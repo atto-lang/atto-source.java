@@ -35,7 +35,7 @@ final class ActorGroupWorkerTransferTest {
     }
 
     @Test
-    void stopAdmissionFencesOwnershipTransferBeforeActorTurnCompletes() throws Exception {
+    void cancellationAdmissionFencesOwnershipTransferBeforeActorTurnCompletes() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             CountDownLatch entered = new CountDownLatch(1);
@@ -55,7 +55,7 @@ final class ActorGroupWorkerTransferTest {
             worker.send(1);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             try {
-                group.stopWorkers();
+                group.cancelWorkers();
                 assertThrows(IllegalStateException.class, () -> group.releaseWorker(worker),
                         "worker must retain stop-admitted lifecycle owner");
             } finally {
