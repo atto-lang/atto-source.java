@@ -205,8 +205,8 @@ final class CallableSemanticsTest {
     }
 
     @Test
-    void boundInstanceMethodsStaticFncsAndExplicitLambdasAreFirstClass() throws Exception {
-        assertDoesNotThrow(
+    void instanceMethodsRequireExplicitLambdasWhileStaticFncsRemainFirstClass() throws Exception {
+        var error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
                           pub addOne(int value): int {
@@ -219,6 +219,7 @@ final class CallableSemanticsTest {
                           val Fnc<int, int> callback = box.addOne;
                         }
                         """)));
+        assertTrue(error.getMessage().contains("explicit lambda"));
 
         String output = run("""
                 fnc apply(Fnc<int, int> callback, int value): int {
@@ -242,7 +243,9 @@ final class CallableSemanticsTest {
                   };
                   val Fnc<int, int> static_callback = Box.twice;
                   val box = new Box();
-                  val Fnc<int, int> bound = box.addOne;
+                  val Fnc<int, int> bound = |int value| -> {
+                    return box.addOne(value);
+                  };
 
                   stdio.stdout.write(apply(wrapped, 4));
                   stdio.stdout.write(":");
