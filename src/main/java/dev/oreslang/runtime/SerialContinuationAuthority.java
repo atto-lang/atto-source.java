@@ -26,10 +26,13 @@ public final class SerialContinuationAuthority {
 
     /** Cheap rejection before using a bounded continuation mailbox slot. */
     public boolean mayQueue() {
+        if (admission != null && !admission.acceptsActorScopedCallbacks()) {
+            return false;
+        }
         if (originatingReceive != null) {
             return originatingReceive.state() != SerialActorAdmission.State.FINISHED;
         }
-        // Unowned callbacks must not jump ahead of the active serial handler.
+        // Unowned callbacks must not jump ahead of any active serial handler.
         return admission == null || !admission.busy();
     }
 
@@ -37,9 +40,8 @@ public final class SerialContinuationAuthority {
     public void requireRunnable() {
         if (originatingReceive != null) {
             originatingReceive.requireActive();
-        } else if (admission != null && admission.busy()) {
-            throw new IllegalStateException(
-                    "unbound continuation cannot enter a running serial handler");
+        } else if (admission != null) {
+            admission.requireIdleActorScopedCallback();
         }
     }
 }
