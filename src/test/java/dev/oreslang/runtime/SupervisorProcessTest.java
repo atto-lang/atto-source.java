@@ -105,7 +105,7 @@ final class SupervisorProcessTest {
             CountDownLatch entered = new CountDownLatch(1);
             AtomicInteger resolved = new AtomicInteger();
             try (SupervisorProcess process = new SupervisorProcess(
-                    supervisor, group, pool, 1,
+                    supervisor, group, pool, 2,
                     n -> { entered.countDown(); return pending; },
                     r -> resolved.incrementAndGet())) {
                 process.accept(notice(supervisor, group, "a"));
