@@ -116,6 +116,9 @@ public final class OresScheduler implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
+    // Guard re-entrant close from callbacks published synchronously while a
+    // host caller is draining queued/cancelled tasks. Guarded by this monitor.
+    private Thread activeCloseThread;
     private final AtomicBoolean closed = new AtomicBoolean();
     // Read/written only while holding this scheduler's synchronized close().
     // Retains the original failed-drain exception for concurrent host callers.
@@ -451,6 +454,13 @@ public final class OresScheduler implements AutoCloseable {
                             + "close from an outside/root scheduler task");
         }
 
+        if (activeCloseThread == Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "OresScheduler close cannot be re-entered from a terminal "
+                            + "Future callback during its own cleanup drain");
+        }
+        activeCloseThread = Thread.currentThread();
+        try {
         // Closed seals new admission; it is not a proof of quiescence.
         // A failed first close can be retried after an owned defer/finally
         // resolves. Concurrent close callers serialize on this monitor.
@@ -507,6 +517,9 @@ public final class OresScheduler implements AutoCloseable {
             }
         }
         closeFailure = null;
+        } finally {
+            activeCloseThread = null;
+        }
     }
 
     private final class TaskRunner<T> implements OresFuture.TaggedRuntimeWaiter {
