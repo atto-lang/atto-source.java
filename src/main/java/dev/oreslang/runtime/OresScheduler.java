@@ -57,6 +57,9 @@ public final class OresScheduler implements AutoCloseable {
     /** Cancellation-aware compiler frames can suspend during lexical cleanup. */
     public interface CancellationAwareTask<T> extends Task<T> {
         boolean cleanupInProgress();
+
+        /** Host threads set a flag only; never execute guest cleanup. */
+        void cancellationRequested();
     }
 
     /** Internal cancellation control signal; never a guest catchable exception. */
@@ -501,6 +504,9 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void onCancellationRequested() {
+            if (task instanceof CancellationAwareTask<?> aware) {
+                aware.cancellationRequested();
+            }
             if (phase.get() == WAITING && !isCleaningUp()) {
                 detachActiveAwaitRegistration();
                 pendingResume.set(Resume.completed(null, cancellation));
