@@ -209,6 +209,71 @@ final class ActorParentSupervisionTest {
         }
     }
 
+    private static final class MiddleSupervisor
+            implements ActorRuntime.Behavior<Integer> {
+        @Override
+        public void onMessage(Integer value, ActorRuntime.ActorContext<Integer> context) {
+            var child = context.runtime().<Integer>spawn(
+                    ActorRuntime.ActorKind.SHARED, context.policy(), ignored -> new Child());
+            child.send(1);
+        }
+    }
+
+    private static final class GrandparentSupervisor
+            implements ActorRuntime.Behavior<Integer>, ActorRuntime.SupervisionHandler {
+        final CountDownLatch observed = new CountDownLatch(1);
+        final AtomicReference<SupervisorFailureLane.Failure> descendant =
+                new AtomicReference<>();
+
+        @Override
+        public void onMessage(Integer value, ActorRuntime.ActorContext<Integer> context) {
+            var middle = context.runtime().<Integer>spawn(
+                    ActorRuntime.ActorKind.SHARED, context.policy(),
+                    ignored -> new MiddleSupervisor());
+            middle.send(0);
+        }
+
+        @Override
+        public ActorRuntime.SupervisionDecision onPanic(SupervisorFailureLane.Failure failure) {
+            assertTrue(ActorRuntime.inActorExecution(),
+                    "grandparent must process the event on its own logical turn");
+            assertEquals(SupervisorFailureLane.Kind.PANIC, failure.kind());
+            descendant.set(failure);
+            observed.countDown();
+            return ActorRuntime.SupervisionDecision.ACKNOWLEDGE;
+        }
+
+        @Override public ActorRuntime.SupervisionDecision onThrow(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onRaise(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onCancel(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onHostFailure(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+    }
+
+    @Test
+    void unhandledChildPanicReachesGrandparentOnItsOwnLaneWithoutRootDuplicate()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            GrandparentSupervisor handler = new GrandparentSupervisor();
+            var grandparent = runtime.<Integer>spawnSharedTrusted(context -> handler);
+            grandparent.send(0);
+            assertTrue(handler.observed.await(5, TimeUnit.SECONDS));
+            assertEquals(SupervisorFailureLane.Kind.PANIC, handler.descendant.get().kind());
+            // Grandparent acknowledged the original descendant event; neither
+            // the intervening supervisor nor the root should report it twice.
+            assertTrue(runtime.pollSupervisionFailure().isEmpty());
+            assertTrue(grandparent.isAlive());
+            runtime.stop(grandparent);
+        }
+    }
+
     @Test
     void missingParentHandlerEscalatesExactChildFaultToRoot() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
