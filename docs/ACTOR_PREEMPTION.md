@@ -178,6 +178,32 @@ An idle-carrier heartbeat is optional diagnostic optimization, not a reliable
 watchdog: no carrier is idle when all carriers are trapped in greedy loops.
 The monitor is independent of the guest dispatch pools.
 
+### UNTRUSTED logical source-task quota prototype (issue #402)
+
+`ActorRuntime.startActorTask` now carries a heap-owned
+`UntrustedLogicalQuota` through every cooperative or awaited dispatch of
+an UNTRUSTED task. It inherits remaining physical-turn fuel, original wall
+start and CPU debt on first admission. Nested tasks inherit the currently
+active quota instead of minting another budget. CPU measurements are added
+**per carrier segment**, never subtracted across unrelated thread clocks.
+`schedulerSafepoint` charges the retained logical quota while executing
+one of these tasks, while synchronous actor turns continue their existing
+physical-batch quota checks. Task entry and step completion independently
+check the persistent wall and CPU budgets, even without a loop backedge.
+
+An await cannot restart the deadline; a cooperate cannot refund fuel.
+The budget is bound to the source task object's scheduled execution and
+does not remain installed on reusable carrier thread-local storage after
+the resume exits.
+
+**Not an authorization to enable UNTRUSTED automatic loop cooperation.**
+Other continuation/cancellation/cleanup paths, nested source scopes, early
+termination and isolate-level hard revocation still need full cross-backend
+conformance and whole-repository runtime stress. This incremental accounting
+fix is not a hard CPU or wall-time enforcement guarantee when host FFI
+blocks without safepoints. CPU samples may be unavailable on a JVM, so
+fuel/wall fallback and host sandbox limits remain mandatory.
+
 **Current limits:** A synchronous Java/FFI call or non-continuation-backed
 method cannot be transparently preempted. UNTRUSTED source-loop cooperation
 remains disabled until fuel, CPU, and wall budgets are bound to the persistent
