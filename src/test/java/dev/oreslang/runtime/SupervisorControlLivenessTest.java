@@ -27,6 +27,16 @@ final class SupervisorControlLivenessTest {
                 "Failure", "simulated");
     }
 
+    private static void awaitResolved(SupervisorProcess process, long count)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (process.resolved() < count && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(count, process.resolved(),
+                "supervisor callback signaled before its resolution was committed");
+    }
+
     @Test
     void failingSharedActorNotifiesSupervisorWhileAllPrivateCarriersBlocked() throws Exception {
         CountDownLatch privateCarrierEntered = new CountDownLatch(1);
@@ -88,7 +98,7 @@ final class SupervisorControlLivenessTest {
                 assertEquals(SupervisorProcess.Directive.ESCALATE,
                         decision.get().directive());
                 assertNotNull(observedCarrier.get());
-                assertEquals(1, process.resolved());
+                awaitResolved(process, 1);
             } finally {
                 releasePrivateCarrier.countDown();
                 group.close();
@@ -126,11 +136,11 @@ final class SupervisorControlLivenessTest {
             active.accept(notice(activeGroup.supervisorId(), activeGroup.id()));
             assertTrue(otherResolved.await(5, TimeUnit.SECONDS),
                     "suspended supervisor occupied another supervisor's CONTROL carrier");
-            assertEquals(1, active.resolved());
+            awaitResolved(active, 1);
             assertEquals(0, waiting.resolved());
             suspended.complete(SupervisorProcess.Directive.ESCALATE);
             assertTrue(firstResolved.await(5, TimeUnit.SECONDS));
-            assertEquals(1, waiting.resolved());
+            awaitResolved(waiting, 1);
             waiting.close();
             active.close();
             waitingGroup.close();
