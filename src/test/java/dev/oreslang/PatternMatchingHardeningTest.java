@@ -228,6 +228,62 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void sumConstructorPayloadNarrowingMustNotClaimWholeVariantCoverage() {
+        String[] incomplete = {
+                """
+                fnc check(Option<int> value): int {
+                  return match value over
+                    on Some(1) { return 1; }
+                    on None { return 0; }
+                  end
+                }
+                """,
+                """
+                fnc check(Result<int, string> value): int {
+                  return match value over
+                    on Ok(1) { return 1; }
+                    on Err(message) { return 0; }
+                  end
+                }
+                """,
+                """
+                fnc check(Result<int, string> value): int {
+                  return match value over
+                    on Ok(value) { return value; }
+                    on Err("known") { return 0; }
+                  end
+                }
+                """
+        };
+        for (String source : incomplete) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(failure.getMessage().contains("non-exhaustive value match"),
+                    failure.getMessage());
+        }
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc check(Option<int> value): int {
+                  return match value over
+                    on Some(1) { return 1; }
+                    on Some(other) { return other; }
+                    on None { return 0; }
+                  end
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc check(Result<int, string> value): int {
+                  return match value over
+                    on Ok(number) { return number; }
+                    on Err(message) { return 0; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
     void returnMatchRequiresExhaustivePatternsAndTerminalArms() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc choose(string value): string {
