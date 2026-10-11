@@ -1556,9 +1556,14 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ContinuationTarget {
         private final ActorId actorId;
+        /** Runtime-created identity of the originating serial receive.
+         * A callback cannot borrow authority from a later receive. */
+        private final SerialActorAdmission.Lease receiveLease;
 
-        private ContinuationTarget(ActorId actorId) {
+        private ContinuationTarget(
+                ActorId actorId, SerialActorAdmission.Lease receiveLease) {
             this.actorId = Objects.requireNonNull(actorId, "actorId");
+            this.receiveLease = receiveLease;
         }
 
         public ActorId actorId() {
@@ -1566,7 +1571,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean enqueue(Runnable continuation) {
-            return enqueueContinuation(actorId, continuation);
+            // Avoid even queueing a known stale callback. If the old receive
+            // terminates after enqueueing, check again on the actor carrier.
+            if (receiveLease != null
+                    && receiveLease.state() == SerialActorAdmission.State.FINISHED) {
+                return false;
+            }
+            return enqueueContinuation(actorId, () -> {
+                if (receiveLease != null) receiveLease.requireActive();
+                continuation.run();
+            });
         }
     }
 
@@ -1576,7 +1590,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
-        return new ContinuationTarget(cell.ref.id());
+        return new ContinuationTarget(cell.ref.id(), cell.serialReceiveLease);
     }
 
     /**
