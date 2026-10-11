@@ -26,20 +26,32 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 final class SourcePendingCleanupExecutionTest {
+    private static final String GATES = """
+            define module gates as
+              pub val Channel<int> startGate = Channel.new<int>(0);
+              pub val Channel<int> finallyGate = Channel.new<int>(0);
+              pub val Channel<int> deferGate = Channel.new<int>(0);
+            end
+
+            pub fnc exposeStartGate(): Channel<int> { return gates.startGate; }
+            pub fnc exposeFinallyGate(): Channel<int> { return gates.finallyGate; }
+            pub fnc exposeDeferGate(): Channel<int> { return gates.deferGate; }
+            """;
+
     private static final String NESTED_PENDING_CLEANUP = """
             pub async fnc work(Channel<int> startGate,
                                Channel<int> finallyGate,
                                Channel<int> deferGate): int {
-              defer stdio.println(await (nb readch deferGate));
+              defer stdio.println(await (nb readch gates.deferGate));
               try {
                 stdio.println("armed");
-                const ignored = await (nb readch startGate);
+                const ignored = await (nb readch gates.startGate);
                 stdio.println("INVALID-resumed-original-work");
               } catch (cancelled) {
                 stdio.println("INVALID-caught-cancellation");
               } finally {
                 stdio.println("finally-pending");
-                const cleaned = await (nb readch finallyGate);
+                const cleaned = await (nb readch gates.finallyGate);
                 stdio.println(cleaned);
                 stdio.println("finally-done");
               }
@@ -47,17 +59,32 @@ final class SourcePendingCleanupExecutionTest {
             }
             """;
 
-    private static OresFuture<?> start(Context context, String source, Object... parameters)
-            throws Exception {
-        Source guest = Source.newBuilder(OresLanguage.ID, source, "source-pending-cleanup.ores")
-                .mimeType(OresLanguage.MIME_TYPE).build();
-        Object[] arguments = new Object[parameters.length + 2];
-        arguments[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
-        arguments[1] = "work";
-        System.arraycopy(parameters, 0, arguments, 2, parameters.length);
-        Value result = context.parse(guest).execute(arguments);
+    private record Started(OresFuture<?> task,
+                           ChannelRuntime.Channel<Integer> startGate,
+                           ChannelRuntime.Channel<Integer> finallyGate,
+                           ChannelRuntime.Channel<Integer> deferGate) { }
+
+    @SuppressWarnings("unchecked")
+    private static Started start(Context context, String source) throws Exception {
+        Source guest = Source.newBuilder(OresLanguage.ID, GATES + source,
+                "source-pending-cleanup.ores").mimeType(OresLanguage.MIME_TYPE).build();
+        Value command = context.parse(guest);
+        command.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+        // Export the guest-created channels before the task starts; after that
+        // Java only completes channel futures and never enters guest code.
+        ChannelRuntime.Channel<Integer> start =
+                (ChannelRuntime.Channel<Integer>) command.execute(
+                        OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "exposeStartGate").asHostObject();
+        ChannelRuntime.Channel<Integer> fin =
+                (ChannelRuntime.Channel<Integer>) command.execute(
+                        OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "exposeFinallyGate").asHostObject();
+        ChannelRuntime.Channel<Integer> defer =
+                (ChannelRuntime.Channel<Integer>) command.execute(
+                        OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "exposeDeferGate").asHostObject();
+        Value result = command.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
         assertTrue(result.isHostObject(), "async source invocation must return a host Future");
-        return assertInstanceOf(OresFuture.class, result.asHostObject());
+        return new Started(assertInstanceOf(OresFuture.class, result.asHostObject()),
+                start, fin, defer);
     }
 
     private static String output(ByteArrayOutputStream bytes) {
@@ -75,13 +102,13 @@ final class SourcePendingCleanupExecutionTest {
     @Test
     void cancellationWaitsForTwoGenuinelyPendingCleanupFuturesInLifoOrder() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (ChannelRuntime.Channel<Integer> startGate = new ChannelRuntime.Channel<>(0);
-             ChannelRuntime.Channel<Integer> finallyGate = new ChannelRuntime.Channel<>(0);
-             ChannelRuntime.Channel<Integer> deferGate = new ChannelRuntime.Channel<>(0);
-             Context context = Context.newBuilder(OresLanguage.ID)
+        try (Context context = Context.newBuilder(OresLanguage.ID)
                      .allowAllAccess(true).out(output).build()) {
-            OresFuture<?> task = start(context, NESTED_PENDING_CLEANUP,
-                    startGate, finallyGate, deferGate);
+            Started started = start(context, NESTED_PENDING_CLEANUP);
+            OresFuture<?> task = started.task();
+            ChannelRuntime.Channel<Integer> startGate = started.startGate();
+            ChannelRuntime.Channel<Integer> finallyGate = started.finallyGate();
+            ChannelRuntime.Channel<Integer> deferGate = started.deferGate();
             awaitOutput(output, "armed");
             assertFalse(task.isDone());
             assertTrue(task.cancel(false));
@@ -115,27 +142,27 @@ final class SourcePendingCleanupExecutionTest {
     void failingPendingFinallyRetainsCancellationAndDoesNotRunDeferTwice()
             throws Exception {
         String source = """
-                pub async fnc work(Channel<int> startGate, Channel<int> cleanupGate): int {
+                pub async fnc work(): int {
                   defer stdio.println("defer-once");
                   try {
                     stdio.println("armed");
-                    const ignored = await (nb readch startGate);
+                    const ignored = await (nb readch gates.startGate);
                   } catch (cancelled) {
                     stdio.println("INVALID-caught-cancellation");
                   } finally {
                     stdio.println("finally-pending");
-                    const cleaned = await (nb readch cleanupGate);
+                    const cleaned = await (nb readch gates.finallyGate);
                     stdio.println("INVALID-finally-completed");
                   }
                   return 17;
                 }
                 """;
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (ChannelRuntime.Channel<Integer> startGate = new ChannelRuntime.Channel<>(0);
-             ChannelRuntime.Channel<Integer> cleanupGate = new ChannelRuntime.Channel<>(0);
-             Context context = Context.newBuilder(OresLanguage.ID)
+        try (Context context = Context.newBuilder(OresLanguage.ID)
                      .allowAllAccess(true).out(output).build()) {
-            OresFuture<?> task = start(context, source, startGate, cleanupGate);
+            Started started = start(context, source);
+            OresFuture<?> task = started.task();
+            ChannelRuntime.Channel<Integer> cleanupGate = started.finallyGate();
             awaitOutput(output, "armed");
             assertTrue(task.cancel(false));
             awaitOutput(output, "finally-pending");
