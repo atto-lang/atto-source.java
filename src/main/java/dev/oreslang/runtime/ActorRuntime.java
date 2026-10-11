@@ -6766,7 +6766,11 @@ public final class ActorRuntime implements AutoCloseable {
                         // Non-suppressible Java Throwable: retain new failure.
                     }
                 }
-                throw hookFailure;
+                if (hookFailure instanceof Error error) throw error;
+                if (hookFailure instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException(
+                        "actor-local failure hook threw a checked host exception",
+                        hookFailure);
             }
         }
 
