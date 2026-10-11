@@ -1622,7 +1622,12 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch();
+        if (check(DO) && checkNext(MATCH)) {
+            advance(); // do
+            advance(); // match
+            return parseMatch(true);
+        }
+        if (match(MATCH)) return parseMatch(false);
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
@@ -2419,7 +2424,7 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() {
+    private Ast.MatchStmt parseMatch(boolean procedural) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2429,6 +2434,19 @@ public final class Parser {
         // match remains proof-checked unless the historical contextual
         // `first` marker is present.
         boolean legacyFirst = matchContextualIdentifier("first");
+        Ast.TypeRef returnContract = null;
+        boolean shorthandContract = false;
+        if (match(LT)) {
+            if (matchContextualIdentifier("ret")) {
+                consume(EQUAL, "match<ret=T> requires '=' after ret");
+            } else if (check(IDENT) && checkNext(EQUAL)) {
+                throw error(peek(), "unknown match parameter; use 'ret=Type'");
+            } else {
+                shorthandContract = true;
+            }
+            returnContract = parseTypeRef();
+            consume(GT, "expected '>' after match return-type contract");
+        }
 
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
@@ -2504,7 +2522,9 @@ public final class Parser {
         // Canonical match is source-ordered. Legacy bare match retains the
         // old exclusivity/proof semantics unless explicitly written
         // `match first ...`.
-        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms);
+        return new Ast.MatchStmt(
+                subject, canonicalOver || legacyFirst, arms,
+                procedural, returnContract, shorthandContract);
     }
 
     private Ast.Pattern parsePattern() {
