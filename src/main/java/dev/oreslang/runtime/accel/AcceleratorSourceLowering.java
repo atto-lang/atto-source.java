@@ -20,9 +20,10 @@ import static dev.oreslang.parser.Token.Type.*;
 public final class AcceleratorSourceLowering {
     private AcceleratorSourceLowering() { }
 
-    public record GpuProgram(String name, DopKernelIR.Kernel kernel) {
+    public record GpuProgram(String name, String parameter, DopKernelIR.Kernel kernel) {
         public GpuProgram {
             Objects.requireNonNull(name);
+            Objects.requireNonNull(parameter);
             Objects.requireNonNull(kernel);
         }
         public DopKernelIR.OpenClArtifact emitOpenCl(DopKernelIR.GpuTarget target) {
@@ -72,7 +73,7 @@ public final class AcceleratorSourceLowering {
         p.expect(EOF);
         var op = multiplied && biased ? DopKernelIR.Op.SCALE_BIAS
                 : multiplied ? DopKernelIR.Op.SCALE : DopKernelIR.Op.BIAS;
-        return new GpuProgram(name, new DopKernelIR.Kernel(
+        return new GpuProgram(name, parameter, new DopKernelIR.Kernel(
                 layout, DopKernelIR.Element.F32, op, scale, bias));
     }
 
