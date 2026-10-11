@@ -1826,15 +1826,19 @@ public final class ActorRuntime implements AutoCloseable {
                     "suspended source receive requires an executing actor turn");
         }
 
+        final ActorInboxMail<?> admittedMail;
+        final SerialActorTurnGate.Ticket barrierTicket;
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(cell.ref);
             if (cell.activeMail == null) {
                 throw new IllegalStateException(
                         "only an active user-mail receive may suspend the actor mailbox");
             }
-            cell.serialTurnGate.hold(cell.activeMail);
+            // Snapshot both identities atomically; each awaited operation
+            // must release only its own distinct barrier, never a sibling's.
+            admittedMail = cell.activeMail;
+            barrierTicket = cell.serialTurnGate.hold(admittedMail);
         }
-        ActorInboxMail<?> admittedMail = cell.activeMail;
 
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
@@ -1842,7 +1846,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.activeMail != admittedMail || cell.finalized
                             || cell.stopped.get()) return;
                     SerialActorTurnGate.Completion completed =
-                            cell.serialTurnGate.complete(admittedMail);
+                            cell.serialTurnGate.complete(barrierTicket);
                     if (completed == SerialActorTurnGate.Completion.STALE) {
                         return;
                     }
