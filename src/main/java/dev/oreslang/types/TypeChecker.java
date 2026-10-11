@@ -3623,14 +3623,10 @@ public final class TypeChecker {
     }
 
     /**
-     * Resolve a first-class class callable using the function type supplied by
-     * its context.  This is what makes doWork(self.someMethod) AOT-safe even
-     * when someMethod is overloaded: the expected callback arity selects the
-     * same closed-world CallableSelector slot that a direct call would use.
-     *
-     * <p>No runtime parameter types participate in selection.  Generic method
-     * values remain intentionally unsupported until Oreslang has an explicit
-     * method-value specialization surface.
+     * Resolve only static class functions as first-class callable values
+     * against an expected function type. Instance methods require a receiver
+     * and are never implicitly reified as callbacks, even with expected arity.
+     * Callers wanting capture semantics must write an explicit lambda.
      */
     private Type contextualCallableMemberType(
             Ast.MemberExpr member,
@@ -3665,50 +3661,9 @@ public final class TypeChecker {
             return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
-        if (normalized instanceof Named named) {
-            Ast.ClassDecl klass = findClass(named.name());
-            if (klass == null) return null;
-
-            // Runtime member lookup gives fields precedence over methods.
-            if (findFieldTarget(klass, named, member.member(), new LinkedHashSet<>()) != null) {
-                return null;
-            }
-
-            ResolvedMethod target = findMethodTarget(
-                    klass, named, member.member(), arity, new LinkedHashSet<>());
-            if (target == null) {
-                if (!findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "no overload of method '" + klass.name() + "." + member.member()
-                                    + "' matches callback arity " + arity);
-                }
-                return null;
-            }
-
-            Ast.MethodDecl method = target.method();
-            requireClassMemberVisible(method.visibility(), target.owner(), "method", method.name());
-            if (!method.genericParameters().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "generic method '" + target.owner().name() + "." + method.name()
-                                + "' must be specialized by a direct call; polymorphic bound-method values are not supported yet");
-            }
-
-            Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
-            memberGenerics.addAll(method.genericParameters());
-            Type callableReceiver = receiverValueType instanceof SelfType
-                    ? receiverValueType
-                    : named;
-            Type signature = functionType(
-                    method.parameters(),
-                    method.returnType(),
-                    method.async(),
-                    false,
-                    memberGenerics,
-                    callableReceiver);
-            return substituteGenerics(
-                    signature,
-                    classGenericBindings(target.owner(), target.ownerType()));
-        }
+        // An instance method always requires its receiver. Even an expected
+        // Function type must not implicitly capture self or turn a method into
+        // a bound callback. An explicit lambda is the opt-in capture mechanism.
 
         return null;
     }
