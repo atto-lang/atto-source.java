@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -107,6 +108,27 @@ final class SharedRouteContractInteropTest {
         }
         assertNull(OresCompiler.takeVerifiedGuestProgram(name, source),
                 "host-only parse lease must be retired before any guest turn");
+    }
+
+    @Test
+    void incrementalAbiTracksContractKindAndConformance() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        String id = "/trusted/contracts.ores";
+        var contract = compiler.compile(Map.of(id, CONTRACT));
+        var ordinaryInterface = compiler.compile(Map.of(
+                id, CONTRACT.replace("define contract RouteContract", "define interface RouteContract")));
+        assertNotEquals(contract.units().get(id).abiDigest(),
+                ordinaryInterface.units().get(id).abiDigest(),
+                "a module contract cannot share its ABI with an ordinary interface");
+
+        String routeId = "/trusted/route.ores";
+        String withConforms = CONTRACT + "\n" + VALID;
+        var strict = new IncrementalCompiler().compile(Map.of(routeId, withConforms));
+        var permissive = new IncrementalCompiler().compile(Map.of(
+                routeId, withConforms.replace("Route conforms RouteContract", "Route")));
+        assertNotEquals(strict.units().get(routeId).abiDigest(),
+                permissive.units().get(routeId).abiDigest(),
+                "changing a module conforms clause is a public ABI change");
     }
 
     @Test
