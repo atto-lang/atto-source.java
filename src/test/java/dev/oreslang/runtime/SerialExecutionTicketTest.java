@@ -71,6 +71,35 @@ final class SerialExecutionTicketTest {
         assertFalse(second.mayEnqueue());
     }
 
+    @Test void retiredTaskCannotBorrowItsStillLiveReceiveAdmission() {
+        Object incarnation = new Object();
+        SerialActorAdmission gate = new SerialActorAdmission(3);
+        var handler = gate.submit(MESSAGE).join();
+        var canceledTask = new SerialExecutionTicket(
+                "actor", incarnation, 10L, gate, handler, () -> true);
+        var unrelatedLiveTask = new SerialExecutionTicket(
+                "actor", incarnation, 11L, gate, handler, () -> true);
+
+        canceledTask.requireRunnable("actor", incarnation, handler);
+        canceledTask.retire();
+        canceledTask.retire(); // terminal notification/cancellation may race
+        assertFalse(canceledTask.mayEnqueue());
+        assertThrows(IllegalStateException.class,
+                () -> canceledTask.requireAdmissible("actor", incarnation, handler));
+        assertThrows(IllegalStateException.class,
+                () -> canceledTask.requireRunnable("actor", incarnation, handler));
+
+        // Retiring one child must not revoke the whole handler or siblings.
+        unrelatedLiveTask.requireRunnable("actor", incarnation, handler);
+        handler.suspend();
+        assertTrue(unrelatedLiveTask.mayEnqueue());
+        assertFalse(canceledTask.mayEnqueue());
+        handler.resume();
+        unrelatedLiveTask.requireRunnable("actor", incarnation, handler);
+        handler.close();
+        gate.close();
+    }
+
     @Test void cancellationAndUnboundActorTicketFailClosed() {
         Object incarnation = new Object();
         AtomicBoolean alive = new AtomicBoolean(true);
