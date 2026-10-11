@@ -276,7 +276,7 @@ final class PatternMatchingHardeningTest {
                 fnc good(int n): int {
                   match n over
                     on _ -> { return 1; }
-                    on int x -> { return x; }
+                    on 7 -> { return 7; }
                   end
                 }
                 """)));
