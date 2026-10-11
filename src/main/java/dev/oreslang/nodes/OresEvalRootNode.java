@@ -1801,7 +1801,29 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
-                SourceFlowCont continuation) {
+                SourceFlowCont downstream) {
+            // Never replay a statement completion if its consumer throws.
+            // Completion belongs to its SourceTask execution context, not to
+            // the producer callback or the physical carrier thread.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Throwable> consumerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            SourceFlowCont continuation = (resumed, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    Throwable prior = consumerFailure.get();
+                    if (prior instanceof RuntimeException runtime) throw runtime;
+                    if (prior instanceof Error error) throw error;
+                    throw new IllegalStateException(
+                            "suspendable statement completed more than once");
+                }
+                try {
+                    downstream.accept(resumed, flow);
+                } catch (RuntimeException | Error failure) {
+                    consumerFailure.compareAndSet(null, failure);
+                    throw failure;
+                }
+            };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -2158,6 +2180,9 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
+                // Once the consumer owns the outcome, the current statement
+                // must not reinterpret its error or run cleanup twice.
+                if (delivered.get()) throw failure;
                 continuation.accept(
                         task,
                         SourceFlow.throwing(failure));
