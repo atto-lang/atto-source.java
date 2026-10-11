@@ -15,7 +15,8 @@ import java.util.function.Consumer;
  * Intentionally small first source-to-CONTROL lowering slice.
  *
  * Compiles exactly one guest-defined on_panic(Failure) with the explicit
- * self.stop() decision. All other statements, effects, hooks and suspension
+ * self.stop() or self.stop(f) decision, where f is the typed Failure binder.
+ * Other statements, effects, hooks and suspension
  * fail at compile time; this is NOT the general Oreslang evaluator.
  *
  * The compiler produces a closed, immutable decision plan. ActorGroup owns
@@ -29,12 +30,16 @@ public final class SourceSupervisorLowering {
     /** An immutable, compiler-validated guest source decision plan. */
     public static final class StopOnlySupervisor {
         private final String sourceName;
+        private final boolean explicitlyBoundFailure;
 
-        private StopOnlySupervisor(String sourceName) {
+        private StopOnlySupervisor(String sourceName, boolean explicitlyBoundFailure) {
             this.sourceName = sourceName;
+            this.explicitlyBoundFailure = explicitlyBoundFailure;
         }
 
         public String sourceName() { return sourceName; }
+        /** True only when the guest named its own typed Failure parameter. */
+        public boolean explicitlyBoundFailure() { return explicitlyBoundFailure; }
 
         /**
          * Installs the compiled source hook on a real supervisor-owned
@@ -129,16 +134,24 @@ public final class SourceSupervisorLowering {
                 || returned.value() != null
                 || !(statement.expression() instanceof Ast.CallExpr call)
                 || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()
-                || !call.arguments().isEmpty()
+                || call.arguments().size() > 1
                 || !(call.callee() instanceof Ast.MemberExpr member)
                 || !(member.receiver() instanceof Ast.NameExpr receiver)
                 || !receiver.name().equals("self")
                 || !member.member().equals("stop")) {
-            throw unsupported("only 'self.stop(); return;' is executable");
+            throw unsupported("only 'self.stop(); return;' or 'self.stop(f); return;' is executable");
+        }
+        boolean explicitlyBoundFailure = !call.arguments().isEmpty();
+        if (explicitlyBoundFailure
+                && (!(call.arguments().getFirst() instanceof Ast.NameExpr failure)
+                    || !failure.name().equals(hook.parameters().getFirst().name()))) {
+            // The compiler never accepts arbitrary ActorRef objects, host IDs,
+            // nested Failure fields or a forged name as a lifecycle target.
+            throw unsupported("STOP target must be the exact typed Failure parameter");
         }
         // No dynamic interpretation, reflection, heap capture or ambient host
-        // authority. An explicit source operation lowers to one host directive.
-        return new StopOnlySupervisor(target.name());
+        // authority. Both forms resolve to the *current* delivered failure.
+        return new StopOnlySupervisor(target.name(), explicitlyBoundFailure);
     }
 
     private static IllegalArgumentException unsupported(String reason) {
