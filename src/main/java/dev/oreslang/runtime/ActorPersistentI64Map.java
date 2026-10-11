@@ -81,6 +81,14 @@ public final class ActorPersistentI64Map implements AutoCloseable {
         }
     }
 
+    /** Host-side spelling of the sealed Oreslang self.handle_state(callback) intrinsic.
+     * The compiler must additionally reject suspension, capability escape,
+     * mutable result aliases and guest overrides; this host API cannot prove those.
+     */
+    public <R> R handleState(Function<? super Access, ? extends R> callback) {
+        return critical(callback);
+    }
+
     private void requireActiveOwner() {
         arena.requireOwnerForState();
         if (closed) throw new IllegalStateException("actor persistent state map closed");
