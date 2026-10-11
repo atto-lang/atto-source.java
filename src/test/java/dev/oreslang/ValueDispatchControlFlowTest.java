@@ -219,6 +219,26 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void nestedDoArmReturnMustMatchContainingFunctionType() {
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc broken(int v): string {
+                          const x = match v over
+                            on _ {
+                              do match v over
+                                on 1 { return 99; }
+                              end
+                              return "ok";
+                            }
+                          end
+                          return x;
+                        }
+                        """)));
+        assertTrue(wrong.getMessage().contains("return value has type"),
+                wrong.getMessage());
+    }
+
+    @Test
     void nestedDoMatchRetainsFunctionReturnBoundary() throws Exception {
         assertEquals("function\n", execute("""
                 fnc nested(int v): string {
