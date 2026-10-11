@@ -222,4 +222,14 @@ final class BorrowedContinuationBoundaryTest {
                 }
                 """, "cannot borrow across an async/generator lifetime");
     }
+
+    @Test
+    void nestedBorrowParameterCannotCrossCooperationSafepoint() {
+        reject(BOX + """
+                fnc unsafe(Option<&Box> nested): void {
+                  rt cooperate;
+                  return;
+                }
+                """, "while an ordinary borrow is live");
+    }
 }
