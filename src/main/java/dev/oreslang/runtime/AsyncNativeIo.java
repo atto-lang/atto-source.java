@@ -74,13 +74,13 @@ public final class AsyncNativeIo implements AutoCloseable {
                 try {
                     value = work.call();
                 } catch (Throwable failure) {
-                    // Closure and worker settlement share one admission lock.
-                    // Otherwise close() can miss a removed-but-pending Future.
+                    // Keep diagnostics published before waiters can observe
+                    // failure, while still settling atomically against close().
+                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
                     synchronized (this) {
                         admitted.remove(result);
                         result.failFromRuntime(failure);
                     }
-                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
