@@ -143,3 +143,31 @@ for all numeric widths and tagged alternatives; native LLVM actor lowering;
 atomic admission/cancellation with proven byte-quota accounting at all
 bindings; concurrent-mutation races; native image and complete compiler
 conformance; independent approval. The PRs remain **DRAFT**.
+
+
+## Binary mailbox frame upgrade (executed follow-up)
+
+The Java \`ActorRuntime.send\` path has been upgraded again: schema-bound
+mailboxes **physically enqueue the runtime-owned MessagePack v2 byte[] frame**,
+not a pre-decoded List/Tuple. \`ActorCell\` decodes that frame only after the
+recipient acquires its exclusive mailbox turn, before passing the decoded
+recipient-owned value to host \`Behavior\` or source \`ActorCodeExecutor\`.
+The sender pre-decodes solely for strict admission and memory estimation,
+then reserves space conservatively for **both retained wire bytes and the
+estimated decoded graph**. The ordinary mailbox envelope \`release\` path
+releases that reservation on dispatch, error or cancelled queued mail.
+Host actors without a bound schema and internal CONTROL/capability traffic
+continue on their separate pre-existing path.
+
+**Latest executed exact-source Maven proof:**
+[funded workflow #38169821931](https://github.com/gha-indie-worker/gha-indie-worker-docs/actions/runs/38169821931),
+Java code pinned to commit \`e4a110b6defa82a484ed82f48d2377b187fabb8c\`.
+76 source/test/resource SHA verifications passed; six targeted JUnit classes
+**39 tests passed, zero failures/errors, BUILD SUCCESS**. This supersedes
+the earlier 39-test proof that only snapshotted/deep-decoded before enqueue.
+
+**Not yet established:** persistent decoded-region accounting across an
+asynchronously suspended source receive; complete cancellation and queue
+capacity stress testing; LLVM source actor mailbox connection; exact-head
+native image and full native CMake/CTest; remote sender authentication and
+full user-defined/generic serialization. Both PRs stay DRAFT.
