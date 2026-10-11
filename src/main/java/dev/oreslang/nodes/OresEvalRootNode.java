@@ -1104,7 +1104,8 @@ public final class OresEvalRootNode extends RootNode {
                         // A live lexical mutex guard is a no-yield region.
                         if (!untrusted && checkDue
                                 && !guardEnv.hasLiveMutexGuards()
-                                && cooperationQuantum.shouldCooperateAtCheck()) {
+                                && (OresScheduler.watchdogCooperationRequested()
+                                    || cooperationQuantum.shouldCooperateAtCheck())) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
                             return;
