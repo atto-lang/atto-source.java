@@ -50,6 +50,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicBoolean shutdown = new AtomicBoolean();
     /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
+    /** Protects one-time native carrier startup against concurrent submit and close. */
+    private boolean nativeStarted;
     private final long nativeHandle;
 
     public NativeCarrierExecutor(
@@ -78,13 +80,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         if (handle == 0L) throw new IllegalStateException("native carrier pool returned a null handle");
         this.nativeHandle = handle;
 
-        boolean started = false;
-        try {
-            nativeStart(handle);
-            started = true;
-        } finally {
-            if (!started) nativeShutdown(handle);
-        }
+        // nativeCreate allocates only descriptors; nativeStart creates carriers
+        // upon the first admitted turn. This is a zero-worker cold pool.
     }
 
     static void requireAllowedCpu(int cpu) {
@@ -212,10 +209,27 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
-        if (shutdown.get() || !queue.offer(task)) {
-            throw new RejectedExecutionException(
-                    shutdown.get() ? "native carrier executor is shut down"
-                            : "native carrier ready queue is full");
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) {
+                throw new RejectedExecutionException("native carrier executor is shut down");
+            }
+            if (!nativeStarted) {
+                try {
+                    nativeStart(nativeHandle);
+                    nativeStarted = true;
+                } catch (RuntimeException | Error failure) {
+                    // A failed first startup must not leave an executor with
+                    // accepted but unserviceable turns.
+                    shutdown.set(true);
+                    nativeShutdown(nativeHandle);
+                    throw failure;
+                }
+            }
+            if (shutdown.get() || !queue.offer(task)) {
+                throw new RejectedExecutionException(
+                        shutdown.get() ? "native carrier executor is shut down"
+                                : "native carrier ready queue is full");
+            }
         }
     }
 
@@ -309,6 +323,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         shutdownNow();
     }
 
+    public int getStartedCarrierCount() {
+        int total = 0;
+        for (int slot = 0; slot < carrierThreads.length(); slot++)
+            if (carrierThreads.get(slot) != null) total++;
+        return total;
+    }
     public int getActiveCount() { return activeCount.get(); }
     public int getQueueSize() { return queue.size(); }
     public long getCompletedTaskCount() { return completedTaskCount.get(); }
@@ -350,8 +370,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     /**
-     * All bounded compensation carriers are physically created at pool
-     * construction and parked natively, so there is nothing to allocate here.
+     * All bounded compensation carriers are physically created on the first
+     * admitted task and parked natively, so there is no separate prestart API.
      */
     public boolean prestartCoreThread() {
         return false;
