@@ -296,4 +296,36 @@ final class TaggedMessageContractTest {
         }
     }
 
+
+    @Test
+    void sourceActorMailboxAdmissionEnforcesPortableSixtyFourVariantLimit() {
+        for (int count : List.of(64, 65)) {
+            StringBuilder program = new StringBuilder("define enum Signals as\n");
+            for (int tag = 1; tag <= count; tag++) {
+                program.append("    Case").append(tag).append(": int = ")
+                        .append(tag).append('\n');
+            }
+            program.append("""
+                    end
+                    define actor Worker as
+                        receive(ActorMail<Signals> mail): void {
+                            self.end();
+                            return;
+                        }
+                    end
+                    pub async routine main(): void {
+                        return;
+                    }
+                    """);
+            if (count == 64) {
+                assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program.toString())));
+            } else {
+                IllegalArgumentException error = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(program.toString())));
+                assertTrue(error.getMessage().contains("1..64"), error.getMessage());
+            }
+        }
+    }
+
 }
