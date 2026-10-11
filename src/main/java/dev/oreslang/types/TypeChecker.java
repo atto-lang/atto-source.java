@@ -1982,6 +1982,10 @@ public final class TypeChecker {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1
                         || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda))
                     throw new IllegalArgumentException("self.handle_state requires one callback lambda");
+                if (!lambda.critical() || lambda.nonLexical()) {
+                    throw new IllegalArgumentException(
+                            "sealed critical handle_state requires a critical lexical callback");
+                }
                 Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
                 validateLambdaAgainstExpected(lambda,
                         new Function(List.of(schemaType), Unknown.INSTANCE), env, generics, self);
