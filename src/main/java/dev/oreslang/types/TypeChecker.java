@@ -1709,8 +1709,113 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    // The current source-task continuations have not yet been generalized
+    // to carry a value-match arm's lexical return across suspension.
+    // Reject explicit suspension during dispatch instead of blocking an actor
+    // carrier or misdirecting an async arm's result to the function return.
+    private boolean valueDispatchHasSuspension(Ast.Expr expr) {
+        if (expr == null) return false;
+        if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return valueDispatchHasSuspension(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary)
+            return valueDispatchHasSuspension(binary.left())
+                    || valueDispatchHasSuspension(binary.right());
+        if (expr instanceof Ast.AssignExpr assigned)
+            return valueDispatchHasSuspension(assigned.target())
+                    || valueDispatchHasSuspension(assigned.value());
+        if (expr instanceof Ast.ConditionalExpr conditional)
+            return valueDispatchHasSuspension(conditional.condition())
+                    || valueDispatchHasSuspension(conditional.whenTrue())
+                    || valueDispatchHasSuspension(conditional.whenFalse());
+        if (expr instanceof Ast.CallExpr call)
+            return valueDispatchHasSuspension(call.callee())
+                    || call.arguments().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.RuntimeCallExpr call)
+            return call.arguments().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.MemberExpr member)
+            return valueDispatchHasSuspension(member.receiver());
+        if (expr instanceof Ast.IndexExpr index)
+            return valueDispatchHasSuspension(index.receiver())
+                    || valueDispatchHasSuspension(index.index());
+        if (expr instanceof Ast.NewExpr newly)
+            return newly.arguments().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.ListExpr list)
+            return list.elements().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.SpreadExpr spread)
+            return valueDispatchHasSuspension(spread.expression());
+        if (expr instanceof Ast.CastExpr cast)
+            return valueDispatchHasSuspension(cast.value());
+        if (expr instanceof Ast.TypeTestExpr typed)
+            return valueDispatchHasSuspension(typed.value());
+        if (expr instanceof Ast.PatternTestExpr pattern)
+            return valueDispatchHasSuspension(pattern.value());
+        if (expr instanceof Ast.LambdaExpr lambda)
+            return (lambda.expressionBody() != null
+                        && valueDispatchHasSuspension(lambda.expressionBody()))
+                    || (lambda.blockBody() != null
+                        && lambda.blockBody().stream().anyMatch(this::valueArmStmtSuspends));
+        if (expr instanceof Ast.ValueMatchExpr matched)
+            return valueDispatchHasSuspension(matched.subject())
+                    || matched.arms().stream().anyMatch(
+                        arm -> (arm.guard() != null && valueDispatchHasSuspension(arm.guard()))
+                            || arm.body().stream().anyMatch(this::valueArmStmtSuspends));
+        if (expr instanceof Ast.ValueSwitchExpr switched)
+            return valueDispatchHasSuspension(switched.subject())
+                    || switched.cases().stream().anyMatch(
+                        arm -> arm.body().stream().anyMatch(this::valueArmStmtSuspends))
+                    || switched.defaultBody().stream().anyMatch(this::valueArmStmtSuspends);
+        return false;
+    }
+
+    private boolean valueArmStmtSuspends(Ast.Stmt stmt) {
+        if (stmt instanceof Ast.ArmReturnStmt value)
+            return valueDispatchHasSuspension(value.value());
+        if (stmt instanceof Ast.ReturnStmt value)
+            return valueDispatchHasSuspension(value.value());
+        if (stmt instanceof Ast.ExprStmt value)
+            return valueDispatchHasSuspension(value.expression());
+        if (stmt instanceof Ast.BindingStmt value)
+            return valueDispatchHasSuspension(value.initializer());
+        if (stmt instanceof Ast.DestructureStmt value)
+            return valueDispatchHasSuspension(value.initializer());
+        if (stmt instanceof Ast.DeferStmt value)
+            return valueDispatchHasSuspension(value.expression());
+        if (stmt instanceof Ast.BlockStmt nested)
+            return nested.body().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.IfStmt conditional)
+            return conditional.branches().stream().anyMatch(
+                    arm -> valueDispatchHasSuspension(arm.condition())
+                        || arm.body().stream().anyMatch(this::valueArmStmtSuspends))
+                    || conditional.elseBody().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.MatchStmt matched)
+            return valueDispatchHasSuspension(matched.subject())
+                    || matched.arms().stream().anyMatch(
+                        arm -> (arm.guard() != null && valueDispatchHasSuspension(arm.guard()))
+                            || arm.body().stream().anyMatch(this::valueArmStmtSuspends));
+        if (stmt instanceof Ast.SwitchStmt switched)
+            return valueDispatchHasSuspension(switched.subject())
+                    || switched.cases().stream().anyMatch(
+                        arm -> arm.body().stream().anyMatch(this::valueArmStmtSuspends))
+                    || switched.defaultBody().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.TryStmt attempted)
+            return attempted.body().stream().anyMatch(this::valueArmStmtSuspends)
+                    || attempted.catchBody().stream().anyMatch(this::valueArmStmtSuspends)
+                    || attempted.finallyBody().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.SelectStmt
+                || stmt instanceof Ast.ForStmt || stmt instanceof Ast.ForOfStmt
+                || stmt instanceof Ast.ForOfDestructureStmt) return true;
+        return false;
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.ValueMatchExpr matched) {
+            if (valueDispatchHasSuspension(expr))
+                throw new IllegalArgumentException(
+                        "suspending value match arms require continuation lowering (not yet supported)");
             final Type subject = deref(typeOf(matched.subject(), env, generics, self));
             List<Type> values = new ArrayList<>();
             armValueTypes.push(values);
@@ -1729,6 +1834,9 @@ public final class TypeChecker {
             return joinArmValues(values, "match");
         }
         if (expr instanceof Ast.ValueSwitchExpr switched) {
+            if (valueDispatchHasSuspension(expr))
+                throw new IllegalArgumentException(
+                        "suspending value switch arms require continuation lowering (not yet supported)");
             final Type subject = deref(typeOf(switched.subject(), env, generics, self));
             List<Type> values = new ArrayList<>();
             armValueTypes.push(values);
