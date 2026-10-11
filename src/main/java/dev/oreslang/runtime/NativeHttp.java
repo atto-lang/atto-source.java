@@ -22,6 +22,12 @@ public final class NativeHttp implements AutoCloseable {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
     private boolean closed;
+    // Admission state and physical retirement are different proofs. A failed
+    // drain retains the exact closing-server set for subsequent retry checks.
+    private final Object retirementLock = new Object();
+    private List<Server> retiringServers;
+    private boolean retired;
+    private Thread retirementOwner;
 
     public NativeHttp(OresContext context) {
         this.context = Objects.requireNonNull(context);
@@ -573,9 +579,65 @@ public final class NativeHttp implements AutoCloseable {
     private static void reject(HttpExchange raw, int status) {
         try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
     }
-    @Override public synchronized void close() {
-        closed = true;
-        for (Server server : List.copyOf(servers)) server.close();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+    @Override public void close() {
+        synchronized (retirementLock) {
+            if (retired) return;
+            if (retirementOwner == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "HTTP retirement cannot re-enter from its own completion callback");
+            }
+            retirementOwner = Thread.currentThread();
+            try {
+                List<Server> closing;
+                synchronized (this) {
+                    closed = true;
+                    if (retiringServers == null) {
+                        retiringServers = List.copyOf(servers);
+                    }
+                    closing = retiringServers;
+                }
+
+                // Stop listeners and enqueue all owned exchange aborts BEFORE
+                // sealing the I/O executor. A terminal response Future is not
+                // proof that the exchange's physical socket carrier has exited.
+                for (Server server : closing) server.close();
+                io.shutdown();
+                timers.shutdown();
+                try {
+                    if (!io.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "HTTP I/O carriers still own pending operations after close timeout");
+                    }
+                    if (!timers.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "HTTP timer carrier did not physically exit during close");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "interrupted before HTTP physical carrier exit", interrupted);
+                }
+
+                // Socket exit alone is insufficient: an actor-owned exchange
+                // retains its admission/transfer capability until actor.done.
+                // Keep the snapshot after timeout so later retries cannot
+                // mistake removed listeners for fully retired exchanges.
+                long outstanding = closing.stream().mapToLong(s -> s.active.size()).sum();
+                if (outstanding != 0) {
+                    throw new IllegalStateException(
+                            "HTTP close still owns " + outstanding
+                                    + " active exchange/actor reservation(s)");
+                }
+                if (!transfers.isEmpty()) {
+                    throw new IllegalStateException(
+                            "HTTP close still owns unclaimed transfer capabilities");
+                }
+
+                retiringServers = null;
+                retired = true;
+            } finally {
+                retirementOwner = null;
+            }
+        }
     }
 }
