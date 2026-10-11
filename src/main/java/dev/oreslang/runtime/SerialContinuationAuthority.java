@@ -26,14 +26,12 @@ public final class SerialContinuationAuthority {
 
     /** Cheap rejection before using a bounded continuation mailbox slot. */
     public boolean mayQueue() {
-        if (admission != null && !admission.acceptsActorScopedCallbacks()) {
-            return false;
-        }
         if (originatingReceive != null) {
             return originatingReceive.state() != SerialActorAdmission.State.FINISHED;
         }
-        // Unowned callbacks must not jump ahead of any active serial handler.
-        return admission == null || !admission.busy();
+        // Unowned callbacks require one atomic open-and-idle observation.
+        // The actor carrier checks it again before running user code.
+        return admission == null || admission.canQueueUnownedContinuation();
     }
 
     /** Check on the real actor carrier immediately before executing callback. */
