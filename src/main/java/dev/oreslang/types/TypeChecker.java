@@ -3663,12 +3663,22 @@ public final class TypeChecker {
         if (normalized instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null
-                    && findFieldTarget(klass, named, member.member(), new LinkedHashSet<>()) == null
-                    && !findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
-                throw new IllegalArgumentException(
-                        "instance method '" + klass.name() + "." + member.member()
-                                + "' is direct-call-only and cannot be passed as a callback; "
-                                + "wrap the receiver call in an explicit lambda");
+                    && findFieldTarget(klass, named, member.member(), new LinkedHashSet<>()) == null) {
+                // Check access before the direct-call-only diagnostic. Otherwise
+                // a private method name/arity is leaked through callback probing.
+                ResolvedMethod target = findMethodTarget(
+                        klass, named, member.member(), arity, new LinkedHashSet<>());
+                if (target != null) {
+                    requireClassMemberVisible(target.method().visibility(), target.owner(),
+                            "method", target.method().name());
+                }
+                if (target != null
+                        || !findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "instance method '" + klass.name() + "." + member.member()
+                                    + "' is direct-call-only and cannot be passed as a callback; "
+                                    + "wrap the receiver call in an explicit lambda");
+                }
             }
         }
 
