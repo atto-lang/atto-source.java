@@ -115,8 +115,6 @@ final class SupervisorHttpResponseRelayTest {
 
     @Test
     void existingActorOutputTransportCarriesOnlyDataToTrustedSupervisor() throws Exception {
-        var sink = new RecordingSink();
-        var relay = new SupervisorHttpResponseRelay("placeholder", REQUEST, 64, 128, sink);
         // The real actor ID is minted by ActorRuntime and cannot be supplied
         // by the guest wire map; bind a new per-request relay to that ID.
         try (ActorRuntime runtime = new ActorRuntime()) {
@@ -132,9 +130,9 @@ final class SupervisorHttpResponseRelayTest {
             bound.grantCredit(64);
             worker.send(1);
             for (int i = 0; i < 3; i++) {
-                var output = worker.outputs().next().get(5, TimeUnit.SECONDS).value();
-                assertTrue(output.isPresent());
-                var envelope = output.orElseThrow();
+                var step = worker.outputs().next().get(5, TimeUnit.SECONDS);
+                assertFalse(step.done());
+                var envelope = step.value();
                 bound.accept(envelope.actorId().value().toString(),
                         envelope.sequence(), envelope.value());
             }
