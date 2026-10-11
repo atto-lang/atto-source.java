@@ -440,6 +440,18 @@ public final class OresEvalRootNode extends RootNode {
                                 + " does not match declaration kind " + expectedKind);
             }
 
+            // The compiler currently stores a source-level state schema
+            // as a synthetic AST field. It MUST NOT become a normal mutable
+            // OresObject field: doing so would bypass the critical state
+            // capability and generation-fenced actor memory contract.
+            // Until the sealed source-level state-runtime bridge is lowered,
+            // reject before allocating or publishing actor state / READY.
+            if (dev.oreslang.types.ActorStateContract.stateField(klass) != null) {
+                throw new UnsupportedOperationException(
+                        "sealed actor state requires runtime-owned critical handle_state "
+                        + "lowering; refusing ordinary field-backed state initialization");
+            }
+
             List<Ast.FieldDecl> classFields =
                     effectiveFields(klass, new LinkedHashSet<>());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
