@@ -2075,6 +2075,33 @@ public final class ActorRuntime implements AutoCloseable {
             return process;
         }
 
+        /**
+         * Async lifecycle effects run on CONTROL and retain the logical
+         * supervisor lease until the trusted host acknowledges completion.
+         * A foreign Future completion cannot finalize a child: the supplied
+         * onAcknowledged callback runs on a newly admitted CONTROL turn.
+         */
+        public SupervisorProcess installSupervisorProcessAwaitingDecision(
+                int mailboxCapacity,
+                java.util.function.Function<SupervisorFailureControl.Notice,
+                        java.util.concurrent.CompletionStage<SupervisorProcess.Directive>> onFailure,
+                java.util.function.Function<SupervisorProcess.Resolution,
+                        java.util.concurrent.CompletionStage<Void>> onDecision,
+                Consumer<SupervisorProcess.Resolution> onAcknowledged) {
+            requireSupervisorContext("install awaiting supervisor process");
+            requireOpen();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisorId, id, supervisorDispatcher, mailboxCapacity,
+                    onFailure, onDecision, onAcknowledged);
+            try {
+                supervisorControl.install(process::accept);
+            } catch (RuntimeException | Error admissionFailure) {
+                process.close();
+                throw admissionFailure;
+            }
+            return process;
+        }
+
         /** Nonzero means this host CONTROL lane has failed closed. */
         public long undeliveredSupervisorFailures() {
             requireObserver("inspect undelivered supervisor notices");
