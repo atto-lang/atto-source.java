@@ -146,7 +146,12 @@ public final class ReturnCleanupChecker {
                 statements(loop.body(), iteration, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.ForStmt loop) {
                 Scope loopScope = new Scope(scope);
-                if (loop.initializer() != null) {
+                if (loop.initializer() instanceof Ast.BindingStmt binding) {
+                    expression(binding.initializer(), loopScope, inDefer, state);
+                    loopScope.define(binding.name());
+                } else if (loop.initializer() instanceof Ast.ExprStmt expr) {
+                    expression(expr.expression(), loopScope, inDefer, state);
+                } else if (loop.initializer() != null) {
                     statements(List.of(loop.initializer()), loopScope, inFinally, inDefer, trackReturns, state);
                 }
                 expression(loop.condition(), loopScope, inDefer, state);
