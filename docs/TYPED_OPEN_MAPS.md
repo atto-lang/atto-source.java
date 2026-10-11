@@ -42,6 +42,8 @@ fnc example(): void {
 - Hook calls apply to top-level map operations, **not** in-place mutations of nested values. The actor's critical/borrow guard remains a separate requirement before sharing actor state.
 - Bracket access uses the same read/write hooks as `get` and `put`. `remove` invokes `on_remove`.
 - Hooks execute synchronously in the calling actor/task, may raise an error to reject an operation, and must not suspend.
+- `put`, `remove`, and indexed writes require exclusive mutable receiver access; immutable borrows cannot mutate a map. Both method calls and indexed writes reject borrowed references, callable closures, and unresolved generics as stored payloads, including borrows nested in sum types.
+- A `get` hook runs before the validated read and may have observable effects; it cannot reenter the same Map. Safe readonly-hook effects and actor `critical` guard enforcement require further compiler integration.
 - The underlying map retains arbitrary additional string keys.
 - The compiler owns map operations: classes cannot override `get`, `put`, or `remove`; interception is through the three hooks.
 - All supported public operations route to the same storage implementation; no iterator-based mutable entry API is exported in this iteration.
