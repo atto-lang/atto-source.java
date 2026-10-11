@@ -43,6 +43,13 @@ public final class TypeChecker {
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    // Identity-keyed proof certificates established while checking each
+    // statement. The return-path verifier must never assume all match arms
+    // returning means every possible value is covered.
+    private final Set<Ast.MatchStmt> provenExhaustiveMatches =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<Ast.SwitchStmt> provenExhaustiveSwitches =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -1532,6 +1539,26 @@ public final class TypeChecker {
             checkBlock(switched.defaultBody(), env, generics, expectedReturn, self);
             exits.add(env.initializationSnapshot());
             env.mergeInitialization(exits);
+            final boolean exhaustive = !switched.defaultBody().isEmpty()
+                    || switchCoversAllBooleanValues(switched, subject);
+            if (exhaustive) provenExhaustiveSwitches.add(switched);
+            if (switched.returnForm()) {
+                if (!exhaustive) {
+                    throw new IllegalArgumentException(
+                            "non-exhaustive return switch: add a default case or cover every finite value");
+                }
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (!definitelyReturns(arm.body())) {
+                        throw new IllegalArgumentException(
+                                "return switch case must return on every path");
+                    }
+                }
+                if (!switched.defaultBody().isEmpty()
+                        && !definitelyReturns(switched.defaultBody())) {
+                    throw new IllegalArgumentException(
+                            "return switch default must return on every path");
+                }
+            }
             return;
         }
         if (stmt instanceof Ast.TryStmt attempted) {
@@ -4573,11 +4600,39 @@ public final class TypeChecker {
             }
         }
 
-        if (!matchProvablyExhaustive(arms, subject, generics, self)) {
+        final boolean exhaustive = matchProvablyExhaustive(arms, subject, generics, self);
+        if (exhaustive) provenExhaustiveMatches.add(matched);
+        // Canonical ordinary match may be partial and continues execution
+        // after its arms. 'return match' requires coverage, while legacy
+        // non-over match retains the historical exhaustiveness rule.
+        if (!exhaustive && (matched.returnForm() || !matched.ordered())) {
             throw new IllegalArgumentException(
-                    "non-exhaustive match for " + subject
-                            + "; add an unguarded 'on _ -> { ... }' arm or cover every provable case");
+                    "non-exhaustive " + (matched.returnForm() ? "return match" : "match")
+                            + " for " + subject
+                            + "; add an unguarded 'on _ { ... }' arm or cover every provable case");
         }
+        if (matched.returnForm()) {
+            for (Ast.MatchArm arm : arms) {
+                if (!definitelyReturns(arm.body())) {
+                    throw new IllegalArgumentException(
+                            "return match arm must return on every path");
+                }
+            }
+        }
+    }
+
+    private boolean switchCoversAllBooleanValues(Ast.SwitchStmt switched, Type subject) {
+        if (subject != Primitive.BOOL) return false;
+        boolean yes = false, no = false;
+        for (Ast.SwitchCase arm : switched.cases()) {
+            for (Ast.Expr value : arm.constants()) {
+                if (value instanceof Ast.LiteralExpr literal) {
+                    if (Boolean.TRUE.equals(literal.value())) yes = true;
+                    if (Boolean.FALSE.equals(literal.value())) no = true;
+                }
+            }
+        }
+        return yes && no;
     }
 
     private void checkPattern(
@@ -7379,12 +7434,14 @@ public final class TypeChecker {
                 if (allBranches) return true;
             }
             if (stmt instanceof Ast.MatchStmt matched
+                    && provenExhaustiveMatches.contains(matched)
                     && !matched.arms().isEmpty()
                     && matched.arms().stream().allMatch(arm -> definitelyReturns(arm.body()))) return true;
             if (stmt instanceof Ast.SwitchStmt switched
-                    && !switched.defaultBody().isEmpty()
+                    && provenExhaustiveSwitches.contains(switched)
                     && switched.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))
-                    && definitelyReturns(switched.defaultBody())) return true;
+                    && (switched.defaultBody().isEmpty()
+                        || definitelyReturns(switched.defaultBody()))) return true;
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
