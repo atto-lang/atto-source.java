@@ -45,7 +45,7 @@ fnc example(): void {
 - Bracket access uses the same read/write hooks as `get` and `put`. `remove` invokes `on_remove`.
 - Hooks execute synchronously in the calling actor/task, may raise an error to reject an operation, and must not suspend.
 - `put`, `remove`, and indexed writes require exclusive mutable receiver access; immutable borrows cannot mutate a map. Both method calls and indexed writes reject borrowed references, callable closures, and unresolved generics as stored payloads, including borrows nested in sum types.
-- A `get` hook runs before the validated read and may have observable effects; it cannot reenter the same Map. Safe readonly-hook effects and actor `critical` guard enforcement require further compiler integration.
+- For present entries, `on_get` and `on_remove` hooks run **after initial value validation**. The runtime validates again after the hook before returning or removing the value. Hooks still fire for missing keys and can have observable effects, but cannot reenter the same Map. Safe readonly-hook effects and actor `critical` guard enforcement require further compiler integration.
 - The underlying map retains arbitrary additional string keys.
 - The compiler owns map operations: classes cannot override `get`, `put`, or `remove`; interception is through the three hooks.
 - All supported public operations route to the same storage implementation; no iterator-based mutable entry API is exported in this iteration.
