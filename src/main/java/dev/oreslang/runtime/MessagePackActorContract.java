@@ -4,7 +4,6 @@ import dev.oreslang.runtime.MessagePackCollectionCodec.Shape;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -81,10 +80,14 @@ public final class MessagePackActorContract {
         if (bytes.length > MessagePackCollectionCodec.MAX_BYTES) {
             throw new IllegalArgumentException("actor message exceeds byte budget");
         }
-        String schema = peekCanonicalSchema(bytes);
+        // The input buffer belongs to the caller. Decode only a detached
+        // snapshot: otherwise another thread can mutate the identity or
+        // payload between the preliminary schema lookup and typed validation.
+        byte[] snapshot = bytes.clone();
+        String schema = peekCanonicalSchema(snapshot);
         Entry entry = bySchema.get(schema);
         if (entry == null) throw new IllegalArgumentException("actor message variant/schema mismatch");
-        Object value = MessagePackCollectionCodec.decode(entry.schemaId(), entry.shape(), bytes);
+        Object value = MessagePackCollectionCodec.decode(entry.schemaId(), entry.shape(), snapshot);
         return new TaggedMessage(entry.variantId(), value);
     }
 
