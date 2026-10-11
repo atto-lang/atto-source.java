@@ -1638,96 +1638,52 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 int index,
                 SourceFlowCont continuation) {
+            // Only runBlock owns finalization. These statements produce a flow;
+            // the caller drains defers and releases live guards exactly once.
             if (index >= statements.size()) {
-                finishBlock(
-                        task,
-                        env,
-                        defers,
-                        SourceFlow.normal(),
-                        continuation);
+                continuation.accept(task, SourceFlow.normal());
                 return;
             }
 
             Ast.Stmt stmt = statements.get(index);
-            // Source tasks must carry returns as SourceFlow, not as a tail-call
-            // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
                     && !(stmt instanceof Ast.ArmReturnStmt)
                     && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(
-                    stmt,
-                    java.util.Collections.newSetFromMap(
-                            new IdentityHashMap<>()))) {
+                            stmt, java.util.Collections.newSetFromMap(
+                                    new IdentityHashMap<>()))) {
                 try {
                     executeStatement(stmt, env, defers, false);
                 } catch (ArmReturnSignal returned) {
-                    finishBlock(task, env, defers,
-                            SourceFlow.armReturning(returned.value), continuation);
+                    continuation.accept(task, SourceFlow.armReturning(returned.value));
                     return;
                 } catch (ReturnSignal returned) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.returning(returned.value),
-                            continuation);
+                    continuation.accept(task, SourceFlow.returning(returned.value));
                     return;
                 } catch (BreakSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.breaking(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.breaking());
                     return;
                 } catch (ContinueSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.continuing(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.continuing());
                     return;
                 } catch (RuntimeException | Error failure) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.throwing(failure),
-                            continuation);
+                    continuation.accept(task, SourceFlow.throwing(failure));
                     return;
                 }
-                // A later source statement or completion callback is not part
-                // of this statement's exception scope. Never reinterpret its
-                // error as another completion for the current block.
-                runStatements(
-                        task, statements, env, defers, index + 1, continuation);
+                // Do not catch downstream continuation failures as errors from
+                // this statement: they belong to a different lexical scope.
+                runStatements(task, statements, env, defers, index + 1, continuation);
                 return;
             }
 
-            runSuspendableStatement(
-                    task,
-                    stmt,
-                    env,
-                    defers,
-                    (ignored, flow) -> {
-                        if (flow.kind() == SourceFlowKind.NORMAL) {
-                            runStatements(
-                                    task,
-                                    statements,
-                                    env,
-                                    defers,
-                                    index + 1,
-                                    continuation);
-                        } else {
-                            finishBlock(
-                                    task,
-                                    env,
-                                    defers,
-                                    flow,
-                                    continuation);
-                        }
-                    });
+            runSuspendableStatement(task, stmt, env, defers, (resumed, flow) -> {
+                if (flow.kind() == SourceFlowKind.NORMAL) {
+                    runStatements(resumed, statements, env, defers,
+                            index + 1, continuation);
+                } else {
+                    continuation.accept(resumed, flow);
+                }
+            });
         }
 
         private void finishBlock(
