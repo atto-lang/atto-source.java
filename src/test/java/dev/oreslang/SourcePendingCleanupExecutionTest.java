@@ -88,11 +88,59 @@ final class SourcePendingCleanupExecutionTest {
                 start, fin, defer);
     }
 
-    private static String output(ByteArrayOutputStream bytes) {
-        return bytes.toString(StandardCharsets.UTF_8);
+
+    /**
+     * The guest's scheduler runs on a different carrier from the host test.
+     * ByteArrayOutputStream is not thread-safe, so polling an unsynchronized
+     * buffer would be a data race even when the guest runtime is correct.
+     */
+    private static final class SafeOutput extends ByteArrayOutputStream {
+        @Override public synchronized void write(int value) {
+            super.write(value);
+        }
+        @Override public synchronized void write(byte[] bytes, int off, int len) {
+            super.write(bytes, off, len);
+        }
+        synchronized String snapshot() {
+            return toString(StandardCharsets.UTF_8);
+        }
     }
 
-    private static void awaitOutput(ByteArrayOutputStream output, String marker) throws Exception {
+    /** Test-only rendezvous probe. Read registrations under their real lock. */
+    private static int activeChannelRegistrations(ChannelRuntime.Channel<?> channel)
+            throws Exception {
+        java.lang.reflect.Field coordinator =
+                ChannelRuntime.class.getDeclaredField("COORDINATOR");
+        coordinator.setAccessible(true);
+        java.util.concurrent.locks.ReentrantLock lock =
+                (java.util.concurrent.locks.ReentrantLock) coordinator.get(null);
+        java.lang.reflect.Field registrations =
+                ChannelRuntime.Channel.class.getDeclaredField("registrations");
+        registrations.setAccessible(true);
+        lock.lock();
+        try {
+            return ((java.util.Collection<?>) registrations.get(channel)).size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static void awaitChannelRegistration(ChannelRuntime.Channel<?> channel)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (activeChannelRegistrations(channel) == 1) return;
+            Thread.sleep(1);
+        }
+        assertEquals(1, activeChannelRegistrations(channel),
+                "guest direct blocking operation never registered with its channel");
+    }
+
+    private static String output(SafeOutput bytes) {
+        return bytes.snapshot();
+    }
+
+    private static void awaitOutput(SafeOutput output, String marker) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (!output(output).contains(marker) && System.nanoTime() < deadline) {
             Thread.sleep(1);
@@ -102,7 +150,7 @@ final class SourcePendingCleanupExecutionTest {
 
     @Test
     void cancellationWaitsForTwoGenuinelyPendingCleanupFuturesInLifoOrder() throws Exception {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SafeOutput output = new SafeOutput();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                      .allowAllAccess(true).out(output).build()) {
             Started started = start(context, NESTED_PENDING_CLEANUP);
@@ -158,7 +206,7 @@ final class SourcePendingCleanupExecutionTest {
                   return 17;
                 }
                 """;
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SafeOutput output = new SafeOutput();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                      .allowAllAccess(true).out(output).build()) {
             Started started = start(context, source);
@@ -185,4 +233,69 @@ final class SourcePendingCleanupExecutionTest {
                     """, output(output));
         }
     }
+
+    @Test
+    void cancelledDirectBlockingReadRevokesItsOwnRendezvousRegistration()
+            throws Exception {
+        String source = """
+                pub async fnc work(): int {
+                  try {
+                    stdio.println("armed");
+                    const ignored = readch gates.startGate;
+                    stdio.println("INVALID-read-resumed");
+                  } finally {
+                    stdio.println("cleanup-once");
+                  }
+                  return 17;
+                }
+                """;
+        SafeOutput output = new SafeOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(true).out(output).build()) {
+            Started started = start(context, source);
+            awaitOutput(output, "armed");
+            awaitChannelRegistration(started.startGate());
+            assertTrue(started.task().cancel(false));
+            assertThrows(CancellationException.class,
+                    () -> started.task().get(5, TimeUnit.SECONDS));
+            assertEquals(0, activeChannelRegistrations(started.startGate()),
+                    "cancellation must revoke the owned pending blocking receive");
+            assertFalse(started.startGate().tryWrite(99),
+                    "late producer must not deliver into an abandoned read");
+            assertEquals("armed\ncleanup-once\n", output(output));
+        }
+    }
+
+    @Test
+    void cancelledDirectBlockingWriteRevokesItsOwnRendezvousRegistration()
+            throws Exception {
+        String source = """
+                pub async fnc work(): int {
+                  try {
+                    stdio.println("armed");
+                    writech gates.startGate, 77;
+                    stdio.println("INVALID-write-resumed");
+                  } finally {
+                    stdio.println("cleanup-once");
+                  }
+                  return 17;
+                }
+                """;
+        SafeOutput output = new SafeOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(true).out(output).build()) {
+            Started started = start(context, source);
+            awaitOutput(output, "armed");
+            awaitChannelRegistration(started.startGate());
+            assertTrue(started.task().cancel(false));
+            assertThrows(CancellationException.class,
+                    () -> started.task().get(5, TimeUnit.SECONDS));
+            assertEquals(0, activeChannelRegistrations(started.startGate()),
+                    "cancellation must revoke the owned pending blocking send");
+            assertTrue(started.startGate().tryRead().isEmpty(),
+                    "late reader must not consume an abandoned channel write");
+            assertEquals("armed\ncleanup-once\n", output(output));
+        }
+    }
+
 }
