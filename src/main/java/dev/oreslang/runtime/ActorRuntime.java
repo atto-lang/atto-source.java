@@ -1832,8 +1832,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "only an active user-mail receive may suspend the actor mailbox");
             }
-            cell.sourceReceiveSuspended = true;
-            cell.pendingSourceReceiveBarriers++;
+            cell.serialTurnGate.hold(cell.activeMail);
         }
         ActorInboxMail<?> admittedMail = cell.activeMail;
 
@@ -1842,12 +1841,12 @@ public final class ActorRuntime implements AutoCloseable {
                 synchronized (cell.lifecycleLock) {
                     if (cell.activeMail != admittedMail || cell.finalized
                             || cell.stopped.get()) return;
-                    if (cell.pendingSourceReceiveBarriers <= 0) {
-                        throw new IllegalStateException(
-                                "source receive completion barrier underflow");
+                    SerialActorTurnGate.Completion completed =
+                            cell.serialTurnGate.complete(admittedMail);
+                    if (completed == SerialActorTurnGate.Completion.STALE) {
+                        return;
                     }
-                    if (--cell.pendingSourceReceiveBarriers == 0) {
-                        cell.sourceReceiveSuspended = false;
+                    if (completed == SerialActorTurnGate.Completion.RELEASED) {
                         cell.activeMail = null;
                     }
                     cell.lifecycleLock.notifyAll();
@@ -5986,10 +5985,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
-        /** True while one source receive owns actor state across suspension. */
-        private boolean sourceReceiveSuspended;
-        /** Multiple awaited operations may jointly own one user-mail turn. */
-        private int pendingSourceReceiveBarriers;
+        /** One admitted user mail stays logically active through all awaits. */
+        private final SerialActorTurnGate serialTurnGate = new SerialActorTurnGate();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -6134,7 +6131,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return !continuationMailbox.isEmpty()
+                        || (!serialTurnGate.occupied() && !mailbox.isEmpty());
         }
 
         private OresScheduler sourceScheduler() {
@@ -6586,7 +6584,7 @@ public final class ActorRuntime implements AutoCloseable {
                         // Continuations always outrank user mail. While a
                         // source receive is suspended, user mail is not runnable.
                         envelope = continuationMailbox.tryRead().orElse(null);
-                        if (envelope == null && !sourceReceiveSuspended) {
+                        if (envelope == null && !serialTurnGate.occupied()) {
                             envelope = mailbox.tryRead().orElse(null);
                         }
                     }
@@ -6640,7 +6638,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                if (!serialTurnGate.occupied()) activeMail = null;
                             }
                         }
                         // Both synchronous messages and cooperative continuation
@@ -6720,8 +6718,7 @@ public final class ActorRuntime implements AutoCloseable {
             })) {
                 // Drain all committed user-message envelopes, including after close.
             }
-            sourceReceiveSuspended = false;
-            pendingSourceReceiveBarriers = 0;
+            serialTurnGate.retire();
             activeMail = null;
         }
 
