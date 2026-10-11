@@ -2119,6 +2119,36 @@ public final class ActorRuntime implements AutoCloseable {
             return reserved;
         }
 
+        /**
+         * A successful authoritative host Future may race a trusted
+         * reconciliation of that same STOP. Accept the exact same turn
+         * idempotently; a stale or unrelated notice cannot borrow the ticket.
+         * This never invokes the external host effect again.
+         */
+        public SupervisorChildRegistry.Snapshot acknowledgeReservedStopEffect(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("acknowledge reserved STOP host effect");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !supervisorId.equals(notice.supervisorId())
+                    || !id.equals(notice.groupId())
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid supervisor STOP effect acknowledgment");
+            }
+            var child = notice.logicalChild().orElseThrow(() ->
+                    new IllegalStateException("missing acknowledged STOP child"));
+            var receipt = childRegistry.stopReceipt(child);
+            var permit = receipt.reservation();
+            if (!permit.failedActor().equals(notice.actorId())
+                    || permit.incarnation() != notice.incarnation()
+                    || permit.turnGeneration() != resolution.turnGeneration()) {
+                throw new IllegalStateException("stale STOP effect acknowledgment");
+            }
+            return childRegistry.acknowledgeHostStop(permit);
+        }
+
         /** Unresolved receipt snapshots survive supervisor process closure. */
         public java.util.List<SupervisorChildRegistry.StopReceipt> unresolvedSupervisorStops() {
             requireSupervisorContext("inspect supervisor STOP reconciliation inventory");
@@ -2136,6 +2166,9 @@ public final class ActorRuntime implements AutoCloseable {
             requireSupervisorContext("reconcile confirmed supervisor STOP");
             Objects.requireNonNull(reservation);
             Objects.requireNonNull(hostEffectAlreadyApplied);
+            // Reject foreign and stale tickets BEFORE invoking trusted host
+            // integration code, then revalidate after that code returns.
+            childRegistry.validateReconciliationCandidate(reservation);
             if (!hostEffectAlreadyApplied.getAsBoolean()) {
                 throw new IllegalStateException("host STOP effect was not independently verified");
             }
