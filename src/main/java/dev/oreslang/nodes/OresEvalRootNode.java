@@ -868,7 +868,27 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        private final class SourceTask
+                implements OresScheduler.CancellationAwareTask<Object> {
+            private final ArrayDeque<SourceCleanupScope> activeScopes = new ArrayDeque<>();
+            private volatile boolean cancellationRequested;
+            private int cleanupDepth;
+            private boolean awaitingCooperate;
+
+            @Override
+            public boolean cleanupInProgress() {
+                return cleanupDepth > 0;
+            }
+
+            @Override
+            public void cancellationRequested() {
+                cancellationRequested = true;
+            }
+
+            private SourceFlow cancellationFlow() {
+                return SourceFlow.throwing(
+                        new OresScheduler.TaskCancelledException());
+            }
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             private static final int LOOP_SAFEPOINT_INTERVAL = 32;
@@ -991,14 +1011,25 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
-                    if (continuation == null) {
-                        throw new IllegalStateException(
-                                "source task resumed without a pending source continuation");
+                    boolean wasCooperating = awaitingCooperate;
+                    awaitingCooperate = false;
+                    if (resume.failure() instanceof OresScheduler.TaskCancelledException
+                            && wasCooperating) {
+                        pendingLoopContinuation = null;
+                        pendingLoopGuardEnv = null;
+                        SourceCleanupScope inner = activeScopes.peekFirst();
+                        if (inner == null) {
+                            throw new IllegalStateException(
+                                    "source cancellation has no live lexical scope");
+                        }
+                        inner.finish(cancellationFlow());
+                    } else {
+                        if (continuation == null) {
+                            throw new IllegalStateException(
+                                    "source task resumed without a pending source continuation");
+                        }
+                        continuation.accept(this, resume.value(), resume.failure());
                     }
-                    continuation.accept(
-                            this,
-                            resume.value(),
-                            resume.failure());
                 }
 
                 // Finish each source loop back-edge iteratively. The unexecuted
@@ -1040,6 +1071,18 @@ public final class OresEvalRootNode extends RootNode {
                     boolean untrusted = ActorRuntime.currentActorKind()
                             == ActorRuntime.ActorKind.UNTRUSTED;
                     if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
+                        if (cancellationRequested && cleanupDepth == 0
+                                && !guardEnv.hasLiveMutexGuards()) {
+                            pendingLoopContinuation = null;
+                            pendingLoopGuardEnv = null;
+                            SourceCleanupScope inner = activeScopes.peekFirst();
+                            if (inner == null) {
+                                throw new IllegalStateException(
+                                        "source cancellation has no live loop scope");
+                            }
+                            inner.finish(cancellationFlow());
+                            return;
+                        }
                         // Untrusted fuel is charged at EVERY loop backedge, not
                         // once per 32 iterations. Trusted tasks poll at 32.
                         context.schedulerSafepoint();
@@ -1069,6 +1112,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "source continuation attempted two terminal steps in one turn");
                 }
+                awaitingCooperate = false;
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.await(future);
             }
@@ -1079,6 +1123,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "source continuation attempted two terminal steps in one turn");
                 }
+                awaitingCooperate = true;
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.cooperate();
             }
@@ -1599,6 +1644,43 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        /**
+         * A heap-owned lexical scope is the unique finalization owner. A source
+         * cancellation suspended at a loop cooperate point can enter this frame
+         * directly without replaying the abandoned loop continuation.
+         */
+        private final class SourceCleanupScope {
+            private final SourceTask task;
+            private final Env env;
+            private final ArrayDeque<Ast.Expr> defers;
+            private final SourceFlowCont downstream;
+            private boolean claimed;
+
+            private SourceCleanupScope(SourceTask task, Env env,
+                    ArrayDeque<Ast.Expr> defers, SourceFlowCont downstream) {
+                this.task = task;
+                this.env = env;
+                this.defers = defers;
+                this.downstream = downstream;
+            }
+
+            private void finish(SourceFlow flow) {
+                if (claimed) {
+                    throw new IllegalStateException("lexical cleanup scope finalized twice");
+                }
+                claimed = true;
+                task.cleanupDepth++;
+                finishBlock(task, env, defers, flow, (resumed, completed) -> {
+                    if (task.activeScopes.peekFirst() != this) {
+                        throw new IllegalStateException("lexical cleanup stack lost scope ordering");
+                    }
+                    task.activeScopes.removeFirst();
+                    task.cleanupDepth--;
+                    downstream.accept(resumed, completed);
+                });
+            }
+        }
+
         private void runBlock(
                 SourceTask task,
                 List<Ast.Stmt> statements,
@@ -1606,14 +1688,21 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            runStatements(
-                    task,
-                    statements,
-                    env,
-                    defers,
-                    0,
-                    (ignored, flow) ->
-                            finishBlock(task, env, defers, flow, continuation));
+            SourceCleanupScope scope =
+                    new SourceCleanupScope(task, env, defers, continuation);
+            task.activeScopes.addFirst(scope);
+            runStatements(task, statements, env, defers, 0,
+                    (ignored, flow) -> scope.finish(flow));
+        }
+
+        /** The entire finally body is cleanup, including its awaited expressions. */
+        private void runFinallyBlock(SourceTask task,
+                List<Ast.Stmt> statements, Env parent, SourceFlowCont downstream) {
+            task.cleanupDepth++;
+            runBlock(task, statements, parent, (resumed, flow) -> {
+                task.cleanupDepth--;
+                downstream.accept(resumed, flow);
+            });
         }
 
         /**
@@ -1658,6 +1747,12 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             // Only runBlock owns finalization. These statements produce a flow;
             // the caller drains defers and releases live guards exactly once.
+            // No unrelated guest statements may run after cancellation; code
+            // within an already-admitted finally/defer retains cleanupDepth.
+            if (task.cancellationRequested && task.cleanupDepth == 0) {
+                continuation.accept(task, task.cancellationFlow());
+                return;
+            }
             if (index >= statements.size()) {
                 continuation.accept(task, SourceFlow.normal());
                 return;
@@ -2048,7 +2143,8 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && !(flow.failure() instanceof OresScheduler.TaskCancelledException)) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -2059,7 +2155,7 @@ public final class OresEvalRootNode extends RootNode {
                                             attempted.catchBody(),
                                             caught,
                                             (t2, catchFlow) ->
-                                                    runBlock(
+                                                    runFinallyBlock(
                                                             t2,
                                                             attempted.finallyBody(),
                                                             env,
@@ -2068,7 +2164,7 @@ public final class OresEvalRootNode extends RootNode {
                                                                             t3,
                                                                             mergeCleanupFlow(catchFlow, finallyFlow))));
                                 } else {
-                                    runBlock(
+                                    runFinallyBlock(
                                             t,
                                             attempted.finallyBody(),
                                             env,
