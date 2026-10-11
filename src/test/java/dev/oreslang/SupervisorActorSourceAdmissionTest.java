@@ -22,6 +22,26 @@ final class SupervisorActorSourceAdmissionTest {
     }
 
     @Test
+    void sourcePipeActorDeclarationsAndOperatorCannotSilentlyExecute() {
+        for (String role : new String[] {"readable", "transform", "writable", "duplex"}) {
+            String source = "define " + role + " pipe actor Foo as\nend\n";
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source));
+            assertTrue(error.getMessage().contains("compiler-checked pipe role typing"),
+                    error::getMessage);
+        }
+        String chain = """
+                pub fnc connect_actors(): ActorStream {
+                    return spawn A1() pipe spawn A2() pipe spawn A3();
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(chain));
+        assertTrue(error.getMessage().contains("actor pipe expressions require compiler-checked"),
+                error::getMessage);
+    }
+
+    @Test
     void ordinaryActorDefinitionsRemainSupported() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define actor Worker as
