@@ -19,17 +19,17 @@ public final class DeclaredEffectVerifier {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
-                    check(function.name(), function.annotations(), function.body());
+                    check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
-                        check(klass.name() + "." + method.name(), method.annotations(), method.body());
+                        check(klass.name() + "." + method.name(), method.annotations(), method.body(), klass.serial());
                     }
                 }
             }
         }
     }
 
-    private static void check(String name, List<Ast.Annotation> annotations, Object body) {
+    private static void check(String name, List<Ast.Annotation> annotations, Object body, boolean serialActor) {
         Ast.Annotation using = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("$requires$")) {
@@ -51,7 +51,7 @@ public final class DeclaredEffectVerifier {
                 .map(Ast.TypeRef::name).toList());
         EnumSet<FunctionEffects.Effect> inferred =
                 EnumSet.noneOf(FunctionEffects.Effect.class);
-        collect(body, inferred, null, name);
+        collect(body, inferred, null, name, serialActor);
 
         // A no_alloc/no_block guarantee requires absence of those operations
         // in the *transitive* effect graph. This conservative first pass rejects
@@ -78,7 +78,7 @@ public final class DeclaredEffectVerifier {
     }
 
     private static void collect(Object node, Set<FunctionEffects.Effect> effects,
-                                String stateAccess, String callableName) {
+                                String stateAccess, String callableName, boolean serialActor) {
         if (node == null) return;
         if (node instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.MemberExpr member
@@ -90,13 +90,13 @@ public final class DeclaredEffectVerifier {
                         || callback.parameters().size() != 1) {
                     throw new IllegalArgumentException("invalid handle_state effect callback");
                 }
-                if (!callback.critical() || callback.nonLexical()) {
+                if ((!callback.critical() && !serialActor) || callback.nonLexical()) {
                     throw new IllegalArgumentException(
                             "intrinsic critical handle_state requires a critical lexical callback");
                 }
                 String name = callback.parameters().getFirst().name();
-                collect(callback.expressionBody(), effects, name, callableName);
-                collect(callback.blockBody(), effects, name, callableName);
+                collect(callback.expressionBody(), effects, name, callableName, serialActor);
+                collect(callback.blockBody(), effects, name, callableName, serialActor);
                 return;
             }
             if (call.callee() instanceof Ast.MemberExpr member
@@ -104,7 +104,7 @@ public final class DeclaredEffectVerifier {
                     && namespace.name().equals("stdio")
                     && (member.member().equals("println") || member.member().equals("print"))) {
                 effects.add(FunctionEffects.Effect.IO);
-                collect(call.arguments(), effects, stateAccess, callableName);
+                collect(call.arguments(), effects, stateAccess, callableName, serialActor);
                 return;
             }
             // An unknown callee might suspend, allocate, perform I/O, or
@@ -121,11 +121,11 @@ public final class DeclaredEffectVerifier {
                 // READ. A read-modify-write operation contributes STATE_READ
                 // separately when its right-hand side observes the field.
                 effects.add(FunctionEffects.Effect.STATE_WRITE);
-                collect(assign.value(), effects, stateAccess, callableName);
+                collect(assign.value(), effects, stateAccess, callableName, serialActor);
                 return;
             }
-            collect(assign.target(), effects, stateAccess, callableName);
-            collect(assign.value(), effects, stateAccess, callableName);
+            collect(assign.target(), effects, stateAccess, callableName, serialActor);
+            collect(assign.value(), effects, stateAccess, callableName, serialActor);
             return;
         }
         if (node instanceof Ast.MemberExpr member && stateAccess != null
@@ -136,7 +136,7 @@ public final class DeclaredEffectVerifier {
         }
         if (node instanceof Ast.AwaitExpr await) {
             effects.add(FunctionEffects.Effect.SUSPEND);
-            collect(await.expression(), effects, stateAccess, callableName);
+            collect(await.expression(), effects, stateAccess, callableName, serialActor);
             return;
         }
         if (node instanceof Ast.NewExpr) {
@@ -155,7 +155,7 @@ public final class DeclaredEffectVerifier {
         if (node instanceof Ast.SelectStmt || node instanceof Ast.DynamicSelectExpr
                 || node instanceof Ast.ChannelOpExpr) effects.add(FunctionEffects.Effect.SUSPEND);
         if (node instanceof Iterable<?> children) {
-            for (Object child : children) collect(child, effects, stateAccess, callableName);
+            for (Object child : children) collect(child, effects, stateAccess, callableName, serialActor);
             return;
         }
         if (node instanceof java.lang.Record record
@@ -163,7 +163,7 @@ public final class DeclaredEffectVerifier {
             for (RecordComponent component : record.getClass().getRecordComponents()) {
                 try {
                     collect(component.getAccessor().invoke(record),
-                            effects, stateAccess, callableName);
+                            effects, stateAccess, callableName, serialActor);
                 } catch (ReflectiveOperationException failure) {
                     throw new IllegalStateException("effect analyzer could not inspect AST", failure);
                 }
