@@ -8797,6 +8797,108 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString() { return "infer struct" + fields; }
     }
 
+    /**
+     * Compiler-private physical storage and short-lived access capability.
+     * No native Slot, MemorySegment, arena or mutable Map is returned to guest.
+     * Persistent bytes survive turns, but this view cannot survive a callback
+     * or be used by a different logical owner after suspension.
+     */
+    private static final class SourceScalarState {
+        private final ActorRuntime.ActorId actorId;
+        private final dev.oreslang.runtime.ActorArena arena;
+        private final Map<String, dev.oreslang.runtime.ExplicitNativeI64Region.Slot> slots;
+        private final Map<String, Ast.TypeRef> types;
+        private StateAccessView active;
+
+        private SourceScalarState(ActorRuntime.ActorId actorId,
+                dev.oreslang.runtime.ActorArena arena,
+                Map<String, dev.oreslang.runtime.ExplicitNativeI64Region.Slot> slots,
+                Map<String, Ast.TypeRef> types) {
+            this.actorId = Objects.requireNonNull(actorId);
+            this.arena = Objects.requireNonNull(arena);
+            this.slots = Map.copyOf(slots);
+            this.types = Map.copyOf(types);
+        }
+
+        private void requireOwner() {
+            if (!actorId.equals(ActorRuntime.currentActorId().orElse(null))) {
+                throw new SecurityException(
+                        "actor StateAccess denied outside owning incarnation");
+            }
+            if (arena.closed()) {
+                throw new IllegalStateException("actor StateAccess belongs to retired arena");
+            }
+            if (!arena.criticalGate().heldByCurrentLogicalDomain()) {
+                throw new IllegalStateException(
+                        "actor StateAccess requires an admitted logical critical ticket");
+            }
+        }
+
+        private StateAccessView begin() {
+            requireOwner();
+            StateAccessView view = new StateAccessView(this, active);
+            active = view;
+            return view;
+        }
+
+        private void finish(StateAccessView view) {
+            // Revoke before restoring outer borrow even if callback threw.
+            view.live = false;
+            if (active != view) {
+                throw new IllegalStateException("actor StateAccess scope unwind out of order");
+            }
+            active = view.previous;
+        }
+
+        private Object get(StateAccessView view, String field) {
+            requireLive(view);
+            var slot = slots.get(field);
+            if (slot == null) throw new IllegalArgumentException("unknown actor state key '" + field + "'");
+            long bits = arena.readPersistent(slot);
+            Ast.TypeRef type = types.get(field);
+            return type.name().equals("bool") || type.name().equals("boolean")
+                    ? bits != 0L : bits;
+        }
+
+        private Object set(StateAccessView view, String field, Object value) {
+            requireLive(view);
+            var slot = slots.get(field);
+            if (slot == null) throw new IllegalArgumentException("unknown actor state key '" + field + "'");
+            Ast.TypeRef type = types.get(field);
+            boolean bool = type.name().equals("bool") || type.name().equals("boolean");
+            if (bool && !(value instanceof Boolean) || !bool && !(value instanceof Number)) {
+                throw new IllegalArgumentException(
+                        "actor state key '" + field + "' requires " + (bool ? "bool" : "int"));
+            }
+            long bits = bool ? ((Boolean) value ? 1L : 0L) : ((Number) value).longValue();
+            arena.writePersistent(slot, bits);
+            return value;
+        }
+
+        private void requireLive(StateAccessView view) {
+            requireOwner();
+            if (active != view || !view.live) {
+                throw new IllegalStateException(
+                        "actor state loan expired or fenced by nested critical scope");
+            }
+        }
+    }
+
+    private static final class StateAccessView {
+        private final SourceScalarState state;
+        private final StateAccessView previous;
+        private boolean live = true;
+
+        private StateAccessView(SourceScalarState state, StateAccessView previous) {
+            this.state = state;
+            this.previous = previous;
+        }
+
+        private Object get(String field) { return state.get(this, field); }
+        private Object set(String field, Object value) { return state.set(this, field, value); }
+        @Override public String toString() { return "<scoped actor StateAccess>"; }
+    }
+
     private record SourceActorState(
             ActorRuntime.ActorId ownerActorId,
             String actorTypeName,
