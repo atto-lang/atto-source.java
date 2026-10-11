@@ -6312,6 +6312,7 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "isolated" -> handler.isolated();
                     case "serial" -> handler.serial();
+                    case "done" -> handler.done();
                     case "send" -> (Invokable) args -> {
                         handler.send(requireStringArg(args, "http.handler.send"));
                         return null;
