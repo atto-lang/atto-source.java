@@ -194,9 +194,12 @@ check the persistent wall and CPU budgets, even without a loop backedge.
 An await cannot restart the deadline; a cooperate cannot refund fuel.
 One live top-level source-task quota cohort is permitted per UNTRUSTED actor.
 Additional top-level task admission fails closed while it is active; nested
-source tasks must share the same actor-bound quota and each completion
-releases exactly one cohort reference. Last-Future settlement retires the
-cohort, including cancellation and synchronous completion/error races.
+source tasks must share the same actor-bound quota. Each task releases
+exactly one cohort reference only after scheduler-confirmed **carrier
+quiescence**, not merely when its Future settles. Last-quiescent-task
+retirement clears the cohort. In particular `Future.cancel(false)` can
+settle while a guest turn is still physically executing; that does not
+grant permission to free its quota or start a second root task.
 A synchronous actor mailbox turn cannot consume a separate physical-turn
 quota at a safepoint while the cohort is live: it must run inside the
 authorized continuation or wait for quota retirement.
