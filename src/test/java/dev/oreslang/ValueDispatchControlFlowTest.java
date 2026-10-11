@@ -194,119 +194,73 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
-    void directAwaitInsideValueArmsFailsClosedUntilResumableLowering() {
-        IllegalArgumentException matchError = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc forbidden(Future<int> pending): int {
-                          return match 1 over
-                            on _ { return await pending; }
-                          end
-                        }
-                        """)));
-        assertTrue(matchError.getMessage().contains("continuation lowering"),
-                matchError.getMessage());
-
-        IllegalArgumentException switchError = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc forbidden(Future<int> pending): int {
-                          return switch 1
-                            default { return await pending; }
-                          end
-                        }
-                        """)));
-        assertTrue(switchError.getMessage().contains("continuation lowering"),
-                switchError.getMessage());
-    }
-
-    @Test
-    void nestedObjectPayloadAndLoopAwaitCannotEscapeValueDispatchFence() {
-        String[] badSources = {
-                """
-                fnc forbidden(Future<int> pending): int {
-                  return match 1 over
-                    on _ {
-                      const message = infer struct{delta: await pending};
-                      return 3;
-                    }
-                  end
+    void awaitingValueArmsPreservesReturnTargetAndRunsCleanup() throws Exception {
+        assertEquals("finally-match\ndefer-match\n42\ndefer-switch\n41\n", execute("""
+                async fnc answer(): int {
+                  return 41;
                 }
-                """,
-                """
-                fnc forbidden(Future<int> pending): int {
-                  return switch 1
-                    default {
-                      loop {
-                        const result = await pending;
-                        break;
-                      }
-                      return 3;
-                    }
-                  end
-                }
-                """,
-                """
-                fnc forbidden(Future<int> pending): int {
-                  return match 1 over
+
+                async fnc collected(): int {
+                  const result = match 1 over
                     on _ {
+                      defer stdio.println("defer-match");
                       try {
-                        const packet = infer struct{data: await pending};
-                      } catch (failure) {
-                        stdio.println("caught");
+                        return (await answer()) + 1;
+                      } catch (error) {
+                        return 0;
                       } finally {
-                        stdio.println("finalized");
+                        stdio.println("finally-match");
                       }
-                      return 3;
-                    }
-                  end
-                }
-                """
-        };
-        for (String source : badSources) {
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)), source);
-            assertTrue(failure.getMessage().contains("continuation lowering"),
-                    failure.getMessage());
-        }
-    }
-
-    @Test
-    void nestedDoArmReturnMustMatchContainingFunctionType() {
-        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc broken(int v): string {
-                          const x = match v over
-                            on _ {
-                              do match v over
-                                on 1 { return 99; }
-                              end
-                              return "ok";
-                            }
-                          end
-                          return x;
-                        }
-                        """)));
-        assertTrue(wrong.getMessage().contains("return value has type"),
-                wrong.getMessage());
-    }
-
-    @Test
-    void nestedDoMatchRetainsFunctionReturnBoundary() throws Exception {
-        assertEquals("function\n", execute("""
-                fnc nested(int v): string {
-                  const result = match v over
-                    on _ {
-                      do match v over
-                        on 1 { return "function"; }
-                      end
-                      return "expression";
                     }
                   end
                   return result;
                 }
 
-                pub fnc main(): void {
-                  stdio.println(nested(1));
+                async fnc switched(): int {
+                  return switch 1
+                    default { return 0; }
+                    case 1 {
+                      defer stdio.println("defer-switch");
+                      return await answer();
+                    }
+                  end
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await collected());
+                  stdio.println(await switched());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void nestedObjectLoopAndTryMaySuspendInValueDispatch() throws Exception {
+        assertEquals("41\nnested-finally\nnested-defer\n7\n", execute("""
+                async fnc answer(): int { return 41; }
+
+                async fnc nested(): int {
+                  return match 1 over
+                    on _ {
+                      defer stdio.println("nested-defer");
+                      try {
+                        loop {
+                          const payload = infer struct{data: await answer()};
+                          stdio.println(payload.data);
+                          break;
+                        }
+                      } catch (error) {
+                        return 0;
+                      } finally {
+                        stdio.println("nested-finally");
+                      }
+                      return 7;
+                    }
+                  end
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await nested());
                   return;
                 }
                 """));
