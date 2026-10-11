@@ -6562,7 +6562,9 @@ public final class ActorRuntime implements AutoCloseable {
             // can dispatch to a supervisor without holding a failed actor's
             // lock or waiting for its bounded user-data mailbox.
             if (recordCause && cause != null
-                    && !(cause instanceof ActorCancelledException)
+                    // Cancellation is a lifecycle effect, never a synthetic
+                    // THROW/PANIC notice (including generic Future cancellation).
+                    && !(cause instanceof CancellationException)
                     && !(cause instanceof ActorCancellationSignal)
                     && ref.terminationCause.get() == cause
                     && failureNoticePublished.compareAndSet(false, true)) {
