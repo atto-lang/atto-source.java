@@ -22,6 +22,8 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    /** Lexical value-match completion boundary, reset by independent lambdas. */
+    private int valueArmDepth;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1589,7 +1591,9 @@ public final class Parser {
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
-            return new Ast.ReturnStmt(value);
+            return valueArmDepth > 0
+                    ? new Ast.ArmReturnStmt(value)
+                    : new Ast.ReturnStmt(value);
         }
         if (match(YIELD)) {
             boolean delegated = match(STAR);
@@ -2509,7 +2513,15 @@ public final class Parser {
             if (!match(ARROW) && !check(LBRACE)) {
                 throw error(peek(), "match arm requires '{ ... }' or '-> { ... }'");
             }
-            Ast.MatchArm arm = new Ast.MatchArm(pattern, guard, parseBlock());
+            int previousArmDepth = valueArmDepth;
+            valueArmDepth = valuePosition ? previousArmDepth + 1 : 0;
+            List<Ast.Stmt> body;
+            try {
+                body = parseBlock();
+            } finally {
+                valueArmDepth = previousArmDepth;
+            }
+            Ast.MatchArm arm = new Ast.MatchArm(pattern, guard, body);
             if (catchAll) {
                 if (defaultArm != null) throw error(previous(), "match can contain only one default arm");
                 defaultArm = arm;
@@ -3315,6 +3327,9 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+        int outerArmDepth = valueArmDepth;
+        valueArmDepth = 0;
+        try {
         // Only an immediate '{' denotes the statement-block form. Everything
         // else starts a normal expression body. This is intentionally lexical:
         // future prefix expressions such as `struct{...}{...}` must remain
@@ -3323,6 +3338,9 @@ public final class Parser {
             return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
         }
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        } finally {
+            valueArmDepth = outerArmDepth;
+        }
     }
 
     private boolean looksLikeLambda() {
