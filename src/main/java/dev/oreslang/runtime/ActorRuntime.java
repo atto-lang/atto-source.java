@@ -3156,6 +3156,15 @@ public final class ActorRuntime implements AutoCloseable {
                     ActorGroup group = new ActorGroup(id, creator, creatorPolicy);
                     if (actorGroups.putIfAbsent(id, group) == null) {
                         if (joined != null) joined.add(id);
+                        // Finalization calls unregisterActor() while holding
+                        // ActorCell.lifecycleLock. Never acquire that lock here:
+                        // instead recheck the stop flag after publication. If
+                        // retirement beat group creation's registration, the
+                        // group is closed before it can escape to the caller.
+                        if (creatorCell != null && creatorCell.stopped.get()) {
+                            group.closeFromRuntime();
+                            throw new IllegalStateException("group creator stopped during creation");
+                        }
                         return group;
                     }
                 }
