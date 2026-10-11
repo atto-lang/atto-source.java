@@ -19,7 +19,7 @@ final class ProjectedBorrowOwnershipTest {
             end
 
             define class Holder as
-              pub let List<Item> items;
+              pub let mut List<Item> items;
             end
             """;
 
