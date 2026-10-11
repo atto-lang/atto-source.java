@@ -241,6 +241,60 @@ final class OresFuturesTest {
     }
 
     @Test
+    void timedGetDetachesWaiterWithoutCancellingOrCompletingSharedProducer()
+            throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        for (int i = 0; i < 160; i++) {
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> pending.get(1, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                    "timed host waits must not accumulate callbacks in shared Future");
+            assertFalse(pending.isDone());
+        }
+        assertThrows(java.util.concurrent.TimeoutException.class,
+                () -> pending.get(0, java.util.concurrent.TimeUnit.NANOSECONDS));
+        assertEquals(0, pending.pendingRuntimeWaiterCount());
+
+        assertTrue(pending.completeFromRuntime(41));
+        assertEquals(41, pending.get(1, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(0, pending.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void interruptedBlockingGetDetachesOnlyItsOwnWaiter() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> observed =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.CountDownLatch starting =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread blocked = Thread.ofVirtual().start(() -> {
+            starting.countDown();
+            try {
+                pending.get();
+                observed.set(new AssertionError("interrupted waiter unexpectedly returned"));
+            } catch (Throwable failure) {
+                observed.set(failure);
+            }
+        });
+        assertTrue(starting.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+        while (pending.pendingRuntimeWaiterCount() == 0
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(1, pending.pendingRuntimeWaiterCount());
+        blocked.interrupt();
+        blocked.join(5000);
+        assertFalse(blocked.isAlive());
+        assertInstanceOf(InterruptedException.class, observed.get());
+        assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                "interrupted host waiter must release its Future registration");
+        assertFalse(pending.isCancelled());
+        assertTrue(pending.completeFromRuntime(17));
+        assertEquals(17, pending.get(1, java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    @Test
     void raceCompletesWithFirstCompletion() {
         CompletableFuture<Integer> slow = new CompletableFuture<>();
         CompletableFuture<Integer> fast = new CompletableFuture<>();
