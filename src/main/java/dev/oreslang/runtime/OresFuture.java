@@ -79,9 +79,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * only prevents this runtime continuation waiter from retaining or being
      * invoked after its owning scheduler/task has been cancelled.</p>
      */
+    /** Scheduler-only generation-tagged completion, never a guest callback. */
+    @FunctionalInterface
+    interface TaggedRuntimeWaiter {
+        void accept(long generation, Object value, Throwable failure);
+    }
+
     static final class RuntimeWaiterRegistration<T> {
         private final OresFuture<T> owner;
         private final BiConsumer<? super T, ? super Throwable> callback;
+        private final TaggedRuntimeWaiter taggedCallback;
+        private final long generation;
         private final AtomicBoolean claimed = new AtomicBoolean();
 
         private RuntimeWaiterRegistration(
@@ -89,6 +97,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 BiConsumer<? super T, ? super Throwable> callback) {
             this.owner = Objects.requireNonNull(owner, "owner");
             this.callback = Objects.requireNonNull(callback, "callback");
+            this.taggedCallback = null;
+            this.generation = 0;
+        }
+
+        private RuntimeWaiterRegistration(
+                OresFuture<T> owner, TaggedRuntimeWaiter callback, long generation) {
+            this.owner = Objects.requireNonNull(owner, "owner");
+            this.callback = null;
+            this.taggedCallback = Objects.requireNonNull(callback, "callback");
+            this.generation = generation;
         }
 
         boolean detach() {
@@ -413,9 +431,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     RuntimeWaiterRegistration<T> whenCompleteRuntimeCancellable(
             BiConsumer<? super T, ? super Throwable> callback) {
-        Objects.requireNonNull(callback, "callback");
-        RuntimeWaiterRegistration<T> waiter =
-                new RuntimeWaiterRegistration<>(this, callback);
+        return registerRuntimeWaiter(new RuntimeWaiterRegistration<>(this, callback));
+    }
+
+    RuntimeWaiterRegistration<T> whenCompleteRuntimeCancellableTagged(
+            TaggedRuntimeWaiter callback, long generation) {
+        return registerRuntimeWaiter(
+                new RuntimeWaiterRegistration<>(this, callback, generation));
+    }
+
+    private RuntimeWaiterRegistration<T> registerRuntimeWaiter(
+            RuntimeWaiterRegistration<T> waiter) {
         waiters.add(waiter);
 
         Object observed = state.get();
@@ -583,14 +609,24 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private void notifyWaiter(RuntimeWaiterRegistration<T> waiter, Object terminal) {
         if (!waiter.claimed.compareAndSet(false, true)) return;
         try {
+            T value;
+            Throwable failure;
             if (terminal instanceof Success<?> success) {
-                waiter.callback.accept((T) success.value(), null);
+                value = (T) success.value();
+                failure = null;
             } else if (terminal instanceof Failure failed) {
-                waiter.callback.accept(null, failed.failure());
+                value = null;
+                failure = failed.failure();
             } else if (terminal instanceof Cancelled cancelled) {
-                waiter.callback.accept(null, cancelled.failure());
+                value = null;
+                failure = cancelled.failure();
             } else {
                 throw new IllegalStateException("attempted to notify waiter from pending Future");
+            }
+            if (waiter.taggedCallback != null) {
+                waiter.taggedCallback.accept(waiter.generation, value, failure);
+            } else {
+                waiter.callback.accept(value, failure);
             }
         } catch (RuntimeException | Error ignored) {
             // Runtime waiter failures must not stop delivery to other waiters or

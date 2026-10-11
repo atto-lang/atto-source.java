@@ -498,7 +498,7 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> implements OresFuture.TaggedRuntimeWaiter {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
@@ -517,6 +517,12 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
+        // A claimed callback from an abandoned Future may arrive after a
+        // cancellation continuation has entered a *different* cleanup await.
+        // The generation and pending-resume publication are one operation:
+        // stale producers cannot inject an old payload into that cleanup.
+        private final Object awaitDeliveryLock = new Object();
+        private long awaitGeneration;
         // Cancellation admission and terminal outcome arbitration must be
         // indivisible. The atomic phase transitions alone were insufficient:
         // cancel() could succeed after finish() selected a success outcome.
@@ -584,9 +590,16 @@ public final class OresScheduler implements AutoCloseable {
                         return;
                     }
                 }
-                if (phase.get() == WAITING && !isCleaningUp()) {
+                boolean wakeCancelled = false;
+                synchronized (awaitDeliveryLock) {
+                    if (phase.get() == WAITING && !isCleaningUp()) {
+                        ++awaitGeneration;
+                        pendingResume.set(Resume.completed(null, cancellation));
+                        wakeCancelled = true;
+                    }
+                }
+                if (wakeCancelled) {
                     detachActiveAwaitRegistration();
-                    pendingResume.set(Resume.completed(null, cancellation));
                     scheduleReadyResume();
                 }
             } catch (RuntimeException | Error failure) {
@@ -717,9 +730,13 @@ public final class OresScheduler implements AutoCloseable {
             if (!phase.compareAndSet(RUNNING, WAITING)) {
                 return;
             }
-            if (cancelRequested.get() && !isCleaningUp()) {
-                pendingResume.set(Resume.completed(null, cancellation));
-                return;
+            final long generation;
+            synchronized (awaitDeliveryLock) {
+                generation = ++awaitGeneration;
+                if (cancelRequested.get() && !isCleaningUp()) {
+                    pendingResume.set(Resume.completed(null, cancellation));
+                    return;
+                }
             }
 
             try {
@@ -735,17 +752,18 @@ public final class OresScheduler implements AutoCloseable {
                 Object terminal = awaited.runtimeTerminalStateOrNull();
                 if (terminal != null) {
                     deliverAwaitCompletion(
+                            generation,
                             OresFuture.runtimeTerminalValue(terminal),
                             OresFuture.runtimeTerminalFailure(terminal));
                     return;
                 }
 
-                // Pending path: TaskRunner itself is the reusable callback
-                // target, avoiding a new captured lambda for every await. The
-                // detachable registration remains per suspension so scheduler
-                // close/task cancellation can sever retention safely.
+                // The reusable tagged callback carries the registration's
+                // immutable await generation, without allocating a lambda
+                // for each pending suspension. A claimed *older* waiter can
+                // never deliver into the current lexical cleanup await.
                 OresFuture.RuntimeWaiterRegistration<?> registration =
-                        awaited.whenCompleteRuntimeCancellable(this);
+                        awaited.whenCompleteRuntimeCancellableTagged(this, generation);
 
                 OresFuture.RuntimeWaiterRegistration<?> previous =
                         activeAwaitRegistration.getAndSet(registration);
@@ -764,28 +782,32 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         @Override
-        public void accept(Object value, Throwable failure) {
-            deliverAwaitCompletion(value, failure);
+        public void accept(long generation, Object value, Throwable failure) {
+            deliverAwaitCompletion(generation, value, failure);
         }
 
-        private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL || (cancelRequested.get() && !isCleaningUp())) return;
+        private void deliverAwaitCompletion(long generation, Object value, Throwable failure) {
+            boolean duplicate = false;
+            synchronized (awaitDeliveryLock) {
+                // In-flight callbacks from detached waits may already have
+                // claimed their registration. Epoch matching is still needed
+                // even if detach reported success for the other waiters.
+                if (generation != awaitGeneration || phase.get() == TERMINAL
+                        || (cancelRequested.get() && !isCleaningUp())) return;
 
-            Resume resume = Resume.completed(
-                    value,
-                    failure == null ? null : OresFuture.unwrap(failure));
-            if (!pendingResume.compareAndSet(null, resume)) {
-                // Cancellation can replace a concurrently delivered await
-                // result. It owns the one pending resume; that is not a
-                // duplicate-delivery bug and must not bypass lexical cleanup.
-                if (cancelRequested.get() && !isCleaningUp()) return;
+                Resume resume = Resume.completed(
+                        value, failure == null ? null : OresFuture.unwrap(failure));
+                if (!pendingResume.compareAndSet(null, resume)) {
+                    if (cancelRequested.get() && !isCleaningUp()) return;
+                    duplicate = true;
+                } else if (phase.get() == TERMINAL) {
+                    pendingResume.compareAndSet(resume, null);
+                    return;
+                }
+            }
+            if (duplicate) {
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
-                return;
-            }
-
-            if (phase.get() == TERMINAL) {
-                pendingResume.compareAndSet(resume, null);
                 return;
             }
             scheduleReadyResume();
