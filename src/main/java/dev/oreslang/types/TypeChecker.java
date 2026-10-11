@@ -1532,7 +1532,7 @@ public final class TypeChecker {
             Type subject = deref(typeOf(switched.subject(), env, generics, self));
             Map<Env.Binding, Set<String>> beforeCases = env.initializationSnapshot();
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
+            List<Object> seenCaseValues = new ArrayList<>();
             for (Ast.SwitchCase arm : switched.cases()) {
                 env.restoreInitialization(beforeCases);
                 if (arm.constants().isEmpty()) throw new IllegalArgumentException("switch case requires at least one constant");
@@ -1542,8 +1542,13 @@ public final class TypeChecker {
                     if (!assignable(actual, subject) && !assignable(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
-                    String key = constant.toString();
-                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + key);
+                    Object value = switchCaseConstantValue(constant);
+                    for (Object prior : seenCaseValues) {
+                        if (switchCaseValuesEqual(prior, value)) {
+                            throw new IllegalArgumentException("duplicate switch case: " + value);
+                        }
+                    }
+                    seenCaseValues.add(value);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
                 exits.add(env.initializationSnapshot());
@@ -7441,6 +7446,110 @@ public final class TypeChecker {
         Set<String> result = new HashSet<>();
         for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
         return result;
+    }
+
+    // Switch labels must be deterministic scalar constants. Folding them
+    // here allows duplicate detection by VALUE, not by AST/string spelling.
+    // Complex/list/object labels fail closed until the shared constant
+    // evaluator and cross-backend equality ABI support them.
+    private Object switchCaseConstantValue(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            if (value == null || value instanceof String || value instanceof Boolean
+                    || value instanceof Number) return value;
+            throw new IllegalArgumentException("switch case constant has unsupported scalar type: " + value);
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            Object value = switchCaseConstantValue(unary.operand());
+            return switch (unary.operator()) {
+                case "+" -> {
+                    if (!(value instanceof Number)) throw new IllegalArgumentException("unary + switch constant must be numeric");
+                    yield value;
+                }
+                case "-" -> {
+                    if (!(value instanceof Number number)) throw new IllegalArgumentException("unary - switch constant must be numeric");
+                    yield isSwitchIntegral(number) ? -number.longValue() : -number.doubleValue();
+                }
+                case "!" -> {
+                    if (!(value instanceof Boolean bool)) throw new IllegalArgumentException("unary ! switch constant must be boolean");
+                    yield !bool;
+                }
+                case "~" -> {
+                    if (!(value instanceof Number number) || !isSwitchIntegral(number)) {
+                        throw new IllegalArgumentException("unary ~ switch constant must be integral");
+                    }
+                    yield ~number.longValue();
+                }
+                default -> throw new IllegalArgumentException(
+                        "unsupported unary switch constant operator: " + unary.operator());
+            };
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            Object left = switchCaseConstantValue(binary.left());
+            Object right = switchCaseConstantValue(binary.right());
+            if (binary.operator().equals("+") && left instanceof String a && right instanceof String b) {
+                return a + b;
+            }
+            if (!(left instanceof Number a) || !(right instanceof Number b)) {
+                throw new IllegalArgumentException(
+                        "unsupported nonnumeric switch constant expression: " + binary.operator());
+            }
+            boolean integral = isSwitchIntegral(a) && isSwitchIntegral(b)
+                    && !binary.operator().equals("/");
+            if (integral) {
+                long x = a.longValue(), y = b.longValue();
+                return switch (binary.operator()) {
+                    case "+" -> x + y;
+                    case "-" -> x - y;
+                    case "*" -> x * y;
+                    case "%" -> {
+                        if (y == 0) throw new IllegalArgumentException("switch case modulo by zero");
+                        yield x % y;
+                    }
+                    default -> throw new IllegalArgumentException(
+                            "unsupported integral switch constant operator: " + binary.operator());
+                };
+            }
+            double x = a.doubleValue(), y = b.doubleValue();
+            return switch (binary.operator()) {
+                case "+" -> x + y;
+                case "-" -> x - y;
+                case "*" -> x * y;
+                case "/" -> x / y;
+                case "%" -> x % y;
+                default -> throw new IllegalArgumentException(
+                        "unsupported floating switch constant operator: " + binary.operator());
+            };
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            Object predicate = switchCaseConstantValue(conditional.condition());
+            if (!(predicate instanceof Boolean bool)) {
+                throw new IllegalArgumentException("conditional switch constant requires a boolean condition");
+            }
+            // Both branches must remain valid compile-time constants.
+            Object yes = switchCaseConstantValue(conditional.whenTrue());
+            Object no = switchCaseConstantValue(conditional.whenFalse());
+            return bool ? yes : no;
+        }
+        throw new IllegalArgumentException(
+                "switch case is not a safely foldable scalar constant: " + expr);
+    }
+
+    private static boolean isSwitchIntegral(Number number) {
+        return number instanceof Byte || number instanceof Short
+                || number instanceof Integer || number instanceof Long;
+    }
+
+    private static boolean switchCaseValuesEqual(Object left, Object right) {
+        if (left == right) return true;
+        if (left == null || right == null) return false;
+        if (left instanceof Number a && right instanceof Number b) {
+            if (isSwitchIntegral(a) && isSwitchIntegral(b)) {
+                return a.longValue() == b.longValue();
+            }
+            return a.doubleValue() == b.doubleValue();
+        }
+        return java.util.Objects.equals(left, right);
     }
 
     private boolean constant(Ast.Expr expr) {
