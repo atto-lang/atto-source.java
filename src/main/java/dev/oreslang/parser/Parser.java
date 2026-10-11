@@ -96,12 +96,12 @@ public final class Parser {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
                 }
-                if (modifiers.shared) {
+                if (modifiers.shared || modifiers.serial) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
                     if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.serial) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
@@ -273,7 +273,7 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
-            if (modifiers.shared || modifiers.untrusted) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.serial) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             if (match(CONTRACT)) {
@@ -318,11 +318,13 @@ public final class Parser {
             if (match(FNC)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
+                if (modifiers.serial) throw error(actorToken, "'serial' applies to actor classes, not actor callables");
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
             if (match(ROUTINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
+                if (modifiers.serial) throw error(actorToken, "'serial' applies to actor classes, not actor callables");
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
 
@@ -332,7 +334,7 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            return parseActorClass(actorKind, modifiers.visibility, modifiers.serial);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -341,9 +343,10 @@ public final class Parser {
                 boolean isolated = actorToken.type() == ISOACTOR;
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
+                if (modifiers.serial) throw error(actorToken, "'serial' applies to actor classes, not actor callables");
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.serial) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
@@ -355,9 +358,10 @@ public final class Parser {
                 boolean isolated = actorToken.type() == ISOACTOR;
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
+                if (modifiers.serial) throw error(actorToken, "'serial' applies to actor classes, not actor callables");
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.serial) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
@@ -385,7 +389,7 @@ public final class Parser {
     }
 
     private Ast.ActorKind resolveActorKind(Token actorToken, boolean isolated, Modifiers modifiers) {
-        if (isolated && (modifiers.shared || modifiers.untrusted)) {
+        if (isolated && (modifiers.shared || modifiers.untrusted || modifiers.serial)) {
             throw error(
                     actorToken,
                     "'shared/untrusted isoactor' is contradictory; use either shared actor, untrusted actor, or isoactor");
@@ -573,7 +577,7 @@ public final class Parser {
 
     private void validateClassModifiers(Modifiers modifiers) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.shared || modifiers.untrusted || modifiers.serial) {
             throw error(previous(),
                     "classes accept only private/pub visibility and abstract; callable/actor modifiers are not permitted");
         }
@@ -581,21 +585,21 @@ public final class Parser {
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.serial) {
             throw error(peek(), "class fields accept only private/pub visibility modifiers");
         }
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.serial) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
         }
     }
 
     private void validateInterfaceCallableModifiers(Modifiers modifiers) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.serial) {
             throw error(previous(),
                     "interface callable signatures currently accept only the structural callable modifier");
         }
@@ -604,7 +608,7 @@ public final class Parser {
     private void validateNoModifiers(Modifiers modifiers, String context) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted) {
+                || modifiers.shared || modifiers.untrusted || modifiers.serial) {
             throw error(previous(), context + " do not accept declaration modifiers");
         }
     }
@@ -632,7 +636,7 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        return parseActorClass(kind, modifiers.visibility, modifiers.serial);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -657,7 +661,7 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
-    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility, boolean serial) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -678,7 +682,7 @@ public final class Parser {
                 if (declaredState || !fields.isEmpty()) {
                     throw error(peek(), "actor declares exactly one state schema and no other storage fields");
                 }
-                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async || mods.isStatic) {
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async || mods.isStatic || mods.serial) {
                     throw error(peek(), "actor state schema does not accept annotations or member modifiers");
                 }
                 fields.add(parseActorStateSchema());
@@ -728,7 +732,7 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods, serial);
     }
 
     /**
@@ -821,14 +825,14 @@ public final class Parser {
             throw error(peek(), "actor state fields are private; expose state through actor methods");
         }
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.serial) {
             throw error(peek(), "actor state fields do not accept callable/static/actor modifiers");
         }
     }
 
     private void validateActorMethodModifiers(Modifiers modifiers) {
         if (modifiers.generator || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted) {
+                || modifiers.shared || modifiers.untrusted || modifiers.serial) {
             throw error(peek(), "actor methods do not accept generator, nlex, abstract, shared, or untrusted modifiers");
         }
     }
@@ -1086,6 +1090,7 @@ public final class Parser {
         boolean isAbstract = false;
         boolean shared = false;
         boolean untrusted = false;
+        boolean serial = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
         boolean generatorSeen = false;
@@ -1096,6 +1101,7 @@ public final class Parser {
         boolean abstractSeen = false;
         boolean sharedSeen = false;
         boolean untrustedSeen = false;
+        boolean serialSeen = false;
 
         while (true) {
             if (match(PUB)) {
@@ -1150,11 +1156,15 @@ public final class Parser {
                 if (untrustedSeen) throw error(previous(), "duplicate 'untrusted' modifier");
                 untrustedSeen = true;
                 untrusted = true;
+            } else if (match(SERIAL)) {
+                if (serialSeen) throw error(previous(), "duplicate 'serial' modifier");
+                serialSeen = true;
+                serial = true;
             } else {
                 break;
             }
         }
-        return new Modifiers(visibility, visibilitySeen, async, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
+        return new Modifiers(visibility, visibilitySeen, async, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted, serial);
     }
 
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
@@ -1170,6 +1180,7 @@ public final class Parser {
         if (before.isAbstract && after.isAbstract) throw error(previous(), "duplicate 'abstract' modifier");
         if (before.shared && after.shared) throw error(previous(), "duplicate 'shared' modifier");
         if (before.untrusted && after.untrusted) throw error(previous(), "duplicate 'untrusted' modifier");
+        if (before.serial && after.serial) throw error(previous(), "duplicate 'serial' modifier");
 
         return new Modifiers(
                 after.visibilitySeen ? after.visibility : before.visibility,
@@ -1182,7 +1193,8 @@ public final class Parser {
                 before.isStatic || after.isStatic,
                 before.isAbstract || after.isAbstract,
                 before.shared || after.shared,
-                before.untrusted || after.untrusted);
+                before.untrusted || after.untrusted,
+                before.serial || after.serial);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -3620,5 +3632,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted, boolean serial) { }
 }
