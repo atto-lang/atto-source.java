@@ -7612,33 +7612,75 @@ public final class TypeChecker {
      * default) cannot satisfy an explicit return-value contract merely
      * because control flow has no fallthrough.
      */
+    // Flow outcomes are a bitset: every reachable path must end with a return.
+    // Unlike a Boolean "contains return" scan, this preserves break/continue
+    // even when an unreachable return follows the escape.
+    private static final int TYPED_MATCH_FALLTHROUGH = 1;
+    private static final int TYPED_MATCH_RETURN = 2;
+    private static final int TYPED_MATCH_ESCAPE = 4;
+
     private boolean guaranteedTypedMatchReturn(List<Ast.Stmt> body) {
+        return typedMatchFlow(body) == TYPED_MATCH_RETURN;
+    }
+
+    private int typedMatchFlow(List<Ast.Stmt> body) {
+        int outcomes = TYPED_MATCH_FALLTHROUGH;
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.ReturnStmt) return true;
-            if (stmt instanceof Ast.BlockStmt block
-                    && guaranteedTypedMatchReturn(block.body())) return true;
-            if (stmt instanceof Ast.IfStmt conditional
-                    && !conditional.branches().isEmpty()
-                    && conditional.branches().stream().allMatch(
-                            branch -> guaranteedTypedMatchReturn(branch.body()))
-                    && !conditional.elseBody().isEmpty()
-                    && guaranteedTypedMatchReturn(conditional.elseBody())) return true;
-            if (stmt instanceof Ast.MatchStmt matched
-                    && !matched.arms().isEmpty()
-                    && matched.arms().stream().allMatch(
-                            arm -> guaranteedTypedMatchReturn(arm.body()))) return true;
-            if (stmt instanceof Ast.SwitchStmt switched
-                    && !switched.defaultBody().isEmpty()
-                    && guaranteedTypedMatchReturn(switched.defaultBody())
-                    && switched.cases().stream().allMatch(
-                            arm -> guaranteedTypedMatchReturn(arm.body()))) return true;
-            if (stmt instanceof Ast.TryStmt attempted
-                    && guaranteedTypedMatchReturn(attempted.body())
-                    && guaranteedTypedMatchReturn(attempted.catchBody())) return true;
-            // No implicit return proof from a loop, expression statement,
-            // discarded callback return, or an unproven nonlocal exception.
+            // Do not treat unreachable statements after a return/break/continue
+            // as evidence for the arm's terminal return contract.
+            if ((outcomes & TYPED_MATCH_FALLTHROUGH) == 0) break;
+            outcomes = (outcomes & ~TYPED_MATCH_FALLTHROUGH)
+                    | typedMatchStatementFlow(stmt);
         }
-        return false;
+        return outcomes;
+    }
+
+    private int typedMatchStatementFlow(Ast.Stmt stmt) {
+        if (stmt instanceof Ast.ReturnStmt) return TYPED_MATCH_RETURN;
+        if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) {
+            return TYPED_MATCH_ESCAPE;
+        }
+        if (stmt instanceof Ast.BlockStmt block) return typedMatchFlow(block.body());
+        if (stmt instanceof Ast.IfStmt conditional) {
+            int outcomes = conditional.elseBody().isEmpty()
+                    ? TYPED_MATCH_FALLTHROUGH
+                    : typedMatchFlow(conditional.elseBody());
+            for (Ast.IfBranch branch : conditional.branches()) {
+                outcomes |= typedMatchFlow(branch.body());
+            }
+            return outcomes;
+        }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            int outcomes = matched.arms().isEmpty() ? TYPED_MATCH_FALLTHROUGH : 0;
+            for (Ast.MatchArm arm : matched.arms()) {
+                outcomes |= typedMatchFlow(arm.body());
+            }
+            // checkMatch has already established exhaustiveness for this
+            // nested dispatch when invoked from the source checker.
+            return outcomes;
+        }
+        if (stmt instanceof Ast.SwitchStmt switched) {
+            int outcomes = switched.defaultBody().isEmpty()
+                    ? TYPED_MATCH_FALLTHROUGH
+                    : typedMatchFlow(switched.defaultBody());
+            for (Ast.SwitchCase arm : switched.cases()) {
+                outcomes |= typedMatchFlow(arm.body());
+            }
+            return outcomes;
+        }
+        if (stmt instanceof Ast.TryStmt attempted) {
+            int primary = typedMatchFlow(attempted.body());
+            if (!attempted.catchBody().isEmpty()) primary |= typedMatchFlow(attempted.catchBody());
+            int cleanup = typedMatchFlow(attempted.finallyBody());
+            // A lexical return from finally is forbidden independently. A
+            // break/continue in finally can still override the pending return.
+            int outcomes = cleanup & ~TYPED_MATCH_FALLTHROUGH;
+            if ((cleanup & TYPED_MATCH_FALLTHROUGH) != 0) outcomes |= primary;
+            return outcomes;
+        }
+        // Loops (including nonterminating ones), expression statements and
+        // callback-local returns do not prove a containing callable return.
+        return TYPED_MATCH_FALLTHROUGH;
     }
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
