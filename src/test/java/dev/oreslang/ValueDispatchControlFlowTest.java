@@ -474,7 +474,7 @@ final class ValueDispatchControlFlowTest {
 
     @Test
     void localLoopControlWithinFinallyMayFinishCleanupWithoutReplacingReturn() throws Exception {
-        assertEquals("cleanup\\noriginal\\n", execute("""
+        assertEquals("cleanup\noriginal\n", execute("""
                 fnc scoped(): string {
                   try { return "original"; }
                   catch (error) { return "caught"; }
