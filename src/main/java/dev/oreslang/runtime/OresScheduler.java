@@ -551,12 +551,18 @@ public final class OresScheduler implements AutoCloseable {
             try {
                 if (task instanceof CancellationAwareTask<?> aware) {
                     aware.cancellationRequested(cancellation);
-                    if (cancelWithoutExecutingWhenIdle(true)) return;
+                    if (cancelWithoutExecutingWhenIdle(true)) {
+                        detachActiveAwaitRegistration();
+                        return;
+                    }
                 } else {
                     // Tasks without lexical cleanup can be cancelled directly
                     // while idle. Compare-and-set prevents a stale WAITING or
                     // QUEUED read from aborting a newly RUNNING guest turn.
-                    if (cancelWithoutExecutingWhenIdle(false)) return;
+                    if (cancelWithoutExecutingWhenIdle(false)) {
+                        detachActiveAwaitRegistration();
+                        return;
+                    }
                 }
                 if (phase.get() == WAITING && !isCleaningUp()) {
                     detachActiveAwaitRegistration();
