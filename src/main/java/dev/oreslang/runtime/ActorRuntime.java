@@ -2271,16 +2271,26 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "cannot transfer worker with live structured descendants");
                 }
-                if (!cell.managedByGroup.compareAndSet(id, null)) {
-                    throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
+                // Retire the exact old identity before publishing a transfer
+                // into the unmanaged state. A failed registry check must leave
+                // the old owner's authority and CONTROL association intact.
+                var binding = cell.supervisedChild.get();
+                if (binding == null || binding.registry() != childRegistry) {
+                    throw new IllegalStateException(
+                            "managed worker lacks its owner's logical child binding");
+                }
+                binding.registry().detachActive(
+                        binding.admitted().child(), worker.id(),
+                        binding.admitted().incarnation());
+                // Both metadata fields are protected by lifecycleLock followed
+                // by authorityLock; no competing adoption can observe half
+                // a transfer. These CAS operations must be uncontended.
+                if (!cell.managedByGroup.compareAndSet(id, null)
+                        || !cell.supervisedChild.compareAndSet(binding, null)) {
+                    throw new IllegalStateException(
+                            "logical child ownership changed during fenced transfer");
                 }
                 cell.supervision.compareAndSet(supervisorControl, null);
-                var binding = cell.supervisedChild.getAndSet(null);
-                if (binding != null) {
-                    binding.registry().detachActive(
-                            binding.admitted().child(), worker.id(),
-                            binding.admitted().incarnation());
-                }
                 managedWorkers.remove(worker.id(), worker);
                 return true;
             }
