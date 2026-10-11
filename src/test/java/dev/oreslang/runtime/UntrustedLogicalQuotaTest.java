@@ -106,6 +106,50 @@ final class UntrustedLogicalQuotaTest {
     }
 
     @Test
+    void untrustedActorCannotMintSiblingRootQuotasWhileTaskIsSuspended()
+            throws Exception {
+        AtomicReference<OresFuture<Integer>> retained = new AtomicReference<>();
+        AtomicReference<Throwable> secondRejected = new AtomicReference<>();
+        java.util.concurrent.CountDownLatch attempted =
+                new java.util.concurrent.CountDownLatch(1);
+        OresFuture<Integer> wait = new OresFuture<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
+                if (message.equals("first")) {
+                    retained.set(turn.runtime().startActorTask(resume ->
+                            resume.initial() ? OresScheduler.<Integer>await(wait)
+                                    : OresScheduler.done(7)));
+                } else if (message.equals("sibling")) {
+                    try {
+                        turn.runtime().startActorTask(
+                                resume -> OresScheduler.done(999));
+                    } catch (SecurityException expected) {
+                        secondRejected.set(expected);
+                    } finally {
+                        attempted.countDown();
+                    }
+                }
+            });
+            actor.send("first");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (retained.get() == null && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(retained.get() != null, "first source task must be admitted");
+            actor.send("sibling");
+            assertTrue(attempted.await(3, TimeUnit.SECONDS));
+            assertTrue(secondRejected.get() instanceof SecurityException,
+                    "a second top-level source task cannot mint another quota");
+            // First source Future is still registered while the second message
+            // runs; completing it lets the quota cohort retire.
+            wait.completeFromRuntime(1);
+            assertEquals(7, retained.get().get(3, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actualUntrustedActorCannotRefuelThroughRepeatedCooperate() throws Exception {
         AtomicReference<OresFuture<Integer>> taskRef = new AtomicReference<>();
         AtomicInteger dispatches = new AtomicInteger();
