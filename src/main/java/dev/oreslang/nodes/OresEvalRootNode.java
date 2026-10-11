@@ -845,6 +845,29 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
+         * Merge one cleanup outcome into the execution-context completion.
+         * The first guest failure keeps its identity; cleanup failures become
+         * suppressed causes. In contrast, a failed cleanup overrides a pending
+         * ordinary/lexical result. This is independent of carrier threads.
+         */
+        private static SourceFlow sourceCleanup(SourceFlow pending, Throwable failure) {
+            Objects.requireNonNull(pending, "pending");
+            Objects.requireNonNull(failure, "failure");
+            if (pending.kind() == SourceFlowKind.THROW) {
+                preserveCleanupFailure(pending.failure(), failure);
+                return pending;
+            }
+            return SourceFlow.throwing(failure);
+        }
+
+        private static SourceFlow sourceFinally(SourceFlow pending, SourceFlow cleanup) {
+            if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
+            if (cleanup.kind() == SourceFlowKind.THROW)
+                return sourceCleanup(pending, cleanup.failure());
+            return cleanup;
+        }
+
+        /**
          * A heap-owned source execution frame. It contains no suspended Java
          * interpreter stack: when a source operation becomes pending, the
          * current continuation is stored here and OresScheduler.Task returns
@@ -1716,7 +1739,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = sourceCleanup(completed, failure);
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1744,7 +1767,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = sourceCleanup(completed, failure);
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1756,14 +1779,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    sourceCleanup(currentFlow, failure),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -2001,7 +2021,8 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && !(flow.failure() instanceof OresPanic)) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -2019,10 +2040,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            sourceFinally(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2031,10 +2049,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            sourceFinally(flow, finallyFlow)));
                                 }
                             });
                     return;
