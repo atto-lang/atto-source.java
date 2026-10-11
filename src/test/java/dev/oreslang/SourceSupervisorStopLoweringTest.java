@@ -198,6 +198,20 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.STOPPED,
                     group.childSnapshot(logicalChild).phase(),
                     "host STOP acknowledgment did not commit child disposition");
+            assertThrows(IllegalStateException.class,
+                    () -> group.acknowledgeFinalizedStop(decision),
+                    "replayed STOP must not consume a second lifecycle generation");
+            var wrongActor = new dev.oreslang.runtime.SupervisorFailureControl.Notice(
+                    decision.notice().supervisorId(), decision.notice().groupId(),
+                    ActorRuntime.ActorId.create(), decision.notice().spawnedBy(),
+                    decision.notice().kind(), decision.notice().failureType(),
+                    decision.notice().diagnostic(), decision.notice().logicalChild(),
+                    decision.notice().incarnation());
+            var forged = new SupervisorProcess.Resolution(wrongActor,
+                    SupervisorProcess.Directive.STOP, decision.turnGeneration());
+            assertThrows(IllegalStateException.class,
+                    () -> group.acknowledgeFinalizedStop(forged),
+                    "foreign physical incarnation may not consume logical child");
             group.close();
             process.close();
         }
