@@ -127,4 +127,46 @@ final class SourceCancellationExecutionTest {
                     """, output.toString(StandardCharsets.UTF_8));
         }
     }
+
+    @Test
+    void cancelledGuestCleanupAwaitsReadyFuturesInLifoOrder() throws Exception {
+        String source = """
+                pub async fnc work(): int {
+                  val Channel<int> deferred = Channel.new<int>(1);
+                  writech deferred, 22;
+                  defer stdio.println(await (nb readch deferred));
+                  try {
+                    val Channel<int> gate = Channel.new<int>(0);
+                    stdio.println("armed");
+                    const unused = await (nb readch gate);
+                    stdio.println("INVALID-after-await");
+                  } finally {
+                    val Channel<int> ready = Channel.new<int>(1);
+                    writech ready, 33;
+                    const cleaned = await (nb readch ready);
+                    stdio.println(cleaned);
+                  }
+                  return 17;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            OresFuture<?> task = start(context, source);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!output.toString(StandardCharsets.UTF_8).contains("armed")
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("armed"));
+            assertFalse(task.isDone());
+            assertTrue(task.cancel(false));
+            assertFalse(task.cancel(false), "a second cancellation cannot replay cleanup");
+            assertThrows(CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertEquals("""
+                    armed
+                    33
+                    22
+                    """, output.toString(StandardCharsets.UTF_8));
+        }
+    }
 }
