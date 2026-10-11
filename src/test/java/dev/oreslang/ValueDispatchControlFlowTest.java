@@ -262,7 +262,7 @@ final class ValueDispatchControlFlowTest {
 
     @Test
     void lexicalArmReturnSurvivesTryFinallyAndRunsCleanupExactlyOnce() throws Exception {
-        assertEquals("finally\\narm-defer\\narm\\ndo-finally\\ndo-defer\\nearly\\ncase\\ndefault\\n",
+        assertEquals("finally\narm-defer\narm\ndo-finally\ndo-defer\nearly\ncase\ndefault\n",
                 execute("""
                 fnc collected(): string {
                   return match 1 over
