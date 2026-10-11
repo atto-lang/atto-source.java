@@ -21,7 +21,9 @@ final class OresVMTest {
                 if (pc.getAndIncrement() == 0) return OresScheduler.await(source);
                 return OresScheduler.done((Integer) resume.value() + 1);
             });
-            assertTrue(vm.controlCarrierCount() > 0);
+            assertEquals(0, vm.controlCarrierCount(),
+                    "isolated caller-owned root admission must start zero guest carriers");
+            assertEquals(1, vm.masterSchedulerThreadCount());
             assertEquals(1, vm.rootScheduler().parallelism());
             turns.poll(5, TimeUnit.SECONDS).run();
             assertTrue(!task.isDone());
@@ -34,14 +36,13 @@ final class OresVMTest {
     }
 
     @Test
-    void controlCarriersAreLiveBeforeFirstRootTaskTurn() throws Exception {
+    void masterStartsEagerlyButRootCarriersStartWithFirstTurn() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
             assertTrue(vm.started());
-            assertEquals(
-                    vm.rootScheduler().parallelism(),
-                    vm.controlCarrierCount(),
-                    "all CONTROL carriers must be resident before root execution");
+            assertEquals(1, vm.masterSchedulerThreadCount());
+            assertEquals(0, vm.controlCarrierCount(),
+                    "cold OresVM must not eagerly launch root guest carriers");
 
             OresFuture<String> first =
                     vm.rootScheduler().start(resume -> {
@@ -55,6 +56,8 @@ final class OresVMTest {
 
             String threadName = first.get(5, TimeUnit.SECONDS);
             assertTrue(threadName.startsWith("ores-control-plane-"));
+            assertTrue(vm.controlCarrierCount() >= 1);
+            assertTrue(vm.controlCarrierCount() <= vm.rootScheduler().parallelism());
         } finally {
             vm.close();
         }
@@ -83,7 +86,9 @@ final class OresVMTest {
             assertTrue(dispatch > 0L);
             vm.startup();
             vm.startup();
-            assertEquals(vm.rootScheduler().parallelism(), vm.controlCarrierCount());
+            assertTrue(vm.controlCarrierCount() >= 1);
+            assertTrue(vm.controlCarrierCount() <= vm.rootScheduler().parallelism());
+            assertEquals(1, vm.masterSchedulerThreadCount());
         } finally {
             vm.close();
         }
