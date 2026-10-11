@@ -16,11 +16,16 @@ import java.util.function.Function;
  * dynamic maps, FFI, and yielding live state loans must fail closed.
  */
 public final class SealedActorState {
+    private static final int MAX_FIELDS = 256;
+    private static final int MAX_STRING_BYTES = 64 * 1024;
+    private static final int MAX_TOTAL_STRING_BYTES = 1024 * 1024;
+
     private final ActorRuntime.ActorId owner;
     private final LinkedHashMap<String, String> schema;
     private final LinkedHashMap<String, Object> values;
     private Access current;
     private long serial;
+    private int retainedStringBytes;
     private boolean retired;
 
     public SealedActorState(ActorRuntime.ActorId owner,
@@ -28,7 +33,9 @@ public final class SealedActorState {
                             Map<String, Object> defaults) {
         this.owner = Objects.requireNonNull(owner, "actor identity");
         this.schema = new LinkedHashMap<>(Objects.requireNonNull(schema, "schema"));
-        if (this.schema.isEmpty()) throw new IllegalArgumentException("empty actor state schema");
+        if (this.schema.isEmpty() || this.schema.size() > MAX_FIELDS) {
+            throw new IllegalArgumentException("actor state requires 1..256 typed fields");
+        }
         this.values = new LinkedHashMap<>();
         for (var item : this.schema.entrySet()) {
             switch (item.getValue()) {
@@ -40,6 +47,11 @@ public final class SealedActorState {
         }
         for (var entry : Objects.requireNonNull(defaults, "defaults").entrySet()) {
             validateValue(entry.getKey(), entry.getValue());
+            int size = stringBytes(entry.getValue());
+            if (size > MAX_TOTAL_STRING_BYTES - retainedStringBytes) {
+                throw new IllegalArgumentException("actor state string byte budget exceeded");
+            }
+            retainedStringBytes += size;
             values.put(entry.getKey(), entry.getValue());
         }
     }
@@ -51,6 +63,18 @@ public final class SealedActorState {
         if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
             throw new SecurityException("actor state requires the owning actor's admitted turn");
         }
+    }
+
+    private static int stringBytes(Object value) {
+        if (!(value instanceof String text)) return 0;
+        if (text.length() > MAX_STRING_BYTES) {
+            throw new IllegalArgumentException("actor state string exceeds per-field quota");
+        }
+        int bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (bytes > MAX_STRING_BYTES) {
+            throw new IllegalArgumentException("actor state UTF-8 bytes exceed per-field quota");
+        }
+        return bytes;
     }
 
     private void validateValue(String name, Object value) {
@@ -92,7 +116,14 @@ public final class SealedActorState {
         public void write(String name, Object value) {
             check();
             validateValue(name, value);
+            int previousBytes = stringBytes(values.get(name));
+            int nextBytes = stringBytes(value);
+            if (nextBytes > MAX_TOTAL_STRING_BYTES
+                    - (retainedStringBytes - previousBytes)) {
+                throw new IllegalArgumentException("actor state string byte budget exceeded");
+            }
             values.put(name, value);
+            retainedStringBytes = retainedStringBytes - previousBytes + nextBytes;
         }
     }
 
@@ -139,6 +170,7 @@ public final class SealedActorState {
         }
         retired = true;
         values.clear();
+        retainedStringBytes = 0;
     }
 
     public Set<String> declaredKeys() { return Set.copyOf(schema.keySet()); }
