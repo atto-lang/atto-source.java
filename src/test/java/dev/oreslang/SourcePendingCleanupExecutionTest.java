@@ -302,4 +302,30 @@ final class SourcePendingCleanupExecutionTest {
         }
     }
 
+
+    @Test
+    void repeatedHostAsyncLaunchesKeepInitialHostAndSchedulerCarrierAuthorized()
+            throws Exception {
+        // A production host invokes async work while still inside the
+        // public interop call. The scheduler can begin a guest turn before
+        // that call returns. This must not make Truffle reject the original
+        // host thread when its language becomes multithreaded.
+        for (int iteration = 0; iteration < 16; iteration++) {
+            SafeOutput output = new SafeOutput();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(true).out(output).build()) {
+                Started started = start(context, NESTED_PENDING_CLEANUP);
+                awaitOutput(output, "armed");
+                assertTrue(started.task().cancel(false),
+                        "cancel was not admitted at iteration " + iteration);
+                awaitOutput(output, "finally-pending");
+                started.finallyGate().writeAsync(33).get(5, TimeUnit.SECONDS);
+                awaitOutput(output, "finally-done");
+                started.deferGate().writeAsync(22).get(5, TimeUnit.SECONDS);
+                assertThrows(CancellationException.class,
+                        () -> started.task().get(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
 }
