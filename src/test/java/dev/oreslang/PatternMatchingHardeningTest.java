@@ -219,12 +219,134 @@ final class PatternMatchingHardeningTest {
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc incomplete(Option<int> value): int {
-                  match value over
+                  return match value over
                     on Some(inner) -> { return inner; }
                   end
                 }
                 """)));
-        assertTrue(error.getMessage().contains("non-exhaustive match"));
+        assertTrue(error.getMessage().contains("non-exhaustive return match"));
+    }
+
+    @Test
+    void returnMatchRequiresExhaustivePatternsAndTerminalArms() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc choose(string value): string {
+                  return match value over
+                    on "ok" { return "accepted"; }
+                    on _ { return "other"; }
+                  end
+                }
+                """)));
+
+        // The ordinary match form is intentionally partial and falls
+        // through to the statement after the entire match.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc maybe(string value): string {
+                  match value over
+                    on "ok" { return "accepted"; }
+                  end
+                  return "fallback";
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc selectBool(bool value): string {
+                  return match value over
+                    on true { return "yes"; }
+                    on false { return "no"; }
+                  end
+                }
+                """)));
+
+        IllegalArgumentException noCoverage = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc wrong(string value): string {
+                          return match value over
+                            on "ok" { return "accepted"; }
+                          end
+                        }
+                        """)));
+        assertTrue(noCoverage.getMessage().contains("non-exhaustive return match"),
+                noCoverage.getMessage());
+
+        IllegalArgumentException noReturn = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc wrong(string value): string {
+                          return match value over
+                            on _ {
+                              val string result = "handled";
+                            }
+                          end
+                        }
+                        """)));
+        assertTrue(noReturn.getMessage().contains("return match arm must return"),
+                noReturn.getMessage());
+
+        IllegalArgumentException guarded = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc wrong(int value): int {
+                          return match value over
+                            on _ when value > 1 { return 1; }
+                          end
+                        }
+                        """)));
+        assertTrue(guarded.getMessage().contains("non-exhaustive return match"),
+                guarded.getMessage());
+    }
+
+    @Test
+    void returnSwitchRequiresExhaustiveCasesAndTerminalArms() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc render(string value): string {
+                  return switch value
+                    case "foo" -> { return "bar"; }
+                    default -> { return "other"; }
+                  end
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc renderBoolean(bool value): string {
+                  return switch value
+                    case true -> { return "yes"; }
+                    case false -> { return "no"; }
+                  end
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc optionalSwitch(string value): string {
+                  switch value
+                    case "foo" -> { return "bar"; }
+                  end
+                  return "fallback";
+                }
+                """)));
+
+        IllegalArgumentException noDefault = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc incomplete(string value): string {
+                          return switch value
+                            case "foo" -> { return "bar"; }
+                          end
+                        }
+                        """)));
+        assertTrue(noDefault.getMessage().contains("non-exhaustive return switch"),
+                noDefault.getMessage());
+
+        IllegalArgumentException noReturn = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc incomplete(string value): string {
+                          return switch value
+                            case "foo" -> { return "bar"; }
+                            default -> {
+                              val string message = "not returned";
+                            }
+                          end
+                        }
+                        """)));
+        assertTrue(noReturn.getMessage().contains("return switch default must return"),
+                noReturn.getMessage());
     }
 
     @Test
