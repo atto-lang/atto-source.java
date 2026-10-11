@@ -376,6 +376,12 @@ public final class ActorRuntime implements AutoCloseable {
             request -> false;
 
     private final ExecutorService privateDispatcher;
+    /**
+     * One bounded CONTROL executor per runtime (NEVER per actor/group).
+     * Supervision must remain runnable when ordinary private actor carriers
+     * are saturated. Guest callbacks must still remain cooperative.
+     */
+    private final ExecutorService supervisorDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
@@ -428,20 +434,30 @@ public final class ActorRuntime implements AutoCloseable {
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         ExecutorService privatePool = null;
         ExecutorService sharedPool = null;
+        ExecutorService supervisorPool = null;
         ExecutorService untrustedPool;
         try {
             privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
                     dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
             sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
                     dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
+            // CONTROL is independent of PRIVATE, SHARED and UNTRUSTED work.
+            // A bounded shared runtime pool prevents one actor pool's busy
+            // carriers from starving terminal notices for other actors.
+            supervisorPool = newActorDispatcher(
+                    Math.max(2, Math.min(4, dispatcherConfig.privateParallelism())),
+                    Math.max(256, dispatcherConfig.maxActors()),
+                    "ores-supervisor-control-");
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
         } catch (RuntimeException | Error failure) {
             if (privatePool != null) privatePool.shutdownNow();
             if (sharedPool != null) sharedPool.shutdownNow();
+            if (supervisorPool != null) supervisorPool.shutdownNow();
             throw failure;
         }
         this.privateDispatcher = privatePool;
+        this.supervisorDispatcher = supervisorPool;
         this.sharedDispatcher = sharedPool;
         this.untrustedDispatcher = untrustedPool;
         CorePerf.end(CorePerf.ACTOR_POOLS_STARTUP, poolsPerf);
@@ -1965,7 +1981,7 @@ public final class ActorRuntime implements AutoCloseable {
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             this.supervisorControl = new SupervisorFailureControl(
-                    supervisorId, id, privateDispatcher,
+                    supervisorId, id, supervisorDispatcher,
                     Math.max(8, Math.min(256, memberLimit)));
             if (creator != null) members.add(creator);
         }
@@ -2003,7 +2019,7 @@ public final class ActorRuntime implements AutoCloseable {
             requireSupervisorContext("install supervisor process");
             requireOpen();
             SupervisorProcess process = new SupervisorProcess(
-                    supervisorId, id, privateDispatcher, mailboxCapacity,
+                    supervisorId, id, supervisorDispatcher, mailboxCapacity,
                     onFailure, onDecision);
             try {
                 supervisorControl.install(process::accept);
@@ -5893,6 +5909,9 @@ public final class ActorRuntime implements AutoCloseable {
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
             untrustedDispatcher.shutdownNow();
+            // Keep the independent supervisor CONTROL pool alive until actor
+            // termination has been observed. Its queue is bounded, and all
+            // admission failures are recorded by the owning CONTROL lane.
 
             // shutdownNow() removes queued tasks without invoking runBatch().
             // Clear those cells' scheduled bits only when no carrier actually
@@ -5917,8 +5936,14 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
+        // A terminal child may publish its notice during its last cleanup.
+        // Gracefully drain already-admitted supervisor CONTROL work after all
+        // actor carriers were requested to stop, before revoking the pool.
+        if (firstClose) supervisorDispatcher.shutdown();
         boolean dispatchersTerminated = true;
-        for (ExecutorService dispatcher : List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
+        for (ExecutorService dispatcher : List.of(
+                privateDispatcher, sharedDispatcher, untrustedDispatcher,
+                supervisorDispatcher)) {
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0) {
                 dispatchersTerminated = false;
@@ -5936,6 +5961,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        if (!dispatchersTerminated) supervisorDispatcher.shutdownNow();
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
         actorGroups.clear();
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
