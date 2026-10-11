@@ -1146,6 +1146,9 @@ public final class TypeChecker {
                             klass.actorKind(),
                             false,
                             "mailbox payload of actor '" + klass.name() + ".receive'");
+                    requireSerializableActorMessageType(
+                            mail.arguments().getFirst(),
+                            "mailbox payload of actor '" + klass.name() + ".receive'");
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -2318,6 +2321,9 @@ public final class TypeChecker {
                             requireAssignable(
                                     payload,
                                     expectedPayload,
+                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
+                            requireSerializableActorMessageType(
+                                    payload,
                                     "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
                             yield Primitive.VOID;
                         }
@@ -4483,6 +4489,66 @@ public final class TypeChecker {
                 where + " cannot transport class instance '" + klass.name()
                         + "' by value; actor boundaries require data-only values "
                         + "or an explicit serialization/copy contract");
+    }
+
+    /**
+     * A mailbox payload must have an unambiguous, data-only wire representation.
+     *
+     * This is deliberately stricter than "sendable" or "shared-safe": runtime
+     * capabilities, opaque named objects and mutable identity-bearing class
+     * instances cannot cross the source-level mailbox boundary merely because
+     * a JVM process could freeze or share them locally.
+     *
+     * This gate admits only the closed built-in structural subset whose schema
+     * can be generated without user-defined codecs. A future @Serializable
+     * derivation can add nominal types only after executable codecs and native
+     * parity are available; never treat annotation presence as proof of a codec.
+     */
+    private void requireSerializableActorMessageType(Type type, String where) {
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException(where
+                        + " requires Serializable data; void/null cannot be mailbox values");
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) return;
+        if (type instanceof ListType list) {
+            requireSerializableActorMessageType(list.element(), where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                requireSerializableActorMessageType(tuple.elements().get(i), where + " tuple " + i);
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                requireSerializableActorMessageType(option, where + " union alternative");
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+                requireSerializableActorMessageType(entry.getValue(),
+                        where + " field '" + entry.getKey() + "'");
+            }
+            return;
+        }
+        if (type instanceof Named named) {
+            int count = named.arguments().size();
+            if ((named.name().equals("Option") && count == 1)
+                    || (named.name().equals("Result") && count == 2)) {
+                for (Type argument : named.arguments()) {
+                    requireSerializableActorMessageType(argument, where + " " + named.name() + " payload");
+                }
+                return;
+            }
+        }
+        throw new IllegalArgumentException(where + " requires Serializable data; "
+                + "non-serializable, opaque, borrowed, executable and capability types "
+                + "cannot be sent in an actor mailbox: " + type);
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
