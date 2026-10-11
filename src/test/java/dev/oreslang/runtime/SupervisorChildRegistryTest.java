@@ -57,6 +57,15 @@ final class SupervisorChildRegistryTest {
         assertThrows(IllegalStateException.class, () -> registry.register(actor));
         assertThrows(SecurityException.class,
                 () -> foreign.snapshot(first.child()));
+        // Two registry instances for one owner still mint disjoint UUIDs;
+        // old child keys cannot address a newly created registry (ABA).
+        var replacementRegistry = new SupervisorChildRegistry(supervisor, group);
+        var otherInstance = replacementRegistry.register(ActorRuntime.ActorId.create());
+        assertNotEquals(first.child(), otherInstance.child());
+        assertThrows(IllegalStateException.class,
+                () -> registry.snapshot(otherInstance.child()));
+        assertThrows(IllegalStateException.class,
+                () -> replacementRegistry.snapshot(first.child()));
         assertThrows(IllegalStateException.class,
                 () -> registry.finalized(first.child(), ActorRuntime.ActorId.create(), 1));
 
