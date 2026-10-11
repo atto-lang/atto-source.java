@@ -216,7 +216,26 @@ public final class OresScheduler implements AutoCloseable {
                 turnExecutor);
     }
 
-    /** True only on private carriers owned by user-created OresSchedulers. */
+    /**
+     * Mark the lifetime of a VM-owned CONTROL carrier, just as a user
+     * OresScheduler marks its private carriers. An isolated root turn run on
+     * the caller's JNI-admitted thread is not a carrier thread.
+     */
+    static Runnable markVmCarrier(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        return () -> {
+            Boolean previous = SCHEDULER_CARRIER.get();
+            SCHEDULER_CARRIER.set(Boolean.TRUE);
+            try {
+                task.run();
+            } finally {
+                if (previous == null) SCHEDULER_CARRIER.remove();
+                else SCHEDULER_CARRIER.set(previous);
+            }
+        };
+    }
+
+    /** True on OresScheduler-owned or VM-owned scheduler carriers. */
     public static boolean isSchedulerCarrierThread() {
         return Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
     }
