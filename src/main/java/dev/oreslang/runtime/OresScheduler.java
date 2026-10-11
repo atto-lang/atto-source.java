@@ -925,8 +925,24 @@ public final class OresScheduler implements AutoCloseable {
                     if (observed == TERMINAL) return;
                 } while (!phase.compareAndSet(observed, TERMINAL));
 
+                // A lexical cleanup failure wins over cancellation, but the
+                // original cancellation must remain inspectable. Preserve it
+                // once, without self-suppression or duplicate suppressed
+                // reasons from nested defer/finally propagation.
+                if (cancelRequested.get() && failure != cancellation
+                        && !(failure instanceof TaskCancelledException)) {
+                    boolean preserved = false;
+                    for (Throwable prior : failure.getSuppressed()) {
+                        if (prior == cancellation
+                                || prior instanceof TaskCancelledException) {
+                            preserved = true;
+                            break;
+                        }
+                    }
+                    if (!preserved) failure.addSuppressed(cancellation);
+                }
                 terminalOutcome.compareAndSet(null,
-                        failure == cancellation
+                        failure instanceof TaskCancelledException
                                 ? new TerminalCancelled<T>(cancellation)
                                 : new TerminalFailure<T>(failure));
             }
