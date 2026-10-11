@@ -40,6 +40,13 @@ final class ActorPersistentI64MapTest {
                             }));
                             assertEquals(2, view.size(),
                                     "outer access restored after nested callback");
+                            assertThrows(IllegalArgumentException.class, () ->
+                                    current.critical(nested -> {
+                                        assertThrows(IllegalStateException.class, view::size);
+                                        throw new IllegalArgumentException("nested callback failed");
+                                    }));
+                            assertEquals(2, view.size(),
+                                    "failure unwinding must restore outer access");
                             return null;
                         });
                         assertThrows(IllegalStateException.class, escaped.get()::size);
