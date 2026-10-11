@@ -11,14 +11,8 @@ final class SourceSupervisorExecutionTest {
     @Test
     void guestPanicHookRunsOnOwningParentActorAndSignalsCompletion() throws Exception {
         String program = """
-                define actor Child as
-                  receive(ActorMail<String> mail): void {
-                    val Option<int> empty = None;
-                    val int impossible = empty.unwrap();
-                    return;
-                  }
-                end
-
+                // Spawn the same source actor class in a new generation.
+                // This preserves the compiler's sibling-code import boundary.
                 define actor Parent as
                   on_throw(String summary): void { return; }
                   on_raise(String summary): void { return; }
@@ -29,8 +23,13 @@ final class SourceSupervisorExecutionTest {
                   }
 
                   receive(ActorMail<String> mail): void {
-                    val child = spawn Child();
-                    child.send("fail");
+                    if mail.value == "start"; do
+                      val child = spawn Parent();
+                      child.send("fail");
+                      return;
+                    fi
+                    val Option<int> empty = None;
+                    val int impossible = empty.unwrap();
                     return;
                   }
                 end
