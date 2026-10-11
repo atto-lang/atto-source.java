@@ -119,5 +119,28 @@ tests**, zero failures/errors/skips. The source/test tree hashes are
 Native-image guest conformance for this revision is tracked separately in
 [run 38180097958](https://github.com/zed-pkg-test/java-app/actions/runs/38180097958).
 
-Cleanup failure suppression, generalized defer/recover effects, and
-suspendable ARM_RESULT are release blockers, not completed features.
+Synchronous `executeBlock` now runs all deferred expressions in LIFO
+order even if an earlier defer fails; it preserves the original execution
+failure and attaches distinct cleanup/release failures as suppressed.
+Package-local Java tests cover suppression and self/duplicate guards,
+while guest tests verify defers still execute after an error. Graal's public
+`PolyglotException` projection does **not** guarantee that Java
+`Throwable.getSuppressed()` is exposed to users.
+
+Generalized `defer`/`recover` effects, suspendable `ARM_RESULT`,
+arbitrary multi-statement borrowed/owned results, and LLVM parity remain
+release blockers, not completed features.
+
+## Synchronous cleanup-failure hardening
+
+Source head `cb2be437daca062c8b3e6f964fd8b4f7454844c4` adds
+`OresEvalRootNode.preserveCleanupFailure`, complete LIFO deferred
+cleanup iteration and direct Java regression tests in
+`ArmResultCleanupFailureTest`. Exact source/test trees:
+`76d2edeba86317b07548c01c12acfc149a6b01a5` /
+`2a6241ac6eb2739cdb5dfe1cf9d6ab0f8ce471f9`.
+
+[Funded JVM verification](https://github.com/zed-pkg-test/java-app/actions/runs/38180629636)
+and [native-image guest verification](https://github.com/zed-pkg-test/java-app/actions/runs/38180629619)
+cover this revision; consult each run's completed conclusion before
+claiming production readiness.
