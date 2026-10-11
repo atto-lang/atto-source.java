@@ -815,7 +815,7 @@ final class PatternMatchingHardeningTest {
                     default {
                       try { return false; }
                       catch (e) { return false; }
-                      finally { if true { return true; } }
+                      finally { block { return true; } }
                     }
                   }
                 }
