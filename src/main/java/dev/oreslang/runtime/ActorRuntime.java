@@ -5813,10 +5813,24 @@ public final class ActorRuntime implements AutoCloseable {
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
-        // Do not shutdownNow() or interrupt the actor carriers here. Finalizers
-        // can suspend on Futures and require these dispatchers to re-enter the
-        // actor's cleanup-only CONTROL lane. Timed-out cleanup must remain owned
-        // and reported, not falsely published as a completed actor.
+        // A running source continuation owns actor state until the last
+        // defer/finally and carrier turn have settled. Those owners require
+        // dispatchers to remain alive for cleanup-only CONTROL resumption.
+        //
+        // Without any source owners, preserve the established fail-stop
+        // shutdown: interrupt legacy host behaviors and clear queued batches
+        // that will never enter a carrier. Otherwise actor-close can hang
+        // behind a non-cooperative normal behavior or a queued idle actor.
+        // This choice is made AFTER stop requests have linearized against
+        // source-task enrollment.
+        boolean ownedSourceCleanup = snapshot.stream()
+                .anyMatch(cell -> !cell.sourceTaskFutures.isEmpty());
+        if (!ownedSourceCleanup) {
+            privateDispatcher.shutdownNow();
+            sharedDispatcher.shutdownNow();
+            untrustedDispatcher.shutdownNow();
+            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
+        }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
         boolean interrupted = false;
