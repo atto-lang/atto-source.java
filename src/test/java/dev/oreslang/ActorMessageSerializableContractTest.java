@@ -103,7 +103,7 @@ final class ActorMessageSerializableContractTest {
     }
 
     @Test
-    void rejectsNumericWidthErasureAndOpaqueCollectionKindThroughAliases() {
+    void rejectsNumericWidthErasureAndOpaqueCollectionKindAtMailbox() {
         String[] unsupported = {
                 "i32", "u64", "bigint", "f32", "Vector[string]",
                 "Slice[string]", "List[u16]", "Tuple[bool, uint]"
@@ -131,7 +131,10 @@ final class ActorMessageSerializableContractTest {
         IllegalArgumentException aliasedFailure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(aliasSource)));
-        assertTrue(aliasedFailure.getMessage().contains("Serializable"),
+        // This same-file alias currently fails an earlier actor lexical
+        // isolation gate, so it is NOT evidence of imported-alias serialization
+        // checking. Imported type alias coverage is a separate integration gate.
+        assertTrue(aliasedFailure.getMessage().contains("same-file type alias"),
                 aliasedFailure.getMessage());
     }
 
