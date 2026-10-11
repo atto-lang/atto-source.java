@@ -82,6 +82,27 @@ final class ActorMessageSerializableContractTest {
     }
 
     @Test
+    void rejectsAnyTypeWithoutAnImplementedPortableCodec() {
+        String[] notYetPortable = {
+                "decimal",
+                "complex",
+                "Option<string>",
+                "Result<string, int>",
+                "string | int"
+        };
+        for (String candidate : notYetPortable) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Worker as
+                              receive(ActorMail<%s> mail): void { return; }
+                            end
+                            """.formatted(candidate))), candidate);
+            assertTrue(failure.getMessage().contains("Serializable"), failure.getMessage());
+        }
+    }
+
+    @Test
     void rejectsRuntimeCapabilityPayloadEvenWhenFormerlySendable() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
