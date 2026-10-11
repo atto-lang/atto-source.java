@@ -1924,6 +1924,7 @@ public final class ActorRuntime implements AutoCloseable {
         // Immutable parent prevents cycles and prevents a hot-policy upgrade
         // from silently reparenting an existing supervisory domain.
         private final ActorSupervisor parent;
+        private volatile SupervisorCodeSlot<?> codeSlot;
 
         private ActorSupervisor(SupervisorId id, ActorSupervisor parent) {
             this.id = Objects.requireNonNull(id, "id");
@@ -1931,6 +1932,38 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public SupervisorId id() { return id; }
+
+        /**
+         * Associate exactly one owner CONTROL code slot with this stable
+         * supervisor. Source-level guest policy loading remains compiler-gated.
+         */
+        public void installPolicyCode(SupervisorCodeSlot<?> slot) {
+            requireSupervisorContext("install supervisor policy code");
+            requireCallerRuntimeAffinity("install supervisor policy code");
+            Objects.requireNonNull(slot, "slot");
+            synchronized (runtimeLifecycleLock) {
+                if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                if (supervisors.get(id) != this)
+                    throw new IllegalArgumentException("foreign supervisor runtime");
+                if (codeSlot != null)
+                    throw new IllegalStateException("supervisor policy code already installed");
+                slot.current();
+                slot.bindToSupervisor(this);
+                codeSlot = slot;
+            }
+        }
+
+        public Optional<SupervisorCodeSlot.Descriptor> policyRevision() {
+            requireSupervisorContext("inspect supervisor policy revision");
+            requireCallerRuntimeAffinity("inspect supervisor policy revision");
+            SupervisorCodeSlot<?> slot = codeSlot;
+            return slot == null ? Optional.empty() : Optional.of(slot.current());
+        }
+
+        private void retireCodeFromRuntime() {
+            SupervisorCodeSlot<?> slot = codeSlot;
+            if (slot != null) slot.close();
+        }
 
         public Optional<SupervisorId> parentId() {
             requireSupervisorContext("inspect supervisor parent");
@@ -5942,6 +5975,17 @@ public final class ActorRuntime implements AutoCloseable {
 
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
         actorGroups.clear();
+        // Retire supervisor code AFTER group shutdown. Old code images remain
+        // pinned until their outstanding runtime CONTROL turns release leases.
+        RuntimeException policyCleanupFailure = null;
+        for (ActorSupervisor supervisor : List.copyOf(supervisors.values())) {
+            try {
+                supervisor.retireCodeFromRuntime();
+            } catch (RuntimeException failure) {
+                if (policyCleanupFailure == null) policyCleanupFailure = failure;
+                else policyCleanupFailure.addSuppressed(failure);
+            }
+        }
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
             stream.closeAndDrainFromRuntime();
         }
@@ -5961,13 +6005,16 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
             }
-            throw new IllegalStateException(
+            IllegalStateException incomplete = new IllegalStateException(
                     "ActorRuntime close did not observe full actor termination/carrier exit: "
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
+            if (policyCleanupFailure != null) incomplete.addSuppressed(policyCleanupFailure);
+            throw incomplete;
         }
         actors.clear();
         actorCount.set(0);
+        if (policyCleanupFailure != null) throw policyCleanupFailure;
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
