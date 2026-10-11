@@ -133,6 +133,44 @@ onto a single explicit scheduler-visible queue **without** losing legacy
 host-blocking fairness, timeouts, poisoning, and deadlock detection. This remains
 an integration task, not an assumed property of the current adapter.
 
+## Borrow-checker contract at critical boundaries (October 11 hardening)
+
+A `CriticalGate.Ticket` is *logical execution exclusion*. It is **not** a
+borrow, an actor-owned allocation, or authorization to leak its guarded object.
+The compiler must prove two independent properties: ticket liveness through
+control-flow exits, and no alias/loan escapes past the protected lifetime.
+
+| Boundary | Borrow rule | Actual status on this branch |
+| --- | --- | --- |
+| Enter plain `critical` | Scoped borrowed parameters may be used synchronously | Admitted; no implicit async conversion |
+| Body of plain `critical` | No explicit await/cooperate/channel/select suspension | OwnershipChecker rejects suspension; compiler loop cooperation remains disabled while ticket held |
+| Return from any `critical` | Never return `&T`, `&mut T`, or typed aggregates that embed them | Recursive declared return signature check rejects |
+| Enter `suspend critical` | No live borrowed caller locals; captured parameters cannot be borrowed or structural | Declaration + callsite checks reject; existing lexical liveness checker also checks the invoking scope |
+| Body of `suspend critical` | A new local borrow may exist **between** suspension points only | Existing `checkSuspensionBorrows` rejects live loans at explicit await/select/cooperate; implicit preemption must obey the same contract |
+| Exit, throw, cancellation, panic | Invalidate scoped access before releasing ticket, then revoke/reclaim actor-owned storage once quiescent | Ticket release in Java task completion exists; Graal `StateAccess` compiler/runtime linkage still pending #633 |
+
+The current validator is deliberately **more restrictive than Rust's full
+pinned-lifetime model**: a borrowed parameter may not cross the mandatory
+initial yield, even if theoretically pinnable, because Oreslang has not yet
+proven that lifetime across carrier migration. Plain `critical` retains
+zero-suspension fast-path borrowing instead. A compiler-owned *pinned* task
+frame could later relax this only with an explicit lifetime and cancellation
+proof, not an implicit alias.
+
+The safe pattern for actor-owned mutable state is: acquire the invocation
+ticket; at a separate lexical point acquire a short-lived `StateAccess`;
+perform synchronous reads/writes; revoke the view **before** every await,
+scheduler handoff, or completion. The logical ticket itself can remain held
+across await. Do not silently treat retaining a critical ticket as permission
+to retain raw mutable FFM pointers, Map references or guards.
+
+**Unmerged integration warning:** #580/#630 implement separate native actor
+arena/state-map hosts. This critical branch does not yet verify source-level
+`state { ... }` + `self.handle_state` lowering against native storage. An
+end-to-end proof requires a single source tree (issue #633), actor incarnation
+and continuation IDs, no escape via nested class/Map values, shared Java/LLVM
+fixtures, and testing cancellation during ticket/loan handoff.
+
 ## Preemption contract
 
 1. Ordinary non-suspending callables execute to completion on their admitted
