@@ -59,7 +59,7 @@ public final class OresScheduler implements AutoCloseable {
         boolean cleanupInProgress();
 
         /** Host threads set a flag only; never execute guest cleanup. */
-        void cancellationRequested();
+        void cancellationRequested(TaskCancelledException reason);
     }
 
     /** Internal cancellation control signal; never a guest catchable exception. */
@@ -505,7 +505,7 @@ public final class OresScheduler implements AutoCloseable {
 
         private void onCancellationRequested() {
             if (task instanceof CancellationAwareTask<?> aware) {
-                aware.cancellationRequested();
+                aware.cancellationRequested(cancellation);
             }
             if (phase.get() == WAITING && !isCleaningUp()) {
                 detachActiveAwaitRegistration();
