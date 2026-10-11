@@ -147,7 +147,15 @@ public final class SealedActorState {
     }
 
     private boolean safeResult(Object value, int depth) {
-        if (value == null || value instanceof String || value instanceof Number
+        // Never accept an arbitrary Number subclass: AtomicInteger/AtomicLong
+        // and user-defined host Number types can be mutable and may retain
+        // references to the active state loan through their own fields.
+        if (value == null || value instanceof String
+                || value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long
+                || value instanceof Float || value instanceof Double
+                || value instanceof java.math.BigInteger
+                || value instanceof java.math.BigDecimal
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Enum<?>) return true;
         // Avoid arbitrary mutable guest/Java wrappers and every possible
