@@ -223,7 +223,7 @@ public final class Parser {
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
-        String name = consume(IDENT, "expected flat module name").lexeme();
+        String name = consumeDeclaredName("expected flat module name");
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
         // Canonical module syntax is "define module Name as ... end".
@@ -451,7 +451,7 @@ public final class Parser {
             Ast.Visibility visibility,
             boolean isAbstract,
             boolean filePrivateScope) {
-        String name = consume(IDENT, "expected class name").lexeme();
+        String name = consumeDeclaredName("expected class name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -658,7 +658,7 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
-        String name = consume(IDENT, "expected actor name").lexeme();
+        String name = consumeDeclaredName("expected actor name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -746,7 +746,7 @@ public final class Parser {
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
-        String name = consume(IDENT, "expected interface name").lexeme();
+        String name = consumeDeclaredName("expected interface name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
@@ -865,6 +865,7 @@ public final class Parser {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
         }
+        if (name.equals("_")) throw error(previous(), "'_' is reserved for discards, not module bindings");
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
@@ -944,7 +945,7 @@ public final class Parser {
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
-        String name = consume(IDENT, "expected type alias name").lexeme();
+        String name = consumeDeclaredName("expected type alias name");
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
         Ast.TypeRef target = parseTypeRef();
@@ -1487,8 +1488,8 @@ public final class Parser {
     }
 
     private String parseQualifiedName() {
-        StringBuilder name = new StringBuilder(consume(IDENT, "expected name").lexeme());
-        while (match(DOT)) name.append('.').append(consume(IDENT, "expected name after '.'").lexeme());
+        StringBuilder name = new StringBuilder(consumeDeclaredName("expected name"));
+        while (match(DOT)) name.append('.').append(consumeDeclaredName("expected name after '.'"));
         return name.toString();
     }
 
@@ -2138,6 +2139,7 @@ public final class Parser {
             }
             type = applyTypeMetadataAnnotations(type, annotations, true);
         }
+        if (name.equals("_")) throw error(previous(), "'_' is reserved for discards, not variable names");
         consume(EQUAL, "binding requires initializer");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
@@ -3560,6 +3562,15 @@ public final class Parser {
         advance();
         advance();
         return true;
+    }
+
+    /** Standalone '_' is for wildcard and discard syntax, not declarations. */
+    private String consumeDeclaredName(String message) {
+        Token token = consume(IDENT, message);
+        if (token.lexeme().equals("_")) {
+            throw error(token, "'_' is reserved for wildcard/discard syntax");
+        }
+        return token.lexeme();
     }
 
     private Token consume(Token.Type type, String message) {
