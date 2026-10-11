@@ -1866,9 +1866,6 @@ public final class TypeChecker {
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.ValueMatchExpr matched) {
-            if (valueDispatchHasSuspension(expr))
-                throw new IllegalArgumentException(
-                        "suspending value match arms require continuation lowering (not yet supported)");
             final Type subject = deref(typeOf(matched.subject(), env, generics, self));
             List<Type> values = new ArrayList<>();
             armValueTypes.push(values);
@@ -1887,9 +1884,6 @@ public final class TypeChecker {
             return joinArmValues(values, "match");
         }
         if (expr instanceof Ast.ValueSwitchExpr switched) {
-            if (valueDispatchHasSuspension(expr))
-                throw new IllegalArgumentException(
-                        "suspending value switch arms require continuation lowering (not yet supported)");
             final Type subject = deref(typeOf(switched.subject(), env, generics, self));
             List<Type> values = new ArrayList<>();
             armValueTypes.push(values);
