@@ -111,6 +111,7 @@ public final class OresContext implements AutoCloseable {
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
                     vm::executeControl);
+            vm.attachActorRuntime(actors);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
@@ -413,6 +414,8 @@ public final class OresContext implements AutoCloseable {
                 "actor_carrier_backend", actors.carrierBackend().name().toLowerCase(java.util.Locale.ROOT),
                 "root_scheduler", vm.rootScheduler().name(),
                 "scheduler_started", vm.started(),
+                "master_scheduler_threads", vm.masterSchedulerThreadCount(),
+                "actor_pool_scheduler_threads", actors.activatedActorPoolSchedulers(),
                 "control_carriers_started", vm.controlCarrierCount(),
                 "scheduler_safepoints", schedulerSafepoints.get()));
         descriptor.put("source_loop_cooperates", sourceLoopCooperates.get());
