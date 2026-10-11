@@ -378,6 +378,10 @@ final class TypedOpenMapKeysTest {
     void openKeyCannotExposeMoveOnlyValueThroughDynamicGet() throws Exception {
         String program = """
                 define class OwnedMap extends Map<string, unknown> as
+                  on_get(string key): void {
+                    stdio.stdout.write("UNEXPECTED_GET_HOOK");
+                    return;
+                  }
                 end
                 pub routine main(): void {
                   val m = new OwnedMap();
@@ -389,14 +393,17 @@ final class TypedOpenMapKeysTest {
                 }
                 """;
         TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "map-noncopy-read.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).build()) {
+                .allowAllAccess(false).out(output).build()) {
             PolyglotException failure = assertThrows(
                     PolyglotException.class, () -> context.eval(source));
             assertTrue(failure.getMessage().contains("move-only"));
         }
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "an invalid dynamic read must be rejected before on_get");
     }
 
     @Test
