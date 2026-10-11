@@ -39,6 +39,7 @@ public final class SerialActorAdmission implements AutoCloseable {
     public final class Lease implements AutoCloseable {
         private final Kind kind;
         private final long generation;
+        private final SerialActorAdmission issuer = SerialActorAdmission.this;
         private State state = State.RUNNING;
         private Lease(Kind kind, long generation) {
             this.kind = kind;
@@ -184,6 +185,12 @@ public final class SerialActorAdmission implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /** Package-private provenance check; a lease can only authorize its
+     * exact issuing actor, even if another actor has the same generation. */
+    boolean issued(Lease lease) {
+        return lease != null && lease.issuer == this;
     }
 
     public boolean busy() {
