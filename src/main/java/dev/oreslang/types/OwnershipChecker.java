@@ -1617,6 +1617,12 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(aggregate.type)) {
                     throw error(callable + " spread cannot consume a guard-bearing tuple");
                 }
+                // Expanded tuple elements bypass checkArgument. Without this
+                // guard, an incoming tuple containing &T could be forwarded
+                // into owned parameters, erasing the lexical loan lifetime.
+                if (containsBorrowType(spreadType) || containsBorrowType(aggregate.type)) {
+                    throw error(callable + " spread cannot forward borrowed tuple elements into owned parameters; pass explicit borrowed arguments");
+                }
                 parameterIndex += width;
                 continue;
             }
