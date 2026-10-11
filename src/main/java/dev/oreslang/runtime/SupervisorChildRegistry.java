@@ -312,6 +312,25 @@ public final class SupervisorChildRegistry {
      * the exact authorized reservation already ACKNOWLEDGED.
      */
     synchronized Snapshot reconcileVerifiedStop(StopReservation permit) {
+        StopReceipt receipt = validateReconciliationCandidate(permit);
+        if (receipt.status() == StopReceiptStatus.ACKNOWLEDGED)
+            return requireCurrent(permit.child());
+        Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
+                permit.incarnation(), Phase.STOPPED);
+        StopReceipt acknowledged = new StopReceipt(
+                permit, StopReceiptStatus.ACKNOWLEDGED);
+        // Allocate the receipt before publishing the terminal transition.
+        children.put(permit.child().logicalId(), stopped);
+        stopReceipts.put(permit.child().logicalId(), acknowledged);
+        stopReservations.remove(permit.child().logicalId());
+        return stopped;
+    }
+
+    /**
+     * Preflight a reconciliation ticket before invoking any external host
+     * verifier. The subsequent commit rechecks all state under this monitor.
+     */
+    synchronized StopReceipt validateReconciliationCandidate(StopReservation permit) {
         Objects.requireNonNull(permit);
         Snapshot current = requireCurrent(permit.child());
         StopReceipt receipt = stopReceipts.get(permit.child().logicalId());
@@ -324,14 +343,27 @@ public final class SupervisorChildRegistry {
             if (current.phase() != Phase.STOPPED
                     || stopReservations.containsKey(permit.child().logicalId()))
                 throw new IllegalStateException("inconsistent acknowledged STOP");
-            return current;
+        } else {
+            requireStopReceipt(permit);
         }
-        requireStopReceipt(permit);
+        return receipt;
+    }
+
+    /**
+     * The original host Future succeeded. A trusted reconciler may already
+     * have acknowledged the exact ticket: this is an idempotent observation,
+     * not permission to repeat its effect. All checks and writes are atomic.
+     */
+    synchronized Snapshot acknowledgeHostStop(StopReservation permit) {
+        StopReceipt receipt = validateReconciliationCandidate(permit);
+        if (receipt.status() == StopReceiptStatus.ACKNOWLEDGED)
+            return requireCurrent(permit.child());
+        if (receipt.status() == StopReceiptStatus.UNCERTAIN)
+            throw new IllegalStateException("uncertain STOP requires independent reconciliation");
         Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
                 permit.incarnation(), Phase.STOPPED);
         StopReceipt acknowledged = new StopReceipt(
                 permit, StopReceiptStatus.ACKNOWLEDGED);
-        // Allocate the receipt before publishing the terminal transition.
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
