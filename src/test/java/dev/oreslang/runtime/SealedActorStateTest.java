@@ -1,0 +1,71 @@
+package dev.oreslang.runtime;
+
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class SealedActorStateTest {
+    @Test void synchronousStateIsPrivateToActorAndScopedToCriticalCallback() throws Exception {
+        var state = new AtomicReference<SealedActorState>();
+        var stale = new AtomicReference<SealedActorState.Access>();
+        var failure = new AtomicReference<Throwable>();
+        var completed = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var worker = runtime.<Integer>spawnShared(() -> (mail, ctx) -> {
+                try {
+                    if (state.get() == null) {
+                        state.set(new SealedActorState(ctx.self().id(),
+                                Map.of("count", "int", "enabled", "bool"),
+                                Map.of("count", 0L, "enabled", true)));
+                    }
+                    SealedActorState current = state.get();
+                    if (mail > 0) {
+                        current.critical(access -> {
+                            long previous = ((Number) access.read("count")).longValue();
+                            access.write("count", previous + 1);
+                            stale.set(access);
+                            return null;
+                        });
+                    } else {
+                        assertEquals(12L, current.critical(s -> s.read("count")));
+                        assertEquals(true, current.critical(s -> s.read("enabled")));
+                        current.critical(outer -> {
+                            assertEquals(12L, outer.read("count"));
+                            assertEquals(12L, current.critical(inner -> {
+                                assertThrows(IllegalStateException.class, () -> outer.read("count"));
+                                assertEquals(12L, inner.read("count"));
+                                return inner.read("count");
+                            }));
+                            assertEquals(12L, outer.read("count"));
+                            assertThrows(IllegalArgumentException.class,
+                                    () -> current.critical(inner -> inner));
+                            assertEquals(12L, outer.read("count"));
+                            return null;
+                        });
+                        assertThrows(IllegalStateException.class, () -> stale.get().read("count"));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> current.critical(s -> { s.write("count", "invalid"); return null; }));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> current.critical(s -> s.read("missing")));
+                        current.retireFromRuntime(ctx.self().id());
+                        assertThrows(IllegalStateException.class,
+                                () -> current.critical(s -> s.read("count")));
+                        completed.countDown();
+                    }
+                } catch (Throwable x) {
+                    failure.compareAndSet(null, x);
+                    completed.countDown();
+                }
+            });
+            for (int i = 0; i < 12; i++) worker.send(1);
+            worker.send(0);
+            assertTrue(completed.await(15, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+            assertThrows(IllegalStateException.class, () -> state.get().critical(s -> s.read("count")));
+        }
+    }
+}
