@@ -41,6 +41,28 @@ public final class MessagePackCollectionCodec {
 
     public sealed interface Shape permits Scalar, Sequence { }
 
+    /**
+     * Immutable trusted actor mailbox codec declaration, constructed by
+     * compiler lowering (or by explicitly trusted host integration tests).
+     * The sender supplies values, NEVER this descriptor from wire bytes.
+     */
+    public record MailboxSchema(String schemaId, Shape shape) {
+        public MailboxSchema {
+            checkSchemaId(schemaId);
+            Objects.requireNonNull(shape, "mailbox shape");
+            // Force recursive quota/structural verification at binding time.
+            shapeDigest(shape);
+        }
+
+        public byte[] encode(Object value) {
+            return MessagePackCollectionCodec.encode(schemaId, shape, value);
+        }
+
+        public Object decode(byte[] bytes) {
+            return MessagePackCollectionCodec.decode(schemaId, shape, bytes);
+        }
+    }
+
     public enum ScalarKind { BOOL, INT64, FLOAT64, STRING }
     public enum SequenceKind { TUPLE, FIXED_ARRAY, FIXED_LIST, ARRAY, LIST }
 
