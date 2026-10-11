@@ -205,4 +205,64 @@ final class TypedValueMatchIntegrationTest {
                 pub fnc main(): void { stdio.println(classify(7)); }
                 """));
     }
+
+    @Test
+    void borrowedReturnContractMustNotBeErasedIntoAnOwnedScalar() {
+        rejects("""
+                fnc invalid(int n): int {
+                  return match<ret=&int> n over {
+                    default { return n; }
+                  };
+                }
+                """, "owned scalar result");
+        rejects("""
+                fnc invalid(int n): int {
+                  return match<ret=&mut int> n over {
+                    default { return n; }
+                  };
+                }
+                """, "owned scalar result");
+    }
+
+    @Test
+    void unaryBorrowCannotAppearInDirectScalarResult() {
+        rejects("""
+                fnc invalid(int n): int {
+                  return match<ret=int> n over {
+                    default { return &n; }
+                  };
+                }
+                """, "one direct return");
+        rejects("""
+                fnc invalid(let mut int n): int {
+                  return match<ret=int> n over {
+                    default { return &mut n; }
+                  };
+                }
+                """, "one direct return");
+    }
+
+    @Test
+    void borrowedScalarNameCannotBeUsedAsOwnedMatchSubject() {
+        rejects("""
+                fnc invalid(int n): int {
+                  const borrowed: &int = &n;
+                  return match<ret=int> borrowed over {
+                    default { return 9; }
+                  };
+                }
+                """, "locally resolved owned scalar");
+    }
+
+    @Test
+    void scalarPatternBindingsRemainLocallyScopedAndExecutable() throws Exception {
+        assertEquals("16", execute("""
+                fnc value(int n): int {
+                  return match<ret=int> n over {
+                    default as number { return number + 7; }
+                  };
+                }
+                pub fnc main(): void { stdio.println(value(9)); }
+                """));
+    }
 }
