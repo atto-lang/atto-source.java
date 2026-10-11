@@ -585,8 +585,12 @@ public final class Ast {
      * flag is retained for AST compatibility; canonical source syntax is
      * always ordered and the parser emits true.
      */
-    public record MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) implements Stmt {
+    public record MatchStmt(
+            Expr subject, boolean ordered, List<MatchArm> arms, boolean returnForm) implements Stmt {
         public MatchStmt { arms = List.copyOf(arms); }
+        public MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) {
+            this(subject, ordered, arms, false);
+        }
     }
 
     public record SwitchCase(List<Expr> constants, List<Stmt> body) {
@@ -596,10 +600,15 @@ public final class Ast {
         }
     }
 
-    public record SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) implements Stmt {
+    public record SwitchStmt(
+            Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody,
+            boolean returnForm) implements Stmt {
         public SwitchStmt {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
+        }
+        public SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) {
+            this(subject, cases, defaultBody, false);
         }
     }
 
