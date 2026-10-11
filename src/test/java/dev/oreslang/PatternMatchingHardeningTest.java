@@ -270,10 +270,22 @@ final class PatternMatchingHardeningTest {
                 }
                 """)));
 
+        // 'on _' is a default alias: even if authored first it cannot
+        // shadow an explicit type arm.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc good(int n): int {
+                  match n over
+                    on _ -> { return 1; }
+                    on int x -> { return x; }
+                  end
+                }
+                """)));
+
+        // An ordinary named binder remains ordered and can shadow arms.
         IllegalArgumentException dead = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(int n): int {
                   match n over
-                    on _ -> { return 1; }
+                    on anything -> { return 1; }
                     on int x -> { return x; }
                   end
                 }
