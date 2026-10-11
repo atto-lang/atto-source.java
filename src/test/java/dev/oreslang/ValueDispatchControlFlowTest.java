@@ -344,7 +344,7 @@ final class ValueDispatchControlFlowTest {
 
     @Test
     void finallyCannotReplaceReturnButLambdaInsideFinallyCanReturnLocally() throws Exception {
-        assertEquals("lambda\\ncleanup\\nouter\\n", execute("""
+        assertEquals("lambda\ncleanup\nouter\n", execute("""
                 fnc outer(): string {
                   try {
                     return "outer";
