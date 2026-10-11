@@ -99,11 +99,27 @@ focused test success alone.
 
 ## Physical queued-carrier cancellation fence (October 11, 2026)
 
-Cancelling a QUEUED task used to settle the terminal Future even if its
-already-submitted executor dispatch had not entered the owning VM context.
-`outstandingCarrierTurns` reserves dispatch admission before the QUEUED
-transition and decrements only after the carrier exits or submission fails.
-Terminal delivery requires zero outstanding reservations. A deterministic
-blocked-carrier test verifies cancellation does not allow premature context
-retirement or execute cancelled guest code. Suspended lexical-cleanup timeout,
-physical ownership and native-image remain independent release gates.
+A queued turn has an atomic carrier-admission ticket. Cancellation may revoke
+a ticket that has **not** claimed entry to the VM, release its outstanding
+reservation, settle the task without entering the VM or running guest code, and
+leave the queued executor callback as a harmless no-op. This is necessary for
+fast actor termination even when the CONTROL queue contains thousands of tasks.
+
+Once a carrier has claimed VM entry, its ticket is no longer revocable:
+`outstandingCarrierTurns` delays task Future publication and scheduler/context
+retirement until the entered turn fully exits. Installing each ticket and
+publishing QUEUED are serialized with cancellation admission so competing
+producers cannot replace a live ticket. A tagged await generation independently
+rejects stale callbacks after resumption into a different cleanup Future.
+Concurrent `close()` callers share a completed drain or its original failure,
+rather than returning prematurely.
+
+**Verified JVM gate:** [funded run 38178592661](https://github.com/zed-pkg-test/java-app/actions/runs/38178592661)
+matched 388 source Git blobs and passed full Maven: **1,429 tests, zero failures,
+zero errors, one skipped**. This includes queued-cancellation, concurrent-close,
+producer/cancellation races, and actor end under CONTROL/backlog saturation.
+
+Suspended source lexical cleanup under actor/context teardown, cancellation
+timeouts and fatal-error policy, independent physical ownership review,
+GraalVM native-image AOT/hybrid, and LLVM semantic parity remain separate
+release gates. Do not merge this draft solely on JVM success.
