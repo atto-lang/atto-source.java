@@ -5592,6 +5592,28 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.ValueMatchExpr matched) {
+                // Staged arm-local expression lowering: no ReturnSignal is
+                // created or caught. This cannot exit the containing callable.
+                Object subject = eval(matched.subject(), env);
+                for (Ast.MatchArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    if (arm.body().size() != 1
+                            || !(arm.body().getFirst() instanceof Ast.ReturnStmt value)
+                            || value.value() == null) {
+                        throw new IllegalStateException(
+                                "unlowered typed value match arm reached runtime");
+                    }
+                    return eval(value.value(), armEnv);
+                }
+                throw new IllegalStateException(
+                        "exhaustive typed value match invariant violated: no arm matched");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
