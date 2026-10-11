@@ -144,4 +144,47 @@ final class ActorSourceCleanupDrainTest {
             assertEquals(1, gates.cleanupCompletes.get());
         }
     }
+
+    @Test
+    void runtimeCloseKeepsSourceCleanupControlLaneAlive() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        Gates gates = new Gates();
+        ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        Thread closer = null;
+        try {
+            actor.send("run");
+            assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
+            closer = Thread.ofPlatform().start(() -> {
+                try {
+                    runtime.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                }
+            });
+            assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS),
+                    "runtime close must retain the actor-owned source CONTROL lane");
+            assertFalse(actor.get_done().isDone(),
+                    "runtime close cannot publish actor done before suspended cleanup finishes");
+            assertEquals(0, gates.cleanupCompletes.get());
+            assertTrue(closer.isAlive(),
+                    "runtime close must wait for source cleanup instead of destroying carriers");
+
+            gates.cleanupAwait.completeFromRuntime(null);
+            closer.join(5000);
+            assertFalse(closer.isAlive(), "close must terminate once owned cleanup drains");
+            assertNull(closeFailure.get(), "global close should finish after source cleanup");
+            assertTrue(actor.get_done().isDone());
+            assertTrue(gates.task.get().isCancelled());
+            assertEquals(1, gates.cleanupStarts.get());
+            assertEquals(1, gates.cleanupCompletes.get());
+            assertEquals(1, gates.userMessages.get());
+        } finally {
+            gates.cleanupAwait.completeFromRuntime(null);
+            if (closer != null) closer.join(5000);
+            if (closer == null || !closer.isAlive()) {
+                runtime.close();
+            }
+        }
+    }
 }
