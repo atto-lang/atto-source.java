@@ -110,6 +110,83 @@ final class SupervisorDecisionCommitFenceTest {
         }
     }
 
+
+    @Test
+    void selfCloseThenSinkExceptionFinishesShutdownWithoutFalseCommit() throws Exception {
+        try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            java.util.concurrent.atomic.AtomicReference<SupervisorProcess> ref =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicInteger attempts = new AtomicInteger();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, carrier, 2,
+                    n -> CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP),
+                    result -> {
+                        attempts.incrementAndGet();
+                        ref.get().close();
+                        entered.countDown();
+                        throw new IllegalStateException("ambiguous host side effect");
+                    });
+            ref.set(process);
+            process.accept(notice(supervisor, group));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(process.failure().orElse("").contains("ambiguous host side effect"));
+            assertEquals(1, attempts.get(), "a failed sink must not be retried");
+            assertEquals(0, process.resolved(), "throwing sink cannot be reported committed");
+            assertEquals(1, process.undelivered(), "unknown lifecycle effect must be accounted");
+            assertEquals(0, process.queued(), "reentrant close must clear failed mailbox");
+            assertFalse(process.callbackActive(), "failed close retained a callback lease");
+            assertFalse(process.healthy());
+            assertThrows(IllegalStateException.class,
+                    () -> process.accept(notice(supervisor, group)));
+            process.close();
+            assertEquals(1, process.undelivered(), "repeat close double-counted failure");
+        }
+    }
+
+    @Test
+    void selfClosePreservesPendingNoticeLossAccounting() throws Exception {
+        try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            CompletableFuture<SupervisorProcess.Directive> first = new CompletableFuture<>();
+            CountDownLatch entered = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<SupervisorProcess> ref =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            AtomicInteger effects = new AtomicInteger();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, carrier, 2,
+                    n -> {
+                        entered.countDown();
+                        return first;
+                    },
+                    result -> {
+                        effects.incrementAndGet();
+                        ref.get().close();
+                    });
+            ref.set(process);
+            process.accept(notice(supervisor, group));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            process.accept(notice(supervisor, group));
+            first.complete(SupervisorProcess.Directive.STOP);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.resolved() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, effects.get());
+            assertEquals(1, process.resolved());
+            assertEquals(1, process.undelivered(), "pending second notice was lost silently");
+            assertEquals(0, process.queued());
+            assertFalse(process.healthy());
+        }
+    }
+
     @Test
     void closedSupervisorRejectsLateFutureCompletionWithoutDecision() throws Exception {
         try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
