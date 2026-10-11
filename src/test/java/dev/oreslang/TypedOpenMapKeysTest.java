@@ -119,6 +119,40 @@ final class TypedOpenMapKeysTest {
     }
 
     @Test
+    void rejectsBorrowEscapeThroughPutAndBrackets() {
+        IllegalArgumentException put = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(MAP + """
+                        fnc invalid(): void {
+                          val m = new MyMap();
+                          val int x = 7;
+                          m.put("extra", &x);
+                          return;
+                        }
+                        """)));
+        assertTrue(put.getMessage().contains("cannot store borrowed references"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(MAP + """
+                        fnc invalid(): void {
+                          val m = new MyMap();
+                          val int x = 7;
+                          m["extra"] = &x;
+                          return;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(MAP + """
+                        fnc invalid(): void {
+                          val m = new MyMap();
+                          val int x = 7;
+                          m.put("extra", Some(&x));
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
     void rejectsUnverifiableSchemasAndGenericMapInheritance() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class Bad extends Map<string, unknown> as
