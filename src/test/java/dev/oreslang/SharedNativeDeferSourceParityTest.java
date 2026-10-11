@@ -49,6 +49,20 @@ final class SharedNativeDeferSourceParityTest {
     }
 
     @Test
+    void nonthrowingNativeTryFinallyPreservesReturnAndOrderedCleanup() throws Exception {
+        Path fixture = Path.of("contracts/v1/semantics/fixtures/native-try-finally-return-snapshot.ores");
+        String source = Files.readString(fixture, StandardCharsets.UTF_8);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
+                "shared nonthrowing try/catch/finally must typecheck on Java/GraalVM");
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Value result = context.eval(Source.newBuilder("ores", source, fixture.toString()).build());
+            assertTrue(result.fitsInLong());
+            assertEquals(246L, result.asLong(),
+                    "pending returns must be snapshotted before ordered finally and outer defer");
+        }
+    }
+
+    @Test
     void exactNativeLifoSourceChecksAndExecutesOnGraalVM() throws Exception {
         Path fixture = Path.of("contracts/v1/semantics/fixtures/native-defer-lifo-cfg.ores");
         String source = Files.readString(fixture, StandardCharsets.UTF_8);
