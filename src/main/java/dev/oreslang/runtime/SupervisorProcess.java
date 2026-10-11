@@ -60,6 +60,10 @@ public final class SupervisorProcess implements AutoCloseable {
     private State state = State.RUNNING;
     /** Single-flight lease, including while an await is suspended. */
     private boolean callbackActive;
+    // close() invoked reentrantly from a lifecycle decision cannot erase that
+    // already-admitted decision before its successful host commit is counted.
+    private boolean committingDecision;
+    private boolean closeAfterCommit;
     private Throwable fatal;
 
     SupervisorProcess(
@@ -181,19 +185,32 @@ public final class SupervisorProcess implements AutoCloseable {
                 return;
             }
         }
+        synchronized (this) {
+            committingDecision = true;
+        }
         try {
             // Exactly one decision request, on an admitted runtime turn.
             decisionSink.accept(new Resolution(notice, decision));
         } catch (Throwable sinkFailure) {
-            synchronized (this) { failLocked(sinkFailure); }
+            synchronized (this) {
+                committingDecision = false;
+                failLocked(sinkFailure);
+            }
             return;
         }
         synchronized (this) {
+            committingDecision = false;
             if (state != State.RUNNING) return;
             mailbox.removeFirst();
             resolved.incrementAndGet();
             callbackActive = false;
-            scheduleLocked();
+            if (closeAfterCommit) {
+                state = State.CLOSED;
+                undelivered.addAndGet(mailbox.size());
+                mailbox.clear();
+            } else {
+                scheduleLocked();
+            }
         }
         }
     }
@@ -215,6 +232,10 @@ public final class SupervisorProcess implements AutoCloseable {
         synchronized (decisionFence) {
             synchronized (this) {
                 if (state == State.CLOSED) return;
+                if (state == State.RUNNING && committingDecision) {
+                    closeAfterCommit = true;
+                    return;
+                }
                 if (state == State.RUNNING) {
                     undelivered.addAndGet(mailbox.size());
                 }
