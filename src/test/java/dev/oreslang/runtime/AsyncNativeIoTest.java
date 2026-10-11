@@ -61,10 +61,10 @@ class AsyncNativeIoTest {
               }
             end
             pub async routine main(): void {
-              val worker = spawn Worker(); await worker.ready;
+              val worker = spawn Worker(); await worker.get_ready();
               worker.send("%s");
               for await const output of worker.outputs { stdio.println(output.value); }
-              await worker.done; return;
+              await worker.get_done(); return;
             }
             """.formatted(path), RuntimePermissions.denyAll().withAllowed(
                 RuntimePermissions.Permission.WRITE, root.toString()), new ByteArrayOutputStream()));
@@ -107,6 +107,54 @@ class AsyncNativeIoTest {
             io.close();
             assertThrows(ExecutionException.class, () -> first.get(2, TimeUnit.SECONDS));
             assertTrue(io.submit("closed", () -> 1).isDone());
+        }
+    }
+
+    @Test void closingContextWinsOverLateWorkerSuccessAndFailure() throws Exception {
+        for (boolean throwLate : new boolean[] {false, true}) {
+            try (var io = new AsyncNativeIo(1)) {
+                CountDownLatch entered = new CountDownLatch(1);
+                CountDownLatch workerExited = new CountDownLatch(1);
+                var pending = io.submit("interrupt-resistant-host-io", () -> {
+                    entered.countDown();
+                    try {
+                        new CountDownLatch(1).await();
+                    } catch (InterruptedException ignored) {
+                        // Some host operations complete rather than abort after
+                        // close interrupts the worker. They must not revive an
+                        // already-closed Oreslang context.
+                    }
+                    workerExited.countDown();
+                    if (throwLate) throw new IOException("late host failure");
+                    return 123;
+                });
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                io.close();
+                assertTrue(workerExited.await(2, TimeUnit.SECONDS));
+                ExecutionException failure = assertThrows(ExecutionException.class,
+                        () -> pending.get(2, TimeUnit.SECONDS));
+                assertInstanceOf(IllegalStateException.class, failure.getCause());
+                assertEquals("I/O context closed", failure.getCause().getMessage());
+            }
+        }
+    }
+
+    @Test void rejectedResourceCleanupNeverRunsUnderAdmissionLock() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            io.close();
+            java.util.concurrent.atomic.AtomicBoolean resourceClosed =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicBoolean heldAdmissionMonitor =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> io.register(() -> {
+                        heldAdmissionMonitor.set(Thread.holdsLock(io));
+                        resourceClosed.set(true);
+                    }));
+            assertEquals("I/O context closed", failure.getMessage());
+            assertTrue(resourceClosed.get());
+            assertFalse(heldAdmissionMonitor.get(),
+                    "host resource.close must never run under I/O admission lock");
         }
     }
 
@@ -212,12 +260,12 @@ class AsyncNativeIoTest {
                   }
                 end
                 pub async routine main(): void {
-                  val reader = spawn Reader(); await reader.ready;
-                  val probe = spawn Probe(); await probe.ready;
+                  val reader = spawn Reader(); await reader.get_ready();
+                  val probe = spawn Probe(); await probe.get_ready();
                   reader.send("go");
                   await reader.outputs.next();
                   probe.send("go");
-                  await reader.done; await probe.done; return;
+                  await reader.get_done(); await probe.get_done(); return;
                 }
                 """.formatted(server.getLocalPort());
             run(program, RuntimePermissions.denyAll().withAllowed(RuntimePermissions.Permission.NET,

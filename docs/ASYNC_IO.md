@@ -81,11 +81,18 @@ workers, closes tracked sockets and settles pending futures. A filesystem syscal
 that ignores interruption may still finish after context closure. Await outstanding
 writes when their completion matters; closing a socket interrupts its pending read.
 Close TCP sockets explicitly when finished; context shutdown is a fallback.
+Pending Future settlement and context closure are serialized so a worker
+cannot remove an unsettled operation just before shutdown. A Future failed
+by closure remains failed even if its host worker finishes late. Resource
+cleanup and best-effort interruption **do not promise** that an interrupted
+write is rolled back or that no external side effects occur after close.
 
 The server-side HTTP API already returns futures for accept, body reads, response
 writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. Stdout/console export and stdin are not migrated by
-this change. This implementation does not add physical actor heap isolation.
+remain separate operations. The existing explicitly async I/O APIs do not add
+`stdio.*_async` operations; the subsequent cooperative `_blocking` migration
+covers console output and stdin with SourceTask suspension. This implementation
+does not add physical actor heap isolation.
 
 ## Validation
 
@@ -129,9 +136,11 @@ file/console/network I/O builtins must also be audited and either renamed with
 documented `*_async` functions remain correctly named; the suffix is optional
 for genuinely async calls.
 
-Do not switch the documentation to claim those replacement functions work
-until the builtin resolver, compiler conformance tests and dependent CLI
-programs have been migrated. Migration must check qualified methods and
+The Java/Graal PR #522 and CLI PR #12 feature branches now contain those
+replacement functions and the migrated CLI source. This does **not** mean
+the current combined heads are release-validated: their latest CI jobs did
+not execute any test steps, and the original passing mirrors cover earlier
+snapshots only. Migration must check qualified methods and
 aliases, explicit capability gating, diagnostics for legacy bare calls,
 and two-actor **single-carrier** tests proving `_blocking` calls do not occupy the carrier, plus the existing explicit-`await` async tests. `_blocking` returns `T` directly in source; `*_async` returns `Future<T>`. Neither may use host `join()`/`get()` on the actor carrier.
 

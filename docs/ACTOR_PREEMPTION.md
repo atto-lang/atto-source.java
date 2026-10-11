@@ -87,6 +87,106 @@ Untrusted actor fuel/wall/CPU accounting must also survive any future
 cooperative handoff before automatic preemption is enabled for untrusted code;
 a handoff must never reset a logical task's quota.
 
+## Automatic loop cooperation in heap-owned source tasks
+
+The source interpreter now lowers `for`, `for-of`, destructuring `for-of`,
+and `loop` back-edges **inside an existing `SourceTask`** into an iterative
+callback trampoline. No `await` or explicit `rt cooperate` is needed in such
+a loop. Every 32 back-edges, a trusted source task polls cancellation and runtime
+state; an UNTRUSTED task charges fuel at **every** back-edge.
+It cooperates after a nominal 2 ms soft quantum or at most 512 back-edges,
+whichever is reached first at a poll. The continuation preserves loop indices,
+iterator cursors, locals, and pending callbacks. A new physical dispatch can
+start only after the previous guest turn fully unwinds.
+
+This is a **soft** scheduling quantum, not a 2 ms deadline guarantee. Long
+single iteration bodies, synchronous helper calls, host/FFI calls, JIT pauses,
+GC pauses, and OS scheduling delays may exceed it. The bounded back-edge count
+also prevents deep recursive Java interpreter stacks. Nested loops in
+`if`/`match`/`switch`/`try`/block contexts are lowered when the enclosing
+source task is already continuation-backed. The runtime does not cooperate
+while an enclosing lexical environment holds a live `MutexGuard`; these
+no-yield regions must remain bounded or the carrier can still starve. Successful
+source loop cooperation decisions are counted in
+`process.descriptor.source_loop_cooperates`.
+
+**Synchronous actor receive special case:** even if a source-defined
+`receive(ActorMail<T>)` method contains no `await` or explicit `rt cooperate`,
+the actor mailbox dispatcher starts it in a heap-owned `SourceTask` when a
+loop is present. This preserves the external `void` receive protocol, gates
+later user mailbox turns until the source Future completes, and permits CPU
+loop cooperation inside the continuation. The actor's `on_start` still runs
+synchronously as part of the ready/initialization boundary.
+
+**Not automatically suspendable yet:** normal synchronous function calls,
+startup callbacks, host Java/FFI executions, and other actor `run`/method
+bodies not transformed into a source task. Their `schedulerSafepoint()`
+remains a cancellation/quota checkpoint and cannot capture the host Java stack.
+Do not make arbitrary synchronous functions implicitly async merely because
+they contain a loop; that changes callable types and actor protocol semantics.
+A future compiler transformation must produce explicit continuations while
+preserving the externally synchronous contract where appropriate.
+
+**UNTRUSTED gate:** automatic loop cooperation is deliberately disabled
+inside UNTRUSTED actor turns while their logical task quota continuity is
+unproven (issue #402 / draft PR #461). They still run the periodic quota
+and cancellation checks, without resetting fuel, CPU, or wall budgets through
+a scheduler handoff. Before enabling cooperation for UNTRUSTED, validate
+all source and callback continuation paths and cross-carrier CPU charges.
+
+**Hard real-time:** no worst-case execution-time or hard deadline guarantee is
+provided on the managed JVM/GraalVM runtime. A hard deadline would require
+bounded allocation/GC, JIT/AOT choices, bounded critical sections, scheduler
+priority/reservation admission, interrupt/native execution boundaries, a
+suitable OS, and WCET plus end-to-end latency proof. Non-cooperating trusted
+code cannot be safely suspended by `Thread.yield()`, Java interruption, or
+a timer; forceful revocation requires a dedicated isolated execution boundary.
+
+## Independent 4 ms turn watchdog
+
+`ActorTurnWatchdog` is a daemon monitor separate from ordinary actor and
+scheduler carriers. Its 2 ms polling cadence detects a physical dispatch turn
+whose monotonic wall time has reached **4 ms** without releasing the carrier.
+The threshold is an observation policy, **not a hard timing guarantee**:
+OS scheduling, GC, JIT and host execution may delay the monitor itself.
+
+For each dispatch, the runtime registers an identity-unique lease and retires
+it when the carrier exits. The monitor synchronizes retirement and inspection
+to avoid reporting a previous actor turn against a reused carrier. Its only
+authority is to set an advisory preemption bit and publish nonblocking
+accounting. It never invokes guest callbacks, interrupts a carrier, performs
+signal-based stack rewrites, or forces a VM suspension.
+
+- `OresScheduler.preemptionRequested()` observes the logical source task's
+  current dispatch; `OresScheduler.watchdogOverruns()` counts flagged turns.
+- `ActorRuntime.watchdogPreemptionRequested()` observes the current actor
+  dispatch. `pollWatchdogNotice()` supplies a bounded host-only notice
+  containing actor id/kind and wall/checkpoint ages; `watchdogOverruns()`
+  counts all detections, including notices dropped by a full notice queue.
+  `watchdogNoticesDropped()` counts bounded-queue drops. These methods and
+  `watchdogObserverFailures()` require host/supervisor authority: ordinary
+  actors and Mailman callbacks cannot drain another actor's diagnostics.
+  When an internal observer fails, the watchdog counts the failure, skips
+  only that observer and continues inspecting peers and future dispatches.
+- `OresContext.watchdogPreemptionRequested()` combines the two sources.
+  The source-loop trampoline honors that advisory bit **only** where it
+  already owns a continuation and no lexical `MutexGuard` is held.
+- Safepoints record checkpoint progress, but checkpoint polling alone **does
+  not** count as releasing the physical carrier.
+
+An idle-carrier heartbeat is optional diagnostic optimization, not a reliable
+watchdog: no carrier is idle when all carriers are trapped in greedy loops.
+The monitor is independent of the guest dispatch pools.
+
+**Current limits:** A synchronous Java/FFI call or non-continuation-backed
+method cannot be transparently preempted. UNTRUSTED source-loop cooperation
+remains disabled until fuel, CPU, and wall budgets are bound to the persistent
+logical task across await/resume and carrier migration. The watchdog reports
+and requests cooperation, but does not itself revoke an untrusted execution
+domain. Supervisors may poll notices and apply an explicit structured or
+isolate-backed cancellation policy; only a proven isolated revoker may force
+termination.
+
 ## Required invariants
 
 1. **No source-line semantics.** Preemption occurs only at VM-defined resumable

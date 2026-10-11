@@ -167,12 +167,17 @@ public final class AsyncNativeIo implements AutoCloseable {
             return result;
         }
         admitted.add(result);
+        long queued = CorePerf.start();
         try {
             workers.execute(() -> {
+                CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+                long workPerf = CorePerf.start();
                 T value;
                 try {
                     value = work.call();
                 } catch (Throwable failure) {
+                    // Keep diagnostics published before waiters can observe
+                    // failure, while still settling atomically against close().
                     SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
                     synchronized (this) {
                         admitted.remove(result);
@@ -182,6 +187,8 @@ public final class AsyncNativeIo implements AutoCloseable {
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
                     return;
+                } finally {
+                    CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
                 }
                 synchronized (this) {
                     admitted.remove(result);
@@ -196,8 +203,8 @@ public final class AsyncNativeIo implements AutoCloseable {
     }
 
     void register(AutoCloseable resource) throws Exception {
-        // Close foreign host resources outside the I/O admission monitor:
-        // release/teardown may wait on a worker that itself needs the lock.
+        // Resource.close() can block or reenter runtime plumbing, so never
+        // invoke third-party teardown while holding the admission monitor.
         synchronized (this) {
             if (!closed) {
                 resources.add(resource);
