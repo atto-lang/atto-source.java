@@ -76,6 +76,43 @@ final class SourceSupervisorStopLoweringTest {
     }
 
     @Test
+    void compiledStopDoesNotAcknowledgeThrowingHostCommit() throws Exception {
+        var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            AtomicInteger calls = new AtomicInteger();
+            CountDownLatch attempted = new CountDownLatch(1);
+            var process = compiled.install(group, 2, decision -> {
+                assertEquals(SupervisorProcess.Directive.STOP, decision.directive());
+                assertTrue(decision.turnGeneration() > 0);
+                calls.incrementAndGet();
+                attempted.countDown();
+                throw new IllegalStateException("ambiguous STOP effect");
+            });
+            var actor = group.spawnWorker(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    factory -> (message, ctx) -> {
+                        throw new IllegalStateException("guest-stop-failure");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("panic");
+            assertTrue(attempted.await(10, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(process.failure().orElse("").contains("ambiguous STOP effect"));
+            assertEquals(1, calls.get(), "ambiguous STOP was automatically replayed");
+            assertEquals(0, process.resolved(), "failed host effect marked committed");
+            assertEquals(1, process.undelivered());
+            assertEquals(0, process.queued());
+            assertFalse(process.healthy());
+            group.close();
+            process.close();
+        }
+    }
+
+    @Test
     void realManagedGrandchildFailureRunsCompiledStopOnSupervisorControl() throws Exception {
         SourceSupervisorLowering.StopOnlySupervisor compiled =
                 OresCompiler.compileStopOnlySupervisor(SOURCE);
