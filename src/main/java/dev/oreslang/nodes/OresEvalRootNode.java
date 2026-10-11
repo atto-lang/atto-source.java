@@ -4114,6 +4114,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OptionValue mapRead(OresObject object, String key) {
+            rejectReentrantMapAccess(object);
             // Invalid stored data must not trigger observable hook side effects.
             if (object.mapEntries.containsKey(key)) {
                 validateMapReadValue(object, key, object.mapEntries.get(key));
@@ -4175,7 +4176,15 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private void mapWrite(OresObject object, String key, Object value) {
+        private static void rejectReentrantMapAccess(OresObject object) {
+            // Reject *before* validation or hooks, so callbacks cannot observe
+            // a partially completed operation through reentrant Map access.
+            if (object.mapHookActive) {
+                throw new IllegalStateException("reentrant map hook access is not permitted");
+            }
+        }
+
+        private void validateMapWriteValue(OresObject object, String key, Object value) {
             if (value == null) {
                 throw new IllegalArgumentException("Map cannot store a void/null value");
             }
@@ -4188,22 +4197,35 @@ public final class OresEvalRootNode extends RootNode {
                     break;
                 }
             }
+        }
+
+        private void validateMapOverwrite(OresObject object, String key) {
+            if (!object.mapEntries.containsKey(key)) return;
+            Object previous = object.mapEntries.get(key);
+            validateMapReadValue(object, key, previous);
             // Replacing an owned value would silently abandon its resources.
-            // Until an explicit previous-value transfer / destructor API lands,
-            // require the caller to remove and handle the old owner first.
-            if (object.mapEntries.containsKey(key)) {
-                Object previous = object.mapEntries.get(key);
-                validateMapReadValue(object, key, previous);
-                try {
-                    mapCopyForRead(previous, new IdentityHashMap<>(), 0);
-                } catch (IllegalArgumentException nonCopy) {
-                    throw new IllegalArgumentException(
-                            "Map.put cannot overwrite a non-Copy owned value for key '"
-                                    + key + "'; call remove() and handle the old owner first",
-                            nonCopy);
-                }
+            // Until explicit previous-value transfer / destruction is available,
+            // require remove() to transfer that owner before replacement.
+            try {
+                mapCopyForRead(previous, new IdentityHashMap<>(), 0);
+            } catch (IllegalArgumentException nonCopy) {
+                throw new IllegalArgumentException(
+                        "Map.put cannot overwrite a non-Copy owned value for key '"
+                                + key + "'; call remove() and handle the old owner first",
+                        nonCopy);
             }
+        }
+
+        private void mapWrite(OresObject object, String key, Object value) {
+            rejectReentrantMapAccess(object);
+            // Validation and overwrite safety apply on both sides of the
+            // user-defined hook, not merely at invocation time. A hook can
+            // mutate a reachable payload or existing map-owned value.
+            validateMapWriteValue(object, key, value);
+            validateMapOverwrite(object, key);
             mapHook(object, "on_put", key, value);
+            validateMapWriteValue(object, key, value);
+            validateMapOverwrite(object, key);
             object.mapEntries.put(key, value);
         }
 
@@ -4264,6 +4286,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OptionValue mapRemove(OresObject object, String key) {
+            rejectReentrantMapAccess(object);
             // Do not invoke user hooks for corrupted stored values.
             if (object.mapEntries.containsKey(key)) {
                 validateMapReadValue(object, key, object.mapEntries.get(key));
