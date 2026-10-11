@@ -833,6 +833,7 @@ public final class Parser {
             type = parseTypeRef();
             name = consume(IDENT, "expected field name").lexeme();
         }
+        if (name.equals("_")) throw error(previous(), "'_' is reserved for discards, not field names");
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
         if (type == null && initializer == null) {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
@@ -844,7 +845,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
-        String name = consume(IDENT, "expected field name").lexeme();
+        String name = consumeDeclaredName("expected field name");
         consume(COLON, "expected ':' after field name");
         Ast.TypeRef type = parseTypeRef();
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
@@ -3005,6 +3006,9 @@ public final class Parser {
         if (token.type() == IDENT
                 || isReservedCallableName(token.type())
                 || isContextualStatementCallableName(token.type())) {
+            if (token.lexeme().equals("_")) {
+                throw error(token, "'_' cannot be a callable declaration name");
+            }
             advance();
             return token.lexeme();
         }
