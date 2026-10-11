@@ -47,6 +47,16 @@ final class SourceSupervisorAdmissionTest {
     }
 
     @Test
+    void directTypeCheckerAndIsolateEntryPointsAlsoFailClosed() {
+        Ast.Program parsed = Parser.parse(VALID);
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(parsed));
+        assertThrows(SecurityException.class,
+                () -> dev.oreslang.runtime.CapabilityChecker.check(
+                        parsed, dev.oreslang.runtime.IsolatePolicy.developer()));
+    }
+
+    @Test
     void forgedOrAmbiguousSupervisorHooksAreRejected() {
         for (String source : new String[] {
                 "define supervisor S as end",
