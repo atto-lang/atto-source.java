@@ -4340,6 +4340,7 @@ public final class TypeChecker {
             };
             case "HttpHandler" -> switch (name) {
                 case "isolated", "serial" -> Primitive.BOOL;
+                case "done" -> voidFuture; // snapshot of one actor incarnation
                 // A handler may only send to its own persistent serial actor;
                 // it does not export an untyped actor reference to guest code.
                 case "send" -> new Function(List.of(Primitive.STRING), Primitive.VOID);
