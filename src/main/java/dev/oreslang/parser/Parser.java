@@ -2565,7 +2565,8 @@ public final class Parser {
 
         while (!check(END) && !check(EOF)) {
             if (matchContextualKeyword("case")) {
-                if (sawDefault) throw error(previous(), "switch case cannot appear after default");
+                // The default arm is a fallback independent of source position.
+                // Retain concrete case order; only a second default is rejected.
                 List<Ast.Expr> constants = new ArrayList<>();
                 do constants.add(parseExpression()); while (match(COMMA));
                 if (check(FAT_ARROW)) {
