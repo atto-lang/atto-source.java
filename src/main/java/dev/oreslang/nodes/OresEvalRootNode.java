@@ -42,6 +42,14 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
+    /** Preserve each distinct cleanup failure without self-suppression. */
+    static void preserveCleanupFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null || cleanup == null || primary == cleanup) return;
+        for (Throwable existing : primary.getSuppressed())
+            if (existing == cleanup) return;
+        primary.addSuppressed(cleanup);
+    }
+
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
@@ -4620,7 +4628,7 @@ public final class OresEvalRootNode extends RootNode {
                     } catch (RuntimeException | Error failure) {
                         if (cleanupFailure == null) cleanupFailure = failure;
                         else if (cleanupFailure != failure)
-                            cleanupFailure.addSuppressed(failure);
+                            preserveCleanupFailure(cleanupFailure, failure);
                     }
                 }
                 try {
@@ -4628,13 +4636,13 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (RuntimeException | Error failure) {
                     if (cleanupFailure == null) cleanupFailure = failure;
                     else if (cleanupFailure != failure)
-                        cleanupFailure.addSuppressed(failure);
+                        preserveCleanupFailure(cleanupFailure, failure);
                 }
                 if (originalFailure != null) {
                     // Never mask the original guest failure with a later
                     // deferred expression or MutexGuard release failure.
                     if (cleanupFailure != null && cleanupFailure != originalFailure)
-                        originalFailure.addSuppressed(cleanupFailure);
+                        preserveCleanupFailure(originalFailure, cleanupFailure);
                 } else if (cleanupFailure instanceof RuntimeException failure) {
                     throw failure;
                 } else if (cleanupFailure instanceof Error failure) {
