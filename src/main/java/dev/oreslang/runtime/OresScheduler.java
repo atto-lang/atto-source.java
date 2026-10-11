@@ -424,17 +424,16 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
-        private static final int NEW = 0;
-        private static final int QUEUED = 1;
-        private static final int RUNNING = 2;
-        private static final int WAITING = 3;
-        private static final int TERMINAL = 4;
+        // Typed scheduler lifecycle; no integer states or magic ordinals.
+        // Phase.NEW -> Phase.QUEUED -> Phase.RUNNING -> (Phase.WAITING -> Phase.QUEUED)* -> Phase.TERMINAL.
+        // Cancellation may transition any non-terminal phase to Phase.TERMINAL.
+        private enum Phase { Phase.NEW, Phase.QUEUED, Phase.RUNNING, Phase.WAITING, Phase.TERMINAL }
 
         private final Task<T> task;
         private final Executor taskPlacement;
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
-        private final AtomicInteger phase = new AtomicInteger(NEW);
+        private final AtomicReference<Phase> phase = new AtomicReference<>(Phase.NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
@@ -451,7 +450,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void scheduleInitial() {
-            if (!phase.compareAndSet(NEW, QUEUED)) {
+            if (!phase.compareAndSet(Phase.NEW, Phase.QUEUED)) {
                 throw new IllegalStateException("scheduler task was already started");
             }
             enqueueTurn();
@@ -471,7 +470,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void runTurn() {
-            if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+            if (!phase.compareAndSet(Phase.QUEUED, Phase.RUNNING)) return;
             if (!executing.compareAndSet(false, true)) {
                 failTerminal(new IllegalStateException(
                         "OresScheduler task execution lease violation"));
@@ -549,7 +548,7 @@ public final class OresScheduler implements AutoCloseable {
                         "cooperate attempted to publish more than one resume"));
                 return;
             }
-            if (!phase.compareAndSet(RUNNING, WAITING)) {
+            if (!phase.compareAndSet(Phase.RUNNING, Phase.WAITING)) {
                 pendingResume.compareAndSet(resume, null);
             }
             // afterCarrierTurn() owns requeueing so this dispatch fully
@@ -557,7 +556,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void armAwait(OresFuture<?> awaited) {
-            if (!phase.compareAndSet(RUNNING, WAITING)) {
+            if (!phase.compareAndSet(Phase.RUNNING, Phase.WAITING)) {
                 return;
             }
 
@@ -594,7 +593,7 @@ public final class OresScheduler implements AutoCloseable {
                 // and waiter publication. whenCompleteRuntimeCancellable()
                 // handles that race and may call accept(...) synchronously.
                 // If it did, clear the already-claimed registration now.
-                if (phase.get() != WAITING || pendingResume.get() != null) {
+                if (phase.get() != Phase.WAITING || pendingResume.get() != null) {
                     detachActiveAwaitRegistration();
                 }
             } catch (RuntimeException | Error registrationFailure) {
@@ -608,7 +607,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) return;
+            if (phase.get() == Phase.TERMINAL) return;
 
             Resume resume = Resume.completed(
                     value,
@@ -619,7 +618,7 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
 
-            if (phase.get() == TERMINAL) {
+            if (phase.get() == Phase.TERMINAL) {
                 pendingResume.compareAndSet(resume, null);
                 return;
             }
@@ -634,7 +633,7 @@ public final class OresScheduler implements AutoCloseable {
         private void scheduleReadyResume() {
             if (executing.get()) return;
             if (pendingResume.get() == null) return;
-            if (!phase.compareAndSet(WAITING, QUEUED)) return;
+            if (!phase.compareAndSet(Phase.WAITING, Phase.QUEUED)) return;
 
             try {
                 enqueueTurn();
@@ -651,7 +650,7 @@ public final class OresScheduler implements AutoCloseable {
 
         private void finish(T value) {
             detachActiveAwaitRegistration();
-            if (!phase.compareAndSet(RUNNING, TERMINAL)) {
+            if (!phase.compareAndSet(Phase.RUNNING, Phase.TERMINAL)) {
                 return;
             }
             terminalOutcome.set(new TerminalSuccess<>(value));
@@ -663,11 +662,11 @@ public final class OresScheduler implements AutoCloseable {
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
             detachActiveAwaitRegistration();
-            int observed;
+            Phase observed;
             do {
                 observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
+                if (observed == Phase.TERMINAL) return;
+            } while (!phase.compareAndSet(observed, Phase.TERMINAL));
 
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             tasks.remove(this);
@@ -677,7 +676,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            if (phase.get() != Phase.TERMINAL || completion.isDone()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
@@ -694,11 +693,11 @@ public final class OresScheduler implements AutoCloseable {
 
         private void cancelFromFuture() {
             detachActiveAwaitRegistration();
-            int observed;
+            Phase observed;
             do {
                 observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
+                if (observed == Phase.TERMINAL) return;
+            } while (!phase.compareAndSet(observed, Phase.TERMINAL));
             tasks.remove(this);
             pendingResume.set(null);
         }
