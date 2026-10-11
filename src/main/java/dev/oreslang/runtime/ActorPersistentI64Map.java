@@ -86,7 +86,7 @@ public final class ActorPersistentI64Map implements AutoCloseable {
             // ephemeral state view (including via List/Map containers).
             // Suspending Future/callback results are not implemented: they
             // must not carry a live state access outside this critical turn.
-            rejectEscapedStateView(result, new IdentityHashMap<>(), 0);
+            rejectEscapedStateView(result, new IdentityHashMap<>(), 0, new int[]{4096});
             return result;
         } finally {
             access.live = false;
@@ -105,7 +105,11 @@ public final class ActorPersistentI64Map implements AutoCloseable {
     private void rejectEscapedStateView(
             Object result,
             IdentityHashMap<Object, Boolean> visited,
-            int depth) {
+            int depth,
+            int[] budget) {
+        if (--budget[0] < 0) {
+            throw new IllegalArgumentException("critical state result exceeds node budget");
+        }
         if (result == null || result instanceof String
                 || result instanceof Number || result instanceof Boolean
                 || result instanceof Character || result instanceof Enum<?>) {
@@ -122,20 +126,20 @@ public final class ActorPersistentI64Map implements AutoCloseable {
         }
         try {
             if (result instanceof List<?> list) {
-                for (Object child : list) rejectEscapedStateView(child, visited, depth + 1);
+                for (Object child : list) rejectEscapedStateView(child, visited, depth + 1, budget);
             } else if (result instanceof Set<?> set) {
-                for (Object child : set) rejectEscapedStateView(child, visited, depth + 1);
+                for (Object child : set) rejectEscapedStateView(child, visited, depth + 1, budget);
             } else if (result instanceof Map<?, ?> map) {
                 for (var entry : map.entrySet()) {
-                    rejectEscapedStateView(entry.getKey(), visited, depth + 1);
-                    rejectEscapedStateView(entry.getValue(), visited, depth + 1);
+                    rejectEscapedStateView(entry.getKey(), visited, depth + 1, budget);
+                    rejectEscapedStateView(entry.getValue(), visited, depth + 1, budget);
                 }
             } else if (result.getClass().isArray()) {
                 int size = java.lang.reflect.Array.getLength(result);
                 for (int i = 0; i < size; i++) {
                     rejectEscapedStateView(
                             java.lang.reflect.Array.get(result, i),
-                            visited, depth + 1);
+                            visited, depth + 1, budget);
                 }
             } else {
                 // Cannot prove arbitrary host objects, Futures or closures
