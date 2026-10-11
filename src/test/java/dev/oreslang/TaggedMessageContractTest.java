@@ -267,4 +267,33 @@ final class TaggedMessageContractTest {
         assertEquals(original, foreign.decode(foreignWire));
     }
 
+
+    @Test
+    void pipelineRoutingNamesFailClosedUntilSchedulerContextIsLowered() {
+        String source = DECLARATIONS + """
+                define actor Worker as
+                    receive(ActorMail<Messages> mail): void {
+                        self.end();
+                        return;
+                    }
+                end
+
+                pub async routine main(): void {
+                    val a = await spawn Worker();
+                    a.send("hello" as Status.Message2);
+                    return;
+                }
+                """;
+        for (String name : List.of("forward", "backward", "respond", "done")) {
+            String attempted = source.replace("self.end();",
+                    "self." + name + "(mail.value);");
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(attempted)),
+                    name + " must not resolve as a user actor method");
+            assertTrue(error.getMessage().contains("authorized lowering"),
+                    error.getMessage());
+        }
+    }
+
 }
