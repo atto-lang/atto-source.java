@@ -13,6 +13,38 @@ import static org.junit.jupiter.api.Assertions.*;
 final class SourceActorSpawnExecutionTest {
 
     @Test
+    void idiomaticLifecycleMethodsAwaitReadyAndPhysicalDoneInGuestSource() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val a = spawn Worker();
+                  val b = spawn Worker();
+
+                  await a.get_ready();
+                  await b.get_ready();
+
+                  a.send("finish");
+                  b.send("finish");
+
+                  await a.get_done();
+                  await b.get_done();
+                  stdio.stdout.write("lifecycle-methods-done");
+                  return;
+                }
+                """;
+
+        assertEquals("lifecycle-methods-done",
+                run(program, "source-actor-get-ready-get-done.ores"),
+                "source actor lifecycle methods must suspend on owned futures");
+    }
+
+    @Test
     void spawnRunsOnStartReceiveAndDoneAcrossActorKinds() throws Exception {
         String program = """
                 define actor SharedWorker as
