@@ -1918,6 +1918,10 @@ public final class ActorRuntime implements AutoCloseable {
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        // Runtime-owned, non-cancellable observer; actor retirement may outlive
+        // group admission revocation and clearing managed-worker references.
+        private final OresFuture<Void> closedWorkersDone =
+                new OresFuture<>(() -> false, () -> { });
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
@@ -2064,6 +2068,24 @@ public final class ActorRuntime implements AutoCloseable {
         public OresFuture<List<Void>> workersDone() {
             requireObserver("await ActorGroup workers completion");
             return OresFutures.all(workers().stream().map(ActorRef::done).toList());
+        }
+
+        /**
+         * Await all workers owned at group-close admission, not merely the
+         * empty managed-worker registry after close has revoked admission.
+         * This observes logical actor retirement, not loan-gated physical
+         * FFM/native heap release.
+         */
+        public OresFuture<Void> closedDone() {
+            requireObserver("observe ActorGroup close completion");
+            return closedWorkersDone;
+        }
+
+        /** Request group shutdown and obtain its noncancellable drain barrier. */
+        public OresFuture<Void> closeAsync() {
+            requireManager("close ActorGroup asynchronously");
+            closeFromRuntime();
+            return closedWorkersDone;
         }
 
         /** Manager-only graceful stop. Never acts on membership-only actors. */
@@ -2333,6 +2355,25 @@ public final class ActorRuntime implements AutoCloseable {
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(managedWorkers.values());
                 managedWorkers.clear();
+            }
+            // Attach completion handlers before requesting cancellation: an
+            // actor might finalize synchronously during the first stop call.
+            // Keep only a future, not strong actor heap/arena references.
+            if (owned.isEmpty()) {
+                closedWorkersDone.completeFromRuntime(null);
+            } else {
+                AtomicInteger pending = new AtomicInteger(owned.size());
+                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+                for (ActorRef<?> worker : owned) {
+                    worker.done().whenCompleteRuntime((ignored, failure) -> {
+                        if (failure != null) firstFailure.compareAndSet(null, failure);
+                        if (pending.decrementAndGet() == 0) {
+                            Throwable terminal = firstFailure.get();
+                            if (terminal == null) closedWorkersDone.completeFromRuntime(null);
+                            else closedWorkersDone.failFromRuntime(terminal);
+                        }
+                    });
+                }
             }
             // Closing a cooperating group never cancels ordinary members.
             // Only explicitly managed workers are structurally cancelled.
