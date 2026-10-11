@@ -633,9 +633,10 @@ public final class OwnershipChecker {
                 throw error("rt borrow expects exactly one argument");
             }
             VarState owner = borrowOwner(runtime.arguments().getFirst(), scope);
+            Ast.TypeRef placeType = borrowedPlaceType(runtime.arguments().getFirst(), scope, owner);
             beginPersistentBorrow(owner, false);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(borrowedPlaceType(runtime.arguments().getFirst(), scope, owner), false),
+                    Ast.TypeRef.borrowed(placeType, false),
                     ValueKind.IMM_BORROW,
                     ownershipRoot(owner),
                     true);
@@ -643,9 +644,10 @@ public final class OwnershipChecker {
             // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
             VarState owner = borrowOwner(unary.operand(), scope);
+            Ast.TypeRef placeType = borrowedPlaceType(unary.operand(), scope, owner);
             beginPersistentBorrow(owner, mutableBorrow);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(borrowedPlaceType(unary.operand(), scope, owner), mutableBorrow),
+                    Ast.TypeRef.borrowed(placeType, mutableBorrow),
                     mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
                     ownershipRoot(owner),
                     true);
@@ -724,8 +726,9 @@ public final class OwnershipChecker {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
                 boolean mutable = unary.operator().equals("&mut");
                 VarState owner = borrowOwner(unary.operand(), scope);
+                Ast.TypeRef placeType = borrowedPlaceType(unary.operand(), scope, owner);
                 validateBorrow(owner, mutable);
-                return new ValueInfo(Ast.TypeRef.borrowed(borrowedPlaceType(unary.operand(), scope, owner), mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(owner));
+                return new ValueInfo(Ast.TypeRef.borrowed(placeType, mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(owner));
             }
             return checkExpr(unary.operand(), scope, false);
         }
@@ -760,9 +763,10 @@ public final class OwnershipChecker {
             return switch (runtime.operation()) {
                 case "borrow" -> {
                     VarState owner = borrowOwner(argument, scope);
+                    Ast.TypeRef placeType = borrowedPlaceType(argument, scope, owner);
                     validateBorrow(owner, false);
                     yield new ValueInfo(
-                            Ast.TypeRef.borrowed(borrowedPlaceType(argument, scope, owner), false),
+                            Ast.TypeRef.borrowed(placeType, false),
                             ValueKind.IMM_BORROW,
                             ownershipRoot(owner));
                 }
