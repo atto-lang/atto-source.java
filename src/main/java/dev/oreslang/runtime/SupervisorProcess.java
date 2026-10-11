@@ -66,6 +66,9 @@ public final class SupervisorProcess implements AutoCloseable {
     private final Function<SupervisorFailureControl.Notice,
             CompletionStage<Directive>> onFailure;
     private final Consumer<Resolution> decisionSink;
+    /** Optional async authoritative effect: acknowledgment is observed on CONTROL. */
+    private final Function<Resolution, CompletionStage<Void>> asyncDecisionSink;
+    private final Consumer<Resolution> onAcknowledged;
     private final ArrayDeque<SupervisorFailureControl.Notice> mailbox =
             new ArrayDeque<>();
     private final AtomicLong admitted = new AtomicLong();
@@ -76,6 +79,8 @@ public final class SupervisorProcess implements AutoCloseable {
     private boolean callbackActive;
     /** Admission guard against a scheduler replaying the current turn. */
     private boolean callbackStarted;
+    /** A generation may request one lifecycle effect, even if its runnable is replayed. */
+    private boolean decisionIssued;
     /** Monotonic turn identity; notice object identity is NOT a continuation fence. */
     private long callbackGeneration;
     // close() invoked reentrantly from a lifecycle decision cannot erase that
@@ -97,6 +102,33 @@ public final class SupervisorProcess implements AutoCloseable {
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         this.onFailure = Objects.requireNonNull(onFailure);
         this.decisionSink = Objects.requireNonNull(decisionSink);
+        this.asyncDecisionSink = null;
+        this.onAcknowledged = null;
+        if (capacity < 1) throw new IllegalArgumentException(
+                "supervisor mailbox capacity must be positive");
+        this.capacity = capacity;
+    }
+
+    /**
+     * Async host effect mode. A successful CompletionStage is an authoritative
+     * effect acknowledgment, not just successful enqueue. The finalizer runs
+     * on a supervisor CONTROL carrier before a turn is counted as resolved.
+     */
+    SupervisorProcess(
+            ActorRuntime.SupervisorId supervisorId,
+            ActorRuntime.ActorGroupId groupId,
+            Executor controlDispatcher,
+            int capacity,
+            Function<SupervisorFailureControl.Notice, CompletionStage<Directive>> onFailure,
+            Function<Resolution, CompletionStage<Void>> asyncDecisionSink,
+            Consumer<Resolution> onAcknowledged) {
+        this.supervisorId = Objects.requireNonNull(supervisorId);
+        this.groupId = Objects.requireNonNull(groupId);
+        this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        this.onFailure = Objects.requireNonNull(onFailure);
+        this.decisionSink = null;
+        this.asyncDecisionSink = Objects.requireNonNull(asyncDecisionSink);
+        this.onAcknowledged = Objects.requireNonNull(onAcknowledged);
         if (capacity < 1) throw new IllegalArgumentException(
                 "supervisor mailbox capacity must be positive");
         this.capacity = capacity;
@@ -159,6 +191,7 @@ public final class SupervisorProcess implements AutoCloseable {
         final long generation = ++callbackGeneration;
         callbackActive = true;
         callbackStarted = false;
+        decisionIssued = false;
         try {
             // Must enqueue; ActorRuntime supplies its shared CONTROL pool.
             SupervisorDispatchGuard.enqueue(controlDispatcher, () -> beginCallback(generation));
@@ -226,6 +259,7 @@ public final class SupervisorProcess implements AutoCloseable {
                 // a replay. Never poison the supervisor for this stale task.
                 return;
             }
+            if (decisionIssued) return; // Replayed completion during async acknowledgment.
             if (!callbackStarted || mailbox.peekFirst() != notice) {
                 failLocked(new IllegalStateException(
                         "supervisor continuation lost its exclusive lease"));
@@ -238,12 +272,18 @@ public final class SupervisorProcess implements AutoCloseable {
                 return;
             }
         }
+        final Resolution resolution = new Resolution(notice, decision, generation);
         synchronized (this) {
+            decisionIssued = true;
             committingDecision = true;
+        }
+        if (asyncDecisionSink != null) {
+            beginDecisionAcknowledgment(resolution, generation);
+            return;
         }
         try {
             // Exactly one decision request, on an admitted runtime turn.
-            decisionSink.accept(new Resolution(notice, decision, generation));
+            decisionSink.accept(resolution);
         } catch (Throwable sinkFailure) {
             synchronized (this) {
                 committingDecision = false;
@@ -256,6 +296,8 @@ public final class SupervisorProcess implements AutoCloseable {
                     state = State.CLOSED;
                     mailbox.clear();
                     callbackActive = false;
+                    callbackStarted = false;
+                    decisionIssued = false;
                     closeAfterCommit = false;
                 }
             }
@@ -268,6 +310,7 @@ public final class SupervisorProcess implements AutoCloseable {
             resolved.incrementAndGet();
             callbackActive = false;
             callbackStarted = false;
+            decisionIssued = false;
             if (closeAfterCommit) {
                 state = State.CLOSED;
                 undelivered.addAndGet(mailbox.size());
@@ -279,6 +322,88 @@ public final class SupervisorProcess implements AutoCloseable {
         }
     }
 
+    /**
+     * Initiate a host lifecycle effect once on CONTROL, then release the
+     * carrier without releasing the supervisor's logical lease. The host's
+     * completion may run on any thread; it can only enqueue an acknowledgment
+     * continuation. Never run guest code or retire child identities there.
+     */
+    private void beginDecisionAcknowledgment(Resolution resolution, long generation) {
+        final CompletionStage<Void> pending;
+        try {
+            pending = Objects.requireNonNull(
+                    asyncDecisionSink.apply(resolution),
+                    "async supervisor lifecycle sink returned null completion");
+        } catch (Throwable failure) {
+            synchronized (this) { finishSinkFailureLocked(failure); }
+            return;
+        } finally {
+            synchronized (this) { committingDecision = false; }
+        }
+        final AtomicBoolean accepted = new AtomicBoolean();
+        try {
+            pending.whenComplete((ignored, failure) -> {
+                if (!accepted.compareAndSet(false, true)) return;
+                try {
+                    SupervisorDispatchGuard.enqueue(controlDispatcher,
+                            () -> finishDecisionAcknowledgment(resolution, generation, failure));
+                } catch (Throwable enqueueFailure) {
+                    synchronized (this) { finishSinkFailureLocked(enqueueFailure); }
+                }
+            });
+        } catch (Throwable registrationFailure) {
+            synchronized (this) { finishSinkFailureLocked(registrationFailure); }
+        }
+    }
+
+    private void finishDecisionAcknowledgment(
+            Resolution resolution, long generation, Throwable error) {
+        synchronized (decisionFence) {
+            synchronized (this) {
+                if (state != State.RUNNING || !callbackActive
+                        || generation != callbackGeneration || !decisionIssued) return;
+                if (mailbox.peekFirst() != resolution.notice()) {
+                    failLocked(new IllegalStateException(
+                            "async supervisor acknowledgment lost its CONTROL lease"));
+                    return;
+                }
+                if (error != null) {
+                    finishSinkFailureLocked(error);
+                    return;
+                }
+                // Verified host effect first, then trusted finalization of
+                // precisely this actor incarnation on this CONTROL carrier.
+                try {
+                    onAcknowledged.accept(resolution);
+                } catch (Throwable finalizationFailure) {
+                    finishSinkFailureLocked(finalizationFailure);
+                    return;
+                }
+                mailbox.removeFirst();
+                resolved.incrementAndGet();
+                callbackActive = false;
+                callbackStarted = false;
+                decisionIssued = false;
+                if (closeAfterCommit) {
+                    state = State.CLOSED;
+                    undelivered.addAndGet(mailbox.size());
+                    mailbox.clear();
+                    closeAfterCommit = false;
+                } else {
+                    scheduleLocked();
+                }
+            }
+        }
+    }
+
+    private void finishSinkFailureLocked(Throwable failure) {
+        failLocked(failure);
+        if (closeAfterCommit) {
+            state = State.CLOSED;
+            closeAfterCommit = false;
+        }
+    }
+
     private void failLocked(Throwable error) {
         if (state != State.RUNNING) return;
         fatal = error;
@@ -287,6 +412,7 @@ public final class SupervisorProcess implements AutoCloseable {
         mailbox.clear(); // Terminal errors must not retain failed guest metadata.
         callbackActive = false;
         callbackStarted = false;
+        decisionIssued = false;
     }
 
     /**
@@ -309,6 +435,7 @@ public final class SupervisorProcess implements AutoCloseable {
                 mailbox.clear();
                 callbackActive = false;
                 callbackStarted = false;
+                decisionIssued = false;
             }
         }
     }
