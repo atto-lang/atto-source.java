@@ -107,17 +107,17 @@ public final class IncrementalCompiler {
             }
 
             Ast.Program checked;
-            Map<String, Ast.ClassDecl> linkedClasses =
-                    linkedPublicClasses(id, parsed.get(id), parsed, normalizedImportResolutions);
-            if (linkedClasses.isEmpty()) {
+            LinkedClasses linked = linkedPublicClasses(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linked.classes().isEmpty()) {
                 checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
             } else {
                 try {
                     // Foreign layouts are used for type and ownership proofs;
                     // their declarations are never executed in the importer.
                     checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linkedClasses);
-                    OwnershipChecker.checkWithImportedClasses(checked, linkedClasses);
+                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
+                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
@@ -145,12 +145,17 @@ public final class IncrementalCompiler {
                 initializationGroups);
     }
 
-    private static Map<String, Ast.ClassDecl> linkedPublicClasses(
+    private record LinkedClasses(
+            Map<String, Ast.ClassDecl> classes,
+            Map<String, Map<String, Ast.TypeAliasDecl>> aliases) { }
+
+    private static LinkedClasses linkedPublicClasses(
             String unitId,
             Ast.Program importer,
             Map<String, Ast.Program> parsed,
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.ClassDecl> linked = new LinkedHashMap<>();
+        LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
             if (imported.kind() != Ast.ImportKind.CLASS || imported.wildcard()) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
@@ -162,6 +167,7 @@ public final class IncrementalCompiler {
             }
             for (String name : imported.names()) {
                 Ast.ClassDecl resolved = null;
+                Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
                 for (Ast.ModuleDecl module : source.modules()) {
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
@@ -172,6 +178,15 @@ public final class IncrementalCompiler {
                                         "ambiguous linked public class '" + name + "'");
                             }
                             resolved = klass;
+                            LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
+                            for (Ast.Decl companion : module.declarations()) {
+                                if (companion instanceof Ast.TypeAliasDecl alias
+                                        && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
+                                    throw new IllegalArgumentException(
+                                            "duplicate type alias in linked class module: " + alias.name());
+                                }
+                            }
+                            classAliases = Map.copyOf(moduleAliases);
                         }
                     }
                 }
@@ -180,9 +195,10 @@ public final class IncrementalCompiler {
                             "missing or duplicate public linked class '" + name
                                     + "' in source unit '" + unitId + "'");
                 }
+                aliases.put(name, classAliases);
             }
         }
-        return Map.copyOf(linked);
+        return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
     }
 
     public synchronized void clear() {
