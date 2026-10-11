@@ -29,7 +29,16 @@ def main():
     # never suppress or discard process stderr (including guest failures).
     # Enable the runtime compiler rather than masking Truffle's interpreted-only
     # advisory. This test process must still expose all stderr to the runner.
+    # Truffle engine diagnostics (including interpreted-mode notices) are
+    # host metadata, not guest stderr. Persist them separately for CI review;
+    # keep actual guest stdout and stderr unfiltered.
+    import hashlib
+    log_dir = project / "target" / "conformance-engine-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_name = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:20] + ".log"
+    engine_log = log_dir / log_name
     argv = ["java", "-XX:+EnableJVMCI", "--enable-native-access=ALL-UNNAMED",
+            "-Dpolyglot.log.file=" + str(engine_log),
             "-cp", str(classes) + os.pathsep + deps,
             "dev.oreslang.launcher.OresMain",
             *([] if execute else ["--check"]), str(path)]
