@@ -111,7 +111,37 @@ public final class SourceSupervisorLowering {
             ActorRuntime.ActorGroup group,
             int capacity,
             Function<SupervisorProcess.Resolution, CompletionStage<Void>> hostAcknowledgment) {
-        throw new UnsupportedOperationException("placeholder");
+        Objects.requireNonNull(group, "group");
+        Objects.requireNonNull(hostAcknowledgment, "hostAcknowledgment");
+        if (!awaitsStopAcknowledgment) {
+            throw unsupported("synchronous on_panic requires the synchronous STOP installer");
+        }
+        ActorRuntime.ActorGroupId expectedGroup = group.id();
+        ActorRuntime.SupervisorId expectedSupervisor = group.supervisorId();
+        return group.installSupervisorProcessAwaitingDecision(capacity, notice -> {
+            if (!expectedSupervisor.equals(notice.supervisorId())
+                    || !expectedGroup.equals(notice.groupId())) {
+                throw new SecurityException("foreign supervisor failure");
+            }
+            if (notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE
+                    || notice.logicalChild().isEmpty()) {
+                throw new IllegalStateException(
+                        "async STOP requires a finalized typed logical child");
+            }
+            // Compiler-validated self.stop(f) emits one owned STOP intent.
+            return CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP);
+        }, resolution -> {
+            verifyStopResolution(resolution, expectedGroup, expectedSupervisor);
+            // This Stage must signal the actual STOP effect completion, not
+            // request admission. On exceptional completion the turn fails
+            // closed and no logical child is marked STOPPED.
+            return Objects.requireNonNull(hostAcknowledgment.apply(resolution),
+                    "host STOP acknowledgment stage");
+        }, resolution -> {
+            verifyStopResolution(resolution, expectedGroup, expectedSupervisor);
+            // Runs on resumed CONTROL carrier *after* host acknowledgment.
+            group.acknowledgeFinalizedStop(resolution);
+        });
     }
 
     /**
@@ -191,6 +221,20 @@ public final class SourceSupervisorLowering {
         // No dynamic interpretation, reflection, heap capture or ambient host
         // authority. Both forms resolve to the *current* delivered failure.
         return new StopOnlySupervisor(target.name(), explicitlyBoundFailure, awaitsAcknowledgment);
+    }
+
+    private static void verifyStopResolution(
+            SupervisorProcess.Resolution resolution,
+            ActorRuntime.ActorGroupId group,
+            ActorRuntime.SupervisorId supervisor) {
+        if (resolution.directive() != SupervisorProcess.Directive.STOP
+                || resolution.turnGeneration() < 1
+                || !group.equals(resolution.notice().groupId())
+                || !supervisor.equals(resolution.notice().supervisorId())
+                || resolution.notice().kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE
+                || resolution.notice().logicalChild().isEmpty()) {
+            throw new SecurityException("invalid compiler-lowered async STOP resolution");
+        }
     }
 
     private static Ast.Expr stopCall(Ast.Expr expression) {
