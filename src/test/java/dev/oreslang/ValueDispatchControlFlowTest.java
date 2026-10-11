@@ -336,6 +336,39 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void canonicalMatchRejectsWildcardBeforeFollowingConcreteArm() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> admitted("""
+                        fnc choose(): int {
+                          return match 1 over
+                            on _ { return 0; }
+                            on 1 { return 42; }
+                          end
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("unreachable match arm"),
+                error.getMessage());
+    }
+
+    @Test
+    void canonicalMatchRejectsSwitchDefaultAliases() {
+        for (String arm : new String[] {
+                "default { return 0; }", "on default { return 0; }"
+        }) {
+            String source = """
+                    fnc choose(): int {
+                      return match 1 over
+                        %s
+                        on 1 { return 42; }
+                      end
+                    }
+                    """.formatted(arm);
+            assertThrows(IllegalArgumentException.class, () -> admitted(source),
+                    "default is switch-only; canonical match uses on _");
+        }
+    }
+
+    @Test
     void guardedMatchArmMayAwaitBeforeSelectingItsValue() throws Exception {
         assertEquals("42\n", execute("""
                 async fnc allowed(): bool { return true; }
