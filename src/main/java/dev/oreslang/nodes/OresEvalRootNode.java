@@ -125,6 +125,24 @@ public final class OresEvalRootNode extends RootNode {
         return arguments.length == 1 && command.equals(arguments[0]);
     }
 
+    /**
+     * Preserve a pending failure when later cleanup fails. Identity checks
+     * make self-suppression and double-reporting impossible even if a broken
+     * completion source delivers the same throwable more than once.
+     */
+    static Throwable preserveSuppressedCleanupFailure(
+            Throwable cleanupFailure, Throwable pendingFailure) {
+        Objects.requireNonNull(cleanupFailure, "cleanupFailure");
+        Objects.requireNonNull(pendingFailure, "pendingFailure");
+        if (cleanupFailure != pendingFailure) {
+            for (Throwable suppressed : cleanupFailure.getSuppressed()) {
+                if (suppressed == pendingFailure) return cleanupFailure;
+            }
+            cleanupFailure.addSuppressed(pendingFailure);
+        }
+        return cleanupFailure;
+    }
+
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
@@ -1696,13 +1714,7 @@ public final class OresEvalRootNode extends RootNode {
             if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
             if (cleanup.kind() == SourceFlowKind.THROW
                     && pending.kind() == SourceFlowKind.THROW) {
-                Throwable later = cleanup.failure();
-                Throwable earlier = pending.failure();
-                if (later != earlier
-                        && java.util.Arrays.stream(later.getSuppressed())
-                                .noneMatch(suppressed -> suppressed == earlier)) {
-                    later.addSuppressed(earlier);
-                }
+                preserveSuppressedCleanupFailure(cleanup.failure(), pending.failure());
             }
             return cleanup;
         }
