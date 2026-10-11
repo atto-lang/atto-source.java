@@ -379,12 +379,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     // Eager descriptors; exactly one sleeping CONTROL thread per pool once it has an actor.
-    private final ActorPoolControlScheduler privatePoolScheduler =
-            new ActorPoolControlScheduler("ores-private");
-    private final ActorPoolControlScheduler sharedPoolScheduler =
-            new ActorPoolControlScheduler("ores-shared");
-    private final ActorPoolControlScheduler untrustedPoolScheduler =
-            new ActorPoolControlScheduler("ores-untrusted");
+    private final ActorPoolControlScheduler privatePoolScheduler;
+    private final ActorPoolControlScheduler sharedPoolScheduler;
+    private final ActorPoolControlScheduler untrustedPoolScheduler;
     private volatile Consumer<ActorKind> masterPoolWakeup;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
@@ -432,6 +429,12 @@ public final class ActorRuntime implements AutoCloseable {
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.privatePoolScheduler = new ActorPoolControlScheduler(
+                "ores-private", dispatcherConfig.maxActors());
+        this.sharedPoolScheduler = new ActorPoolControlScheduler(
+                "ores-shared", dispatcherConfig.maxActors());
+        this.untrustedPoolScheduler = new ActorPoolControlScheduler(
+                "ores-untrusted", dispatcherConfig.maxActors());
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         ExecutorService privatePool = null;
