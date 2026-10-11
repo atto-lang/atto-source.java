@@ -1724,6 +1724,10 @@ public final class TypeChecker {
      */
     private Type checkTypedValueMatch(
             Ast.ValueMatchExpr matched, Env env, Set<String> generics, Type self) {
+        if (!matched.ordered()) {
+            throw new IllegalArgumentException(
+                    "typed value match requires canonical 'match ... over' ordered dispatch");
+        }
         if (currentMaySuspend || currentAsyncCallable || currentGenerator) {
             throw new IllegalArgumentException(
                     "value match continuation lowering is not enabled in async/suspends/generator callables");
