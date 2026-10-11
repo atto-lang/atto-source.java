@@ -432,7 +432,7 @@ final class OresSchedulerTest {
     }
 
     @Test
-    void cancellingQueuedTaskCannotPublishBeforeItsCarrierLeavesTheVm() throws Exception {
+    void cancellingUnclaimedQueuedTaskNeverEntersVmAndSettlesWithoutCarrier() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -456,13 +456,14 @@ final class OresSchedulerTest {
                 return OresScheduler.done(42);
             });
             assertTrue(task.cancel(false));
-            assertFalse(task.isDone(),
-                    "QUEUED cancellation must retain the outstanding context admission");
+            assertTrue(task.isCancelled(),
+                    "revoked unclaimed carrier must allow immediate cancellation");
             assertEquals(0, contextEntries.get());
             release.countDown();
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> task.get(5, TimeUnit.SECONDS));
-            assertEquals(1, contextEntries.get());
+            assertEquals(0, contextEntries.get(),
+                    "revoked queued carrier must never enter the VM context");
             assertEquals(0, guestRuns.get());
         } finally {
             release.countDown();
@@ -819,8 +820,8 @@ final class OresSchedulerTest {
                     });
 
             assertTrue(queued.cancel(false));
-            assertFalse(queued.isDone(),
-                    "already-submitted carrier must exit before cancellation publishes");
+            assertTrue(queued.isCancelled(),
+                    "unclaimed carrier can be revoked without running guest code");
             assertEquals(0, sourceEntries.get());
             releaseCarrier.countDown();
             assertNull(occupying.get(5, TimeUnit.SECONDS));
