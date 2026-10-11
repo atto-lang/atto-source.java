@@ -285,9 +285,11 @@ public final class SupervisorChildRegistry {
             throw new IllegalStateException("STOP must have applied host receipt");
         Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
                 permit.incarnation(), Phase.STOPPED);
+        StopReceipt acknowledged = new StopReceipt(
+                permit, StopReceiptStatus.ACKNOWLEDGED);
+        // Allocate the receipt before publishing the terminal transition.
         children.put(permit.child().logicalId(), stopped);
-        stopReceipts.put(permit.child().logicalId(),
-                new StopReceipt(permit, StopReceiptStatus.ACKNOWLEDGED));
+        stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
         return stopped;
     }
@@ -327,9 +329,11 @@ public final class SupervisorChildRegistry {
         requireStopReceipt(permit);
         Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
                 permit.incarnation(), Phase.STOPPED);
+        StopReceipt acknowledged = new StopReceipt(
+                permit, StopReceiptStatus.ACKNOWLEDGED);
+        // Allocate the receipt before publishing the terminal transition.
         children.put(permit.child().logicalId(), stopped);
-        stopReceipts.put(permit.child().logicalId(),
-                new StopReceipt(permit, StopReceiptStatus.ACKNOWLEDGED));
+        stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
         return stopped;
     }
