@@ -195,12 +195,17 @@ public final class AsyncNativeIo implements AutoCloseable {
         return result;
     }
 
-    synchronized void register(AutoCloseable resource) throws Exception {
-        if (closed) {
-            resource.close();
-            throw new IllegalStateException("I/O context closed");
+    void register(AutoCloseable resource) throws Exception {
+        // Close foreign host resources outside the I/O admission monitor:
+        // release/teardown may wait on a worker that itself needs the lock.
+        synchronized (this) {
+            if (!closed) {
+                resources.add(resource);
+                return;
+            }
         }
-        resources.add(resource);
+        resource.close();
+        throw new IllegalStateException("I/O context closed");
     }
 
     synchronized void unregister(AutoCloseable resource) { resources.remove(resource); }
