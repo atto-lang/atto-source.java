@@ -7,6 +7,7 @@ fnc mutate(borrow mut Counter c, int path): int {
     if (path eq 0) { return c.value; } fi
     return c.value;
   } catch (err) {
+    return 0;
   } finally {
     c.value = c.value * 10;
     c.value = c.value + 1;
