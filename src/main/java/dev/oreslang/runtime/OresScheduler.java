@@ -113,6 +113,9 @@ public final class OresScheduler implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Read/written only while holding this scheduler's synchronized close().
+    // Retains the original failed-drain exception for concurrent host callers.
+    private Throwable closeFailure;
     private static final long CLOSE_DRAIN_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     /**
@@ -304,10 +307,21 @@ public final class OresScheduler implements AutoCloseable {
      */
     public <T> OresFuture<T> start(Task<T> task) {
         Objects.requireNonNull(task, "task");
-        ensureOpen();
-
-        TaskRunner<T> runner = new TaskRunner<>(task);
-        tasks.add(runner);
+        // Admission and close share the same monitor. No new task may slip
+        // into the live registry after close() snapshots cancellation targets.
+        TaskRunner<T> runner;
+        synchronized (tasks) {
+            ensureOpen();
+            runner = new TaskRunner<>(task);
+            tasks.add(runner);
+        }
+        // close() may win after ensureOpen() and before registration. Do not
+        // admit a new task after close snapshots and drains live tasks.
+        if (closed.get()) {
+            runner.failBeforeStart(new RejectedExecutionException(
+                    "OresScheduler " + name + " closed during task admission"));
+            return runner.completion;
+        }
         try {
             runner.scheduleInitial();
         } catch (RuntimeException | Error failure) {
@@ -377,7 +391,8 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure,
+            java.util.function.BooleanSupplier enterContext) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         // Existing admitted tasks may resume cancellation cleanup after close().
@@ -385,7 +400,12 @@ public final class OresScheduler implements AutoCloseable {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             SCHEDULER_CARRIER.set(Boolean.TRUE);
             try {
-                turnExecutor.execute(() -> runBoundAdmittedTask(turn));
+                // A queued cancellation may revoke its unclaimed carrier
+                // ticket. In that case the already-submitted Runnable is a
+                // no-op and must never enter the Truffle/VM context.
+                if (enterContext.getAsBoolean()) {
+                    turnExecutor.execute(() -> runBoundAdmittedTask(turn));
+                }
             } catch (RuntimeException | Error failure) {
                 // Context admission can fail before runTurn starts. Settle the
                 // owning task instead of leaving the host waiting forever.
@@ -412,57 +432,79 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (CURRENT.get() == this) {
             throw new IllegalStateException(
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
         }
-        if (!closed.compareAndSet(false, true)) return;
-
-        for (TaskRunner<?> task : Set.copyOf(tasks)) {
-            task.cancelFromSchedulerClose();
+        // A concurrent caller must wait for this close's cleanup drain.
+        // Returning merely because closed=true would let that caller destroy
+        // its context while the first closer is still unwinding guest tasks.
+        if (closed.get()) {
+            if (closeFailure instanceof RuntimeException failure) throw failure;
+            if (closeFailure instanceof Error failure) throw failure;
+            return;
         }
+        try {
+            Set<TaskRunner<?>> closingTasks;
+            synchronized (tasks) {
+                if (!closed.compareAndSet(false, true)) {
+                    throw new IllegalStateException("scheduler close admission lost its owner");
+                }
+                closingTasks = Set.copyOf(tasks);
+            }
 
-        // Host close waits for task-owned cleanup without occupying a carrier.
-        long deadline = System.nanoTime() + CLOSE_DRAIN_NANOS;
-        boolean drained;
-        synchronized (tasks) {
-            while (!tasks.isEmpty()) {
-                long remaining = deadline - System.nanoTime();
-                if (remaining <= 0) break;
+            for (TaskRunner<?> task : closingTasks) {
+                task.cancelFromSchedulerClose();
+            }
+
+            // Host close waits for task-owned cleanup without occupying a carrier.
+            long deadline = System.nanoTime() + CLOSE_DRAIN_NANOS;
+            boolean drained;
+            synchronized (tasks) {
+                while (!tasks.isEmpty()) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) break;
+                    try {
+                        TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                drained = tasks.isEmpty();
+            }
+            if (!drained) {
+                for (TaskRunner<?> task : Set.copyOf(tasks)) {
+                    task.failTerminal(new IllegalStateException(
+                            "cancellation cleanup drain timed out in " + name));
+                }
+            }
+            if (ownedExecutor != null) {
+                ownedExecutor.shutdownNow();
                 try {
-                    TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
+                    if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "OresScheduler " + name + " carriers did not terminate");
+                    }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    break;
+                    throw new java.util.concurrent.CancellationException(
+                            "interrupted while closing OresScheduler " + name);
                 }
             }
-            drained = tasks.isEmpty();
-        }
-        if (!drained) {
-            // Deadline is NOT physical cleanup: retain execution contexts
-            // and all outstanding owned resources for explicit isolation
-            // escalation. Never label abandoned finalizers as completed.
-            throw new IllegalStateException(
-                    "OresScheduler " + name + " has unfinished cancellation cleanup");
-        }
-        if (ownedExecutor != null) {
-            ownedExecutor.shutdown();
-            try {
-                if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException(
-                            "OresScheduler " + name + " carriers did not terminate");
-                }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new java.util.concurrent.CancellationException(
-                        "interrupted while closing OresScheduler " + name);
+            if (!drained) {
+                throw new IllegalStateException(
+                        "OresScheduler " + name + " closed with unfinished cancellation cleanup");
             }
+        } catch (RuntimeException | Error failure) {
+            closeFailure = failure;
+            throw failure;
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> implements OresFuture.TaggedRuntimeWaiter {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
@@ -474,6 +516,42 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        // Reserved before QUEUED publication; released after VM carrier exit.
+        private final AtomicInteger outstandingCarrierTurns = new AtomicInteger();
+        private final AtomicReference<CarrierLease> queuedCarrierLease =
+                new AtomicReference<>();
+
+        /** CAS arbitration between VM admission and revocation of queued work. */
+        private final class CarrierLease {
+            // 0 reserved/queued, 1 context entry claimed, 2 revoked.
+            private final AtomicInteger admission = new AtomicInteger();
+            private final AtomicBoolean released = new AtomicBoolean();
+
+            boolean enterContext() {
+                boolean entered = admission.compareAndSet(0, 1);
+                if (entered) queuedCarrierLease.compareAndSet(this, null);
+                return entered;
+            }
+
+            boolean revoke() {
+                if (!admission.compareAndSet(0, 2)) return false;
+                queuedCarrierLease.compareAndSet(this, null);
+                release();
+                return true;
+            }
+
+            void release() {
+                queuedCarrierLease.compareAndSet(this, null);
+                if (released.compareAndSet(false, true)) releaseCarrierReservation();
+            }
+        }
+
+        private CarrierLease reserveCarrier() {
+            CarrierLease lease = new CarrierLease();
+            outstandingCarrierTurns.incrementAndGet();
+            queuedCarrierLease.set(lease);
+            return lease;
+        }
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -481,9 +559,18 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
+        // A claimed callback from an abandoned Future may arrive after a
+        // cancellation continuation has entered a *different* cleanup await.
+        // The generation and pending-resume publication are one operation:
+        // stale producers cannot inject an old payload into that cleanup.
+        private final Object awaitDeliveryLock = new Object();
+        private long awaitGeneration;
+        // Cancellation admission and terminal outcome arbitration must be
+        // indivisible. The atomic phase transitions alone were insufficient:
+        // cancel() could succeed after finish() selected a success outcome.
+        private final Object terminalAdmissionLock = new Object();
         private final AtomicBoolean cancelRequested = new AtomicBoolean();
-        /** An undispatched task has no registered defer/finally obligations. */
-        private final AtomicBoolean everEntered = new AtomicBoolean();
+        private final AtomicBoolean everStarted = new AtomicBoolean();
         private final TaskCancelledException cancellation = new TaskCancelledException();
 
         private TaskRunner(Task<T> task) {
@@ -493,8 +580,43 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private boolean admitCancellation() {
-            return phase.get() != TERMINAL
-                    && cancelRequested.compareAndSet(false, true);
+            synchronized (terminalAdmissionLock) {
+                if (phase.get() == TERMINAL || cancelRequested.get()) {
+                    return false;
+                }
+                cancelRequested.set(true);
+                return true;
+            }
+        }
+
+        /**
+         * Never enter a guest source task merely to cancel it before its first
+         * dispatch. Once a source frame has started, only a lane-owned unwind
+         * may complete cancellation; QUEUED can mean a pending cleanup turn.
+         */
+        private boolean cancelWithoutExecutingWhenIdle(boolean requireUnstarted) {
+            synchronized (terminalAdmissionLock) {
+                if (requireUnstarted && everStarted.get()) return false;
+                int observed = phase.get();
+                if (observed != NEW && observed != QUEUED && observed != WAITING) {
+                    return false;
+                }
+                if (observed == QUEUED) {
+                    // Do not settle a carrier that has already claimed VM entry.
+                    // A still-queued carrier can be revoked without executing
+                    // any guest code or consuming the actor CONTROL queue.
+                    CarrierLease lease = queuedCarrierLease.get();
+                    if (lease == null || !lease.revoke()) return false;
+                }
+                if (!phase.compareAndSet(observed, TERMINAL)) return false;
+                terminalOutcome.set(new TerminalCancelled<T>(cancellation));
+            }
+            // A cancelled WAITING task must not retain the shared producer.
+            // Unregister it before terminal completion can unblock context
+            // teardown or synchronous Future observers.
+            detachActiveAwaitRegistration();
+            if (!executing.get()) publishTerminalIfReady();
+            return true;
         }
 
         private boolean isCleaningUp() {
@@ -503,66 +625,83 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void onCancellationRequested() {
-            // Cancel never-entered scheduler tasks directly. Their already-
-            // enqueued executor closures are inert because phase is TERMINAL.
-            // This prevents a stopped actor with thousands of queued source
-            // tasks from needing guest execution just to discover no lexical
-            // cleanup was ever registered.
-            int initialPhase = phase.get();
-            if (!everEntered.get()
-                    && (initialPhase == NEW || initialPhase == QUEUED)) {
-                failTerminal(cancellation);
-                return;
-            }
-            if (task instanceof CancellationAwareTask<?> aware) {
-                aware.cancellationRequested(cancellation);
-            } else {
-                // Compiler-independent fire-and-forget tasks have no saved
-                // lexical cleanup. Cancelling thousands of already-queued
-                // actor bookkeeping turns must not require dispatching them
-                // just to discover that they are cancelled.
-                int observed = phase.get();
-                if (observed == NEW || observed == QUEUED || observed == WAITING) {
-                    failTerminal(cancellation);
-                    return;
+            try {
+                if (task instanceof CancellationAwareTask<?> aware) {
+                    aware.cancellationRequested(cancellation);
+                    if (cancelWithoutExecutingWhenIdle(true)) {
+                        return;
+                    }
+                } else {
+                    // Tasks without lexical cleanup can be cancelled directly
+                    // while idle. Compare-and-set prevents a stale WAITING or
+                    // QUEUED read from aborting a newly RUNNING guest turn.
+                    if (cancelWithoutExecutingWhenIdle(false)) {
+                        return;
+                    }
                 }
-            }
-            if (phase.get() == WAITING && !isCleaningUp()) {
-                detachActiveAwaitRegistration();
-                pendingResume.set(Resume.completed(null, cancellation));
-                scheduleReadyResume();
+                boolean wakeCancelled = false;
+                synchronized (awaitDeliveryLock) {
+                    if (phase.get() == WAITING && !isCleaningUp()) {
+                        ++awaitGeneration;
+                        pendingResume.set(Resume.completed(null, cancellation));
+                        wakeCancelled = true;
+                    }
+                }
+                if (wakeCancelled) {
+                    detachActiveAwaitRegistration();
+                    scheduleReadyResume();
+                }
+            } catch (RuntimeException | Error failure) {
+                // OresFuture's cancellation hook suppresses callback failures.
+                // Settle the scheduler task explicitly instead of stranding it.
+                failTerminal(failure);
             }
         }
 
         private void scheduleInitial() {
-            if (!phase.compareAndSet(NEW, QUEUED)) {
-                throw new IllegalStateException("scheduler task was already started");
+            CarrierLease lease;
+            synchronized (terminalAdmissionLock) {
+                // The reservation and QUEUED transition are one admission:
+                // close/cancel cannot observe QUEUED without its revocable
+                // lease, or a second producer replace the published lease.
+                if (phase.get() != NEW)
+                    throw new IllegalStateException("scheduler task was already started");
+                lease = reserveCarrier();
+                phase.set(QUEUED);
             }
-            enqueueTurn();
+            enqueueTurn(lease);
         }
 
-        private void enqueueTurn() {
+        private void enqueueTurn(CarrierLease lease) {
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, () -> afterCarrierTurn(lease::release),
+                        this::failTerminal, lease::enterContext);
             } catch (RuntimeException | Error rejected) {
+                lease.release();
                 failTerminal(rejected);
                 throw rejected;
             }
         }
 
+        private void releaseCarrierReservation() {
+            if (outstandingCarrierTurns.decrementAndGet() < 0)
+                throw new IllegalStateException("scheduler carrier reservation underflow");
+            publishTerminalIfReady();
+        }
+
         private void runTurn() {
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
-            everEntered.set(true);
             if (!executing.compareAndSet(false, true)) {
                 failTerminal(new IllegalStateException(
                         "OresScheduler task execution lease violation"));
                 return;
             }
 
+            everStarted.set(true);
             Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
             CURRENT_TASK_DOMAIN.set(this);
             try {
@@ -629,9 +768,9 @@ public final class OresScheduler implements AutoCloseable {
          * task Future earlier can let a host close its Polyglot Context while
          * this carrier is still executing guest continuation code.
          */
-        private void afterCarrierTurn() {
+        private void afterCarrierTurn(Runnable release) {
             executing.set(false);
-            publishTerminalIfReady();
+            release.run();
             scheduleReadyResume();
         }
 
@@ -655,9 +794,13 @@ public final class OresScheduler implements AutoCloseable {
             if (!phase.compareAndSet(RUNNING, WAITING)) {
                 return;
             }
-            if (cancelRequested.get() && !isCleaningUp()) {
-                pendingResume.set(Resume.completed(null, cancellation));
-                return;
+            final long generation;
+            synchronized (awaitDeliveryLock) {
+                generation = ++awaitGeneration;
+                if (cancelRequested.get() && !isCleaningUp()) {
+                    pendingResume.set(Resume.completed(null, cancellation));
+                    return;
+                }
             }
 
             try {
@@ -673,17 +816,18 @@ public final class OresScheduler implements AutoCloseable {
                 Object terminal = awaited.runtimeTerminalStateOrNull();
                 if (terminal != null) {
                     deliverAwaitCompletion(
+                            generation,
                             OresFuture.runtimeTerminalValue(terminal),
                             OresFuture.runtimeTerminalFailure(terminal));
                     return;
                 }
 
-                // Pending path: TaskRunner itself is the reusable callback
-                // target, avoiding a new captured lambda for every await. The
-                // detachable registration remains per suspension so scheduler
-                // close/task cancellation can sever retention safely.
+                // The reusable tagged callback carries the registration's
+                // immutable await generation, without allocating a lambda
+                // for each pending suspension. A claimed *older* waiter can
+                // never deliver into the current lexical cleanup await.
                 OresFuture.RuntimeWaiterRegistration<?> registration =
-                        awaited.whenCompleteRuntimeCancellable(this);
+                        awaited.whenCompleteRuntimeCancellableTagged(this, generation);
 
                 OresFuture.RuntimeWaiterRegistration<?> previous =
                         activeAwaitRegistration.getAndSet(registration);
@@ -702,25 +846,32 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         @Override
-        public void accept(Object value, Throwable failure) {
-            deliverAwaitCompletion(value, failure);
+        public void accept(long generation, Object value, Throwable failure) {
+            deliverAwaitCompletion(generation, value, failure);
         }
 
-        private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL || (cancelRequested.get() && !isCleaningUp())) return;
+        private void deliverAwaitCompletion(long generation, Object value, Throwable failure) {
+            boolean duplicate = false;
+            synchronized (awaitDeliveryLock) {
+                // In-flight callbacks from detached waits may already have
+                // claimed their registration. Epoch matching is still needed
+                // even if detach reported success for the other waiters.
+                if (generation != awaitGeneration || phase.get() == TERMINAL
+                        || (cancelRequested.get() && !isCleaningUp())) return;
 
-            Resume resume = Resume.completed(
-                    value,
-                    failure == null ? null : OresFuture.unwrap(failure));
-            if (!pendingResume.compareAndSet(null, resume)) {
-                if (cancelRequested.get()) return;
+                Resume resume = Resume.completed(
+                        value, failure == null ? null : OresFuture.unwrap(failure));
+                if (!pendingResume.compareAndSet(null, resume)) {
+                    if (cancelRequested.get() && !isCleaningUp()) return;
+                    duplicate = true;
+                } else if (phase.get() == TERMINAL) {
+                    pendingResume.compareAndSet(resume, null);
+                    return;
+                }
+            }
+            if (duplicate) {
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
-                return;
-            }
-
-            if (phase.get() == TERMINAL) {
-                pendingResume.compareAndSet(resume, null);
                 return;
             }
             scheduleReadyResume();
@@ -734,12 +885,21 @@ public final class OresScheduler implements AutoCloseable {
         private void scheduleReadyResume() {
             if (executing.get()) return;
             if (pendingResume.get() == null) return;
-            if (!phase.compareAndSet(WAITING, QUEUED)) return;
-
+            CarrierLease lease;
+            synchronized (terminalAdmissionLock) {
+                if (executing.get() || pendingResume.get() == null
+                        || phase.get() != WAITING) return;
+                // Producers and carrier-exit callbacks may both try to
+                // requeue this WAITING task. Serializing lease installation
+                // with QUEUED publication prevents a losing reservation from
+                // clobbering the winner's revocable queuedCarrierLease.
+                lease = reserveCarrier();
+                phase.set(QUEUED);
+            }
             try {
-                enqueueTurn();
+                enqueueTurn(lease);
             } catch (RejectedExecutionException rejected) {
-                // enqueueTurn already failed the task.
+                // enqueueTurn already failed the task and released its lease.
             }
         }
 
@@ -751,61 +911,61 @@ public final class OresScheduler implements AutoCloseable {
 
         private void finish(T value) {
             detachActiveAwaitRegistration();
-            if (!phase.compareAndSet(RUNNING, TERMINAL)) {
-                return;
+            synchronized (terminalAdmissionLock) {
+                if (!phase.compareAndSet(RUNNING, TERMINAL)) return;
+                terminalOutcome.set(cancelRequested.get()
+                        ? new TerminalCancelled<T>(cancellation)
+                        : new TerminalSuccess<>(value));
             }
-            terminalOutcome.set(cancelRequested.get()
-                    ? new TerminalCancelled<T>(cancellation)
-                    : new TerminalSuccess<>(value));
-            removeFromTasks();
-            // afterCarrierTurn() publishes only after the carrier has fully
-            // unwound runBound(...).
+            // Keep this task in the live registry until afterCarrierTurn()
+            // publishes completion. Otherwise close() may dispose a shared
+            // context while guest code is still leaving its carrier turn.
         }
 
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
             detachActiveAwaitRegistration();
-            int observed;
-            do {
-                observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
+            synchronized (terminalAdmissionLock) {
+                int observed;
+                do {
+                    observed = phase.get();
+                    if (observed == TERMINAL) return;
+                } while (!phase.compareAndSet(observed, TERMINAL));
 
-            if (cancelRequested.get() && !(failure instanceof TaskCancelledException)
-                    && failure != cancellation) {
-                boolean alreadySuppressed = false;
-                for (Throwable earlier : failure.getSuppressed()) {
-                    if (earlier == cancellation
-                            || earlier instanceof TaskCancelledException) {
-                        alreadySuppressed = true;
-                        break;
-                    }
-                }
-                if (!alreadySuppressed) {
-                    failure.addSuppressed(cancellation);
-                }
+                terminalOutcome.compareAndSet(null,
+                        failure == cancellation
+                                ? new TerminalCancelled<T>(cancellation)
+                                : new TerminalFailure<T>(failure));
             }
-            terminalOutcome.compareAndSet(null,
-                    failure instanceof TaskCancelledException
-                            ? new TerminalCancelled<T>(cancellation)
-                            : new TerminalFailure<T>(failure));
-            removeFromTasks();
-            if (!executing.get()) {
-                publishTerminalIfReady();
-            }
+            if (!executing.get()) publishTerminalIfReady();
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            // A terminal *phase* is not proof that the carrier has left the
+            // entered guest context. The task remains registered until its
+            // completion is published outside that execution lease.
+            if (phase.get() != TERMINAL || executing.get()
+                    || outstandingCarrierTurns.get() != 0) return;
+            if (completion.isDone()) {
+                removeFromTasks();
+                return;
+            }
             TerminalOutcome<T> outcome = terminalOutcome.get();
-            if (outcome instanceof TerminalSuccess<?> success) {
-                @SuppressWarnings("unchecked")
-                T value = (T) success.value();
-                completion.completeFromRuntime(value);
-            } else if (outcome instanceof TerminalFailure<?> failure) {
-                completion.failFromRuntime(failure.failure());
-            } else if (outcome instanceof TerminalCancelled<?> cancelled) {
-                completion.cancelFromRuntime(cancelled.reason());
+            if (outcome == null) return;
+            try {
+                if (outcome instanceof TerminalSuccess<?> success) {
+                    @SuppressWarnings("unchecked")
+                    T value = (T) success.value();
+                    completion.completeFromRuntime(value);
+                } else if (outcome instanceof TerminalFailure<?> failure) {
+                    completion.failFromRuntime(failure.failure());
+                } else if (outcome instanceof TerminalCancelled<?> cancelled) {
+                    completion.cancelFromRuntime(cancelled.reason());
+                }
+            } finally {
+                // Never tell close() the task drained until the terminal
+                // callback has settled (including synchronous observers).
+                if (completion.isDone()) removeFromTasks();
             }
         }
 
