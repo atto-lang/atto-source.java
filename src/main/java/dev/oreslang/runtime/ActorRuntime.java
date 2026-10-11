@@ -6001,6 +6001,14 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
+            // Root must receive any urgent child events the parent did not
+            // process before stopping. Do not silently lose reserved faults.
+            Optional<SupervisorFailureLane.Failure> orphan;
+            while ((orphan = childFailures.poll()).isPresent()) {
+                SupervisorFailureLane.Failure failure = orphan.orElseThrow();
+                supervisorFailures.publish(failure);
+                childFailures.ack(failure.actor());
+            }
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
@@ -6038,7 +6046,9 @@ public final class ActorRuntime implements AutoCloseable {
                 String parentId = parent == null ? "" : parent.ref.id().value().toString();
                 controlEvent = new SupervisorFailureLane.Failure(
                         supervised, supervisorFailureKind(terminal), summary, parentId);
-                supervisorFailures.publish(controlEvent);
+                // Nested failures are first offered to the parent's actor
+                // control turn; the root copy stays reserved for escalation.
+                if (parent == null) supervisorFailures.publish(controlEvent);
             }
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
@@ -6066,9 +6076,14 @@ public final class ActorRuntime implements AutoCloseable {
                 children.remove(child);
                 if (controlEvent == null) {
                     childFailures.retireGracefully(supervisorKey(child.ref.id()));
+                } else if (stopped.get() || finalized || forceKillFenced) {
+                    // A dead supervisor cannot consume a child event. Escalate
+                    // directly; root's reserved slot survives the child.
+                    supervisorFailures.publish(controlEvent);
+                    childFailures.retireGracefully(supervisorKey(child.ref.id()));
                 } else {
                     childFailures.publish(controlEvent);
-                    wake = !stopped.get() && !finalized && !forceKillFenced;
+                    wake = true;
                 }
                 if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                 lifecycleLock.notifyAll();
@@ -6385,14 +6400,20 @@ public final class ActorRuntime implements AutoCloseable {
                                                 codeActorType, codeActorState, failure, sourceContext),
                                         "source supervisor returned null decision");
                             }
-                            // Root already has a durable copy, including for
-                            // ESCALATE. A child can never poison the parent by
-                            // requesting a non-existent restart mechanism.
+                            if (decision == SupervisionDecision.ESCALATE) {
+                                supervisorFailures.publish(failure);
+                            } else {
+                                // ACK means the child is handled. No root
+                                // notification should be spuriously delivered.
+                                supervisorFailures.retireGracefully(failure.actor());
+                            }
                             childFailures.ack(failure.actor());
                         } catch (RuntimeException | Error handlerFailure) {
+                            supervisorFailures.publish(failure);
                             childFailures.retry(failure.actor());
                             throw handlerFailure;
                         } catch (Exception handlerFailure) {
+                            supervisorFailures.publish(failure);
                             childFailures.retry(failure.actor());
                             throw new IllegalStateException(
                                     "supervisor handler failed for child " + failure.actor(),
