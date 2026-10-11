@@ -16,6 +16,7 @@ The following source expressions are the initial Java/GraalVM lowering target:
 ```ores
 val group = ActorGroup.new();
 val permit = group.join_capability(); // group manager only
+val replacement = group.rotate_join_capability(); // revokes old permits
 // Inside a running actor turn:
 permit.join();                         // idempotent current-actor join
 group.member_count();                  // member only, or trusted manager
