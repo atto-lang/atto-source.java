@@ -15,9 +15,10 @@ public final class SerialContinuationAuthority {
     public SerialContinuationAuthority(
             SerialActorAdmission admission,
             SerialActorAdmission.Lease originatingReceive) {
-        if (admission == null && originatingReceive != null) {
+        if (originatingReceive != null
+                && (admission == null || !admission.issued(originatingReceive))) {
             throw new IllegalArgumentException(
-                    "serial continuation lease requires its admission gate");
+                    "serial continuation lease must be issued by its actor admission gate");
         }
         this.admission = admission;
         this.originatingReceive = originatingReceive;
