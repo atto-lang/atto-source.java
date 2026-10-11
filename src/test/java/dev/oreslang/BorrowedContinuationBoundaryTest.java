@@ -232,4 +232,30 @@ final class BorrowedContinuationBoundaryTest {
                 }
                 """, "while an ordinary borrow is live");
     }
+
+    @Test
+    void scalarConstCannotBeExclusivelyBorrowedAcrossCall() {
+        reject("""
+                fnc mutate(borrow mut int x): int {
+                  return x;
+                }
+                fnc unsafe(): int {
+                  const fixed: int = 42;
+                  return mutate(rt borrow mut fixed);
+                }
+                """, "cannot mutably borrow immutable owner");
+    }
+
+    @Test
+    void scalarConstMayBeSharedAcrossSynchronousCall() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                fnc read(borrow int x): int {
+                  return x;
+                }
+                fnc safe(): int {
+                  const fixed: int = 42;
+                  return read(rt borrow fixed);
+                }
+                """)));
+    }
 }
