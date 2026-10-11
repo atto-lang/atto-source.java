@@ -52,8 +52,9 @@ final class SerialExecutionTicket {
                 : handlerLease.state() != SerialActorAdmission.State.FINISHED;
     }
 
-    /** Called on the actor's entered execution-context immediately before run. */
-    void requireRunnable(
+    /** Check ownership before ActorCell resumes a physically suspended lease.
+     * A suspended handler is still authorized to enqueue its own continuation. */
+    void requireAdmissible(
             Object executingActorId,
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
@@ -67,9 +68,20 @@ final class SerialExecutionTicket {
                     "scheduler task cannot borrow a different serial receive's authority");
         }
         if (handlerLease != null) {
-            handlerLease.requireActive();
+            if (handlerLease.state() == SerialActorAdmission.State.FINISHED) {
+                throw new IllegalStateException("retired source task ticket");
+            }
         } else if (admission != null) {
             admission.requireIdleActorScopedCallback();
         }
+    }
+
+    /** Called on the actor's entered execution-context immediately before run. */
+    void requireRunnable(
+            Object executingActorId,
+            Object executingIncarnation,
+            SerialActorAdmission.Lease activeReceive) {
+        requireAdmissible(executingActorId, executingIncarnation, activeReceive);
+        if (handlerLease != null) handlerLease.requireActive();
     }
 }
