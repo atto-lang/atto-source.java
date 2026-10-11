@@ -313,20 +313,38 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    /** 1024 UTF-8 bytes, never splitting a Unicode scalar/surrogate pair. */
+    /**
+     * Bound CONTROL text to 1024 UTF-8 bytes, preserving complete Unicode
+     * scalars. A Java String may contain an unpaired surrogate; replace it
+     * with '?' rather than putting malformed text into a supervisor notice.
+     * LLVM performs equivalent normalization at its UTF-8 input boundary.
+     */
     private static String boundedFailureSummary(String message) {
         final int maxUtf8Bytes = 1024;
+        StringBuilder result = new StringBuilder(Math.min(maxUtf8Bytes, message.length()));
         int offset = 0;
         int usedBytes = 0;
         while (offset < message.length()) {
-            int codePoint = message.codePointAt(offset);
+            char first = message.charAt(offset);
+            int codePoint;
+            int consumed = 1;
+            if (Character.isHighSurrogate(first) && offset + 1 < message.length()
+                    && Character.isLowSurrogate(message.charAt(offset + 1))) {
+                codePoint = Character.toCodePoint(first, message.charAt(offset + 1));
+                consumed = 2;
+            } else if (Character.isSurrogate(first)) {
+                codePoint = '?';
+            } else {
+                codePoint = first;
+            }
             int byteCount = codePoint <= 0x7f ? 1
                     : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
             if (usedBytes + byteCount > maxUtf8Bytes) break;
             usedBytes += byteCount;
-            offset += Character.charCount(codePoint);
+            result.appendCodePoint(codePoint);
+            offset += consumed;
         }
-        return offset == message.length() ? message : message.substring(0, offset);
+        return result.toString();
     }
 
     private static ActorFailureNotice failureNotice(ActorId id, Throwable failure) {
