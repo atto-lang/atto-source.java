@@ -86,6 +86,9 @@ public final class SupervisorFailureControl {
     private final AtomicLong undelivered = new AtomicLong();
     private Consumer<Notice> handler;
     private boolean draining;
+    private boolean drainActive;
+    /** Fences duplicate and late scheduler callbacks across CONTROL batches. */
+    private long dispatchGeneration;
     private Throwable handlerFailure;
 
     public SupervisorFailureControl(
@@ -141,9 +144,16 @@ public final class SupervisorFailureControl {
 
     private void scheduleLocked() {
         if (draining || handler == null || pending.isEmpty() || handlerFailure != null) return;
+        if (dispatchGeneration == Long.MAX_VALUE) {
+            handlerFailure = new IllegalStateException("supervisor CONTROL dispatch generation exhausted");
+            undelivered.addAndGet(pending.size());
+            pending.clear();
+            return;
+        }
+        final long generation = ++dispatchGeneration;
         draining = true;
         try {
-            SupervisorDispatchGuard.enqueue(dispatcher, this::drain);
+            SupervisorDispatchGuard.enqueue(dispatcher, () -> drain(generation));
         } catch (Throwable dispatchFailure) {
             handlerFailure = dispatchFailure;
             draining = false;
@@ -152,7 +162,14 @@ public final class SupervisorFailureControl {
         }
     }
 
-    private void drain() {
+    private void drain(long generation) {
+        // Even an executor that invokes the same submitted Runnable twice
+        // cannot overlap handlers or use an old batch callback on a newer one.
+        synchronized (this) {
+            if (!draining || drainActive || generation != dispatchGeneration
+                    || handlerFailure != null) return;
+            drainActive = true;
+        }
         // Bounded bursts: release the shared dispatcher between batches.
         int processed = 0;
         while (processed < 32) {
@@ -161,6 +178,7 @@ public final class SupervisorFailureControl {
             synchronized (this) {
                 if (handlerFailure != null || pending.isEmpty()) {
                     draining = false;
+                    drainActive = false;
                     return;
                 }
                 next = pending.peekFirst();
@@ -174,6 +192,7 @@ public final class SupervisorFailureControl {
                     undelivered.addAndGet(pending.size());
                     pending.clear(); // No further delivery is possible.
                     draining = false;
+                    drainActive = false;
                 }
                 return;
             }
@@ -184,6 +203,7 @@ public final class SupervisorFailureControl {
         }
         synchronized (this) {
             draining = false;
+            drainActive = false;
             scheduleLocked();
         }
     }
