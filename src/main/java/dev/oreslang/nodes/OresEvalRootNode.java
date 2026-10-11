@@ -4588,7 +4588,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
                 throw signal;
-            } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+            } catch (ReturnSignal | ArmReturnSignal | BreakSignal | ContinueSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
@@ -4645,6 +4645,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 return;
+            }
+            if (stmt instanceof Ast.ArmReturnStmt arm) {
+                // Lexically scoped: never returns from the containing function.
+                throw new ArmReturnSignal(eval(arm.value(), env));
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 returnFrom(
@@ -5576,6 +5580,78 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.ValueMatchExpr match) {
+                Object subject = eval(match.subject(), env);
+                Ast.MatchArm selected = null, fallback = null;
+                Env selectedEnv = null;
+                for (Ast.MatchArm arm : match.arms()) {
+                    boolean catchAll = arm.guard() == null
+                            && (arm.pattern() instanceof Ast.WildcardPattern
+                                || arm.pattern() instanceof Ast.BindingPattern);
+                    if (!match.ordered() && catchAll) {
+                        fallback = arm;
+                        continue;
+                    }
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    if (match.ordered()) {
+                        selected = arm;
+                        selectedEnv = armEnv;
+                        break;
+                    }
+                    if (selected != null) throw new IllegalStateException(
+                            "exclusive value match selected more than one arm");
+                    selected = arm;
+                    selectedEnv = armEnv;
+                }
+                if (selected == null && fallback != null) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(fallback.pattern(), subject, bindings))
+                        throw new IllegalStateException("value match fallback rejected subject");
+                    selected = fallback;
+                    selectedEnv = new Env(env);
+                    Env matchedEnv = selectedEnv;
+                    bindings.forEach((name, value) ->
+                            matchedEnv.define(name, value, Ast.BindingKind.VAL));
+                }
+                if (selected == null) throw new IllegalStateException(
+                        "exhaustive value match reached uncovered input");
+                try {
+                    executeBlock(selected.body(), selectedEnv, true);
+                } catch (ArmReturnSignal result) {
+                    return result.value;
+                }
+                throw new IllegalStateException("value match arm completed without result");
+            }
+            if (expr instanceof Ast.ValueSwitchExpr switched) {
+                Object subject = eval(switched.subject(), env);
+                List<Ast.Stmt> selectedBody = switched.defaultBody();
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    boolean found = false;
+                    for (Ast.Expr constant : arm.constants()) {
+                        if (valueEquals(subject, eval(constant, env))) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) {
+                        selectedBody = arm.body();
+                        break;
+                    }
+                }
+                if (selectedBody.isEmpty()) throw new IllegalStateException(
+                        "exhaustive value switch reached uncovered input");
+                try {
+                    executeBlock(selectedBody, env, true);
+                } catch (ArmReturnSignal result) {
+                    return result.value;
+                }
+                throw new IllegalStateException("value switch arm completed without result");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -8588,6 +8664,11 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+    }
+
+    private static final class ArmReturnSignal extends RuntimeException {
+        private final Object value;
+        private ArmReturnSignal(Object value) { super(null, null, false, false); this.value = value; }
     }
 
     private static final class ReturnSignal extends RuntimeException {
