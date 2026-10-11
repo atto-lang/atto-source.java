@@ -97,6 +97,19 @@ final class SerialActorCriticalAdmissionTest {
             """)));
     }
 
+    @Test void inheritedMutableActorStateRequiresExplicitLaneComposition() {
+        String derived = """
+            define actor Base as
+                state { base: int = 0; }
+            end
+            define serial actor Derived extends Base as
+                state { count: int = 0; }
+            end
+            """;
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(Parser.parse(derived)));
+    }
+
     @Test void nonSerialInstanceAndStaticMethodCannotAcquireImplicitCritical() {
         String staticallyBound = """
             define serial actor Counter as
