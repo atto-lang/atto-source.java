@@ -119,10 +119,39 @@ final class SourceActorGroupExecutionTest {
     }
 
     @Test
-    void rejectsCapabilityAsActorMailboxPayload() {
+    void rejectsDirectAndNestedActorGroupCapabilitiesAtActorBoundaries() {
+        // A String mailbox would reject the permit simply for being the wrong
+        // payload type. Exercise matching declared types instead: they must
+        // fail specifically because opaque group authority is not sendable.
+        for (String payloadType : java.util.List.of(
+                "ActorGroup", "ActorGroupJoinCapability",
+                "Option<ActorGroupJoinCapability>",
+                "List<ActorGroup>", "List<Option<ActorGroupJoinCapability>>")) {
+            String program = """
+                    define actor Receiver as
+                      receive(ActorMail<%s> mail): void {
+                        self.end();
+                        return;
+                      }
+                    end
+                    pub routine main(): void { return; }
+                    """.formatted(payloadType);
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(program),
+                    payloadType + " must not be an actor mailbox payload");
+            assertTrue(denied.getMessage().contains(
+                            payloadType.contains("JoinCapability")
+                                    ? "ActorGroupJoinCapability" : "ActorGroup"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsGroupPermitSentToExplicitlyTypedActorRef() {
         String program = """
                 define actor Receiver as
-                  receive(ActorMail<String> mail): void {
+                  receive(ActorMail<ActorGroupJoinCapability> mail): void {
                     self.end();
                     return;
                   }
@@ -134,7 +163,10 @@ final class SourceActorGroupExecutionTest {
                   return;
                 }
                 """;
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(program));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(denied.getMessage().contains("ActorGroupJoinCapability"),
+                denied.getMessage());
     }
 
     @Test
