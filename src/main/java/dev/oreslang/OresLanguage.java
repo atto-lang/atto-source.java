@@ -44,8 +44,13 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
     @Override
     protected OresContext createContext(Env env) {
-        initialContextHostThread = Thread.currentThread();
-        return new OresContext(this, env);
+        OresContext context = new OresContext(this, env);
+        // Publish the embedding-thread privilege only after we know this
+        // context's isolation policy. An adversarial guest must never retain
+        // this trusted-host concurrent admission exception.
+        initialContextHostThread = context.isolatePolicy().adversarial()
+                ? null : Thread.currentThread();
+        return context;
     }
 
     /**
@@ -60,9 +65,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
         return singleThreaded
                 || thread == initialContextHostThread
-                || ActorRuntime.isActorCarrierThread()
-                || AsyncRuntime.isAsyncCarrierThread()
-                || OresScheduler.isSchedulerCarrierThread();
+                || (thread == Thread.currentThread()
+                    && (ActorRuntime.isActorCarrierThread()
+                        || AsyncRuntime.isAsyncCarrierThread()
+                        || OresScheduler.isSchedulerCarrierThread()));
     }
 
     @Override
