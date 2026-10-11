@@ -518,7 +518,7 @@ final class PatternMatchingHardeningTest {
         }
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc ok(int n): int {
-                  val (head, _) = (n, 0);
+                  const [head, _] = [n, 0];
                   return head;
                 }
                 """));
