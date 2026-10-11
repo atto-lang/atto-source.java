@@ -103,10 +103,14 @@ public final class OresEvalRootNode extends RootNode {
             current.link();
             Object result = current.invokePublic(
                     functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
-            // Java Future is not a valid raw Truffle interop return value.
-            // Adapt only the public host-invocation boundary; guest dispatch
-            // continues receiving the original scheduler-owned OresFuture.
-            if (result instanceof OresFuture<?>) return context.env().asGuestValue(result);
+            // Runtime Future/Channel handles are not valid raw Truffle interop
+            // results. Adapt only the explicit public embedder boundary:
+            // guest dispatch retains native Oreslang handles, and no arbitrary
+            // host object gains admission across an async guest task boundary.
+            if (result instanceof OresFuture<?>
+                    || result instanceof ChannelRuntime.Channel<?>) {
+                return context.env().asGuestValue(result);
+            }
             return result;
         }
 
@@ -176,6 +180,14 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        // A module field is process/code-unit static state, never a fresh
+        // initializer evaluation on each member read. Identity keys prevent
+        // accidental collisions between separate declaration origins.
+        // All access is serialized here so concurrent first reads cannot
+        // create competing channel, singleton, or resource instances.
+        private final IdentityHashMap<Ast.FieldDecl, Object> moduleFieldValues =
+                new IdentityHashMap<>();
+        private static final Object MODULE_FIELD_INITIALIZING = new Object();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -933,6 +945,8 @@ public final class OresEvalRootNode extends RootNode {
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
+            // Exclusive to an inline channel operation, never a shared Future.
+            private OresFuture<?> ownedPendingChannelAwait;
             private OresScheduler.Step<Object> nextStep;
 
             private SourceTask(
@@ -1039,6 +1053,15 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
+                    OresFuture<?> abandonedChannel = ownedPendingChannelAwait;
+                    ownedPendingChannelAwait = null;
+                    if (abandonedChannel != null
+                            && resume.failure() instanceof OresScheduler.TaskCancelledException
+                            && cleanupDepth == 0) {
+                        // This uniquely-created inline channel select must not
+                        // retain a phantom consumer after its owner cancels.
+                        abandonedChannel.cancel(false);
+                    }
                     boolean wasCooperating = awaitingCooperate;
                     awaitingCooperate = false;
                     if (resume.failure() instanceof OresScheduler.TaskCancelledException
@@ -1134,6 +1157,13 @@ public final class OresEvalRootNode extends RootNode {
             private void suspend(
                     OresFuture<?> future,
                     SourceValueCont continuation) {
+                suspend(future, continuation, false);
+            }
+
+            private void suspend(
+                    OresFuture<?> future,
+                    SourceValueCont continuation,
+                    boolean ownsInlineChannelOperation) {
                 Objects.requireNonNull(future, "future");
                 Objects.requireNonNull(continuation, "continuation");
                 if (nextStep != null) {
@@ -1142,6 +1172,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 awaitingCooperate = false;
                 awaitingContinuation = continuation;
+                ownedPendingChannelAwait = ownsInlineChannelOperation ? future : null;
                 nextStep = OresScheduler.await(future);
             }
 
@@ -3292,7 +3323,10 @@ public final class OresEvalRootNode extends RootNode {
                                     suspendOnAwaitable(
                                             t,
                                             value,
-                                            continuation);
+                                            continuation,
+                                            awaited.expression() instanceof Ast.ChannelOpExpr channel
+                                                    && channel.mode() == Ast.WaitMode.NONBLOCKING
+                                                    && !channel.callback());
                                 }
                             });
                     return;
@@ -3891,7 +3925,8 @@ public final class OresEvalRootNode extends RootNode {
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
-                SourceValueCont continuation) {
+                SourceValueCont continuation,
+                boolean ownsInlineChannelOperation) {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
@@ -3937,7 +3972,8 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(
                                     t,
                                     result,
-                                    failure));
+                                    failure),
+                    ownsInlineChannelOperation);
         }
 
         private void evalSuspendableChannel(
@@ -7706,12 +7742,47 @@ public final class OresEvalRootNode extends RootNode {
                     return new ClassFacade(this, klass);
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
-                    if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
+                    return moduleFieldValue(module, field);
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
         }
+
+        private Object moduleFieldValue(Ast.ModuleDecl module, Ast.FieldDecl field) {
+            synchronized (moduleFieldValues) {
+                if (moduleFieldValues.containsKey(field)) {
+                    Object existing = moduleFieldValues.get(field);
+                    if (existing == MODULE_FIELD_INITIALIZING) {
+                        throw new IllegalStateException("recursive module field initialization: "
+                                + module.name() + "." + field.name());
+                    }
+                    if (existing instanceof FailedModuleField failed) {
+                        Throwable failure = failed.failure();
+                        if (failure instanceof RuntimeException runtime) throw runtime;
+                        if (failure instanceof Error fatal) throw fatal;
+                        throw new IllegalStateException("module initializer failed", failure);
+                    }
+                    return existing;
+                }
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException("module field has no initializer: "
+                            + module.name() + "." + field.name());
+                }
+                moduleFieldValues.put(field, MODULE_FIELD_INITIALIZING);
+                try {
+                    Object value = eval(field.initializer(), new Env(null));
+                    moduleFieldValues.put(field, value);
+                    return value;
+                } catch (RuntimeException | Error failure) {
+                    // Retry is not automatic: a failed module initializer must
+                    // not be silently evaluated again with duplicate effects.
+                    moduleFieldValues.put(field, new FailedModuleField(failure));
+                    throw failure;
+                }
+            }
+        }
+
+        private record FailedModuleField(Throwable failure) { }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
             Ast.FunctionDecl match = null;
