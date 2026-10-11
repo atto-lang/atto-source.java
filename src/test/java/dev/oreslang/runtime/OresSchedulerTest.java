@@ -840,6 +840,7 @@ final class OresSchedulerTest {
                     OresFuture<Integer> source = new OresFuture<>();
                     CountDownLatch suspended = new CountDownLatch(1);
                     AtomicInteger cleanups = new AtomicInteger();
+                    AtomicBoolean normalResultSelected = new AtomicBoolean();
                     OresFuture<Integer> task = scheduler.start(
                             new OresScheduler.CancellationAwareTask<>() {
                                 private volatile boolean cleanup;
@@ -867,6 +868,7 @@ final class OresSchedulerTest {
                                         cleanups.incrementAndGet();
                                         return OresScheduler.done(123);
                                     }
+                                    normalResultSelected.set(true);
                                     return OresScheduler.done(55);
                                 }
                             });
@@ -887,8 +889,11 @@ final class OresSchedulerTest {
                     if (admitted) {
                         assertThrows(java.util.concurrent.CancellationException.class,
                                 () -> task.get(5, TimeUnit.SECONDS));
-                        assertEquals(1, cleanups.get(),
-                                "admitted cancel needs exactly one lane-owned unwind");
+                        assertTrue(cleanups.get() == 1 || normalResultSelected.get(),
+                                "a cancellation may omit synthetic cleanup only when the "
+                                + "guest had already selected its normal Done result");
+                        assertTrue(cleanups.get() <= 1,
+                                "a racing await may never replay cleanup");
                     } else {
                         assertEquals(55, task.get(5, TimeUnit.SECONDS));
                         assertEquals(0, cleanups.get());
