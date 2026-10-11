@@ -113,4 +113,26 @@ final class TypedValueMatchCleanupPrecedenceTest {
                 """, out);
         assertEquals("inner\nouter\n42", output(out));
     }
+    @Test
+    void originalPanicIdentitySurvivesFailingFinally() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> eval("""
+                pub fnc main(): void {
+                  try {
+                    val Option<int> missing = None;
+                    val int ignored = missing.unwrap();
+                  } catch (e) {
+                    stdio.println("panic-caught");
+                  } finally {
+                    stdio.println("finally-ran");
+                    val int cleanupError = 1 % 0;
+                  }
+                  stdio.println("continued");
+                }
+                """, out));
+        assertTrue(failure.getMessage().contains("Option::unwrap"),
+                () -> "finally masked the original panic: " + failure.getMessage());
+        assertEquals("finally-ran", output(out));
+    }
+
 }
