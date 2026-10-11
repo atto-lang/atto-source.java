@@ -94,8 +94,21 @@ final class TaggedMessageContractTest {
         var narrower = new TaggedMessageCodec(new TaggedMessageContracts.Domain(
                 "OnlyFirst", List.of(registry.requireCase("Status.Message1"))));
         assertThrows(IllegalArgumentException.class, () -> narrower.decode(encoded));
-        encoded[encoded.length - 1] ^= 1;
-        assertThrows(IllegalArgumentException.class, () -> codec.decode(encoded));
+        // A shape digest is not a message authentication code: changing
+        // one valid string to another valid string is allowed. Instead,
+        // tamper the type-binding digest, which must always be rejected.
+        byte[] alteredDigest = encoded.clone();
+        boolean found = false;
+        for (int i = 0; i < alteredDigest.length - 34; i++) {
+            if ((alteredDigest[i] & 255) == 0xc4
+                    && (alteredDigest[i + 1] & 255) == 32) {
+                alteredDigest[i + 2] ^= 1;
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found);
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(alteredDigest));
     }
 
     @Test
