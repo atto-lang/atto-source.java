@@ -1513,6 +1513,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         UntrustedLogicalQuota quota = inheritedQuota;
+        AtomicBoolean released = new AtomicBoolean();
+        Runnable retireOnce = () -> {
+            if (released.compareAndSet(false, true)) {
+                releaseUntrustedSourceTask(cell, quota);
+            }
+        };
         try {
             OresFuture<T> future = cell.sourceScheduler().start(resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
@@ -1536,14 +1542,12 @@ public final class ActorRuntime implements AutoCloseable {
             });
             // Completion may run after actor retirement; it must reclaim only
             // the same quota cohort and never unblock a newer generation.
-            future.whenCompleteRuntime((ignored, failure) ->
-                    releaseUntrustedSourceTask(cell, quota));
+            future.whenCompleteRuntime((ignored, failure) -> retireOnce.run());
             return future;
         } catch (RuntimeException | Error failure) {
-            // Includes scheduler admission/registration failure. A task that
-            // was admitted but failed immediately may also invoke the terminal
-            // callback: releaseUntrustedSourceTask refuses negative counts.
-            releaseUntrustedSourceTask(cell, quota);
+            // Admission and registration failures may race synchronous terminal
+            // publication. Release once even if the callback already executed.
+            retireOnce.run();
             throw failure;
         }
     }
