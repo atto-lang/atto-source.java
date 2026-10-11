@@ -1938,10 +1938,16 @@ public final class ActorRuntime implements AutoCloseable {
      * bus. It does not own a dispatcher and is not itself an actor, so group
      * communication never serializes through a central mailbox.</p>
      */
+    /** Immutable registry association stored on the actual actor cell. */
+    private record SupervisedChild(
+            SupervisorChildRegistry registry,
+            SupervisorChildRegistry.Snapshot admitted) { }
+
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
         private final SupervisorId supervisorId = SupervisorId.create();
         private final SupervisorFailureControl supervisorControl;
+        private final SupervisorChildRegistry childRegistry;
         private final ActorId creator;
         private final int memberLimit;
         private final int eventTopicLimit;
@@ -1983,6 +1989,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.supervisorControl = new SupervisorFailureControl(
                     supervisorId, id, supervisorDispatcher,
                     Math.max(8, Math.min(256, memberLimit)));
+            this.childRegistry = new SupervisorChildRegistry(supervisorId, id);
             if (creator != null) members.add(creator);
         }
 
@@ -2114,6 +2121,10 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor is already managed by a different ActorGroup");
                 }
+                if (cell.supervisedChild.get() == null) {
+                    var admittedChild = childRegistry.register(worker.id());
+                    cell.supervisedChild.set(new SupervisedChild(childRegistry, admittedChild));
+                }
                 managedWorkers.putIfAbsent(worker.id(), worker);
                 cell.supervision.set(supervisorControl);
             }
@@ -2190,6 +2201,12 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
                 }
                 cell.supervision.compareAndSet(supervisorControl, null);
+                var binding = cell.supervisedChild.getAndSet(null);
+                if (binding != null) {
+                    binding.registry().detachActive(
+                            binding.admitted().child(), worker.id(),
+                            binding.admitted().incarnation());
+                }
                 managedWorkers.remove(worker.id(), worker);
                 return true;
             }
@@ -3902,6 +3919,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                                 cell.managedByGroup.set(inheritedId);
                                 cell.supervision.set(inherited.supervisorControl);
+                                var admittedChild = inherited.childRegistry.register(id);
+                                cell.supervisedChild.set(
+                                        new SupervisedChild(inherited.childRegistry, admittedChild));
                                 inherited.managedWorkers.put(id, ref);
                                 parent.children.add(cell);
                                 linkedToParent = true;
@@ -3921,6 +3941,18 @@ public final class ActorRuntime implements AutoCloseable {
                 // Roll back every registry when spawn admission fails. In
                 // particular, never strand an inherited group ownership ref.
                 if (cell != null) actors.remove(id, cell);
+                if (cell != null) {
+                    var tracking = cell.supervisedChild.getAndSet(null);
+                    if (tracking != null) {
+                        try {
+                            tracking.registry().detachActive(
+                                    tracking.admitted().child(), id,
+                                    tracking.admitted().incarnation());
+                        } catch (RuntimeException cleanup) {
+                            failure.addSuppressed(cleanup);
+                        }
+                    }
+                }
                 if (linkedToParent && cell != null) parent.children.remove(cell);
                 if (cell != null) {
                     ActorGroupId inheritedId = cell.managedByGroup.get();
@@ -4214,40 +4246,58 @@ public final class ActorRuntime implements AutoCloseable {
         // invoke the supervisor on this child actor's physical carrier.
         // The control lane survives removal of a closed ActorGroup registry.
         SupervisorFailureControl lane = cell.supervision.get();
+        SupervisedChild tracking = cell.supervisedChild.get();
         Throwable failure = cell.ref.terminationCause.get();
-        if (lane != null && failure != null) {
-            SupervisorFailureControl.Kind failureKind =
-                    failure instanceof CancellationException
-                            ? SupervisorFailureControl.Kind.CANCELLED
-                            : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
-            ActorGroupId ownerGroup = cell.managedByGroup.get();
-            if (ownerGroup != null) {
-                // Capture the exact, immutable failure envelope while the
-                // actor still owns its supervision association. Publish only
-                // AFTER doneFuture and finalizedFuture settle: otherwise a
-                // fast CONTROL carrier can authorize STOP while the failed
-                // child is still externally observable as unfinished.
-                SupervisorFailureControl.Notice notice =
-                        new SupervisorFailureControl.Notice(
-                                lane.supervisorId(), ownerGroup, cell.ref.id(),
-                                cell.parent == null
-                                        ? Optional.empty() : Optional.of(cell.parent.ref.id()),
-                                failureKind,
-                                failure.getClass().getName(),
-                                failure.getMessage() == null ? "" : failure.getMessage());
-                cell.finalizedFuture.whenCompleteRuntime((ignored, completionFailure) -> {
-                    if (completionFailure == null) {
-                        // A CONTROL enqueue, never guest execution on this
-                        // child carrier. The captured lane survives group
-                        // registry removal and actor retirement.
-                        lane.publish(notice);
-                    } else {
-                        // The finalization barrier is not trustworthy. Never
-                        // present an incomplete child as a finalized Failure.
-                        lane.rejectUnfinalizedFailure();
+        ActorGroupId ownerGroup = cell.managedByGroup.get();
+        if (lane != null && ownerGroup != null
+                && (tracking != null || failure != null)) {
+            // Finalize the trusted exact child generation only after the actor
+            // has crossed the physical teardown / TurnExecutor barrier.
+            // Retain registry identity after the owning group registry closes.
+            cell.finalizedFuture.whenCompleteRuntime((ignored, barrierFailure) -> {
+                if (barrierFailure != null) {
+                    lane.rejectUnfinalizedFailure();
+                    return;
+                }
+                try {
+                    if (tracking != null) {
+                        var admitted = tracking.admitted();
+                        var registry = tracking.registry();
+                        registry.finalized(admitted.child(), cell.ref.id(),
+                                admitted.incarnation());
+                        if (failure == null) {
+                            // A normally terminated incarnation does not
+                            // reserve an unbounded restartable failure record.
+                            registry.stop(admitted.child(), cell.ref.id(),
+                                    admitted.incarnation());
+                            registry.retireStopped(admitted.child());
+                        }
                     }
-                });
-            }
+                } catch (RuntimeException | Error invalidFinalization) {
+                    // Never publish a supposedly verified logical child if
+                    // its identity/finalization check failed.
+                    lane.rejectUnfinalizedFailure();
+                    return;
+                }
+                if (failure != null) {
+                    SupervisorFailureControl.Kind kind =
+                            failure instanceof CancellationException
+                                    ? SupervisorFailureControl.Kind.CANCELLED
+                                    : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
+                    var child = tracking == null
+                            ? Optional.<SupervisorChildRegistry.ChildId>empty()
+                            : Optional.of(tracking.admitted().child());
+                    long incarnation = tracking == null
+                            ? 0 : tracking.admitted().incarnation();
+                    lane.publish(new SupervisorFailureControl.Notice(
+                            lane.supervisorId(), ownerGroup, cell.ref.id(),
+                            cell.parent == null ? Optional.empty()
+                                    : Optional.of(cell.parent.ref.id()),
+                            kind, failure.getClass().getName(),
+                            failure.getMessage() == null ? "" : failure.getMessage(),
+                            child, incarnation));
+                }
+            });
         }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
@@ -6143,6 +6193,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
         /** Trusted, process-local supervisor lane. Not a guest capability. */
         private final AtomicReference<SupervisorFailureControl> supervision =
+                new AtomicReference<>();
+        /** Exact trusted group child association; survives group close. */
+        private final AtomicReference<SupervisedChild> supervisedChild =
                 new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
