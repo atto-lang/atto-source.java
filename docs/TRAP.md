@@ -62,8 +62,15 @@ const value: Option<int> = trap parse_number(text);
 ```
 
 In an async function `trap await operation()` keeps the trap boundary across
-the suspension. By contrast, `await trap operation()` first traps the call to
-`operation()` itself and then awaits the resulting Option (where applicable).
+the suspension. By contrast, `await trap operation()` would attempt to await
+an `Option<Future<T>>`, rather than a `Future<T>`, so the current type checker
+correctly rejects it. Trapping a Future-producing call alone does not trap
+errors that arrive later when that Future is awaited.
+
+Because `trap` constructs an owned `Option<T>`, its operand is consumed
+with the same move/borrow restrictions as `Some(operand)`. Owned sum values
+cannot contain borrowed references or live mutex guards without a separate
+lifetime-safe ownership mechanism.
 Use a typed `Result` or explicit `try/catch` when the original error detail
 matters; `trap` deliberately discards it.
 
