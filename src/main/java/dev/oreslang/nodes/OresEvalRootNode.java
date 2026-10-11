@@ -22,6 +22,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
@@ -901,9 +902,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
-            private static final int LOOP_SAFEPOINT_INTERVAL = 32;
-            private static final int MAX_LOOP_BACKEDGES_PER_TURN = 512;
-            private static final long SOFT_LOOP_QUANTUM_NANOS = 2_000_000L;
+            private final SourceCooperationQuantum cooperationQuantum =
+                    new SourceCooperationQuantum();
 
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
@@ -966,6 +966,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
+                // The logical source context survives await/cooperate and
+                // lexical cleanup; only physical-dispatch fairness resets.
+                cooperationQuantum.beginDispatch();
                 nextStep = null;
 
                 if (resume.initial()) {
@@ -1070,17 +1073,17 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private void drainLoopContinuations() {
-                long started = System.nanoTime();
-                int backedges = 0;
+                // Only compiler-lowered, post-commit loop backedges are
+                // eligible to suspend. The unexecuted continuation is heap-owned.
+                final boolean untrusted = ActorRuntime.currentActorKind()
+                        == ActorRuntime.ActorKind.UNTRUSTED;
                 while (nextStep == null && pendingLoopContinuation != null) {
                     SourceValueCont next = pendingLoopContinuation;
                     Env guardEnv = pendingLoopGuardEnv;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
-                    ++backedges;
-                    boolean untrusted = ActorRuntime.currentActorKind()
-                            == ActorRuntime.ActorKind.UNTRUSTED;
-                    if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
+                    boolean checkDue = cooperationQuantum.completedBackedgeNeedsCheck();
+                    if (untrusted || checkDue) {
                         if (cancellationRequested && cleanupDepth == 0
                                 && !guardEnv.hasLiveMutexGuards()) {
                             pendingLoopContinuation = null;
@@ -1093,17 +1096,15 @@ public final class OresEvalRootNode extends RootNode {
                             inner.finish(cancellationFlow());
                             return;
                         }
-                        // Untrusted fuel is charged at EVERY loop backedge, not
-                        // once per 32 iterations. Trusted tasks poll at 32.
+                        // UNTRUSTED fuel remains charged at every backedge.
+                        // Trusted loops perform only a cheap increment/mask in
+                        // the hot path, with clock sampling at most every 64.
                         context.schedulerSafepoint();
-                        // Issue #402: an UNTRUSTED carrier handoff can currently
-                        // mint a fresh physical-turn quota, so fail closed.
-                        // Never auto-cooperate while a live lexical mutex guard
-                        // is held: the guard is a no-yield critical region.
-                        if (!untrusted
-                                && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
-                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
-                                && !guardEnv.hasLiveMutexGuards()) {
+                        // Do not refill UNTRUSTED logical quotas by cooperating.
+                        // A live lexical mutex guard is a no-yield region.
+                        if (!untrusted && checkDue
+                                && !guardEnv.hasLiveMutexGuards()
+                                && cooperationQuantum.shouldCooperateAtCheck()) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
                             return;
@@ -1136,6 +1137,8 @@ public final class OresEvalRootNode extends RootNode {
                 awaitingCooperate = true;
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.cooperate();
+                // Generator yield and await are not scheduler cooperation.
+                cooperationQuantum.recordedCooperate();
             }
 
             private void done(Object value) {
